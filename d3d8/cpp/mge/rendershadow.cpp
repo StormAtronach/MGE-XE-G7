@@ -44,8 +44,12 @@ void DistantLand::renderShadowMap() {
     // Render far layer (changes viewport)
     renderShadowLayer(1, shadowFarRadius, &inverseCameraProj);
 
-    // Reset viewport
+    // Reset viewport and the caster pass states that the distant land passes do not set
     device->SetViewport(&vp);
+    device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    device->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, 0);
+    device->SetRenderState(D3DRS_DEPTHBIAS, 0);
 }
 
 void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, const D3DXMATRIX* viewproj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set) {

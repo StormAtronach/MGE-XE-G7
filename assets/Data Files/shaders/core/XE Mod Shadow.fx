@@ -50,9 +50,12 @@ TransformedVert transformShadowVert(MorrowindVertIn IN) {
 //------------------------------------------------------------
 // 2 layer cascade ortho percentage-closer lookup
 
-// Receiver position in a cascade's clip space, pushed along the normal to avoid self-shadowing
+// Receiver position in a cascade's clip space, pushed along the normal to avoid self-shadowing.
+// The push grows towards grazing sun angles, where one shadow texel spans the most depth.
 float4 shadowReceiverPos(float4 pos, float3 normal, int layer) {
-    float offset = shadowNormalOffset * 2 * shadowCascadeRadius[layer] * shadowRcpRes;
+    float ndotl = saturate(dot(normal, -sunVecView));
+    float slope = sqrt(1 - ndotl * ndotl);
+    float offset = shadowNormalOffset * (0.5 + slope) * 2 * shadowCascadeRadius[layer] * shadowRcpRes;
     return mul(pos + float4(normal * offset, 0), shadowViewProj[layer]);
 }
 
