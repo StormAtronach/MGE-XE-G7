@@ -68,6 +68,9 @@ public:
     static constexpr int kMaxPostPointLights = 32;
     static constexpr D3DFORMAT kFormatIntz =
         static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
+    // Render target that allocates no memory, for depth-only passes
+    static constexpr D3DFORMAT kFormatNull =
+        static_cast<D3DFORMAT>(MAKEFOURCC('N', 'U', 'L', 'L'));
 
     struct TerrainRuntimeConstants {
         D3DXVECTOR2 worldOrigin;
@@ -198,8 +201,8 @@ public:
     static IDirect3DSurface9* surfRain, *surfRipples, *surfRippleBuffer;
     static IDirect3DVertexBuffer9* vbWaveSim;
 
-    static IDirect3DTexture9* texShadow, *texSoftShadow;
-    static IDirect3DSurface9* surfShadowZ;
+    static IDirect3DTexture9* texShadow;
+    static IDirect3DSurface9* surfShadow, *surfShadowColor;
     static IDirect3DVertexBuffer9* vbFullFrame, *vbClipCube;
 
     // Must match shadowCascades in "XE Mod Shadow Data.fx". That file is user-replaceable

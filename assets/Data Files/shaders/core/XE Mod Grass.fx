@@ -102,8 +102,7 @@ float4 GrassPS(GrassVertOut IN): COLOR0 {
         discard;
 
     // Soft shadowing
-    float dz = shadowDeltaZ(IN.shadow0pos, IN.shadow1pos);
-    float v = shadowESM(dz);
+    float v = shadowVisibility(IN.shadow0pos, IN.shadow1pos);
 
     // Darken shadow area according to existing lighting (slightly towards blue)
     v *= IN.color.a;

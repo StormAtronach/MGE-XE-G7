@@ -141,6 +141,17 @@ DebugOut ShadowDebugVS(float4 pos : POSITION) {
     return OUT;
 }
 
+// The atlas is a depth texture, which D3D9 only exposes through comparison sampling.
+// Reconstruct a 3-bit depth by counting the slices the stored depth passes.
+float shadowDebugDepth(float4 t) {
+    float z = 0;
+    [unroll] for(int i = 1; i <= 8; ++i) {
+        t.z = i / 8.0;
+        z += tex2Dlod(sampShadow, t).r;
+    }
+    return z / 8.0;
+}
+
 float4 ShadowDebugPS(DebugOut IN) : COLOR0 {
     float z, red = 0;
     float4 shadowClip, eyeClip;
@@ -148,7 +159,7 @@ float4 ShadowDebugPS(DebugOut IN) : COLOR0 {
     [branch] if(IN.tex.y < 1) {
         // Sample depth
         float2 t = IN.tex;
-        z = tex2Dlod(sampDepth, mapShadowToAtlas(t, 0)).r / ESM_scale;
+        z = shadowDebugDepth(mapShadowToAtlas(t, 0));
         // Convert pixel position from shadow clip space directly to camera clip space
         shadowClip = float4(2*t.x - 1, 1 - 2*t.y, z, 1);
         eyeClip = mul(shadowClip, vertexBlendPalette[0]);
@@ -156,7 +167,7 @@ float4 ShadowDebugPS(DebugOut IN) : COLOR0 {
     else {
         // Sample depth
         float2 t = IN.tex - float2(0, 1);
-        z = tex2Dlod(sampDepth, mapShadowToAtlas(t, 1)).r / ESM_scale;
+        z = shadowDebugDepth(mapShadowToAtlas(t, 1));
         // Convert pixel position from shadow clip space directly to camera clip space
         shadowClip = float4(2*t.x - 1, 1 - 2*t.y, z, 1);
         eyeClip = mul(shadowClip, vertexBlendPalette[1]);

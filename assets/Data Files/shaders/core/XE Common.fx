@@ -43,6 +43,8 @@ sampler sampDetail = sampler_state { texture = <tex2>; minfilter = anisotropic; 
 sampler sampWater3d = sampler_state { texture = <tex1>; minfilter = linear; magfilter = linear; mipfilter = none; addressu = wrap; addressv = wrap; addressw = wrap; };
 sampler sampDepth = sampler_state { texture = <tex3>; minfilter = linear; magfilter = linear; mipfilter = none; addressu = clamp; addressv = clamp; };
 sampler sampDepthPoint = sampler_state { texture = <tex3>; minfilter = point; magfilter = point; mipfilter = none; addressu = clamp; addressv = clamp; };
+// Shadow atlas is a depth texture; linear filtering gives a hardware 2x2 percentage-closer compare
+sampler sampShadow = sampler_state { texture = <tex3>; minfilter = linear; magfilter = linear; mipfilter = none; addressu = clamp; addressv = clamp; };
 sampler sampDepthSrc = sampler_state { texture = <texDepthSrc>; minfilter = point; magfilter = point; mipfilter = none; addressu = clamp; addressv = clamp; };
 
 

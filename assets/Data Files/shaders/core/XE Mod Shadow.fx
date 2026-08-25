@@ -48,27 +48,37 @@ TransformedVert transformShadowVert(MorrowindVertIn IN) {
 }
 
 //------------------------------------------------------------
-// 2 layer cascade ortho ESM lookup
+// 2 layer cascade ortho percentage-closer lookup
 
-float shadowDeltaZ(float4 shadow0pos, float4 shadow1pos) {
-    float dz = 1e-6;
-
-    [branch] if(all(saturate(atlasMargin - abs(shadow0pos.xyz)))) {
-        // Layer 0, inner
-        float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadow0pos.xy;
-        dz = tex2Dlod(sampDepth, mapShadowToAtlas(shadowUV, 0)).r / ESM_scale - shadow0pos.z;
-    }
-    else if(all(saturate(atlasMargin - abs(shadow1pos.xyz)))) {
-        // Layer 1
-        float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadow1pos.xy;
-        dz = tex2Dlod(sampDepth, mapShadowToAtlas(shadowUV, 1)).r / ESM_scale - shadow1pos.z;
-    }
-
-    return dz;
+// Receiver position in a cascade's clip space, pushed along the normal to avoid self-shadowing
+float4 shadowReceiverPos(float4 pos, float3 normal, int layer) {
+    float offset = shadowNormalOffset * 2 * shadowCascadeRadius[layer] * shadowRcpRes;
+    return mul(pos + float4(normal * offset, 0), shadowViewProj[layer]);
 }
 
-float shadowESM(float dz) {
-    return 1 - saturate(exp(ESM_c * dz + ESM_bias));
+// Lit fraction in [0, 1] from four bilinear compare taps
+float shadowLayerLit(float4 shadowpos, int layer) {
+    float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadowpos.xy;
+    float4 t = mapShadowToAtlas(shadowUV, layer);
+    t.z = shadowpos.z - shadowBias;
+    float2 d = shadowFilterRadius * shadowRcpRes * float2(shadowCascadeSize, 1);
+
+    float lit = tex2Dlod(sampShadow, t + float4(-d.x, -d.y, 0, 0)).r;
+    lit += tex2Dlod(sampShadow, t + float4(d.x, -d.y, 0, 0)).r;
+    lit += tex2Dlod(sampShadow, t + float4(-d.x, d.y, 0, 0)).r;
+    lit += tex2Dlod(sampShadow, t + float4(d.x, d.y, 0, 0)).r;
+    return 0.25 * lit;
+}
+
+// Shadow term in [0, 1], 1 being fully shadowed; the innermost containing cascade wins
+float shadowVisibility(float4 shadow0pos, float4 shadow1pos) {
+    [branch] if(all(saturate(atlasMargin - abs(shadow0pos.xyz)))) {
+        return 1 - shadowLayerLit(shadow0pos, 0);
+    }
+    [branch] if(all(saturate(atlasMargin - abs(shadow1pos.xyz)))) {
+        return 1 - shadowLayerLit(shadow1pos, 1);
+    }
+    return 0;
 }
 
 //------------------------------------------------------------
@@ -104,8 +114,9 @@ RenderShadowVertOut RenderShadowsBaseVS(MorrowindVertIn IN) {
         OUT.light *= saturate(4 * fogatt);
 
     // Find position in light space, output light depth
-    OUT.shadow0pos = mul(v.viewpos, shadowViewProj[0]);
-    OUT.shadow1pos = mul(v.viewpos, shadowViewProj[1]);
+    float3 normal = normalize(v.normal.xyz);
+    OUT.shadow0pos = shadowReceiverPos(v.viewpos, normal, 0);
+    OUT.shadow1pos = shadowReceiverPos(v.viewpos, normal, 1);
     OUT.shadow0pos.z = OUT.shadow0pos.z / OUT.shadow0pos.w;
     OUT.shadow1pos.z = OUT.shadow1pos.z / OUT.shadow1pos.w;
 
@@ -156,8 +167,9 @@ RenderShadowVertOut RenderShadowsIndexedBaseVS(MorrowindIndexedVertIn IN) {
     else
         OUT.light *= saturate(4 * fogatt);
 
-    OUT.shadow0pos = mul(v.viewpos, shadowViewProj[0]);
-    OUT.shadow1pos = mul(v.viewpos, shadowViewProj[1]);
+    float3 normal = normalize(v.normal.xyz);
+    OUT.shadow0pos = shadowReceiverPos(v.viewpos, normal, 0);
+    OUT.shadow1pos = shadowReceiverPos(v.viewpos, normal, 1);
     OUT.shadow0pos.z = OUT.shadow0pos.z / OUT.shadow0pos.w;
     OUT.shadow1pos.z = OUT.shadow1pos.z / OUT.shadow1pos.w;
     OUT.texcoords = IN.texcoords;
@@ -190,10 +202,8 @@ float4 RenderShadowsPS(RenderShadowVertOut IN): COLOR0 {
     }
 
     // Soft shadowing
-    float dz = shadowDeltaZ(IN.shadow0pos, IN.shadow1pos);
-    clip(-dz);
-    float v = shadowESM(dz) * IN.light * alpha;
-    
+    float v = shadowVisibility(IN.shadow0pos, IN.shadow1pos) * IN.light * alpha;
+
     // Fade out shadows at map edges
     float2 fade = saturate(25 * (1 - abs(IN.shadow1pos.xy)));
     v = v * fade.x * fade.y;
