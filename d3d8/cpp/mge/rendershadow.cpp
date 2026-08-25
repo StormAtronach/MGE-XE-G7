@@ -117,30 +117,20 @@ size_t buildStencilHull(const D3DXMATRIX& clipToLight, float margin, D3DXVECTOR3
 
 
 
-// Renders multiple shadow map layers to channels in one texture with soft edges.
+// Renders the shadow cascades side by side into the depth atlas.
 // Restores render state on return.
 void DistantLand::renderShadowMap() {
-    IDirect3DSurface9* target, *targetSoft;
-    texShadow->GetSurfaceLevel(0, &target);
-    texSoftShadow->GetSurfaceLevel(0, &targetSoft);
-
-    // Switch to render target
-    RenderTargetSwitcher rtsw(targetSoft, surfShadowZ);
+    // Depth-only render into the atlas, colour writes go to the null target
+    RenderTargetSwitcher rtsw(surfShadowColor, surfShadow);
     D3DVIEWPORT9 vp;
     device->GetViewport(&vp);
 
-    // Unbind shadow samplers
+    // Unbind samplers, tex3 still holds the atlas from the last receiver pass
     effect->SetTexture(ehTex0, 0);
     effect->SetTexture(ehTex2, 0);
+    effect->SetTexture(ehTex3, 0);
 
-    // Clear floating point buffer to far depth
     device->Clear(0, 0, D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL, 0, 1.0, 0);
-    effectShadow->BeginPass(PASS_CLEARSHADOWMAP);
-    effectShadow->CommitChanges();
-    device->SetVertexDeclaration(WaterDecl);
-    device->SetStreamSource(0, vbFullFrame, 0, 12);
-    device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-    effectShadow->EndPass();
 
     // Calculate transform to map view frustum into world space
     // Null when the camera projection is singular, which masks the whole cascade instead
@@ -156,28 +146,6 @@ void DistantLand::renderShadowMap() {
 
     // Reset viewport
     device->SetViewport(&vp);
-
-    // Soften shadow map, separable blur through texShadow and back
-    device->SetVertexDeclaration(WaterDecl);
-    device->SetStreamSource(0, vbFullFrame, 0, 12);
-
-    device->SetRenderTarget(0, target);
-    effectShadow->BeginPass(PASS_SOFTENSHADOWMAP_H);
-    effect->SetTexture(ehTex3, texSoftShadow);
-    effectShadow->CommitChanges();
-    device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-    effectShadow->EndPass();
-
-    device->SetRenderTarget(0, targetSoft);
-    effectShadow->BeginPass(PASS_SOFTENSHADOWMAP_V);
-    effect->SetTexture(ehTex3, texShadow);
-    effectShadow->CommitChanges();
-    device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-    effectShadow->EndPass();
-
-    // Clean up surface pointers
-    target->Release();
-    targetSoft->Release();
 }
 
 void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, const D3DXMATRIX* viewproj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set) {
@@ -296,8 +264,8 @@ void DistantLand::renderShadow() {
     viewToShadow[1] = inverseView * smViewproj[1];
     effect->SetMatrixArray(ehShadowViewproj, viewToShadow, 2);
 
-    // Bind filtered ESM
-    effect->SetTexture(ehTex3, texSoftShadow);
+    // Bind depth atlas, sampled with hardware compare
+    effect->SetTexture(ehTex3, texShadow);
 
     // Use an alpha threshold for solidity that isn't precisely equal to a commonly used value (such as 0.5).
     // Vertex interpolators can be slightly inaccurate and cause a value that should be constant across a triangle
@@ -381,7 +349,7 @@ void DistantLand::renderShadowDebug() {
     effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
     effect->BeginPass(PASS_DEBUGSHADOW);
     device->SetRenderState(D3DRS_CULLMODE, D3DCULL_CW);
-    effect->SetTexture(ehTex3, texSoftShadow);
+    effect->SetTexture(ehTex3, texShadow);
     effect->SetMatrixArray(ehVertexBlendPalette, shadowToCameraProj, 2);
     effect->CommitChanges();
     device->SetVertexDeclaration(WaterDecl);

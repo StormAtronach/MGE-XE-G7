@@ -16,6 +16,10 @@ static const int shadowCascades = 2;
 // Shadow atlas texture scaling factor
 static const float shadowCascadeSize = 1. / shadowCascades;
 
+// Cascade half-widths in world units. Must match shadowNearRadius and shadowFarRadius in
+// rendershadow.cpp; only used to size the receiver normal offset in world units.
+static const float shadowCascadeRadius[2] = { 1000.0, 4000.0 };
+
 //------------------------------------------------------------
 // Shadow parameters
 
@@ -25,12 +29,11 @@ static const float shade = 0.4;
 // Shade colouration, how much each channel is affected by shadow
 static const float3 shadecolor = float3(1.0, 0.97, 0.81);
 
-// ESM exponent, affects shadow fade near shadow casters, bounded by float accuracy to ~88
-// Higher means less fade at shadow root, but less effective softening of shadows
-static const float ESM_c = 60.0;
+// Depth comparison bias in atlas depth units; the light range spans 16384 world units
+static const float shadowBias = 2.5e-4;
 
-// ESM bias, for countering blurred depth pushing surface depth values through objects
-static const float ESM_bias = 2e-3 * ESM_c;
+// Receiver offset along its normal, in shadow texels of the sampled cascade
+static const float shadowNormalOffset = 1.5;
 
-// Scale stored depth to use (most of) FP16 range
-static const float ESM_scale = 32768.0;
+// Filter tap spread in texels; each tap is a hardware 2x2 bilinear compare
+static const float shadowFilterRadius = 1.0;

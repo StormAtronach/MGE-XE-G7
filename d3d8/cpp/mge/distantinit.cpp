@@ -159,8 +159,8 @@ IDirect3DSurface9* DistantLand::surfRippleBuffer;
 IDirect3DVertexBuffer9* DistantLand::vbWaveSim;
 
 IDirect3DTexture9* DistantLand::texShadow;
-IDirect3DTexture9* DistantLand::texSoftShadow;
-IDirect3DSurface9* DistantLand::surfShadowZ;
+IDirect3DSurface9* DistantLand::surfShadow;
+IDirect3DSurface9* DistantLand::surfShadowColor;
 IDirect3DVertexBuffer9* DistantLand::vbFullFrame;
 
 D3DXMATRIX DistantLand::mwView, DistantLand::mwProj;
@@ -1326,24 +1326,25 @@ bool DistantLand::initDynamicWaves() {
 }
 
 bool DistantLand::initShadow() {
-    const D3DFORMAT shadowFormat = D3DFMT_R16F, shadowZFormat = D3DFMT_D24S8;
     const UINT shadowSize = Configuration.DL.ShadowResolution, cascades = kShadowCascades;
     HRESULT hr;
 
-    // The shadow texture holds a horizontal-packed shadow atlas
-    hr = device->CreateTexture(cascades * shadowSize, shadowSize, 1, D3DUSAGE_RENDERTARGET, shadowFormat, D3DPOOL_DEFAULT, &texShadow, NULL);
+    // The shadow atlas is a depth texture, packed horizontally by cascade, sampled with hardware compare
+    hr = device->CreateTexture(cascades * shadowSize, shadowSize, 1, D3DUSAGE_DEPTHSTENCIL, D3DFMT_D24S8, D3DPOOL_DEFAULT, &texShadow, NULL);
     if (hr != D3D_OK) {
-        LOG::logline("!! Failed to create shadow render target");
+        LOG::logline("!! Failed to create shadow depth texture");
         return false;
     }
-    hr = device->CreateTexture(cascades * shadowSize, shadowSize, 1, D3DUSAGE_RENDERTARGET, shadowFormat, D3DPOOL_DEFAULT, &texSoftShadow, NULL);
+    texShadow->GetSurfaceLevel(0, &surfShadow);
+
+    // D3D9 needs a colour target bound while rendering depth; NULL format costs no memory
+    hr = device->CreateRenderTarget(cascades * shadowSize, shadowSize, kFormatNull, D3DMULTISAMPLE_NONE, 0, FALSE, &surfShadowColor, NULL);
     if (hr != D3D_OK) {
-        LOG::logline("!! Failed to create shadow render target");
-        return false;
+        LOG::logline("-- NULL render target unsupported, shadow atlas uses a real colour surface");
+        hr = device->CreateRenderTarget(cascades * shadowSize, shadowSize, D3DFMT_R16F, D3DMULTISAMPLE_NONE, 0, FALSE, &surfShadowColor, NULL);
     }
-    hr = device->CreateDepthStencilSurface(cascades * shadowSize, shadowSize, shadowZFormat, D3DMULTISAMPLE_NONE, 0, TRUE, &surfShadowZ, NULL);
     if (hr != D3D_OK) {
-        LOG::logline("!! Failed to create shadow Z buffer");
+        LOG::logline("!! Failed to create shadow colour target");
         return false;
     }
     hr = device->CreateVertexBuffer(4 * 12, D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &vbFullFrame, 0);
@@ -2121,9 +2122,9 @@ void DistantLand::release() {
     safeRelease(WaterDecl);
     safeRelease(GrassDecl);
 
+    safeRelease(surfShadowColor);
+    safeRelease(surfShadow);
     safeRelease(texShadow);
-    safeRelease(texSoftShadow);
-    safeRelease(surfShadowZ);
 
     safeRelease(texWater);
     safeRelease(texReflection);
