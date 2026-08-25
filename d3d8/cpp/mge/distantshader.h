@@ -24,8 +24,7 @@ enum RenderPassID {
 };
 
 enum RenderShadowMapID {
-    PASS_SHADOWSTENCIL = 0,
-    PASS_RENDERSHADOWMAP,
+    PASS_RENDERSHADOWMAP = 0,
     PASS_RENDERSTATICSHADOWMAP
 };
 

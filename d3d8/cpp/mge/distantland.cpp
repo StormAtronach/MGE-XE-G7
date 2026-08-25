@@ -314,13 +314,16 @@ void DistantLand::renderStage0() {
             effect->EndPass();
 
             // Shadow map early render
+            bool shadowsRendered = false;
             if (Configuration.MGEFlags & USE_SHADOWS) {
                 if (mwBridge->CellHasWeather() && !mwBridge->IsMenu()) {
                     effectShadow->Begin(&passes, D3DXFX_DONOTSAVESTATE);
                     renderShadowMap();
                     effectShadow->End();
+                    shadowsRendered = true;
                 }
             }
+            effect->SetFloat(ehShadowDistant, (shadowsRendered && shadowCurrentValid) ? 1.0f : 0.0f);
 
             // Distant everything; bias the projection matrix such that
             // distant land gets drawn behind anything Morrowind would draw
