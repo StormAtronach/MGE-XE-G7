@@ -4,6 +4,7 @@
 // Shadow map rendering, depth only into the shadow atlas
 
 #include "XE Common.fx"
+#include "XE Mod Shadow Data.fx"
 
 
 
@@ -14,8 +15,7 @@ struct ShadowVertOut {
     float4 pos : POSITION;
 };
 
-// Position only. Callers supply the stencil clip cube (WaterDecl) and distant terrain
-// (TerrainDecl), neither of which carries texcoords, so terrain casters cannot alpha test.
+// Position only, used for the stencil clip cube (WaterDecl)
 ShadowVertOut ShadowVS(float4 pos : POSITION) {
     ShadowVertOut OUT;
 
@@ -23,6 +23,19 @@ ShadowVertOut ShadowVS(float4 pos : POSITION) {
     OUT.pos = mul(OUT.pos, shadowViewProj[0]);
 
     // Clamp vertices to front plane to avoid clipping and shadow loss
+    OUT.pos.z = max(0, OUT.pos.z);
+    return OUT;
+}
+
+// Distant terrain (TerrainDecl, no texcoords so it cannot alpha test). The mesh is a coarse
+// twin of Morrowind's terrain and pokes through roads and floors built on it, which the
+// depth compare would read as shadow; sink it so only its silhouette casts.
+ShadowVertOut ShadowLandVS(float4 pos : POSITION) {
+    ShadowVertOut OUT;
+
+    OUT.pos = mul(pos, world);
+    OUT.pos.z -= shadowTerrainSink;
+    OUT.pos = mul(OUT.pos, shadowViewProj[0]);
     OUT.pos.z = max(0, OUT.pos.z);
     return OUT;
 }
@@ -97,6 +110,11 @@ technique T0 {
         ColorWriteEnable = 0;
         CullMode = CW;
 
+        // Push casters back in proportion to their depth slope, which is what
+        // grazing sun angles need; the receiver adds a small constant bias
+        DepthBias = 0;
+        SlopeScaleDepthBias = 2.0;
+
         StencilEnable = true;
         StencilFunc = notequal;
         StencilPass = keep;
@@ -104,7 +122,7 @@ technique T0 {
         StencilRef = 0;
         StencilMask = 0xffffffff;
 
-        VertexShader = compile vs_3_0 ShadowVS();
+        VertexShader = compile vs_3_0 ShadowLandVS();
         PixelShader = compile ps_3_0 ShadowPS();
     }
     //------------------------------------------------------------
@@ -115,6 +133,11 @@ technique T0 {
         ZFunc = LessEqual;
         ColorWriteEnable = 0;
         CullMode = CW;
+
+        // Push casters back in proportion to their depth slope, which is what
+        // grazing sun angles need; the receiver adds a small constant bias
+        DepthBias = 0;
+        SlopeScaleDepthBias = 2.0;
 
         StencilEnable = true;
         StencilFunc = notequal;
