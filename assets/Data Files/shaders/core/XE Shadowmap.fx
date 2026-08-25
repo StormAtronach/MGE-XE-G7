@@ -15,18 +15,6 @@ struct ShadowVertOut {
     float4 pos : POSITION;
 };
 
-// Position only, used for the stencil clip cube (WaterDecl)
-ShadowVertOut ShadowVS(float4 pos : POSITION) {
-    ShadowVertOut OUT;
-
-    OUT.pos = mul(pos, world);
-    OUT.pos = mul(OUT.pos, shadowViewProj[0]);
-
-    // Clamp vertices to front plane to avoid clipping and shadow loss
-    OUT.pos.z = max(0, OUT.pos.z);
-    return OUT;
-}
-
 // Distant terrain (TerrainDecl, no texcoords so it cannot alpha test). The mesh is a coarse
 // twin of Morrowind's terrain and pokes through roads and floors built on it, which the
 // depth compare would read as shadow; sink it so only its silhouette casts.
@@ -83,67 +71,37 @@ float4 StaticShadowPS(StaticShadowVertOut IN) : COLOR0 {
 
 technique T0 {
     //------------------------------------------------------------
-    // Used to render the view frustum into the stencil
-    Pass P0 {
-        ZEnable = false;
-        ZWriteEnable = false;
-        ColorWriteEnable = 0;
-        CullMode = none;
-
-        StencilEnable = true;
-        StencilFunc = always;
-        StencilPass = replace;
-        StencilFail = keep;
-        StencilRef = 1;
-        StencilMask = 0xffffffff;
-
-        VertexShader = compile vs_3_0 ShadowVS();
-        PixelShader = compile ps_3_0 ShadowPS();
-    }
-    //------------------------------------------------------------
     // Used to render distant land into the shadow map
-    Pass P1 {
+    Pass P0 {
         ZEnable = true;
         ZWriteEnable = true;
         ZFunc = LessEqual;
         ColorWriteEnable = 0;
         CullMode = CW;
+        StencilEnable = false;
 
         // Push casters back in proportion to their depth slope, which is what
         // grazing sun angles need; the receiver adds a small constant bias
         DepthBias = 0;
         SlopeScaleDepthBias = 2.0;
-
-        StencilEnable = true;
-        StencilFunc = notequal;
-        StencilPass = keep;
-        StencilFail = keep;
-        StencilRef = 0;
-        StencilMask = 0xffffffff;
 
         VertexShader = compile vs_3_0 ShadowLandVS();
         PixelShader = compile ps_3_0 ShadowPS();
     }
     //------------------------------------------------------------
     // Used to render distant statics into the shadow map
-    Pass P2 {
+    Pass P1 {
         ZEnable = true;
         ZWriteEnable = true;
         ZFunc = LessEqual;
         ColorWriteEnable = 0;
         CullMode = CW;
+        StencilEnable = false;
 
         // Push casters back in proportion to their depth slope, which is what
         // grazing sun angles need; the receiver adds a small constant bias
         DepthBias = 0;
         SlopeScaleDepthBias = 2.0;
-
-        StencilEnable = true;
-        StencilFunc = notequal;
-        StencilPass = keep;
-        StencilFail = keep;
-        StencilRef = 0;
-        StencilMask = 0xffffffff;
 
         VertexShader = compile vs_3_0 StaticShadowVS();
         PixelShader = compile ps_3_0 StaticShadowPS();

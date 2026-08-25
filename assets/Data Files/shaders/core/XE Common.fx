@@ -13,7 +13,12 @@ shared float shadowRcpRes;
 shared float sourceM33, sourceM43;
 shared matrix world, view, proj;
 shared matrix vertexBlendPalette[8];
-shared matrix shadowViewProj[2];
+// Current atlas cascades in [0, 4), next atlas cascades in [4, 8)
+shared matrix shadowViewProj[8];
+// Per cascade: x = texel size in world units, y = light depth range in world units
+shared float4 shadowCascade[4];
+// Crossfade from the current atlas to the next, 0 while the next is still being built
+shared float shadowBlend;
 shared bool hasAlpha, hasBones, hasVCol;
 shared float alphaRef, materialAlpha;
 shared int vertexBlendState;
@@ -27,6 +32,8 @@ shared float nearFogStart, nearFogRange;
 shared float nearViewRange;
 shared float3 sunPos;
 shared float sunVis;
+// 1 while a shadow map exists for this frame, so distant land and statics sample it
+shared float shadowDistant;
 shared float2 windVec;
 shared float niceWeather;
 shared float time;
@@ -35,7 +42,7 @@ shared float time;
 //------------------------------------------------------------
 // Textures
 
-shared texture tex0, tex1, tex2, tex3, texDepthSrc;
+shared texture tex0, tex1, tex2, tex3, texDepthSrc, texShadowNext;
 
 sampler sampBaseTex = sampler_state { texture = <tex0>; minfilter = anisotropic; magfilter = linear; mipfilter = linear; maxmiplevel = 0; addressu = wrap; addressv = wrap; };
 sampler sampNormals = sampler_state { texture = <tex1>; minfilter = anisotropic; magfilter = linear; mipfilter = linear; addressu = wrap; addressv = wrap; };
@@ -45,6 +52,7 @@ sampler sampDepth = sampler_state { texture = <tex3>; minfilter = linear; magfil
 sampler sampDepthPoint = sampler_state { texture = <tex3>; minfilter = point; magfilter = point; mipfilter = none; addressu = clamp; addressv = clamp; };
 // Shadow atlas is a depth texture; linear filtering gives a hardware 2x2 percentage-closer compare
 sampler sampShadow = sampler_state { texture = <tex3>; minfilter = linear; magfilter = linear; mipfilter = none; addressu = clamp; addressv = clamp; };
+sampler sampShadowNext = sampler_state { texture = <texShadowNext>; minfilter = linear; magfilter = linear; mipfilter = none; addressu = clamp; addressv = clamp; };
 sampler sampDepthSrc = sampler_state { texture = <texDepthSrc>; minfilter = point; magfilter = point; mipfilter = none; addressu = clamp; addressv = clamp; };
 
 
@@ -76,6 +84,10 @@ struct StatVertOut {
     centroid float4 fog : TEXCOORD0;
     float3 texcoords_range : TEXCOORD1;
     float4 uvBounds : TEXCOORD2;
+    // Shadow receiver terms, projected per pixel
+    centroid float shadowLight : COLOR1;
+    float4 worldpos : TEXCOORD3;
+    float3 normalWS : TEXCOORD4;
 };
 
 //------------------------------------------------------------

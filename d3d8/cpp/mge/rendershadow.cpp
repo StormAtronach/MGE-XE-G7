@@ -6,78 +6,114 @@
 #include "proxydx/d3d8header.h"
 #include "support/log.h"
 
+#include <algorithm>
 #include <cmath>
 
 
 
-static const float shadowNearRadius = 1000.0;
-static const float shadowFarRadius = 4000.0;
-
-// Stencil mask dilation, must exceed the blur kernel reach of ~3 texels
-static const int shadowStencilMarginTexels = 8;
-
-
-
-// Renders the shadow cascades side by side into the depth atlas.
-// Restores render state on return.
-void DistantLand::renderShadowMap() {
-    // Depth-only render into the atlas, colour writes go to the null target
-    RenderTargetSwitcher rtsw(surfShadowColor, surfShadow);
-    D3DVIEWPORT9 vp;
-    device->GetViewport(&vp);
-
-    // Unbind samplers, tex3 still holds the atlas from the last receiver pass
-    effect->SetTexture(ehTex0, 0);
-    effect->SetTexture(ehTex2, 0);
-    effect->SetTexture(ehTex3, 0);
-
-    device->Clear(0, 0, D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL, 0, 1.0, 0);
-
-    // Calculate transform to map view frustum into world space
-    D3DXMATRIX inverseCameraProj, cameraViewProj;
-    D3DXMatrixMultiply(&cameraViewProj, &mwView, &mwProj);
-    D3DXMatrixInverse(&inverseCameraProj, NULL, &cameraViewProj);
-
-    // Render near layer (changes viewport)
-    renderShadowLayer(0, shadowNearRadius, &inverseCameraProj);
-
-    // Render far layer (changes viewport)
-    renderShadowLayer(1, shadowFarRadius, &inverseCameraProj);
-
-    // Reset viewport and the caster pass states that the distant land passes do not set
-    device->SetViewport(&vp);
-    device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
-    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-    device->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, 0);
-    device->SetRenderState(D3DRS_DEPTHBIAS, 0);
+// Cascade half-widths in world units, the last covering the distant land draw distance
+static float shadowCascadeRadius(int layer) {
+    static const float fixedRadius[] = { 1000.0f, 4000.0f, 16000.0f };
+    if (layer < 3) {
+        return fixedRadius[layer];
+    }
+    return Configuration.DL.DrawDist * DistantLand::kCellSize;
 }
 
-void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, const D3DXMATRIX* viewproj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set) {
+// Half the light depth range, grows with the cascade so far casters are not clipped
+static float shadowCascadeDepthRange(float radius) {
+    return std::max(DistantLand::kCellSize, radius);
+}
+
+// Real-time length of the crossfade from the current atlas to the next one
+static const float shadowBlendSeconds = 0.25f;
+
+
+
+// Uploads shadow clip transforms for both atlases, current in [0, N) and next in [N, 2N),
+// premultiplied by pre when given (inverse view for view space receivers), with the blend
+// factor and both atlas textures
+void DistantLand::uploadShadowMatrices(const D3DXMATRIX* pre) {
+    D3DXMATRIX m[2 * kShadowCascades];
+    for (int i = 0; i < kShadowCascades; ++i) {
+        m[i] = pre ? (*pre) * smViewproj[shadowCurrent][i] : smViewproj[shadowCurrent][i];
+        m[kShadowCascades + i] = pre ? (*pre) * smViewproj[shadowBuilding][i] : smViewproj[shadowBuilding][i];
+    }
+    effect->SetMatrixArray(ehShadowViewproj, m, 2 * kShadowCascades);
+    effect->SetFloat(ehShadowBlend, shadowBuildComplete ? shadowBlend : 0.0f);
+    effect->SetTexture(ehTex3, texShadow[shadowCurrent]);
+    effect->SetTexture(ehTexShadowNext, texShadow[shadowBuilding]);
+}
+
+// Builds the next shadow atlas one cascade per frame, then cross-fades it in over
+// shadowBlendSeconds of real time and swaps. Shadows therefore move continuously as the
+// sun does, independent of frame rate, and casters cost one cascade per frame.
+// Restores render state on return.
+void DistantLand::renderShadowMap() {
+    const DWORD now = GetTickCount();
+
+    if (shadowBuildComplete) {
+        shadowBlend = std::min(1.0f, (now - shadowBlendStart) * (0.001f / shadowBlendSeconds));
+        if (shadowBlend >= 1.0f || !shadowCurrentValid) {
+            shadowCurrent = shadowBuilding;
+            shadowBuilding ^= 1;
+            shadowCurrentValid = true;
+            shadowBuildComplete = false;
+            shadowBlend = 0;
+        }
+    }
+
+    if (!shadowBuildComplete) {
+        // Depth-only render into the next atlas, colour writes go to the null target
+        RenderTargetSwitcher rtsw(surfShadowColor, surfShadow[shadowBuilding]);
+        D3DVIEWPORT9 vp;
+        device->GetViewport(&vp);
+
+        // Unbind samplers, the atlases are still bound from the last receiver pass
+        effect->SetTexture(ehTex0, 0);
+        effect->SetTexture(ehTex2, 0);
+        effect->SetTexture(ehTex3, 0);
+        effect->SetTexture(ehTexShadowNext, 0);
+
+        if (shadowBuildLayer == 0) {
+            device->Clear(0, 0, D3DCLEAR_ZBUFFER, 0, 1.0, 0);
+        }
+
+        renderShadowLayer(shadowBuildLayer, shadowCascadeRadius(shadowBuildLayer));
+
+        if (++shadowBuildLayer == kShadowCascades) {
+            shadowBuildLayer = 0;
+            shadowBuildComplete = true;
+            shadowBlendStart = now;
+        }
+
+        // Reset viewport and the caster pass states that the distant land passes do not set
+        device->SetViewport(&vp);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+        device->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, 0);
+        device->SetRenderState(D3DRS_DEPTHBIAS, 0);
+    }
+
+    // Texel size and depth range per cascade in world units, for receiver bias
+    D3DXVECTOR4 cascadeParams[kShadowCascades];
+    for (int layer = 0; layer < kShadowCascades; ++layer) {
+        const float radius = shadowCascadeRadius(layer);
+        cascadeParams[layer] = D3DXVECTOR4(2.0f * radius / Configuration.DL.ShadowResolution, 2.0f * shadowCascadeDepthRange(radius), 0, 0);
+    }
+    effect->SetVectorArray(ehShadowCascade, cascadeParams, kShadowCascades);
+
+    // Distant land and statics receive next; they sample from world space
+    uploadShadowMatrices(nullptr);
+}
+
+// Draws one cascade's casters into its atlas strip. The whole cascade box is rendered, not
+// just the camera frustum: the atlas is reused for up to shadowBlendSeconds while the
+// camera turns freely, so its content must not depend on the view direction
+void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set) {
     // Clip to atlas region with viewport
     const DWORD res = Configuration.DL.ShadowResolution;
     D3DVIEWPORT9 vp = { layer * res, 0, res, res, 0.0f, 1.0f };
     device->SetViewport(&vp);
-
-    // Render view frustum to stencil, which limits rendering to visible texels
-    // Drawn at five clip space offsets to dilate the mask, else edge receivers blur in the cleared atlas
-    effect->SetMatrix(ehWorld, inverseCameraProj);
-    const float margin = shadowStencilMarginTexels * 2.0f / res;
-    static const float offsets[5][2] = { {0, 0}, {-1, -1}, {-1, 1}, {1, -1}, {1, 1} };
-    effectShadow->BeginPass(PASS_SHADOWSTENCIL);
-    device->SetVertexDeclaration(WaterDecl);
-    device->SetStreamSource(0, vbClipCube, 0, 12);
-    for (const auto& o : offsets) {
-        D3DXMATRIX offsetViewproj = *viewproj;
-        offsetViewproj._41 += margin * o[0];
-        offsetViewproj._42 += margin * o[1];
-        effect->SetMatrixArray(ehShadowViewproj, &offsetViewproj, 1);
-        effectShadow->CommitChanges();
-        device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 12);
-    }
-    effectShadow->EndPass();
-
-    // Restore cascade transform for casters
-    effect->SetMatrixArray(ehShadowViewproj, viewproj, 1);
 
     // Render land
     effectShadow->BeginPass(PASS_RENDERSHADOWMAP);
@@ -97,47 +133,35 @@ void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const 
     }
 }
 
-void DistantLand::renderShadowLayer(int layer, float radius, const D3DXMATRIX* inverseCameraProj) {
+void DistantLand::renderShadowLayer(int layer, float radius) {
     auto mwBridge = MWBridge::get();
-    D3DXVECTOR3 lookAt, lookAtEye, shadowCameraPos, up(0, 0, 1);
-    D3DXMATRIX* view = &smView[layer], *proj = &smProj[layer], *viewproj = &smViewproj[layer];
+    D3DXVECTOR3 lookAt, shadowCameraPos, up(0, 0, 1);
+    D3DXMATRIX* view = &smView[layer], *proj = &smProj[layer], *viewproj = &smViewproj[shadowBuilding][layer];
 
     // Select light vector, sunPos during daytime, sunVec during night
     D3DXVECTOR4 lightVec = (sunPos.z > 0) ? -sunPos : sunVec;
 
-    // Centre of projection is one radius ahead of the player
-    // Not as far in z direction as player is likely looking at the ground plane rather than below
-    // This will be split into a non-texel-quantized but temporally stable view position part,
-    // and a texel-quantized view rotation part with small magnitude
-    lookAt.x = eyePos.x + radius * eyeVec.x;
-    lookAt.y = eyePos.y + radius * eyeVec.y;
-    lookAt.z = eyePos.z + 0.5f * radius * eyeVec.z;
+    // Centre of projection is the eye, so the atlas stays valid however the camera turns
+    // while it is reused; only eye translation ages it
+    lookAt.x = eyePos.x;
+    lookAt.y = eyePos.y;
+    lookAt.z = eyePos.z;
 
-    // Quantize eye position to partially reduce texture swimming during camera movement
-    lookAtEye.x = float(16.0 * std::floor(0.0625 * eyePos.x));
-    lookAtEye.y = float(16.0 * std::floor(0.0625 * eyePos.y));
-    lookAtEye.z = float(16.0 * std::floor(0.0625 * eyePos.z));
+    // Create shadow frustum centred on lookAt, looking along lightVec
+    const float zrange = shadowCascadeDepthRange(radius);
+    shadowCameraPos.x = lookAt.x - zrange * lightVec.x;
+    shadowCameraPos.y = lookAt.y - zrange * lightVec.y;
+    shadowCameraPos.z = lookAt.z - zrange * lightVec.z;
 
-    // Create shadow frustum centred on lookAtEye, looking along lightVec
-    const float zrange = kCellSize;
-    shadowCameraPos.x = lookAtEye.x - zrange * lightVec.x;
-    shadowCameraPos.y = lookAtEye.y - zrange * lightVec.y;
-    shadowCameraPos.z = lookAtEye.z - zrange * lightVec.z;
-
-    D3DXMatrixLookAtRH(view, &shadowCameraPos, &lookAtEye, &up);
+    D3DXMatrixLookAtRH(view, &shadowCameraPos, &lookAt, &up);
     D3DXMatrixOrthoRH(proj, 2 * radius, (1 + std::fabs(lightVec.z)) * radius, 0, 2.0 * zrange);
     *viewproj = (*view) * (*proj);
 
-    // Transform remainder into shadow clip space and quantize
-    // Prevents all shimmer during camera rotation
-    D3DXVECTOR3 dv, deltaLookAt = lookAtEye - lookAt;
-    D3DXVec3TransformNormal(&dv, &deltaLookAt, viewproj);
-
-    // Quantize clip space range [-1, +1] over ShadowResolution texels
-    const float quantizer = 2.0f / Configuration.DL.ShadowResolution;
-    viewproj->_41 += quantizer * floor(dv.x / quantizer);
-    viewproj->_42 += quantizer * floor(dv.y / quantizer);
-    viewproj->_43 += dv.z;
+    // Snap to whole texels. The translation row is where the world origin lands in clip
+    // space, so rounding it locks the sampling grid to the world for a given light direction
+    const double quantizer = 2.0 / Configuration.DL.ShadowResolution;
+    viewproj->_41 = float(quantizer * std::floor(viewproj->_41 / quantizer));
+    viewproj->_42 = float(quantizer * std::floor(viewproj->_42 / quantizer));
 
     effect->SetMatrixArray(ehShadowViewproj, viewproj, 1);
     effectShadow->CommitChanges();
@@ -151,20 +175,19 @@ void DistantLand::renderShadowLayer(int layer, float radius, const D3DXMATRIX* i
         ipcClient.getVisibleMeshesCoarse(visExtraSharedId, range_frustum, VIS_STATIC);
     }
 
-    renderShadowLayerGeneric(mwBridge, layer, inverseCameraProj, viewproj, view, proj, visExtraShared);
+    renderShadowLayerGeneric(mwBridge, layer, view, proj, visExtraShared);
 }
 
 // renderShadow - Renders shadows (using blending) over Morrowind shadow receivers
 void DistantLand::renderShadow() {
-    // Supply view space -> shadow clip space matrix
-    D3DXMATRIX inverseView, viewToShadow[2];
-    D3DXMatrixInverse(&inverseView, NULL, &mwView);
-    viewToShadow[0] = inverseView * smViewproj[0];
-    viewToShadow[1] = inverseView * smViewproj[1];
-    effect->SetMatrixArray(ehShadowViewproj, viewToShadow, 2);
+    if (!shadowCurrentValid) {
+        return;
+    }
 
-    // Bind depth atlas, sampled with hardware compare
-    effect->SetTexture(ehTex3, texShadow);
+    // Supply view space -> shadow clip space matrices and both atlases
+    D3DXMATRIX inverseView;
+    D3DXMatrixInverse(&inverseView, NULL, &mwView);
+    uploadShadowMatrices(&inverseView);
 
     // Use an alpha threshold for solidity that isn't precisely equal to a commonly used value (such as 0.5).
     // Vertex interpolators can be slightly inaccurate and cause a value that should be constant across a triangle
@@ -236,20 +259,20 @@ void DistantLand::renderShadowDebug() {
     UINT passes;
 
     // Create shadow clip space -> camera clip space matrices
-    D3DXMATRIX inverseShadowViewProj, cameraViewProj, shadowToCameraProj[2];
+    D3DXMATRIX inverseShadowViewProj, cameraViewProj, shadowToCameraProj[kShadowCascades];
 
     D3DXMatrixMultiply(&cameraViewProj, &mwView, &mwProj);
-    D3DXMatrixInverse(&inverseShadowViewProj, NULL, &smViewproj[0]);
-    D3DXMatrixMultiply(&shadowToCameraProj[0], &inverseShadowViewProj, &cameraViewProj);
-    D3DXMatrixInverse(&inverseShadowViewProj, NULL, &smViewproj[1]);
-    D3DXMatrixMultiply(&shadowToCameraProj[1], &inverseShadowViewProj, &cameraViewProj);
+    for (int i = 0; i < kShadowCascades; ++i) {
+        D3DXMatrixInverse(&inverseShadowViewProj, NULL, &smViewproj[shadowCurrent][i]);
+        D3DXMatrixMultiply(&shadowToCameraProj[i], &inverseShadowViewProj, &cameraViewProj);
+    }
 
     // Display shadow layers in top right corner
     effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
     effect->BeginPass(PASS_DEBUGSHADOW);
     device->SetRenderState(D3DRS_CULLMODE, D3DCULL_CW);
-    effect->SetTexture(ehTex3, texShadow);
-    effect->SetMatrixArray(ehVertexBlendPalette, shadowToCameraProj, 2);
+    effect->SetTexture(ehTex3, texShadow[shadowCurrent]);
+    effect->SetMatrixArray(ehVertexBlendPalette, shadowToCameraProj, kShadowCascades);
     effect->CommitChanges();
     device->SetVertexDeclaration(WaterDecl);
     device->SetStreamSource(0, vbFullFrame, 0, 12);

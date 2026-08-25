@@ -48,40 +48,64 @@ TransformedVert transformShadowVert(MorrowindVertIn IN) {
 }
 
 //------------------------------------------------------------
-// 2 layer cascade ortho percentage-closer lookup
+// Cascaded ortho percentage-closer lookup
+//
+// Two atlases are live: the current one and the next, built a cascade per frame and
+// cross-faded in over shadowBlend so shadows move continuously as the sun does. Matrix set 0
+// (shadowViewProj[0..3]) belongs to the current atlas, set 1 (shadowViewProj[4..7]) to the next.
+// Receivers project per pixel from a position and normal in the space the matrices expect:
+// view space with sunVecView for the near receiver pass, world space with sunVec otherwise.
 
 // Receiver position in a cascade's clip space, pushed along the normal to avoid self-shadowing.
 // The push grows towards grazing sun angles, where one shadow texel spans the most depth.
-float4 shadowReceiverPos(float4 pos, float3 normal, int layer) {
-    float ndotl = saturate(dot(normal, -sunVecView));
+float4 shadowReceiverPos(float4 pos, float3 normal, float3 sunDir, int set, int layer) {
+    float ndotl = saturate(dot(normal, -sunDir));
     float slope = sqrt(1 - ndotl * ndotl);
-    float offset = shadowNormalOffset * (0.5 + slope) * 2 * shadowCascadeRadius[layer] * shadowRcpRes;
-    return mul(pos + float4(normal * offset, 0), shadowViewProj[layer]);
+    float offset = shadowNormalOffset * (0.5 + slope) * shadowCascade[layer].x;
+    float4 sp = mul(pos + float4(normal * offset, 0), shadowViewProj[set * shadowCascades + layer]);
+    sp.z /= sp.w;
+    return sp;
 }
 
-// Lit fraction in [0, 1] from four bilinear compare taps
-float shadowLayerLit(float4 shadowpos, int layer) {
+// Lit fraction in [0, 1] from a 3x3 grid of bilinear compare taps, shadowFilterRadius texels apart
+float shadowLayerLit(sampler atlas, float4 shadowpos, int layer) {
     float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadowpos.xy;
     float4 t = mapShadowToAtlas(shadowUV, layer);
-    t.z = shadowpos.z - shadowBias;
+    t.z = shadowpos.z - shadowBias / shadowCascade[layer].y;
     float2 d = shadowFilterRadius * shadowRcpRes * float2(shadowCascadeSize, 1);
 
-    float lit = tex2Dlod(sampShadow, t + float4(-d.x, -d.y, 0, 0)).r;
-    lit += tex2Dlod(sampShadow, t + float4(d.x, -d.y, 0, 0)).r;
-    lit += tex2Dlod(sampShadow, t + float4(-d.x, d.y, 0, 0)).r;
-    lit += tex2Dlod(sampShadow, t + float4(d.x, d.y, 0, 0)).r;
-    return 0.25 * lit;
+    float lit = 0;
+    [unroll] for(int y = -1; y <= 1; ++y) {
+        [unroll] for(int x = -1; x <= 1; ++x) {
+            lit += tex2Dlod(atlas, t + float4(x * d.x, y * d.y, 0, 0)).r;
+        }
+    }
+    return lit / 9.0;
 }
 
-// Shadow term in [0, 1], 1 being fully shadowed; the innermost containing cascade wins
-float shadowVisibility(float4 shadow0pos, float4 shadow1pos) {
-    [branch] if(all(saturate(atlasMargin - abs(shadow0pos.xyz)))) {
-        return 1 - shadowLayerLit(shadow0pos, 0);
-    }
-    [branch] if(all(saturate(atlasMargin - abs(shadow1pos.xyz)))) {
-        return 1 - shadowLayerLit(shadow1pos, 1);
+// Shadow term from one atlas: the innermost containing cascade, faded at the outermost edge
+float shadowSetVisibility(sampler atlas, int set, float4 pos, float3 normal, float3 sunDir) {
+    [unroll] for(int i = 0; i < shadowCascades; ++i) {
+        float4 sp = shadowReceiverPos(pos, normal, sunDir, set, i);
+        [branch] if(all(saturate(atlasMargin - abs(sp.xyz)))) {
+            float v = 1 - shadowLayerLit(atlas, sp, i);
+            if(i == shadowCascades - 1) {
+                float2 fade = saturate(25 * (1 - abs(sp.xy)));
+                v *= fade.x * fade.y;
+            }
+            return v;
+        }
     }
     return 0;
+}
+
+// Shadow term in [0, 1], 1 being fully shadowed, cross-faded between the two atlases
+float shadowVisibility(float4 pos, float3 normal, float3 sunDir) {
+    float v = shadowSetVisibility(sampShadow, 0, pos, normal, sunDir);
+    [branch] if(shadowBlend > 0) {
+        v = lerp(v, shadowSetVisibility(sampShadowNext, 1, pos, normal, sunDir), shadowBlend);
+    }
+    return v;
 }
 
 //------------------------------------------------------------
@@ -93,8 +117,8 @@ struct RenderShadowVertOut {
     centroid float light: COLOR0;
     centroid float alpha: COLOR1;
 
-    float4 shadow0pos: TEXCOORD1;
-    float4 shadow1pos: TEXCOORD2;
+    float4 viewpos: TEXCOORD1;
+    float3 normal: TEXCOORD2;
 };
 
 RenderShadowVertOut RenderShadowsBaseVS(MorrowindVertIn IN) {
@@ -116,12 +140,9 @@ RenderShadowVertOut RenderShadowsBaseVS(MorrowindVertIn IN) {
     else
         OUT.light *= saturate(4 * fogatt);
 
-    // Find position in light space, output light depth
-    float3 normal = normalize(v.normal.xyz);
-    OUT.shadow0pos = shadowReceiverPos(v.viewpos, normal, 0);
-    OUT.shadow1pos = shadowReceiverPos(v.viewpos, normal, 1);
-    OUT.shadow0pos.z = OUT.shadow0pos.z / OUT.shadow0pos.w;
-    OUT.shadow1pos.z = OUT.shadow1pos.z / OUT.shadow1pos.w;
+    // Light space projection happens per pixel
+    OUT.viewpos = v.viewpos;
+    OUT.normal = v.normal.xyz;
 
     OUT.texcoords = IN.texcoords;
     return OUT;
@@ -170,11 +191,8 @@ RenderShadowVertOut RenderShadowsIndexedBaseVS(MorrowindIndexedVertIn IN) {
     else
         OUT.light *= saturate(4 * fogatt);
 
-    float3 normal = normalize(v.normal.xyz);
-    OUT.shadow0pos = shadowReceiverPos(v.viewpos, normal, 0);
-    OUT.shadow1pos = shadowReceiverPos(v.viewpos, normal, 1);
-    OUT.shadow0pos.z = OUT.shadow0pos.z / OUT.shadow0pos.w;
-    OUT.shadow1pos.z = OUT.shadow1pos.z / OUT.shadow1pos.w;
+    OUT.viewpos = v.viewpos;
+    OUT.normal = v.normal.xyz;
     OUT.texcoords = IN.texcoords;
     return OUT;
 }
@@ -205,11 +223,7 @@ float4 RenderShadowsPS(RenderShadowVertOut IN): COLOR0 {
     }
 
     // Soft shadowing
-    float v = shadowVisibility(IN.shadow0pos, IN.shadow1pos) * IN.light * alpha;
-
-    // Fade out shadows at map edges
-    float2 fade = saturate(25 * (1 - abs(IN.shadow1pos.xy)));
-    v = v * fade.x * fade.y;
+    float v = shadowVisibility(IN.viewpos, normalize(IN.normal), sunVecView) * IN.light * alpha;
 
     // Darken shadow area according to existing lighting (slightly towards blue)
     clip(v - 2.0/255.0);
