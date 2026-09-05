@@ -112,9 +112,11 @@ There is no blur. Softness comes from the receiver's filter kernel.
 
 Cascade half-widths come from `shadowCascadeRadius(layer)` in `rendershadow.cpp`: 1000,
 4000, 16000, and `Configuration.DL.DrawDist * kCellSize` for the last, which covers the
-whole distant-land draw distance. The light depth half-range is
-`shadowCascadeDepthRange(radius) = max(kCellSize, radius)`, so the far cascades do not clip
-casters against their near or far planes.
+whole distant-land draw distance. Each cascade covers a cylinder of that radius and the
+same height (`shadowCascadeHeight`) around the eye. Toward the sun the light camera sits
+`max(shadowCasterReach, halfZ)` out, with `shadowCasterReach` two cells, so a hill a couple
+of cells away still casts into the near cascades at sunset; the depth range runs from there
+to the far side of the box.
 
 Light direction comes from `sunPos` during the day and `sunVec` at night:
 
@@ -131,10 +133,24 @@ view direction to spend the atlas on what the camera sees; with the atlas reused
 half a second while the camera turns, anything view-dependent in the fit leaves the new
 view uncovered until the next build fades in, so the fit depends on eye position only.
 
-The light camera looks at the eye from `zrange` units back along `lightVec`, with up
-`(0, 0, 1)`. The ortho projection is `2 * radius` wide, `(1 + |lightVec.z|) * radius` tall,
-near 0, far `2 * zrange`. Height scales with sun elevation because a high sun compresses
-the world's z extent into less of the light-space y axis.
+The light camera looks at the eye along `lightVec` with up `(0, 0, 1)`, which keeps
+light-space y vertical as the receiver offsets assume. Within 26 degrees of the zenith
+(`|lightVec.z| >= 0.9`) that up vector nears the light direction and the basis would spin
+with every sun step, so world Y takes over there; the sun path never runs north-south. The
+swap is a single grid rotation, which the atlas crossfade absorbs. The box is then sized
+from the basis axes: along each axis the half-extent is `radius * horizontal + height *
+vertical` (`shadowExtentAlong`), so the cylinder fits at any sun angle. The older
+`(1 + |lightVec.z|) * radius` height covered only half a radius of relief at low sun and
+dropped tall casters from the near cascades exactly when shadows are longest. The ortho
+projection is `2 * halfX` wide and `2 * halfY` tall, near 0, far `zSun + halfZ`.
+
+Before the fit, the light elevation is clamped to `shadowMinElevation` (10 degrees), keeping
+the azimuth. Below that the constant receiver bias detaches shadows from their casters by
+`bias / tan(elevation)` (274 units at 5 degrees), the two-cell caster reach no longer covers
+the relief, and a ground texel stretches to `texel / sin(elevation)` along the light. The
+receivers fade the shadow term out over `shadowElevationFade` (5 to 10 degrees of the true
+sun elevation, from `sunVec`), so the last degrees dissolve instead of snapping; the weather
+already drives the sun colour and `sunVis` toward zero in the same band.
 
 The view-projection is then snapped to whole texels:
 
@@ -151,9 +167,10 @@ drifts with the sun, through the elevation-dependent height above. Clip space sp
 [-1, +1] over `res` texels, hence the factor of 2. z is not quantized because depth
 precision does not alias the same way.
 
-After fitting, `renderShadowMap` uploads `shadowCascade[layer] = (texel size in world
-units, depth range in world units, 0, 0)`. The shaders use it for the normal offset and to
-convert the world-unit bias into atlas depth.
+Each fit records its texel size and depth range in `shadowFit[layer]`, and `renderShadowMap`
+uploads them every frame as `shadowCascade[layer] = (texel size in world units, depth range
+in world units, 0, 0)`. The shaders use them for the normal offset, to convert the
+world-unit bias into atlas depth, and to match the filter spacing across cascades.
 
 ## Caster rendering
 
@@ -229,9 +246,12 @@ Constants live in `XE Mod Shadow Data.fx`:
 | Constant | Value | Role |
 | --- | --- | --- |
 | `shadowBias` | 24.0 | Constant receiver bias, world units. Must exceed the LOD error between a caster and its near twin. |
+| `shadowBiasTexels` | 1.0 | Extra bias of one texel of the sampled cascade, in world units per unit of texel size, for the rasterisation error of coarse far cascades. |
 | `shadowNormalOffset` | 1.5 | Receiver push along its normal, in texels of the sampled cascade; scaled 0.5x facing the sun to 1.5x at grazing angles. |
-| `shadowFilterRadius` | 2.0 | Spacing of a 3x3 grid of bilinear-compare taps, in texels; penumbra about `3 * radius + 1` texels. |
+| `shadowNormalOffsetMax` | 16.0 | Cap on the normal offset in world units, so far cascades do not push receivers a quarter of a cell. |
+| `shadowFilterRadius` | 2.0 | Spacing of a 3x3 grid of bilinear-compare taps, in cascade 0 texels, kept the same in world units on every cascade; penumbra about `3 * radius + 1` cascade 0 texels everywhere. |
 | `shadowTerrainSink` | 24.0 | World units terrain casters are lowered by. |
+| `shadowElevationFade` | `(5, 10)` | Sun elevation band in degrees over which the shadow term fades out toward the horizon; the top matches the fit clamp `shadowMinElevation`. |
 | `shade` | 0.6 | Luminance floor for shadowed areas; higher is lighter. |
 | `shadecolor` | `(1.0, 0.985, 0.93)` | Per-channel shadow strength, near neutral. |
 
@@ -241,8 +261,10 @@ for grass, terrain and statics). `shadowSetVisibility` walks the cascades of one
 order: `shadowReceiverPos` pushes the position along the normal by
 `shadowNormalOffset * (0.5 + sin(angle to sun)) * texel` and projects it with that atlas's
 matrix (`shadowViewProj[set * 4 + layer]`); the first cascade whose clip-space margin
-contains it is sampled by `shadowLayerLit`, which subtracts `shadowBias / depthRange` from
-the projected z and takes a 3x3 grid of compare taps `shadowFilterRadius` texels apart, the
+contains it is sampled by `shadowLayerLit`, which subtracts `(shadowBias + shadowBiasTexels *
+texel) / depthRange` from the projected z and takes a 3x3 grid of compare taps
+`shadowFilterRadius` cascade 0 texels apart in world units (under one texel on the far
+cascades, where the filter collapses to the hardware compare), the
 mean being the lit fraction. The outermost cascade fades over its last 4% of clip space.
 `shadowVisibility` returns `1 - lit` from the current atlas, blended toward the next atlas's
 result by `shadowBlend` when a fade is in progress; the second walk is skipped under a
@@ -313,6 +335,8 @@ OUT.light = shadowSunEstimate(saturate(dot(v.normal.xyz, -sunVecView)));
 maps through `x / (shade + x)`. Fog then attenuates it by `fogMWScalar(pos.w)` squared,
 or `saturate(4 * fogatt)` when `eyePos` is below sea level, which stops underwater shadows
 fading out immediately.
+It also fades to zero over `shadowElevationFade`, the band below which the fit clamps the
+light elevation.
 
 `RenderShadowsPS` clips unlit fragments below `2/255` and failed alpha tests, then
 `v = shadowVisibility(viewpos, normal, sunVecView) * light * alpha`, clipped below `2/255`,

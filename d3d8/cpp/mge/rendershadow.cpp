@@ -20,10 +20,35 @@ static float shadowCascadeRadius(int layer) {
     return Configuration.DL.DrawDist * DistantLand::kCellSize;
 }
 
-// Half the light depth range, grows with the cascade so far casters are not clipped
-static float shadowCascadeDepthRange(float radius) {
-    return std::max(DistantLand::kCellSize, radius);
+// Vertical half-extent of the box a cascade covers around the eye, so casters and
+// receivers this far above or below the eye are inside it at any sun angle
+static float shadowCascadeHeight(float radius) {
+    return radius;
 }
+
+// How far toward the sun the light frustum reaches past the box, so a hill a couple of
+// cells away still casts into the near cascades at low sun
+static const float shadowCasterReach = 2.0f * DistantLand::kCellSize;
+
+// Lowest sun elevation the fit uses, in degrees. Below it the constant receiver bias
+// detaches shadows from their casters (bias / tan), the caster reach no longer covers the
+// relief, and ground texels stretch to many units along the light. The azimuth is kept, so
+// shadows still point away from the sun; the receivers fade them out over the same band
+// (shadowElevationFade in XE Mod Shadow Data.fx, whose top must match this)
+static const float shadowMinElevation = 10.0f;
+
+// Light-space half-extent, along one unit axis of the light basis, of a cylinder of the
+// cascade radius and height around the eye
+static float shadowExtentAlong(const D3DXVECTOR3& axis, float radius, float height) {
+    return radius * std::sqrt(axis.x * axis.x + axis.y * axis.y) + height * std::fabs(axis.z);
+}
+
+// Texel size and light depth range of each cascade as last fitted, in world units
+struct ShadowFit {
+    float texel;
+    float depth;
+};
+static ShadowFit shadowFit[DistantLand::kShadowCascades];
 
 // Real-time length of the crossfade from the current atlas to the next one
 static const float shadowBlendSeconds = 0.25f;
@@ -94,11 +119,16 @@ void DistantLand::renderShadowMap() {
         device->SetRenderState(D3DRS_DEPTHBIAS, 0);
     }
 
-    // Texel size and depth range per cascade in world units, for receiver bias
+    // Texel size and light depth range per cascade in world units, for receiver bias;
+    // a layer not fitted yet gets the values its first fit would give
     D3DXVECTOR4 cascadeParams[kShadowCascades];
     for (int layer = 0; layer < kShadowCascades; ++layer) {
-        const float radius = shadowCascadeRadius(layer);
-        cascadeParams[layer] = D3DXVECTOR4(2.0f * radius / Configuration.DL.ShadowResolution, 2.0f * shadowCascadeDepthRange(radius), 0, 0);
+        if (shadowFit[layer].depth <= 0) {
+            const float radius = shadowCascadeRadius(layer);
+            shadowFit[layer].texel = 2.0f * radius / Configuration.DL.ShadowResolution;
+            shadowFit[layer].depth = std::max(shadowCasterReach, radius) + radius;
+        }
+        cascadeParams[layer] = D3DXVECTOR4(shadowFit[layer].texel, shadowFit[layer].depth, 0, 0);
     }
     effect->SetVectorArray(ehShadowCascade, cascadeParams, kShadowCascades);
 
@@ -135,7 +165,7 @@ void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, D3DXMA
 
 void DistantLand::renderShadowLayer(int layer, float radius) {
     auto mwBridge = MWBridge::get();
-    D3DXVECTOR3 lookAt, shadowCameraPos, up(0, 0, 1);
+    D3DXVECTOR3 lookAt, shadowCameraPos;
     D3DXMATRIX* view = &smView[layer], *proj = &smProj[layer], *viewproj = &smViewproj[shadowBuilding][layer];
 
     // Select light vector, sunPos during daytime, sunVec during night
@@ -147,15 +177,45 @@ void DistantLand::renderShadowLayer(int layer, float radius) {
     lookAt.y = eyePos.y;
     lookAt.z = eyePos.z;
 
-    // Create shadow frustum centred on lookAt, looking along lightVec
-    const float zrange = shadowCascadeDepthRange(radius);
-    shadowCameraPos.x = lookAt.x - zrange * lightVec.x;
-    shadowCameraPos.y = lookAt.y - zrange * lightVec.y;
-    shadowCameraPos.z = lookAt.z - zrange * lightVec.z;
+    // World Z keeps light-space y vertical; within 26 degrees of the zenith it nears the
+    // light direction and the basis would spin with every sun step, so world Y takes over
+    // there (the sun path never runs north-south). The swap is one grid rotation, which
+    // the atlas crossfade absorbs.
+    D3DXVECTOR3 lightDir(lightVec.x, lightVec.y, lightVec.z);
+    const float minSin = std::sin(shadowMinElevation * D3DX_PI / 180.0f);
+    if (-lightDir.z < minSin) {
+        const float horizontal = std::sqrt(lightDir.x * lightDir.x + lightDir.y * lightDir.y);
+        if (horizontal > 1.0e-4f) {
+            const float scale = std::cos(shadowMinElevation * D3DX_PI / 180.0f) / horizontal;
+            lightDir.x *= scale;
+            lightDir.y *= scale;
+            lightDir.z = -minSin;
+        }
+    }
+    const D3DXVECTOR3 up = (std::fabs(lightDir.z) < 0.9f) ? D3DXVECTOR3(0, 0, 1) : D3DXVECTOR3(0, 1, 0);
 
+    // Orientation first, then size the box from its axes so a cylinder of the cascade
+    // radius and height around the eye fits at any sun angle
+    const D3DXVECTOR3 towardSun = lookAt - lightDir;
+    D3DXMatrixLookAtRH(view, &towardSun, &lookAt, &up);
+    const D3DXVECTOR3 axisX(view->_11, view->_21, view->_31);
+    const D3DXVECTOR3 axisY(view->_12, view->_22, view->_32);
+    const D3DXVECTOR3 axisZ(view->_13, view->_23, view->_33);
+    const float height = shadowCascadeHeight(radius);
+    const float halfX = shadowExtentAlong(axisX, radius, height);
+    const float halfY = shadowExtentAlong(axisY, radius, height);
+    const float halfZ = shadowExtentAlong(axisZ, radius, height);
+
+    // The light camera sits toward the sun far enough that casters a couple of cells out
+    // still land in the map; depth spans from there to the far side of the box
+    const float zSun = std::max(shadowCasterReach, halfZ);
+    shadowCameraPos = lookAt - lightDir * zSun;
     D3DXMatrixLookAtRH(view, &shadowCameraPos, &lookAt, &up);
-    D3DXMatrixOrthoRH(proj, 2 * radius, (1 + std::fabs(lightVec.z)) * radius, 0, 2.0 * zrange);
+    D3DXMatrixOrthoRH(proj, 2 * halfX, 2 * halfY, 0, zSun + halfZ);
     *viewproj = (*view) * (*proj);
+
+    shadowFit[layer].texel = 2 * halfX / Configuration.DL.ShadowResolution;
+    shadowFit[layer].depth = zSun + halfZ;
 
     // Snap to whole texels. The translation row is where the world origin lands in clip
     // space, so rounding it locks the sampling grid to the world for a given light direction

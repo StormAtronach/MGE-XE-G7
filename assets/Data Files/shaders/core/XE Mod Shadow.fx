@@ -26,6 +26,8 @@ float4 mapShadowToAtlas(float2 t, int layer) {
 float shadowSunEstimate(float lambert) {
     float x = lambert * dot(sunCol, float3(0.36, 0.53, 0.11));
     x *= 0.25 + 0.75 * sunVis;
+    // Fade out over the last degrees of elevation, where the fit clamps the light direction
+    x *= smoothstep(sin(radians(shadowElevationFade.x)), sin(radians(shadowElevationFade.y)), -sunVec.z);
     return x / (shade + x);
 }
 
@@ -61,18 +63,20 @@ TransformedVert transformShadowVert(MorrowindVertIn IN) {
 float4 shadowReceiverPos(float4 pos, float3 normal, float3 sunDir, int set, int layer) {
     float ndotl = saturate(dot(normal, -sunDir));
     float slope = sqrt(1 - ndotl * ndotl);
-    float offset = shadowNormalOffset * (0.5 + slope) * shadowCascade[layer].x;
+    float offset = min(shadowNormalOffset * (0.5 + slope) * shadowCascade[layer].x, shadowNormalOffsetMax);
     float4 sp = mul(pos + float4(normal * offset, 0), shadowViewProj[set * shadowCascades + layer]);
     sp.z /= sp.w;
     return sp;
 }
 
-// Lit fraction in [0, 1] from a 3x3 grid of bilinear compare taps, shadowFilterRadius texels apart
+// Lit fraction in [0, 1] from a 3x3 grid of bilinear compare taps, shadowFilterRadius cascade 0
+// texels apart in world units on every cascade
 float shadowLayerLit(sampler atlas, float4 shadowpos, int layer) {
     float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadowpos.xy;
     float4 t = mapShadowToAtlas(shadowUV, layer);
-    t.z = shadowpos.z - shadowBias / shadowCascade[layer].y;
-    float2 d = shadowFilterRadius * shadowRcpRes * float2(shadowCascadeSize, 1);
+    t.z = shadowpos.z - (shadowBias + shadowBiasTexels * shadowCascade[layer].x) / shadowCascade[layer].y;
+    float spacing = shadowFilterRadius * shadowCascade[0].x / shadowCascade[layer].x;
+    float2 d = spacing * shadowRcpRes * float2(shadowCascadeSize, 1);
 
     float lit = 0;
     [unroll] for(int y = -1; y <= 1; ++y) {
