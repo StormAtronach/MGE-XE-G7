@@ -86,10 +86,10 @@ and statics are skipped entirely while `IsUnderwater(eyePos.z)`. Distant statics
 2. Captures Morrowind's view/projection (`mwView`/`mwProj`), derives eye position/vector
    and sun position (`setView`), recomputes fog ranges and colour (`adjustFog`, §8), and
    uploads the per-frame shared parameters (`setupCommonEffect`).
-3. Shadow map early pass (`renderShadowMap`, exterior weather cells only). Renders two
-   cascades side by side into one shadow atlas, each with distant terrain plus host-culled
-   distant statics through `XE Shadowmap.fx`, then blurs the atlas. Restores state.
-   See [shadows.md](shadows.md).
+3. Shadow map early pass (`renderShadowMap`, exterior weather cells only). Builds the next
+   shadow atlas one cascade per frame: distant terrain plus host-culled distant statics,
+   depth-only through `XE Shadowmap.fx` into one of two depth atlases, which receivers
+   cross-fade between. Restores state. See [shadows.md](shadows.md).
 4. Distant geometry. Draws with a projection that pushes the near/far planes out
    (`editProjectionZ(kDistantNearPlane − ε, DrawDist·8192)`) so it always lands behind
    anything Morrowind draws:
@@ -127,7 +127,7 @@ unconditional.
 - Grass draw (`renderGrassInst`, `PASS_RENDERGRASSINST`): hardware instancing, wind sway
   (smoothed wind vector), shadow receiving, alpha-to-coverage.
 - Shadow overlay (`renderShadow`, `PASS_RENDERSHADOW`/`PASS_RENDERSHADOWFFE`): re-draws
-  recorded z-writing geometry and projects the soft shadow map onto it with blending.
+  recorded z-writing geometry and projects the depth atlas onto it per pixel with blending.
 - Depth texture (`captureNativeDepth` when enabled and supported, otherwise
   `renderDepth`): writes `texDepthFrame` and its auxiliary depth surface from the active
   main DSV. Without MSAA, Morrowind renders directly into sampleable INTZ; with MSAA,
@@ -195,16 +195,20 @@ treatment: [distantland-lifecycle.md](distantland-lifecycle.md).
 
 Full treatment: [shadows.md](shadows.md).
 
-- `renderShadowLayer` fits two cascade layers (`smView/smProj/smViewproj[2]`) per frame
-  around the camera and computes a sun-aligned ortho projection per layer radius. The two
-  cascades sit side by side in one `2*res` by `res` R16F atlas, separated by viewport.
-- Casters: distant terrain and host-culled distant statics only, drawn through
-  `XE Shadowmap.fx` (`effectShadow`) into `texSoftShadow`, then blurred via `texShadow`
-  and back into `texSoftShadow`. Recorded Morrowind geometry does not cast.
-- Receivers: Stage 1/2 re-draw recorded geometry and sample the shadow map with blending
-  (`PASS_RENDERSHADOW`, or `PASS_RENDERSHADOWFFE` matching the
-  per-pixel-lighting model). Grass samples the map in its own pass; distant statics and
-  terrain do not. There is no depth-buffer shadowing of Morrowind's own rendering.
+- `renderShadowLayer` fits one cascade per frame (`smView/smProj`, `smViewproj[2][4]`) as
+  an eye-centred light box on the sky light's basis, with the translation row snapped to
+  texels. Four cascades sit side by side in one `4*res` by `res` D24S8 atlas, separated by
+  viewport. Two such atlases exist; once the next one is complete, receivers cross-fade to
+  it over a quarter of a second and the roles swap.
+- Casters: distant terrain and host-culled distant statics only, depth-only through
+  `XE Shadowmap.fx` (`effectShadow`) against a NULL colour target. Statics cast only within
+  `distant_land.shadows.static_range` of the camera. Recorded Morrowind geometry does not
+  cast.
+- Receivers: Stage 1/2 re-draw recorded geometry and project the atlas per pixel
+  (`PASS_RENDERSHADOW`, or `PASS_RENDERSHADOWFFE` matching the per-pixel-lighting model),
+  sampling through DXVK's comparison sampler. Grass, distant terrain and distant statics
+  sample it in their own passes under `shadowDistant`. There is no depth-buffer shadowing of
+  Morrowind's own rendering.
 
 ## 7. Fixed-function emulation (FFE)
 

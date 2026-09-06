@@ -513,8 +513,8 @@ Stage 2 call sees only that scene's draws.
 
 `renderShadowDebug` draws all cascades stacked in the top-right corner through
 `PASS_DEBUGSHADOW`, colouring depth green to blue and marking in red any shadow texel that
-falls inside the camera frustum, which makes wasted atlas area and the stencil mask
-boundary obvious (black is the cleared atlas outside the mask). Because a depth texture can
+falls inside the camera frustum, which shows how much of each cascade the view is using
+(the atlas outside every caster reads as the cleared far plane). Because a depth texture can
 only be compare-sampled through D3D9, `shadowDebugDepth` reconstructs a 3-bit depth by
 counting how many of eight reference slices pass the compare. Its only call site in
 `postProcess` is commented out:
