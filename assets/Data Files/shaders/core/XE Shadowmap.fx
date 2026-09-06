@@ -15,9 +15,7 @@ struct ShadowVertOut {
     float4 pos : POSITION;
 };
 
-// Distant terrain (TerrainDecl, no texcoords so it cannot alpha test). The mesh is a coarse
-// twin of Morrowind's terrain and pokes through roads and floors built on it, which the
-// depth compare would read as shadow; sink it so only its silhouette casts.
+// Distant terrain, position only (TerrainDecl has no texcoords), sunk by shadowTerrainSink
 ShadowVertOut ShadowLandVS(float4 pos : POSITION) {
     ShadowVertOut OUT;
 
@@ -46,7 +44,7 @@ StaticShadowVertOut StaticShadowVS(StatVertIn IN) {
     OUT.pos = mul(float4(IN.pos.xyz, 1), world);
     OUT.pos = mul(OUT.pos, shadowViewProj[0]);
 
-    // Clamp vertices to front plane to avoid clipping and shadow loss
+    // Pancake onto the near plane instead of clipping
     OUT.pos.z = max(0, OUT.pos.z);
 
     OUT.texcoords = IN.texcoords;
@@ -81,8 +79,7 @@ technique T0 {
         CullMode = CW;
         StencilEnable = false;
 
-        // Push casters back in proportion to their depth slope, which is what
-        // grazing sun angles need; the receiver adds a small constant bias
+        // Slope-scaled bias here, the constant bias on the receiver
         DepthBias = 0;
         SlopeScaleDepthBias = 2.0;
 
@@ -99,8 +96,7 @@ technique T0 {
         CullMode = CW;
         StencilEnable = false;
 
-        // Push casters back in proportion to their depth slope, which is what
-        // grazing sun angles need; the receiver adds a small constant bias
+        // Slope-scaled bias here, the constant bias on the receiver
         DepthBias = 0;
         SlopeScaleDepthBias = 2.0;
 

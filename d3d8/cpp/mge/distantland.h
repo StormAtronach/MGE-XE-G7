@@ -242,8 +242,8 @@ public:
     static IDirect3DSurface9* surfRain, *surfRipples, *surfRippleBuffer;
     static IDirect3DVertexBuffer9* vbWaveSim;
 
-    // Two atlases: the current one receivers sample, and the next one built a cascade per
-    // frame and cross-faded in, so shadows move continuously as the sun does
+    // Two atlases: the one receivers sample, and the next, built a cascade per frame and
+    // cross-faded in
     static IDirect3DTexture9* texShadow[2];
     static IDirect3DSurface9* surfShadow[2], *surfShadowColor;
     static int shadowCurrent, shadowBuilding, shadowBuildLayer;

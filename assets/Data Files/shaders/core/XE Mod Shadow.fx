@@ -52,14 +52,12 @@ TransformedVert transformShadowVert(MorrowindVertIn IN) {
 //------------------------------------------------------------
 // Cascaded ortho percentage-closer lookup
 //
-// Two atlases are live: the current one and the next, built a cascade per frame and
-// cross-faded in over shadowBlend so shadows move continuously as the sun does. Matrix set 0
-// (shadowViewProj[0..3]) belongs to the current atlas, set 1 (shadowViewProj[4..7]) to the next.
-// Receivers project per pixel from a position and normal in the space the matrices expect:
-// view space with sunVecView for the near receiver pass, world space with sunVec otherwise.
+// Set 0 (shadowViewProj[0..3], shadowCascade[0..3]) is the current atlas, set 1 the next,
+// cross-faded by shadowBlend. Receivers project per pixel in the space the matrices expect:
+// view space with sunVecView in the near receiver pass, world space with sunVec otherwise.
 
-// Receiver position in a cascade's clip space, pushed along the normal to avoid self-shadowing.
-// The push grows towards grazing sun angles, where one shadow texel spans the most depth.
+// Receiver in a cascade's clip space, pushed along the normal against self-shadowing, more at
+// grazing angles
 float4 shadowReceiverPos(float4 pos, float3 normal, float3 sunDir, int set, int layer) {
     float ndotl = saturate(dot(normal, -sunDir));
     float slope = sqrt(1 - ndotl * ndotl);

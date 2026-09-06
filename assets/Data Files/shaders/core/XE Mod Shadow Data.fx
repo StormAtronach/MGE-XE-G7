@@ -19,46 +19,35 @@ static const float shadowCascadeSize = 1. / shadowCascades;
 //------------------------------------------------------------
 // Shadow parameters
 
-// Luminance reduction parameter for shadowed areas; higher is lighter. Percentage-closer
-// shadows reach full strength close to the caster where the old exponential map faded,
-// so this sits above the ESM-era 0.4.
+// Luminance floor for shadowed areas; higher is lighter
 static const float shade = 0.6;
 
-// Shade colouration, how much each channel is affected by shadow. A strong blue cast on a
-// fully shadowed slope reads as fog, so this is kept close to neutral.
+// Per-channel shadow strength, kept near neutral: a blue cast reads as fog
 static const float3 shadecolor = float3(1.0, 0.985, 0.93);
 
-// Constant depth comparison bias in world units. Casters are distant-land copies of the
-// receivers and sit a few units off them, so this has to exceed that LOD error or every
-// static shadows itself. Slope-dependent bias is on the caster side (SlopeScaleDepthBias
-// in XE Shadowmap.fx).
+// Constant depth bias, world units. Must exceed the offset between a caster and its near
+// twin (LOD error); the slope-scaled bias is on the caster side (XE Shadowmap.fx)
 static const float shadowBias = 24.0;
 
-// Extra comparison bias of one texel of the sampled cascade, in world units per unit of
-// texel size, so the coarse far cascades get the tolerance their rasterisation error needs
+// Extra bias in texels of the sampled cascade
 static const float shadowBiasTexels = 1.0;
 
-// Receiver offset along its normal, in shadow texels of the sampled cascade, scaled from
-// 0.5x facing the sun to 1.5x at grazing angles
+// Receiver push along its normal, in texels of the sampled cascade, 0.5x facing the sun to
+// 1.5x grazing
 static const float shadowNormalOffset = 1.5;
 
-// Cap on that offset in world units, so the coarse far cascades do not push receivers a
-// quarter of a cell toward the sun
+// Cap on that push, world units
 static const float shadowNormalOffsetMax = 16.0;
 
-// Spacing of the 3x3 filter taps in cascade 0 texels; each tap is a hardware 2x2 bilinear
-// compare, so the penumbra is about 3 * radius + 1 texels wide (cascade 0 texels are ~1 world
-// unit). Other cascades use the same spacing in world units, so the penumbra width does not
-// jump at a cascade boundary
+// 3x3 tap spacing in cascade 0 texels, kept in world units on the cascades that use the grid;
+// penumbra about 3 * radius + 1 texels
 static const float shadowFilterRadius = 2.0;
 
 // First cascade sampled with one compare instead of the 3x3 grid: from here the grid falls
 // inside a quarter texel
 static const int shadowSingleTapCascade = 2;
 
-// World units the distant terrain caster is lowered by, so its coarse mesh stays below
-// roads and floors built on it instead of shadowing them. Costs that much shadow at the
-// foot of every slope.
+// World units the terrain caster is lowered by, so its coarse mesh stays below roads built on it
 static const float shadowTerrainSink = 24.0;
 
 // Elevation band, degrees on sunVec, over which the shadow term fades out. The top must match
