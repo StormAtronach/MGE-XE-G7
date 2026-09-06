@@ -35,7 +35,8 @@ static const float shadowCasterReach = 2.0f * DistantLand::kCellSize;
 // detaches shadows from their casters (bias / tan), the caster reach no longer covers the
 // relief, and ground texels stretch to many units along the light. The azimuth is kept, so
 // shadows still point away from the sun; the receivers fade them out over the same band
-// (shadowElevationFade in XE Mod Shadow Data.fx, whose top must match this)
+// (shadowElevationFade in XE Mod Shadow Data.fx, whose top must match this). The vanilla sky
+// light never drops below 13.8 degrees, so this engages only if a mod lowers it
 static const float shadowMinElevation = 10.0f;
 
 // Light-space half-extent, along one unit axis of the light basis, of a cylinder of the
@@ -195,8 +196,9 @@ void DistantLand::renderShadowLayer(int layer, float radius) {
     D3DXVECTOR3 lookAt, shadowCameraPos;
     D3DXMATRIX* view = &smView[layer], *proj = &smProj[layer], *viewproj = &smViewproj[shadowBuilding][layer];
 
-    // Select light vector, sunPos during daytime, sunVec during night
-    D3DXVECTOR4 lightVec = (sunPos.z > 0) ? -sunPos : sunVec;
+    // The sky light, not the sun disc: what the lambert terms and the engine's stencil
+    // shadows use (docs/architecture/shadows.md)
+    const D3DXVECTOR4& lightVec = sunVec;
 
     // Centre of projection is the eye, so the atlas stays valid however the camera turns
     // while it is reused; only eye translation ages it

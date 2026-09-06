@@ -61,7 +61,6 @@ static const int shadowSingleTapCascade = 2;
 // foot of every slope.
 static const float shadowTerrainSink = 24.0;
 
-// Sun elevation band in degrees over which shadows fade out toward the horizon. The top
-// must match the fit clamp in rendershadow.cpp (shadowMinElevation): below it the constant
-// bias detaches shadows from their casters and ground texels stretch along the light
+// Elevation band, degrees on sunVec, over which the shadow term fades out. The top must match
+// shadowMinElevation in rendershadow.cpp. Dormant with the vanilla light (13.8 degree minimum)
 static const float2 shadowElevationFade = float2(5.0, 10.0);

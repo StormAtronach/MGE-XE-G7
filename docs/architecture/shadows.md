@@ -129,15 +129,10 @@ same height (`shadowCascadeHeight`) around the eye. Toward the sun the light cam
 of cells away still casts into the near cascades at sunset; the depth range runs from there
 to the far side of the box.
 
-Light direction comes from `sunPos` during the day and `sunVec` at night:
-
-```cpp
-D3DXVECTOR4 lightVec = (sunPos.z > 0) ? -sunPos : sunVec;
-```
-
-`sunPos` is the normalized sun disc direction from `MWBridge::GetSunDir`, flipped in z when
-`sunVis` is zero so it sets instead of bouncing at the horizon. `sunVec` is the D3D sun
-light direction captured in `setSunLight`, which Morrowind also uses for interiors.
+Light direction is `sunVec`, the D3D light 6 direction captured in `setSunLight`, day and
+night. It is the engine's sky light, not the sun disc; see the measurement below. Older
+versions used the disc (`sunPos`, from `MWBridge::GetSunDir`) while it was above the
+horizon and switched to the light when `sunVis` reached zero.
 
 The projection centre is the eye itself. Older versions pushed it a radius ahead along the
 view direction to spend the atlas on what the camera sees; with the atlas reused for up to
@@ -159,20 +154,20 @@ Before the fit, the light elevation is clamped to `shadowMinElevation` (10 degre
 the azimuth. Below that the constant receiver bias detaches shadows from their casters by
 `bias / tan(elevation)` (274 units at 5 degrees), the two-cell caster reach no longer covers
 the relief, and a ground texel stretches to `texel / sin(elevation)` along the light. The
-receivers fade the shadow term out over `shadowElevationFade` (5 to 10 degrees of the true
-sun elevation, from `sunVec`), so the last degrees dissolve instead of snapping; the weather
-already drives the sun colour and `sunVis` toward zero in the same band.
+receivers fade the shadow term out over `shadowElevationFade` (5 to 10 degrees of elevation
+of the same `sunVec`), so the last degrees would dissolve instead of snapping.
 
 Measured against the engine (`WeatherController::updateSun`, transit constants
-`(-400, 75, -100)`), the two vectors are not the same sun. The sky light behind D3D light 6,
-which is `sunVec`, has direction `(f, 75, -100)` with `f` sweeping -400 to 400 over the day
-and back over the night: its elevation is 13.8 degrees at sunrise and sunset and 53.1 at
-noon, never lower. The sun disc, which is `sunPos`, sits at `(-f, -75, 400 - |f|)`: the same
-azimuth, but 0 degrees at the horizon and 79.2 at noon. Two consequences. The fade on
-`-sunVec.z` never engages for the exterior sun, so by day the clamp alone bounds the fit.
-And the fit follows the disc by day while every lambert term, MGE's included, and the
-engine's stencil actor shadows follow the light; at noon that is 79 against 53 degrees.
-Whether the fit should follow the light instead is an open choice.
+`(-400, 75, -100)`), the light and the disc are not the same sun. The sky light behind D3D
+light 6 points along `(f, 75, -100)`, with `f` sweeping -400 to 400 over the day and back
+over the night. Its elevation is 13.8 degrees at sunrise and sunset and 53.1 at noon, never
+lower. The sun disc sits at `(-f, -75, 400 - |f|)`, the same azimuth but 0 degrees at the
+horizon and 79.2 at noon. The fit follows the light because every lambert term, MGE's
+included, and the engine's stencil actor shadows do. Cast shadows then meet the shading
+terminator and the actor shadows at every hour. The price is a noon shadow of a 53 degree
+sun under a 79 degree disc. One vector for day and night also means nothing hops when the
+disc fades out. With the vanilla light the clamp and the fade are dormant. They engage only
+if a mod lowers the light.
 
 The view-projection is then snapped to whole texels:
 
