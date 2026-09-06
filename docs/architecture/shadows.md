@@ -163,6 +163,17 @@ receivers fade the shadow term out over `shadowElevationFade` (5 to 10 degrees o
 sun elevation, from `sunVec`), so the last degrees dissolve instead of snapping; the weather
 already drives the sun colour and `sunVis` toward zero in the same band.
 
+Measured against the engine (`WeatherController::updateSun`, transit constants
+`(-400, 75, -100)`), the two vectors are not the same sun. The sky light behind D3D light 6,
+which is `sunVec`, has direction `(f, 75, -100)` with `f` sweeping -400 to 400 over the day
+and back over the night: its elevation is 13.8 degrees at sunrise and sunset and 53.1 at
+noon, never lower. The sun disc, which is `sunPos`, sits at `(-f, -75, 400 - |f|)`: the same
+azimuth, but 0 degrees at the horizon and 79.2 at noon. Two consequences. The fade on
+`-sunVec.z` never engages for the exterior sun, so by day the clamp alone bounds the fit.
+And the fit follows the disc by day while every lambert term, MGE's included, and the
+engine's stencil actor shadows follow the light; at noon that is 79 against 53 degrees.
+Whether the fit should follow the light instead is an open choice.
+
 The view-projection is then snapped to whole texels:
 
 ```cpp
