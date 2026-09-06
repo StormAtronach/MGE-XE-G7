@@ -265,27 +265,34 @@ Constants live in `XE Mod Shadow Data.fx`:
 | `shadowBiasTexels` | 1.0 | Extra bias of one texel of the sampled cascade, in world units per unit of texel size, for the rasterisation error of coarse far cascades. |
 | `shadowNormalOffset` | 1.5 | Receiver push along its normal, in texels of the sampled cascade; scaled 0.5x facing the sun to 1.5x at grazing angles. |
 | `shadowNormalOffsetMax` | 16.0 | Cap on the normal offset in world units, so far cascades do not push receivers a quarter of a cell. |
-| `shadowFilterRadius` | 2.0 | Spacing of a 3x3 grid of bilinear-compare taps, in cascade 0 texels, kept the same in world units on every cascade; penumbra about `3 * radius + 1` cascade 0 texels everywhere. |
+| `shadowFilterRadius` | 2.0 | Spacing of a 3x3 grid of bilinear-compare taps, in cascade 0 texels, kept the same in world units on the cascades that use the grid; penumbra about `3 * radius + 1` cascade 0 texels. |
+| `shadowSingleTapCascade` | 2 | First cascade sampled with one bilinear compare. From there the grid would fall inside a quarter texel and return the same value; cascade 1, at half-texel spacing, keeps the grid. |
 | `shadowTerrainSink` | 24.0 | World units terrain casters are lowered by. |
 | `shadowElevationFade` | `(5, 10)` | Sun elevation band in degrees over which the shadow term fades out toward the horizon; the top matches the fit clamp `shadowMinElevation`. |
 | `shade` | 0.6 | Luminance floor for shadowed areas; higher is lighter. |
 | `shadecolor` | `(1.0, 0.985, 0.93)` | Per-channel shadow strength, near neutral. |
 
-Receivers project per pixel from a position and normal (`shadowVisibility(pos, normal,
-sunDir)`; view space with `sunVecView` for the near receiver pass, world space with `sunVec`
-for grass, terrain and statics). `shadowSetVisibility` walks the cascades of one atlas in
-order: `shadowReceiverPos` pushes the position along the normal by
+Receivers project per pixel from a position and a normal, `shadowVisibility(pos, normal,
+sunDir)`: view space with `sunVecView` in the near receiver pass, world space with `sunVec`
+for grass, terrain and statics. `shadowSetVisibility` walks the cascades of one atlas in
+order. For each, `shadowReceiverPos` pushes the position along the normal by
 `shadowNormalOffset * (0.5 + sin(angle to sun)) * texel` and projects it with that atlas's
-matrix (`shadowViewProj[set * 4 + layer]`); the first cascade whose clip-space margin
-contains it is sampled by `shadowLayerLit`, which subtracts `(shadowBias + shadowBiasTexels *
-texel) / depthRange` from the projected z and takes a 3x3 grid of compare taps
-`shadowFilterRadius` cascade 0 texels apart in world units (under one texel on the far
-cascades, where the filter collapses to the hardware compare), the
-mean being the lit fraction. The outermost cascade fades over its last 4% of clip space.
-`shadowVisibility` returns `1 - lit` from the current atlas, blended toward the next atlas's
-result by `shadowBlend` when a fade is in progress; the second walk is skipped under a
-`[branch]` otherwise. Walking stops at the first containing cascade, so near pixels cost one
-projection per atlas.
+matrix, `shadowViewProj[set * 4 + layer]`. The first cascade whose clip-space margin contains
+the point is sampled by `shadowLayerLit`. It subtracts `(shadowBias + shadowBiasTexels *
+texel) / depthRange` from the projected z. On cascades 0 and 1 it averages a 3x3 grid of
+compare taps `shadowFilterRadius` cascade 0 texels apart in world units. From
+`shadowSingleTapCascade` on it takes one compare, because the grid would fall inside a
+quarter texel and return the same value. The outermost cascade fades over its last 4% of
+clip space.
+
+`shadowVisibility` returns `1 - lit` from the current atlas. While a fade is running it
+blends toward the next atlas's result by `shadowBlend`; otherwise a `[branch]` skips the
+second walk. The second walk starts at the cascade the first one chose, or at 0 if the first
+found none. The next atlas's boxes are centred at most a fade's travel away, so a finer
+cascade could contain the point only right at a boundary. Near pixels therefore cost one
+projection per atlas, far pixels one projection for the next atlas during a fade. A build
+takes four frames and a fade 0.25 s, so at 60 fps about four frames in five run both walks.
+That is why the second walk is kept short.
 
 Why the bias is this large: the old exponential map only began to shadow at 33 units of
 caster-receiver separation and saturated hundreds of units later, which quietly absorbed

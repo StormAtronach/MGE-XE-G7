@@ -69,13 +69,19 @@ float4 shadowReceiverPos(float4 pos, float3 normal, float3 sunDir, int set, int 
     return sp;
 }
 
-// Lit fraction in [0, 1] from a 3x3 grid of bilinear compare taps, shadowFilterRadius cascade 0
-// texels apart in world units on every cascade
+// Lit fraction in [0, 1]: a 3x3 grid of bilinear compare taps, shadowFilterRadius cascade 0
+// texels apart in world units, or one tap from shadowSingleTapCascade on
 float shadowLayerLit(sampler atlas, float4 shadowpos, int set, int layer) {
     float4 cascade = shadowCascade[set * shadowCascades + layer];
     float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadowpos.xy;
     float4 t = mapShadowToAtlas(shadowUV, layer);
     t.z = shadowpos.z - (shadowBias + shadowBiasTexels * cascade.x) / cascade.y;
+
+    // layer is a literal once the caller's loop is unrolled, so this resolves at compile time
+    if(layer >= shadowSingleTapCascade) {
+        return tex2Dlod(atlas, t).r;
+    }
+
     float spacing = shadowFilterRadius * shadowCascade[set * shadowCascades].x / cascade.x;
     float2 d = spacing * shadowRcpRes * float2(shadowCascadeSize, 1);
 
@@ -88,27 +94,36 @@ float shadowLayerLit(sampler atlas, float4 shadowpos, int set, int layer) {
     return lit / 9.0;
 }
 
-// Shadow term from one atlas: the innermost containing cascade, faded at the outermost edge
-float shadowSetVisibility(sampler atlas, int set, float4 pos, float3 normal, float3 sunDir) {
+// Innermost containing cascade from minLayer up, faded at the outer edge. layerOut is the
+// cascade used, shadowCascades if none
+float shadowSetVisibility(sampler atlas, int set, float4 pos, float3 normal, float3 sunDir, int minLayer, out int layerOut) {
+    layerOut = shadowCascades;
     [unroll] for(int i = 0; i < shadowCascades; ++i) {
-        float4 sp = shadowReceiverPos(pos, normal, sunDir, set, i);
-        [branch] if(all(saturate(atlasMargin - abs(sp.xyz)))) {
-            float v = 1 - shadowLayerLit(atlas, sp, set, i);
-            if(i == shadowCascades - 1) {
-                float2 fade = saturate(25 * (1 - abs(sp.xy)));
-                v *= fade.x * fade.y;
+        [branch] if(i >= minLayer) {
+            float4 sp = shadowReceiverPos(pos, normal, sunDir, set, i);
+            [branch] if(all(saturate(atlasMargin - abs(sp.xyz)))) {
+                float v = 1 - shadowLayerLit(atlas, sp, set, i);
+                if(i == shadowCascades - 1) {
+                    float2 fade = saturate(25 * (1 - abs(sp.xy)));
+                    v *= fade.x * fade.y;
+                }
+                layerOut = i;
+                return v;
             }
-            return v;
         }
     }
     return 0;
 }
 
-// Shadow term in [0, 1], 1 being fully shadowed, cross-faded between the two atlases
+// Shadow term in [0, 1], 1 fully shadowed, cross-faded between the atlases. The next atlas is
+// walked from the current one's cascade: a finer one could contain the point only next to a
+// boundary
 float shadowVisibility(float4 pos, float3 normal, float3 sunDir) {
-    float v = shadowSetVisibility(sampShadow, 0, pos, normal, sunDir);
+    int layer, layerNext;
+    float v = shadowSetVisibility(sampShadow, 0, pos, normal, sunDir, 0, layer);
     [branch] if(shadowBlend > 0) {
-        v = lerp(v, shadowSetVisibility(sampShadowNext, 1, pos, normal, sunDir), shadowBlend);
+        int minLayer = (layer < shadowCascades) ? layer : 0;
+        v = lerp(v, shadowSetVisibility(sampShadowNext, 1, pos, normal, sunDir, minLayer, layerNext), shadowBlend);
     }
     return v;
 }

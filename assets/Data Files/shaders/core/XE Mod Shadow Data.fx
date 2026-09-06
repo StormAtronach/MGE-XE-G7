@@ -49,9 +49,12 @@ static const float shadowNormalOffsetMax = 16.0;
 // Spacing of the 3x3 filter taps in cascade 0 texels; each tap is a hardware 2x2 bilinear
 // compare, so the penumbra is about 3 * radius + 1 texels wide (cascade 0 texels are ~1 world
 // unit). Other cascades use the same spacing in world units, so the penumbra width does not
-// jump at a cascade boundary; on the far cascades the taps fall within one texel and the
-// filter collapses to the hardware compare
+// jump at a cascade boundary
 static const float shadowFilterRadius = 2.0;
+
+// First cascade sampled with one compare instead of the 3x3 grid: from here the grid falls
+// inside a quarter texel
+static const int shadowSingleTapCascade = 2;
 
 // World units the distant terrain caster is lowered by, so its coarse mesh stays below
 // roads and floors built on it instead of shadowing them. Costs that much shadow at the
