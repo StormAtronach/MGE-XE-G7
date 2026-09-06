@@ -189,6 +189,7 @@ impl Settings {
             "distant_land.fog.interior_end" => self.distant_land.fog.interior_end.into(),
             "distant_land.shadows.enabled" => bool_number(self.distant_land.shadows.enabled),
             "distant_land.shadows.map_resolution" => self.distant_land.shadows.map_resolution.into(),
+            "distant_land.shadows.static_range" => self.distant_land.shadows.static_range.into(),
             "distant_land.per_pixel_lighting" => bool_number(self.distant_land.per_pixel_lighting),
             "distant_land.per_pixel_mode" => self.distant_land.per_pixel_mode.runtime_value().into(),
             "distant_land.horizon.culling" => bool_number(self.distant_land.horizon.culling),
@@ -326,6 +327,7 @@ impl Settings {
             "distant_land.fog.interior_end" => self.distant_land.fog.interior_end = finite_f32(value, path)?,
             "distant_land.shadows.enabled" => self.distant_land.shadows.enabled = number_bool(value, path)?,
             "distant_land.shadows.map_resolution" => self.distant_land.shadows.map_resolution = integer::<u32>(value, path)?,
+            "distant_land.shadows.static_range" => self.distant_land.shadows.static_range = finite_f32(value, path)?,
             "distant_land.per_pixel_lighting" => self.distant_land.per_pixel_lighting = number_bool(value, path)?,
             "distant_land.per_pixel_mode" => {
                 self.distant_land.per_pixel_mode = PerPixelMode::from_runtime(integer::<u32>(value, path)?)

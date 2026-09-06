@@ -141,6 +141,7 @@ const iniSetting iniSettings[] = {
         t_uint32,
         "distant_land.shadows.map_resolution",
         0),
+    NUM(Configuration.ShadowStaticRange, t_float, "distant_land.shadows.static_range", 0),
 
     WEATHER_BIND(0, "clear"),
     WEATHER_BIND(1, "cloudy"),

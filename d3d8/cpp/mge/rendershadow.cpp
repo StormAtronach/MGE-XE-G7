@@ -181,9 +181,40 @@ void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, D3DXMA
     }
 }
 
+// Statics cast only this far from the eye, world units. 0 in the config means the whole
+// draw distance, which the last cascade already covers
+static float shadowStaticRadius() {
+    const float cells = Configuration.ShadowStaticRange;
+    return cells > 0 ? cells * DistantLand::kCellSize : shadowCascadeRadius(DistantLand::kShadowCascades - 1);
+}
+
+// Ortho light box for the given basis: the eye cylinder of this radius fits at any sun
+// angle, and the camera sits at least shadowCasterReach toward the sun
+static void fitLightBox(const D3DXVECTOR3& lookAt, const D3DXVECTOR3& lightDir, const D3DXVECTOR3& up, float radius,
+                        D3DXMATRIX* view, D3DXMATRIX* proj, D3DXMATRIX* viewproj, ShadowFit* fit) {
+    // Orientation first, then the box from its axes
+    const D3DXVECTOR3 towardSun = lookAt - lightDir;
+    D3DXMatrixLookAtRH(view, &towardSun, &lookAt, &up);
+    const D3DXVECTOR3 axisX(view->_11, view->_21, view->_31);
+    const D3DXVECTOR3 axisY(view->_12, view->_22, view->_32);
+    const D3DXVECTOR3 axisZ(view->_13, view->_23, view->_33);
+    const float height = shadowCascadeHeight(radius);
+    const float halfX = shadowExtentAlong(axisX, radius, height);
+    const float halfY = shadowExtentAlong(axisY, radius, height);
+    const float halfZ = shadowExtentAlong(axisZ, radius, height);
+
+    const float zSun = std::max(shadowCasterReach, halfZ);
+    const D3DXVECTOR3 cameraPos = lookAt - lightDir * zSun;
+    D3DXMatrixLookAtRH(view, &cameraPos, &lookAt, &up);
+    D3DXMatrixOrthoRH(proj, 2 * halfX, 2 * halfY, 0, zSun + halfZ);
+    *viewproj = (*view) * (*proj);
+
+    fit->texel = 2 * halfX / Configuration.DL.ShadowResolution;
+    fit->depth = zSun + halfZ;
+}
+
 void DistantLand::renderShadowLayer(int layer, float radius) {
     auto mwBridge = MWBridge::get();
-    D3DXVECTOR3 lookAt, shadowCameraPos;
     D3DXMATRIX* view = &smView[layer], *proj = &smProj[layer], *viewproj = &smViewproj[shadowBuilding][layer];
 
     // The sky light, not the sun disc: what the lambert terms and the engine's stencil
@@ -191,9 +222,7 @@ void DistantLand::renderShadowLayer(int layer, float radius) {
     const D3DXVECTOR4& lightVec = sunVec;
 
     // Eye-centred, so the atlas stays valid while the camera turns
-    lookAt.x = eyePos.x;
-    lookAt.y = eyePos.y;
-    lookAt.z = eyePos.z;
+    const D3DXVECTOR3 lookAt(eyePos.x, eyePos.y, eyePos.z);
 
     // Up is world Z, or world Y within 26 degrees of the zenith, where Z would let the basis
     // spin with the sun
@@ -210,27 +239,7 @@ void DistantLand::renderShadowLayer(int layer, float radius) {
     }
     const D3DXVECTOR3 up = (std::fabs(lightDir.z) < 0.9f) ? D3DXVECTOR3(0, 0, 1) : D3DXVECTOR3(0, 1, 0);
 
-    // Orientation first, then the box from its axes: the eye cylinder must fit at any sun angle
-    const D3DXVECTOR3 towardSun = lookAt - lightDir;
-    D3DXMatrixLookAtRH(view, &towardSun, &lookAt, &up);
-    const D3DXVECTOR3 axisX(view->_11, view->_21, view->_31);
-    const D3DXVECTOR3 axisY(view->_12, view->_22, view->_32);
-    const D3DXVECTOR3 axisZ(view->_13, view->_23, view->_33);
-    const float height = shadowCascadeHeight(radius);
-    const float halfX = shadowExtentAlong(axisX, radius, height);
-    const float halfY = shadowExtentAlong(axisY, radius, height);
-    const float halfZ = shadowExtentAlong(axisZ, radius, height);
-
-    // Camera at least shadowCasterReach toward the sun; depth runs from there to the far side
-    // of the box
-    const float zSun = std::max(shadowCasterReach, halfZ);
-    shadowCameraPos = lookAt - lightDir * zSun;
-    D3DXMatrixLookAtRH(view, &shadowCameraPos, &lookAt, &up);
-    D3DXMatrixOrthoRH(proj, 2 * halfX, 2 * halfY, 0, zSun + halfZ);
-    *viewproj = (*view) * (*proj);
-
-    shadowFit[shadowBuilding][layer].texel = 2 * halfX / Configuration.DL.ShadowResolution;
-    shadowFit[shadowBuilding][layer].depth = zSun + halfZ;
+    fitLightBox(lookAt, lightDir, up, radius, view, proj, viewproj, &shadowFit[shadowBuilding][layer]);
 
     // Snap the translation row (the world origin in clip space) to whole texels, locking the
     // grid to the world
@@ -242,11 +251,19 @@ void DistantLand::renderShadowLayer(int layer, float radius) {
     effect->SetMatrixArray(ehShadowViewproj, viewproj, 1);
     effectShadow->CommitChanges();
 
-    // Cull
-    ViewFrustum range_frustum(viewproj);
-
     visExtraShared.RemoveAll();
     if (staticsUploaded) {
+        // Statics are culled with a light box of the static range when that is smaller than
+        // the cascade; terrain always casts over the whole cascade
+        D3DXMATRIX cullViewproj = *viewproj;
+        const float staticRadius = shadowStaticRadius();
+        if (staticRadius < radius) {
+            D3DXMATRIX cullView, cullProj;
+            ShadowFit cullFit;
+            fitLightBox(lookAt, lightDir, up, staticRadius, &cullView, &cullProj, &cullViewproj, &cullFit);
+        }
+        ViewFrustum range_frustum(&cullViewproj);
+
         // because shadow meshes don't need to be sorted, we can read and write in parallel
         ipcClient.getVisibleMeshesCoarse(visExtraSharedId, range_frustum, VIS_STATIC);
     }

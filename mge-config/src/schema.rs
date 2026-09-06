@@ -563,6 +563,8 @@ impl Default for FogSettings {
 pub struct ShadowSettings {
     pub enabled: bool,
     pub map_resolution: u32,
+    /// Cells from the eye within which distant statics cast shadows; 0 means no limit.
+    pub static_range: f32,
 }
 
 impl Default for ShadowSettings {
@@ -570,6 +572,7 @@ impl Default for ShadowSettings {
         Self {
             enabled: true,
             map_resolution: 2048,
+            static_range: 4.0,
         }
     }
 }

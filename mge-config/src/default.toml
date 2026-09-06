@@ -150,6 +150,9 @@ interior_end = 2.0
 enabled = true
 # Runtime-supported map size, clamped to 1024..2048.
 map_resolution = 2048
+# Cells from the eye within which distant statics cast shadows. Terrain casts over the
+# whole draw distance regardless. 0 means no limit.
+static_range = 4.0
 
 # Host-side terrain horizon culling. Distances here are world units.
 [distant_land.horizon]

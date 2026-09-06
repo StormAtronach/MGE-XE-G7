@@ -242,9 +242,13 @@ if (staticsUploaded) {
 }
 ```
 
-`range_frustum` is built from the cascade's own view-projection, and `VIS_STATIC` is
-`VIS_NEAR | VIS_FAR | VIS_VERY_FAR`, so all three static bands are candidates. This runs
-once per cascade, so four host queries and four terrain draws per frame.
+`range_frustum` is the cascade's own light box, or, when `distant_land.shadows.static_range`
+(cells, default 4, 0 for no limit) is smaller than the cascade radius, a light box of that
+radius on the same basis, built by the same `fitLightBox`. Statics beyond the range never
+enter the atlas. Statics inside it still throw their shadows past it, and terrain casts over
+the whole cascade whatever the range. `VIS_STATIC` is `VIS_NEAR | VIS_FAR | VIS_VERY_FAR`, so
+all three static bands are candidates. One cascade is built per frame, so this is one host
+query and one terrain draw per frame.
 
 Coarse is genuinely coarse. On the host, `get_visible_meshes_coarse` passes `None` for the
 view sphere, which routes `collect_quadtree_meshes` to `QuadTree::get_visible_meshes_coarse`
@@ -421,15 +425,19 @@ The replacement water plane, and the sky and scattering passes, do not sample th
 [distant_land.shadows]
 enabled = true
 map_resolution = 2048
+static_range = 4.0
 ```
 
 | TOML key | Default | Range | C++ binding |
 | --- | --- | --- | --- |
 | `distant_land.shadows.enabled` | `true` | bool | `Configuration.MGEFlags & USE_SHADOWS` (bit 31) |
 | `distant_land.shadows.map_resolution` | `2048` | clamped to [1024, 2048] | `Configuration.DL.ShadowResolution` |
+| `distant_land.shadows.static_range` | `4.0` | cells, clamped to [0, 300], 0 = no limit | `Configuration.ShadowStaticRange` |
 
-The GUI puts both on the Distant Land tab under "Lighting and shadows": a "Dynamic solar
-shadows" checkbox and a resolution dropdown offering Medium (1024) and High (2048).
+The GUI puts the first two on the Distant Land tab under "Lighting and shadows": a "Dynamic
+solar shadows" checkbox and a resolution dropdown offering Medium (1024) and High (2048). The
+static range is TOML only. It lives outside `Configuration.DL` because that struct is the
+MWSE-facing `DistantLandRenderConfig` and cannot grow.
 
 Three runtime controls exist for the toggle, and none for the resolution:
 
@@ -520,7 +528,8 @@ Uncomment to use it. There is no config flag.
 ## Gotchas
 
 - No shadows in interiors. `CellHasWeather()` gates the whole feature.
-- Nothing Morrowind draws casts a shadow. Only distant terrain and distant statics do.
+- Nothing Morrowind draws casts a shadow. Only distant terrain and distant statics do, and
+  statics only within `distant_land.shadows.static_range` of the eye.
 - Cascade radii live in `shadowCascadeRadius()` in `rendershadow.cpp`; the last one follows
   `DrawDist`.
 - Cascade count 4 lives in `DistantLand::kShadowCascades`, in `shadowCascades` in

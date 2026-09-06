@@ -165,6 +165,10 @@ struct ConfigurationStruct {
         bool HierarchicalMarch;
     } Horizon;
 
+    // Cells from the eye within which distant statics cast shadows, 0 for no limit. Outside
+    // DL for the same reason as Horizon.
+    float ShadowStaticRange;
+
     struct {
         float SunMult[10];
         float AmbMult[10];
