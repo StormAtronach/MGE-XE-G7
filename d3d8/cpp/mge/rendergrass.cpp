@@ -103,7 +103,9 @@ void DistantLand::renderGrassInst() {
         return;
     }
 
-    uploadShadowMatrices(nullptr);
+    if (shadowCurrentValid) {
+        uploadShadowMatrices(nullptr);
+    }
     device->SetVertexDeclaration(GrassDecl);
 
     renderGrassCommon(effect);

@@ -97,12 +97,11 @@ float4 GrassPS(GrassVertOut IN): COLOR0 {
     if(result.a < 64.0/255.0)
         discard;
 
-    // Soft shadowing
-    float v = shadowVisibility(IN.worldpos, float3(0, 0, 0), sunVec);
-
-    // Darken shadow area according to existing lighting (slightly towards blue)
-    v *= IN.color.a;
-    result.rgb *= 1 - v * shadecolor;
+    // Sun shadow, only while an atlas exists this frame
+    [branch] if(shadowDistant > 0) {
+        float v = IN.color.a * shadowVisibility(IN.worldpos, float3(0, 0, 0), sunVec);
+        result.rgb *= 1 - v * shadecolor;
+    }
 
     // Fogging
     result.rgb = fogApply(result.rgb, IN.fog);

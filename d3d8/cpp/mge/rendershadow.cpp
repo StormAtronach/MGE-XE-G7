@@ -11,13 +11,14 @@
 
 
 
-// Cascade half-widths in world units, the last covering the distant land draw distance
+// Cascade half-widths in world units. The last covers the draw distance and must stay the
+// outermost: only it carries the edge fade
 static float shadowCascadeRadius(int layer) {
     static const float fixedRadius[] = { 1000.0f, 4000.0f, 16000.0f };
     if (layer < 3) {
         return fixedRadius[layer];
     }
-    return Configuration.DL.DrawDist * DistantLand::kCellSize;
+    return std::max(Configuration.DL.DrawDist * DistantLand::kCellSize, 1.25f * fixedRadius[2]);
 }
 
 // Vertical half-extent of the box a cascade covers around the eye, so casters and
@@ -43,12 +44,21 @@ static float shadowExtentAlong(const D3DXVECTOR3& axis, float radius, float heig
     return radius * std::sqrt(axis.x * axis.x + axis.y * axis.y) + height * std::fabs(axis.z);
 }
 
-// Texel size and light depth range of each cascade as last fitted, in world units
+// Texel size and light depth range per cascade of each atlas, world units, indexed like smViewproj
 struct ShadowFit {
     float texel;
     float depth;
 };
-static ShadowFit shadowFit[DistantLand::kShadowCascades];
+static ShadowFit shadowFit[2][DistantLand::kShadowCascades];
+
+// Eye at the start of the current build. A move past shadowRestartDistance is a jump
+// (teleport, load): the build restarts and is shown without a fade
+static D3DXVECTOR3 shadowBuildEye;
+static bool shadowBuildEyeValid = false;
+static bool shadowBuildRestarted = false;
+static float shadowRestartDistance() {
+    return 0.5f * shadowCascadeRadius(0);
+}
 
 // Real-time length of the crossfade from the current atlas to the next one
 static const float shadowBlendSeconds = 0.25f;
@@ -77,24 +87,35 @@ void DistantLand::uploadShadowMatrices(const D3DXMATRIX* pre) {
 void DistantLand::renderShadowMap() {
     const DWORD now = GetTickCount();
 
+    // Eye jump: end any fade now, restart the build here, show it without a fade
+    const D3DXVECTOR3 eye(eyePos.x, eyePos.y, eyePos.z);
+    const D3DXVECTOR3 moved = eye - shadowBuildEye;
+    const bool eyeJumped = shadowBuildEyeValid && D3DXVec3Length(&moved) > shadowRestartDistance();
+
     if (shadowBuildComplete) {
         shadowBlend = std::min(1.0f, (now - shadowBlendStart) * (0.001f / shadowBlendSeconds));
-        if (shadowBlend >= 1.0f || !shadowCurrentValid) {
+        if (shadowBlend >= 1.0f || !shadowCurrentValid || shadowBuildRestarted || eyeJumped) {
             shadowCurrent = shadowBuilding;
             shadowBuilding ^= 1;
             shadowCurrentValid = true;
             shadowBuildComplete = false;
+            shadowBuildRestarted = false;
             shadowBlend = 0;
         }
     }
 
     if (!shadowBuildComplete) {
+        if (eyeJumped) {
+            shadowBuildLayer = 0;
+            shadowBuildRestarted = true;
+        }
+
         // Depth-only render into the next atlas, colour writes go to the null target
         RenderTargetSwitcher rtsw(surfShadowColor, surfShadow[shadowBuilding]);
         D3DVIEWPORT9 vp;
         device->GetViewport(&vp);
 
-        // Unbind samplers, the atlases are still bound from the last receiver pass
+        // Clear the atlas parameters left by the last receiver pass
         effect->SetTexture(ehTex0, 0);
         effect->SetTexture(ehTex2, 0);
         effect->SetTexture(ehTex3, 0);
@@ -102,6 +123,8 @@ void DistantLand::renderShadowMap() {
 
         if (shadowBuildLayer == 0) {
             device->Clear(0, 0, D3DCLEAR_ZBUFFER, 0, 1.0, 0);
+            shadowBuildEye = eye;
+            shadowBuildEyeValid = true;
         }
 
         renderShadowLayer(shadowBuildLayer, shadowCascadeRadius(shadowBuildLayer));
@@ -119,18 +142,22 @@ void DistantLand::renderShadowMap() {
         device->SetRenderState(D3DRS_DEPTHBIAS, 0);
     }
 
-    // Texel size and light depth range per cascade in world units, for receiver bias;
-    // a layer not fitted yet gets the values its first fit would give
-    D3DXVECTOR4 cascadeParams[kShadowCascades];
-    for (int layer = 0; layer < kShadowCascades; ++layer) {
-        if (shadowFit[layer].depth <= 0) {
-            const float radius = shadowCascadeRadius(layer);
-            shadowFit[layer].texel = 2.0f * radius / Configuration.DL.ShadowResolution;
-            shadowFit[layer].depth = std::max(shadowCasterReach, radius) + radius;
+    // Per-cascade texel size and depth range for both atlases, laid out like the matrices;
+    // unfitted layers get their first fit's values
+    D3DXVECTOR4 cascadeParams[2 * kShadowCascades];
+    const int atlas[2] = { shadowCurrent, shadowBuilding };
+    for (int set = 0; set < 2; ++set) {
+        for (int layer = 0; layer < kShadowCascades; ++layer) {
+            ShadowFit& fit = shadowFit[atlas[set]][layer];
+            if (fit.depth <= 0) {
+                const float radius = shadowCascadeRadius(layer);
+                fit.texel = 2.0f * radius / Configuration.DL.ShadowResolution;
+                fit.depth = std::max(shadowCasterReach, radius) + radius;
+            }
+            cascadeParams[set * kShadowCascades + layer] = D3DXVECTOR4(fit.texel, fit.depth, 0, 0);
         }
-        cascadeParams[layer] = D3DXVECTOR4(shadowFit[layer].texel, shadowFit[layer].depth, 0, 0);
     }
-    effect->SetVectorArray(ehShadowCascade, cascadeParams, kShadowCascades);
+    effect->SetVectorArray(ehShadowCascade, cascadeParams, 2 * kShadowCascades);
 
     // Distant land and statics receive next; they sample from world space
     uploadShadowMatrices(nullptr);
@@ -214,8 +241,8 @@ void DistantLand::renderShadowLayer(int layer, float radius) {
     D3DXMatrixOrthoRH(proj, 2 * halfX, 2 * halfY, 0, zSun + halfZ);
     *viewproj = (*view) * (*proj);
 
-    shadowFit[layer].texel = 2 * halfX / Configuration.DL.ShadowResolution;
-    shadowFit[layer].depth = zSun + halfZ;
+    shadowFit[shadowBuilding][layer].texel = 2 * halfX / Configuration.DL.ShadowResolution;
+    shadowFit[shadowBuilding][layer].depth = zSun + halfZ;
 
     // Snap to whole texels. The translation row is where the world origin lands in clip
     // space, so rounding it locks the sampling grid to the world for a given light direction

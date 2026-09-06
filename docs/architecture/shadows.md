@@ -35,7 +35,7 @@ see [Core mods](#core-mods).
 | `vbFullFrame` | vertex buffer | 4 verts, 12 bytes each | full-target quad |
 
 `res` is `Configuration.DL.ShadowResolution` and `N` is `DistantLand::kShadowCascades` (4),
-so each atlas is 8192x2048 or 16384x4096. The latter is at the D3D9 texture width limit.
+so each atlas is 4096x1024 or 8192x2048 for the two resolutions the config allows.
 
 There are two atlases because shadows are cross-faded in time. `shadowCurrent` indexes the
 one receivers sample; `shadowBuilding` indexes the one being rebuilt a cascade per frame.
@@ -93,18 +93,28 @@ colour writes off and vanishes into fog outside menu mode.
 
 `renderShadowMap` runs every Stage 0 and does this:
 
-1. If the next atlas is complete, advance `shadowBlend` by wall-clock time. At 1.0 (or
-   immediately, if no atlas was ever valid) swap `shadowCurrent` and `shadowBuilding` and
-   start a new build.
-2. If a build is in progress: bind `surfShadowColor` and `surfShadow[shadowBuilding]`
-   through `RenderTargetSwitcher`, unbind the atlas samplers, clear depth when starting
-   cascade 0 (depth 1.0 is the far plane, which every receiver compare reads as lit), and
-   render the one cascade `shadowBuildLayer` with `renderShadowLayer`. After the last
-   cascade, mark the build complete and stamp the fade start time. Restore the viewport
-   and the render states above.
-3. Upload `shadowCascade[]` (per-cascade texel size and depth range) and, through
-   `uploadShadowMatrices`, both atlases' cascade matrices, both textures and `shadowBlend`,
-   for the distant-land receivers that draw next.
+1. Compare the eye with where the current build started (during a fade, where the last one
+   started). More than half the near radius away, `shadowRestartDistance` = 500 units,
+   counts as a jump. Only a teleport, a load or a door moves the eye that far inside one
+   build or one fade.
+2. If the next atlas is complete, advance `shadowBlend` by wall-clock time. At 1.0 (or
+   immediately if no atlas was ever valid, if the eye jumped, or if this build was restarted
+   after a jump) swap `shadowCurrent` and `shadowBuilding` and start a new build.
+3. If a build is in progress, first handle a jump: drop back to cascade 0 and flag the
+   build so it lands without a fade. Then bind `surfShadowColor` and
+   `surfShadow[shadowBuilding]` through `RenderTargetSwitcher` and clear the atlas
+   parameters left by the last receiver pass. When starting cascade 0, clear depth (1.0 is
+   the far plane, which every receiver compare reads as lit) and record the eye. Render the
+   one cascade `shadowBuildLayer` with `renderShadowLayer`. After the last cascade, mark the
+   build complete and stamp the fade start time. Restore the viewport and the render states
+   above.
+4. Upload `shadowCascade[]` (texel size and depth range per cascade of each atlas) and,
+   through `uploadShadowMatrices`, both atlases' cascade matrices, both textures and
+   `shadowBlend`, for the distant-land receivers that draw next.
+
+After a jump the stale atlas stays on screen until the restarted one lands, four frames
+later. It is world-locked, so it is still right wherever it covers the new position, and
+empty elsewhere.
 
 There is no blur. Softness comes from the receiver's filter kernel.
 
@@ -112,7 +122,8 @@ There is no blur. Softness comes from the receiver's filter kernel.
 
 Cascade half-widths come from `shadowCascadeRadius(layer)` in `rendershadow.cpp`: 1000,
 4000, 16000, and `Configuration.DL.DrawDist * kCellSize` for the last, which covers the
-whole distant-land draw distance. Each cascade covers a cylinder of that radius and the
+whole distant-land draw distance. The last is held at or above 1.25 times the third, so it
+stays the outermost at draw distances under two cells. Each cascade covers a cylinder of that radius and the
 same height (`shadowCascadeHeight`) around the eye. Toward the sun the light camera sits
 `max(shadowCasterReach, halfZ)` out, with `shadowCasterReach` two cells, so a hill a couple
 of cells away still casts into the near cascades at sunset; the depth range runs from there
@@ -167,10 +178,15 @@ drifts with the sun, through the elevation-dependent height above. Clip space sp
 [-1, +1] over `res` texels, hence the factor of 2. z is not quantized because depth
 precision does not alias the same way.
 
-Each fit records its texel size and depth range in `shadowFit[layer]`, and `renderShadowMap`
-uploads them every frame as `shadowCascade[layer] = (texel size in world units, depth range
-in world units, 0, 0)`. The shaders use them for the normal offset, to convert the
-world-unit bias into atlas depth, and to match the filter spacing across cascades.
+Each fit records its texel size and depth range in `shadowFit[atlas][layer]`.
+`renderShadowMap` uploads both atlases' values every frame as `shadowCascade[set * 4 + layer]
+= (texel size in world units, depth range in world units, 0, 0)`, set 0 for the current atlas
+and set 1 for the next, like the matrices. The texel size is the horizontal one. With world Z
+up the vertical texel is `sin e + cos e` times larger, up to 41 percent at 45 degrees. The
+shaders use the values for the normal offset, to convert the world-unit bias into atlas
+depth, and to match the filter spacing across cascades. Each atlas needs its own set because
+consecutive fits differ, normally by a cycle of sun motion, at the up-vector swap by a third
+on cascade 0.
 
 ## Caster rendering
 
@@ -378,9 +394,11 @@ outright keeps the brightness continuous across the near-to-distant handoff. Int
 statics emit zero terms. The water reflection reuses these shaders, so reflected terrain
 and statics are shadowed too.
 
-Grass reads the same way. `renderGrassInst` calls `uploadShadowMatrices(nullptr)`, and
-`XE Mod Grass.fx` calls `shadowVisibility` from world position with a zero normal, so no
-normal offset.
+Grass reads the same way. `renderGrassInst` calls `uploadShadowMatrices(nullptr)` once an
+atlas is valid, and `XE Mod Grass.fx` calls `shadowVisibility` under the same `shadowDistant`
+branch, from world position with a zero normal, so no normal offset. Before the branch, a
+run-time toggle left the last atlas frozen on the grass, and shadows disabled in the config
+still cost every grass pixel the full walk.
 
 The replacement water plane, and the sky and scattering passes, do not sample the map.
 
@@ -493,13 +511,15 @@ Uncomment to use it. There is no config flag.
 - Cascade radii live in `shadowCascadeRadius()` in `rendershadow.cpp`; the last one follows
   `DrawDist`.
 - Cascade count 4 lives in `DistantLand::kShadowCascades`, in `shadowCascades` in
-  `XE Mod Shadow Data.fx`, and in the `shadowViewProj[8]` (two atlases) / `shadowCascade[4]`
+  `XE Mod Shadow Data.fx`, and in the `shadowViewProj[8]` / `shadowCascade[8]` (two atlases)
   declarations in `XE Common.fx`. Nothing checks that they agree, and the second is
   user-replaceable.
-- Atlas contents are up to half a second old. Anything that moves casters or the eye
-  faster than that (teleport, cell change, a sprint) shows through as a quarter-second
-  dissolve rather than a cut. Turning the camera never invalidates it: nothing in the fit
-  or the caster set depends on the view direction, and that must stay true.
+- Atlas contents are up to half a second old. Fast movement (a raised Speed attribute, a
+  console-set speed, a detached camera) shows through as a quarter-second dissolve rather
+  than a cut. An eye jump of more than 500 units (teleport, load, door) restarts the build
+  and lands it without a fade, four frames later. Turning the camera never invalidates it:
+  nothing in the fit or the caster set depends on the view direction, and that must stay
+  true.
 - Resolution changes need a renderer restart. Writing `ShadowResolution` through the MWSE
   config pointer does nothing until then.
 - The atlas is a depth texture: any sampler bound to it compares, it cannot be read as

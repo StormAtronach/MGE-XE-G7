@@ -15,8 +15,9 @@ shared matrix world, view, proj;
 shared matrix vertexBlendPalette[8];
 // Current atlas cascades in [0, 4), next atlas cascades in [4, 8)
 shared matrix shadowViewProj[8];
-// Per cascade: x = texel size in world units, y = light depth range in world units
-shared float4 shadowCascade[4];
+// Per cascade of each atlas, indexed like shadowViewProj: x = texel size in world units,
+// y = light depth range in world units
+shared float4 shadowCascade[8];
 // Crossfade from the current atlas to the next, 0 while the next is still being built
 shared float shadowBlend;
 shared bool hasAlpha, hasBones, hasVCol;

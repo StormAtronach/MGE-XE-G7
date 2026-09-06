@@ -63,7 +63,7 @@ TransformedVert transformShadowVert(MorrowindVertIn IN) {
 float4 shadowReceiverPos(float4 pos, float3 normal, float3 sunDir, int set, int layer) {
     float ndotl = saturate(dot(normal, -sunDir));
     float slope = sqrt(1 - ndotl * ndotl);
-    float offset = min(shadowNormalOffset * (0.5 + slope) * shadowCascade[layer].x, shadowNormalOffsetMax);
+    float offset = min(shadowNormalOffset * (0.5 + slope) * shadowCascade[set * shadowCascades + layer].x, shadowNormalOffsetMax);
     float4 sp = mul(pos + float4(normal * offset, 0), shadowViewProj[set * shadowCascades + layer]);
     sp.z /= sp.w;
     return sp;
@@ -71,11 +71,12 @@ float4 shadowReceiverPos(float4 pos, float3 normal, float3 sunDir, int set, int 
 
 // Lit fraction in [0, 1] from a 3x3 grid of bilinear compare taps, shadowFilterRadius cascade 0
 // texels apart in world units on every cascade
-float shadowLayerLit(sampler atlas, float4 shadowpos, int layer) {
+float shadowLayerLit(sampler atlas, float4 shadowpos, int set, int layer) {
+    float4 cascade = shadowCascade[set * shadowCascades + layer];
     float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadowpos.xy;
     float4 t = mapShadowToAtlas(shadowUV, layer);
-    t.z = shadowpos.z - (shadowBias + shadowBiasTexels * shadowCascade[layer].x) / shadowCascade[layer].y;
-    float spacing = shadowFilterRadius * shadowCascade[0].x / shadowCascade[layer].x;
+    t.z = shadowpos.z - (shadowBias + shadowBiasTexels * cascade.x) / cascade.y;
+    float spacing = shadowFilterRadius * shadowCascade[set * shadowCascades].x / cascade.x;
     float2 d = spacing * shadowRcpRes * float2(shadowCascadeSize, 1);
 
     float lit = 0;
@@ -92,7 +93,7 @@ float shadowSetVisibility(sampler atlas, int set, float4 pos, float3 normal, flo
     [unroll] for(int i = 0; i < shadowCascades; ++i) {
         float4 sp = shadowReceiverPos(pos, normal, sunDir, set, i);
         [branch] if(all(saturate(atlasMargin - abs(sp.xyz)))) {
-            float v = 1 - shadowLayerLit(atlas, sp, i);
+            float v = 1 - shadowLayerLit(atlas, sp, set, i);
             if(i == shadowCascades - 1) {
                 float2 fade = saturate(25 * (1 - abs(sp.xy)));
                 v *= fade.x * fade.y;
