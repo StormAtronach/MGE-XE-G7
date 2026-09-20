@@ -38,6 +38,9 @@ and the required capability bit is `CAP_PPL_DRAW_V2`. The `V1` in the type name 
 frozen history, not the current version. `CAP_PPL_DRAW_V1` still exists as a bit and is
 *not* what MGE XE asks for.
 
+`DxvkMorrowindPplDrawV3` does match its version, 3. It embeds the version 2 struct as
+`base` and is still submitted through `DrawPplV1(&packet.base)`.
+
 ## Negotiation
 
 `QueryInterface` on the D3D9 device for `IDxvkMorrowindPplInterop1`
@@ -64,6 +67,7 @@ Capability bits (`dxvk_morrowind_interop.h:16-24`):
 - `CAP_PPL_DRAW_V1` = 1<<1
 - `CAP_PPL_DRAW_V2` = 1<<2, the bit native PPL requires
 - `CAP_EXPANDED_LIGHT_LIMIT` = 1<<3
+- `CAP_PPL_DRAW_V3` = 1<<4, `DrawPplV1` also accepts the version 3 packet
 
 Failure paths all degrade silently to the legacy D3DX path, which is correct behavior,
 not a bug. However, this means "native PPL quietly stopped working" looks identical to
@@ -72,9 +76,10 @@ predating `CAP_PPL_DRAW_V2` is released and nulled at `ffeshader.cpp:151-158`.
 
 ## Non-obvious packet semantics
 
-Sizes are pinned by `static_assert` in the shared header: stage 32 bytes, draw 1956.
-DXVK's internal `D3D9MorrowindPplData` is 1920, the same payload minus the 36-byte
-draw header, which DXVK consumes rather than uploads.
+Sizes are pinned by `static_assert` in the shared header: stage 32 bytes, draw 1956,
+version 3 draw 2084. DXVK's internal `D3D9MorrowindPplData` is 2048: the version 3
+payload minus the 36-byte draw header, which DXVK consumes rather than uploads. A
+version 2 packet uploads with the fade array zeroed.
 
 What you cannot infer from the field names:
 
@@ -88,6 +93,38 @@ What you cannot infer from the field names:
 - `lightSlotCount` must be exactly the packed count and must be 0 for unlit draws.
 - Unused `stages[]` entries must be zeroed; DXVK rejects the draw otherwise.
 - `reserved0` and `reserved1[2]` must be 0.
+
+## Light fade (version 3)
+
+Version 3 appends `lightFadeInvRadius[32]`, the reciprocal of each point light's cutoff
+distance `R`. Attenuation is multiplied by `(1 - x^2)^2` with
+`x = saturate(4 * d / R - 3)`, so a light fades out between `0.75R` and `R`, the
+curve OpenMW uses. A value of 0 gives `x = 0` and leaves the light unchanged, which is
+how a version 2 packet renders.
+
+Morrowind submits every light with an effectively infinite `Range`, so the radius is
+recovered from the attenuation instead (`MWBridge::pointLightRadius`, at `SetLight`
+capture). `R` is `distant_land.per_pixel_light_fade_radius` times that radius, floored at
+16. MGE sends version 3 only when `distant_land.per_pixel_light_fade` is on and the
+renderer reports `CAP_PPL_DRAW_V3`; otherwise the version 2 prefix goes out alone. The
+legacy effect takes the same values as `lightFadeInvRadius` in `XE FixedFuncEmu.fx`.
+
+The fade alone does not stop pop-in. `game_dynamicLightTest` (0x4D2F40) attaches a light to
+an object only when some geometry bound comes within the light's record radius, and an actor's
+lights, or a light it carries, are retested only after it moves 64 units
+(`MobileObject::updateDynamicLightSource`, 0x5616A0). Anything between that radius and `R` would
+gain or lose a still visible light at a retest. `MWPatches::patchLightAttachRadius` therefore
+retargets the six calls that pass a record radius into the attach test
+(`game_updateDynamicLightingForPointLight` and `game_updateLightHelper2` callers) so lights attach
+at `R + 160`: the fade radius, two 64-unit retest steps for a moving actor and a moving light,
+and a frame of fast movement. An unattached light then contributes nothing, so attaching or
+detaching it is invisible. OpenMW gets the same property by testing the fade radius every frame.
+The test stores the radius it used in the light's specular colour, and the retest in
+`DataHandler::updateDynamicLightingForReference` reads it back, so that call needs no patch. The
+wider radius is only used while every renderer drawing lit objects fades
+(`FixedFunctionShader::lightAttachRadius`), and only for lights whose radius MGE can recover.
+More lights reach each object, so the per-node limit matters more; `expanded_light_limit` is
+recommended.
 
 ## What falls back to legacy
 

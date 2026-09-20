@@ -220,6 +220,14 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
             MWPatches::patchExpandedLightLimit();
         }
 
+        // Attach lights out to where the per-pixel fade ends, plus the distance an
+        // actor or light moves before the engine retests it, so no light is added
+        // or removed while it still reaches an object. The radius is decided per
+        // call, as the lighting mode can change at runtime.
+        if (Configuration.PerPixelLightFade) {
+            MWPatches::patchLightAttachRadius(&FixedFunctionShader::lightAttachRadius);
+        }
+
         // Start distant-land host/output preparation and upload pumping at the earliest
         // Present where Morrowind's environment pointer is known to be valid.
         if (!(Configuration.MGEFlags & MGE_DISABLED)
@@ -961,10 +969,21 @@ void captureLight(DWORD a, const D3DLIGHT8* b) {
     light->diffuse = b->Diffuse;
 
     if (b->Type == D3DLIGHT_POINT) {
+        const bool falloffChanged = previousType != D3DLIGHT_POINT
+            || light->falloff.x != b->Attenuation0
+            || light->falloff.y != b->Attenuation1
+            || light->falloff.z != b->Attenuation2;
+
         light->position = b->Position;
         light->falloff.x = b->Attenuation0;
         light->falloff.y = b->Attenuation1;
         light->falloff.z = b->Attenuation2;
+
+        // Morrowind resubmits unchanged lights for every object.
+        if (falloffChanged) {
+            light->radius = MWBridge::get()->pointLightRadius(
+                b->Attenuation0, b->Attenuation1, b->Attenuation2);
+        }
     } else {
         D3DXVec3Normalize((D3DXVECTOR3*)&light->position, (D3DXVECTOR3*)&b->Direction);
         light->ambient.x = b->Ambient.r;

@@ -459,6 +459,47 @@ BYTE MWBridge::GetSunVis() {
 
 //-----------------------------------------------------------------------------
 
+// Inverts the two ways Morrowind derives point-light attenuation from a radius.
+// The coefficients reach D3D unchanged, so the division is exact up to rounding.
+float MWBridge::pointLightRadius(float constant, float linear, float quadratic) {
+    using namespace TES3::Address;
+    float radius = 0.0f;
+
+    // EntityLight::createLightOnReference copies the INI constant as-is, which is
+    // what identifies its lights. OutQuadInLin enables the linear term indoors
+    // and the quadratic term outdoors, whatever their own flags say.
+    const auto flags = globalAt<unsigned int>(LightAttenuation_Flags);
+    const bool quadraticInLinear = globalAt<BYTE>(LightAttenuation_QuadraticInLinear) != 0;
+    const float iniConstant = (flags & 1) ? globalAt<float>(LightAttenuation_ConstantValue) : 0.0f;
+
+    const int quadraticMethod = globalAt<int>(LightAttenuation_QuadraticMethod);
+    const float quadraticValue = globalAt<float>(LightAttenuation_QuadraticValue);
+    const int linearMethod = globalAt<int>(LightAttenuation_LinearMethod);
+    const float linearValue = globalAt<float>(LightAttenuation_LinearValue);
+
+    if (constant == iniConstant
+     && quadratic > 0 && quadraticValue > 0 && quadraticMethod != 0
+     && ((flags & 4) || quadraticInLinear)) {
+        // Method 1 divides by the radius before the multiplier is applied.
+        radius = quadraticMethod == 1
+            ? quadraticValue / quadratic
+            : std::sqrt(quadraticValue / quadratic)
+                / globalAt<float>(LightAttenuation_QuadraticRadiusMultiplier);
+    } else if (constant == iniConstant
+     && linear > 0 && linearValue > 0 && linearMethod != 0
+     && ((flags & 2) || quadraticInLinear)) {
+        radius = (linearMethod == 2 ? std::sqrt(linearValue / linear) : linearValue / linear)
+            / globalAt<float>(LightAttenuation_LinearRadiusMultiplier);
+    } else if (constant == 0 && linear == 0 && quadratic > 0) {
+        // MobileObject::setLightEffectFalloff, for spell and projectile lights.
+        radius = std::sqrt(10.0f / quadratic);
+    }
+
+    return radius > 0 ? radius : 0.0f;
+}
+
+//-----------------------------------------------------------------------------
+
 // setSunriseSunset - Sets sunrise and sunset time and duration
 void MWBridge::setSunriseSunset(float rise_time, float rise_dur, float set_time, float set_dur) {
     auto wthr = weatherController();
