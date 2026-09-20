@@ -460,14 +460,19 @@ BYTE MWBridge::GetSunVis() {
 //-----------------------------------------------------------------------------
 
 // Inverts the two ways Morrowind derives point-light attenuation from a radius.
-// The coefficients reach D3D unchanged, so the division is exact up to rounding.
+// The coefficients reach D3D unchanged, so each inversion is exact up to
+// rounding, but picking the right one is not always possible; see the third
+// branch. A radius that cannot be recovered is returned as 0 and does not fade.
 float MWBridge::pointLightRadius(float constant, float linear, float quadratic) {
     using namespace TES3::Address;
     float radius = 0.0f;
 
     // EntityLight::createLightOnReference copies the INI constant as-is, which is
     // what identifies its lights. OutQuadInLin enables the linear term indoors
-    // and the quadratic term outdoors, whatever their own flags say.
+    // and the quadratic term outdoors, whatever their own flags say. Which of
+    // the two the light was created in is not tested here, and need not be: the
+    // term the engine skipped was left at zero, so the coefficient guards below
+    // reject that branch on their own.
     const auto flags = globalAt<unsigned int>(LightAttenuation_Flags);
     const bool quadraticInLinear = globalAt<BYTE>(LightAttenuation_QuadraticInLinear) != 0;
     const float iniConstant = (flags & 1) ? globalAt<float>(LightAttenuation_ConstantValue) : 0.0f;
@@ -492,6 +497,11 @@ float MWBridge::pointLightRadius(float constant, float linear, float quadratic) 
             / globalAt<float>(LightAttenuation_LinearRadiusMultiplier);
     } else if (constant == 0 && linear == 0 && quadratic > 0) {
         // MobileObject::setLightEffectFalloff, for spell and projectile lights.
+        // Only reached once the branches above decline, and a quadratic INI
+        // config leaves them the same shape: constant 0, linear 0, quadratic
+        // positive. Nothing in the coefficients separates the two, so under
+        // such a config a spell light is read as a record light and comes out
+        // sqrt(quadraticValue / 10) times too long. That only widens its fade.
         radius = std::sqrt(10.0f / quadratic);
     }
 

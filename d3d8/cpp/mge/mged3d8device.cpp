@@ -224,6 +224,18 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
         // actor or light moves before the engine retests it, so no light is added
         // or removed while it still reaches an object. The radius is decided per
         // call, as the lighting mode can change at runtime.
+        //
+        // That decision only covers attachments made from here on. An attachment
+        // is sticky: the engine keeps it until the object moves 64 units, and a
+        // static never moves, so turning per-pixel lighting off at runtime
+        // (MGEAPI::lightingModeSet, MacroFunctions::ToggleLightingMode) leaves
+        // lights already attached out to the fade radius but now drawn by
+        // fixed-function lighting, which does not fade: a faint halo past where
+        // the engine would have cut them, and more lights competing for each
+        // node's effect slots, until the cell reloads. Narrowing them again
+        // would mean detaching and retesting every reference in the active
+        // cells, which MGE has no way to walk; expanded_light_limit covers the
+        // half of it that matters.
         if (Configuration.PerPixelLightFade) {
             MWPatches::patchLightAttachRadius(&FixedFunctionShader::lightAttachRadius);
         }

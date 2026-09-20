@@ -105,7 +105,14 @@ how a version 2 packet renders.
 Morrowind submits every light with an effectively infinite `Range`, so the radius is
 recovered from the attenuation instead (`MWBridge::pointLightRadius`, at `SetLight`
 capture). `R` is `distant_land.per_pixel_light_fade_radius` times that radius, floored at
-16. MGE sends version 3 only when `distant_land.per_pixel_light_fade` is on and the
+16. A radius that cannot be recovered comes back as 0 and that light does not fade. The
+recovery inverts `EntityLight::createLightOnReference` for record lights and the fixed
+`10 / r^2` of `MobileObject::setLightEffectFalloff` for spell and projectile lights; the
+record form is tried first. Under a quadratic `[LightAttenuation]` config the two produce
+the same shape (constant 0, linear 0, quadratic positive) and nothing in the coefficients
+separates them, so a spell light is read as a record light and its radius comes out
+`sqrt(quadraticValue / 10)` times too long. The consequence is a longer fade, not a
+wrong one. MGE sends version 3 only when `distant_land.per_pixel_light_fade` is on and the
 renderer reports `CAP_PPL_DRAW_V3`; otherwise the version 2 prefix goes out alone. The
 legacy effect takes the same values as `lightFadeInvRadius` in `XE FixedFuncEmu.fx`.
 
@@ -125,6 +132,16 @@ wider radius is only used while every renderer drawing lit objects fades
 (`FixedFunctionShader::lightAttachRadius`), and only for lights whose radius MGE can recover.
 More lights reach each object, so the per-node limit matters more; `expanded_light_limit` is
 recommended.
+
+That test runs per attachment, but an attachment outlives it. The engine holds one until the
+object moves 64 units, and a static never moves, so turning per-pixel lighting off at runtime
+(`MGEAPI::lightingModeSet`, `MacroFunctions::ToggleLightingMode`) leaves lights already attached
+out to `R + 160` and now drawn by fixed-function lighting, which does not fade. That shows as a
+faint halo past where the engine would have cut the light, plus more lights competing for each
+node's effect slots, until the cell reloads. Narrowing them back would mean detaching and
+retesting every reference in the active cells, and MGE has no way to walk them. The
+interiors-only case does not hit this: stepping outdoors is a cell change, which reattaches
+everything anyway.
 
 ## What falls back to legacy
 

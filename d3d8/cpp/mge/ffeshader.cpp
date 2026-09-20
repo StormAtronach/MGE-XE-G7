@@ -37,6 +37,12 @@ static constexpr float kMinFadeRadius = 16.0f;
 // movement, so a light is never attached or detached while it reaches the object.
 static constexpr int kLightAttachMargin = 160;
 
+// One cell. A recovered radius is a division, so a coefficient outside what the
+// engine can produce would yield an enormous one; past INT_MAX the cast in
+// lightAttachRadius is undefined, and well before that the light would be
+// attached to every object in the cell. No light record comes near this.
+static constexpr float kMaxFadeRadius = 8192.0f;
+
 DecodedPointLight decodeMorrowindPointLight(
     const D3DCOLORVALUE& diffuse,
     const D3DVECTOR& falloff,
@@ -408,7 +414,8 @@ int __cdecl FixedFunctionShader::lightAttachRadius(const NI::PointLight* light, 
         return radius;
     }
 
-    const int attach = static_cast<int>(std::ceil(lightFadeRadius(recovered))) + kLightAttachMargin;
+    const float fadeRadius = std::min(lightFadeRadius(recovered), kMaxFadeRadius);
+    const int attach = static_cast<int>(std::ceil(fadeRadius)) + kLightAttachMargin;
     return std::max(radius, attach);
 }
 
@@ -487,7 +494,14 @@ void FixedFunctionShader::buildPplDrawData(
             out->lightFalloffLinear[pointLightCount] = decoded.attenuation.y;
             out->lightFalloffQuadratic[pointLightCount] = decoded.attenuation.z;
             if (Configuration.PerPixelLightFade && light->radius > 0) {
-                out->lightFadeInvRadius[pointLightCount] = 1.0f / lightFadeRadius(light->radius);
+                // A zero fade radius would divide to infinity, saturate the fade
+                // to one and extinguish every point light. The schema clamps the
+                // multiplier to [1, 5], but nothing between there and here
+                // rechecks it, and the failure would be total rather than local.
+                const float fadeRadius = lightFadeRadius(light->radius);
+                if (fadeRadius > 0) {
+                    out->lightFadeInvRadius[pointLightCount] = 1.0f / fadeRadius;
+                }
             }
 
             ++pointLightCount;
