@@ -25,6 +25,12 @@ static constexpr uint64_t DXVK_MORROWIND_CAP_EXPANDED_LIGHT_LIMIT = 1ull << 3;
 // DrawPplV1 also accepts DxvkMorrowindPplDrawV3. A build advertising this
 // still accepts version 2 packets.
 static constexpr uint64_t DXVK_MORROWIND_CAP_PPL_DRAW_V3 = 1ull << 4;
+// The ordinary fixed-function path fades a light to zero over the last
+// quarter of D3DLIGHT9::Range, where D3D9 specifies a step. Stated outright
+// for the same reason as the expanded light limit: it describes the ordinary
+// path, which no packet version speaks for. A client that writes a finite
+// Range to a renderer without this gets the step, on every vertex past it.
+static constexpr uint64_t DXVK_MORROWIND_CAP_SOFT_LIGHT_RANGE = 1ull << 5;
 
 static constexpr uint32_t DXVK_MORROWIND_PPL_STRUCT_VERSION = 2;
 static constexpr uint32_t DXVK_MORROWIND_PPL_STRUCT_VERSION_V3 = 3;

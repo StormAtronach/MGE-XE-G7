@@ -14,6 +14,7 @@
 #include "mwbridge.h"
 #include "mwpatches.h"
 #include "statusoverlay.h"
+#include "support/log.h"
 #include "userhud.h"
 #include "videobackground.h"
 
@@ -99,16 +100,25 @@ MGEProxyDevice::MGEProxyDevice(IDirect3DDevice9* real, ProxyD3D* d3d) : ProxyDev
     // consume the expanded limit. A renderer that only spoke the native packet
     // would not be enough. The interop object delegates reference counting to
     // the D3D9 device, so it is released immediately; only the result is kept.
+    //
+    // The soft light range is asked for the same way and for the same reason:
+    // it describes the ordinary path. Any other renderer, native D3D9 included,
+    // steps to zero at Range, and uploadLight must not hand it a finite one.
     expandedLightLimitSupported = false;
+    softLightRangeSupported = false;
     {
         IDxvkMorrowindPplInterop1* pplInterop = nullptr;
         if (SUCCEEDED(realDevice->QueryInterface(
                 __uuidof(IDxvkMorrowindPplInterop1),
                 reinterpret_cast<void**>(&pplInterop)))) {
-            expandedLightLimitSupported =
-                (pplInterop->GetCapabilities() & DXVK_MORROWIND_CAP_EXPANDED_LIGHT_LIMIT) != 0;
+            const uint64_t capabilities = pplInterop->GetCapabilities();
+            expandedLightLimitSupported = (capabilities & DXVK_MORROWIND_CAP_EXPANDED_LIGHT_LIMIT) != 0;
+            softLightRangeSupported = (capabilities & DXVK_MORROWIND_CAP_SOFT_LIGHT_RANGE) != 0;
             pplInterop->Release();
         }
+    }
+    if (Configuration.PerPixelLightFade && !softLightRangeSupported) {
+        LOG::logline("-- Renderer has no soft light range; fixed-function draws keep the engine's falloff");
     }
 
     // Store active device in distant land, occurs on startup and after fullscreen alt-tab
@@ -229,11 +239,14 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
         // is sticky: the engine keeps it until the object moves 64 units, and a
         // static never moves, so turning per-pixel lighting off at runtime
         // (MGEAPI::lightingModeSet, MacroFunctions::ToggleLightingMode) leaves
-        // lights attached out past where the engine would have cut them. They
-        // are not drawn unfaded, because uploadLight carries the same cutoff to
-        // the ordinary fixed-function path in D3DLIGHT Range. What does survive
-        // is the extra pressure on each node's effect slots, since a light that
-        // fades to zero still occupies one; expanded_light_limit covers that.
+        // lights attached out past where the engine would have cut them. On a
+        // renderer with the soft light range they are not drawn unfaded, because
+        // uploadLight carries the same cutoff to the ordinary fixed-function
+        // path in D3DLIGHT Range. On any other they are, until the cell reloads:
+        // dimmer than at the record radius, and with smaller steps than the
+        // engine's own. What survives either way is the extra pressure on each
+        // node's effect slots, since a light that fades to zero still occupies
+        // one; expanded_light_limit covers that.
         if (Configuration.PerPixelLightFade) {
             MWPatches::patchLightAttachRadius(&FixedFunctionShader::lightAttachRadius);
         }
@@ -559,8 +572,14 @@ HRESULT MGEProxyDevice::uploadLight(DWORD a, const D3DLIGHT8* absolute) {
     // light the engine attached out at the widened radius is drawn unfaded by
     // any draw the per-pixel shaders did not take, which is every draw once
     // per-pixel lighting is switched off at runtime.
+    //
+    // Only for a renderer that fades over Range. D3D9 specifies a step there,
+    // and the step is reachable: the engine attaches by an object's bounds, so
+    // a room shell or a terrain patch attached at the record radius has
+    // vertices well past the cutoff. A step across those is worse than the
+    // unfaded light it would replace.
     float fadeRange = 0.0f;
-    if (Configuration.PerPixelLightFade && absolute->Type == D3DLIGHT_POINT) {
+    if (softLightRangeSupported && Configuration.PerPixelLightFade && absolute->Type == D3DLIGHT_POINT) {
         auto iLight = lightrs.lights.find(a);
         if (iLight != lightrs.lights.end()) {
             fadeRange = FixedFunctionShader::lightFadeCutoff(iLight->second.radius);

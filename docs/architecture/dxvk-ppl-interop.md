@@ -24,7 +24,7 @@ every edit; a mismatch is an ABI deployment error even when both repositories co
 - `ffeshader.cpp:691`: `DrawPplV1`, the actual handoff
 - `ffeshader.cpp:730`: branch between native and legacy
 - `ffeshader.cpp:1193`: release on teardown
-- `mged3d8device.cpp:88-106`: separate `CAP_EXPANDED_LIGHT_LIMIT` probe
+- `mged3d8device.cpp`: separate `CAP_EXPANDED_LIGHT_LIMIT` and `CAP_SOFT_LIGHT_RANGE` probe
 - `distantinit.cpp`: memory-budget query, cap selection, and cap resampling
 - DXVK `src/d3d9/d3d9_interop.cpp`: `DrawPplV1` entry, size/version rejection
 - DXVK `src/d3d9/d3d9_device.cpp`: `ValidateMorrowindPpl`, `DrawMorrowindPpl`
@@ -68,6 +68,7 @@ Capability bits (`dxvk_morrowind_interop.h:16-24`):
 - `CAP_PPL_DRAW_V2` = 1<<2, the bit native PPL requires
 - `CAP_EXPANDED_LIGHT_LIMIT` = 1<<3
 - `CAP_PPL_DRAW_V3` = 1<<4, `DrawPplV1` also accepts the version 3 packet
+- `CAP_SOFT_LIGHT_RANGE` = 1<<5, the ordinary path fades over the last quarter of `Range`
 
 Failure paths all degrade silently to the legacy D3DX path, which is correct behavior,
 not a bug. However, this means "native PPL quietly stopped working" looks identical to
@@ -107,12 +108,19 @@ recovered from the attenuation instead (`MWBridge::pointLightRadius`, at `SetLig
 capture). `R` is `distant_land.per_pixel_light_fade_radius` times that radius, floored at
 16. A radius that cannot be recovered comes back as 0 and that light does not fade. The
 recovery inverts `EntityLight::createLightOnReference` for record lights and the fixed
-`10 / r^2` of `MobileObject::setLightEffectFalloff` for spell and projectile lights; the
-record form is tried first. Under a quadratic `[LightAttenuation]` config the two produce
-the same shape (constant 0, linear 0, quadratic positive) and nothing in the coefficients
-separates them, so a spell light is read as a record light and its radius comes out
-`sqrt(quadraticValue / 10)` times too long. The consequence is a longer fade, not a
-wrong one. MGE sends version 3 only when `distant_land.per_pixel_light_fade` is on and the
+`10 / r^2` of `MobileObject::setLightEffectFalloff`, which is every spell and projectile light
+and, through `EntityLight::setupInternalLight`, every light an actor carries; the record form
+is tried first. With no INI constant and a quadratic `[LightAttenuation]` term the two produce
+the same shape (constant 0, linear 0, quadratic positive). Read as a record light, a body
+light comes out `sqrt(quadraticValue / 10)` times too long under method 2 and
+`quadraticValue * r / 10` times under method 1, which puts a torch at the one-cell cap:
+attached to every node in reach and first in each node's list, which the engine sorts by
+distance less radius. Both derivations start from an integer radius, so the recovery keeps
+whichever reading comes back as one. That settles most radii, and none at all for a
+`quadraticValue` of 10; when both readings are integers the record one stands, since a long
+reading costs slots but changes no pixel and a short one would shrink a record light. A
+record light is never taken for a body light. The stock INI and the one MGE recommends have
+no ambiguity to begin with. MGE sends version 3 only when `distant_land.per_pixel_light_fade` is on and the
 renderer reports `CAP_PPL_DRAW_V3`; otherwise the version 2 prefix goes out alone. The
 legacy effect takes the same values as `lightFadeInvRadius` in `XE FixedFuncEmu.fx`.
 
@@ -141,13 +149,22 @@ object moves 64 units, and a static never moves, so turning per-pixel lighting o
 `MGEProxyDevice::uploadLight` covers those. It writes the same cutoff `R` into `D3DLIGHT8::Range`
 for every point light it forwards, and the fork's fixed-function vertex shader fades over the last
 quarter of `Range` rather than stepping at it, so a widened attachment is faded on the ordinary
-path too and the two paths agree on where a light ends.
+path too and the two paths agree on where a light ends. That holds wherever the ordinary path
+draws, so under interiors-only lighting an exterior light also ends at `R`. Its attachment is
+left at the record radius, and the fade has not begun there, so the engine's own attach
+boundary looks as it always did.
 
 Range reaches only the ordinary path. The native packet is self-contained by design and never
-reads device light state, which is why the fade also has to travel in the packet. Nothing gates
-the Range side: MGE writes a finite range only when the fade is on, a renderer without the soft
-falloff treats it as D3D9's hard cutoff, and the engine attaches nothing past `R` unless the
-attach patch widened it, so on an older build that cutoff is unreachable.
+reads device light state, which is why the fade also has to travel in the packet.
+
+The Range side is gated on `CAP_SOFT_LIGHT_RANGE`. D3D9 specifies a step at `Range`, and the
+step is reachable: the engine attaches by an object's bounds, so a room shell or a terrain
+patch attached at the record radius has vertices well past `R`. A renderer without the soft
+falloff, native D3D9 included, would draw a step of roughly a fifth of the light's strength
+across them, which is worse than the unfaded light it replaces. There MGE leaves `Range` alone
+and logs that it did, and a runtime switch away from per-pixel lighting leaves the widened
+attachments drawn unfaded until the cell reloads: dimmer than at the record radius, and with
+smaller steps than the engine's own.
 
 What survives is slot pressure. A light faded to zero still occupies one of the node's effect
 slots, so a wider attach radius costs slots whether or not the light contributes. That is the

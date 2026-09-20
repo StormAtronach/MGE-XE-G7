@@ -244,7 +244,6 @@ class FixedFunctionShader {
 
     static ID3DXEffect* generateMWShader(const ShaderKey& sk);
 
-    static float lightFadeRadius(float radius);
     static bool lightFadeActive();
 
 public:

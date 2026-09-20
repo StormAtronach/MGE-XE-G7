@@ -381,10 +381,6 @@ void FixedFunctionShader::precacheAsync() {
     });
 }
 
-float FixedFunctionShader::lightFadeRadius(float radius) {
-    return Configuration.PerPixelLightFadeRadius * std::max(radius, kMinFadeRadius);
-}
-
 float FixedFunctionShader::lightFadeCutoff(float recoveredRadius) {
     if (!Configuration.PerPixelLightFade || recoveredRadius <= 0) {
         return 0.0f;
@@ -397,7 +393,7 @@ float FixedFunctionShader::lightFadeCutoff(float recoveredRadius) {
     // the recovered radius is a division, so a coefficient outside what the
     // engine can produce would yield an enormous one, and past INT_MAX the cast
     // in lightAttachRadius is undefined.
-    const float fadeRadius = lightFadeRadius(recoveredRadius);
+    const float fadeRadius = Configuration.PerPixelLightFadeRadius * std::max(recoveredRadius, kMinFadeRadius);
     return fadeRadius > 0 ? std::min(fadeRadius, kMaxFadeRadius) : 0.0f;
 }
 
@@ -421,15 +417,11 @@ int __cdecl FixedFunctionShader::lightAttachRadius(const NI::PointLight* light, 
         return radius;
     }
 
-    // The fade uses this same recovered radius, so a light the fade cannot
-    // place keeps the engine's own reach.
-    const float recovered = MWBridge::get()->pointLightRadius(
-        light->constantAttenuation, light->linearAttenuation, light->quadraticAttenuation);
-    if (recovered <= 0) {
-        return radius;
-    }
-
-    const float cutoff = lightFadeCutoff(recovered);
+    // The fade uses this same recovered radius, and not the one the engine
+    // passed, so the two agree even where the recovery is wrong. A light the
+    // fade cannot place has no cutoff and keeps the engine's own reach.
+    const float cutoff = lightFadeCutoff(MWBridge::get()->pointLightRadius(
+        light->constantAttenuation, light->linearAttenuation, light->quadraticAttenuation));
     if (cutoff <= 0) {
         return radius;
     }
