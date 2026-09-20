@@ -37,10 +37,9 @@ static constexpr float kMinFadeRadius = 16.0f;
 // movement, so a light is never attached or detached while it reaches the object.
 static constexpr int kLightAttachMargin = 160;
 
-// One cell. A recovered radius is a division, so a coefficient outside what the
-// engine can produce would yield an enormous one; past INT_MAX the cast in
-// lightAttachRadius is undefined, and well before that the light would be
-// attached to every object in the cell. No light record comes near this.
+// One cell, the upper bound lightFadeCutoff applies. No light record comes near
+// it; it is there to keep a malformed coefficient from reaching the int cast in
+// lightAttachRadius or from lighting the whole cell.
 static constexpr float kMaxFadeRadius = 8192.0f;
 
 DecodedPointLight decodeMorrowindPointLight(
@@ -386,6 +385,22 @@ float FixedFunctionShader::lightFadeRadius(float radius) {
     return Configuration.PerPixelLightFadeRadius * std::max(radius, kMinFadeRadius);
 }
 
+float FixedFunctionShader::lightFadeCutoff(float recoveredRadius) {
+    if (!Configuration.PerPixelLightFade || recoveredRadius <= 0) {
+        return 0.0f;
+    }
+
+    // A zero fade radius would divide to infinity in the shader, saturate the
+    // fade to one and extinguish every point light. The schema clamps the
+    // multiplier to [1, 5], but nothing between there and here rechecks it, and
+    // the failure would be total rather than local. The upper bound is one cell:
+    // the recovered radius is a division, so a coefficient outside what the
+    // engine can produce would yield an enormous one, and past INT_MAX the cast
+    // in lightAttachRadius is undefined.
+    const float fadeRadius = lightFadeRadius(recoveredRadius);
+    return fadeRadius > 0 ? std::min(fadeRadius, kMaxFadeRadius) : 0.0f;
+}
+
 // Whether every renderer currently drawing lit objects fades the lights.
 bool FixedFunctionShader::lightFadeActive() {
     if (!Configuration.PerPixelLightFade || !(Configuration.MGEFlags & USE_FFESHADER)) {
@@ -414,8 +429,12 @@ int __cdecl FixedFunctionShader::lightAttachRadius(const NI::PointLight* light, 
         return radius;
     }
 
-    const float fadeRadius = std::min(lightFadeRadius(recovered), kMaxFadeRadius);
-    const int attach = static_cast<int>(std::ceil(fadeRadius)) + kLightAttachMargin;
+    const float cutoff = lightFadeCutoff(recovered);
+    if (cutoff <= 0) {
+        return radius;
+    }
+
+    const int attach = static_cast<int>(std::ceil(cutoff)) + kLightAttachMargin;
     return std::max(radius, attach);
 }
 
@@ -493,15 +512,9 @@ void FixedFunctionShader::buildPplDrawData(
             out->lightAmbient[pointLightCount] = decoded.ambient;
             out->lightFalloffLinear[pointLightCount] = decoded.attenuation.y;
             out->lightFalloffQuadratic[pointLightCount] = decoded.attenuation.z;
-            if (Configuration.PerPixelLightFade && light->radius > 0) {
-                // A zero fade radius would divide to infinity, saturate the fade
-                // to one and extinguish every point light. The schema clamps the
-                // multiplier to [1, 5], but nothing between there and here
-                // rechecks it, and the failure would be total rather than local.
-                const float fadeRadius = lightFadeRadius(light->radius);
-                if (fadeRadius > 0) {
-                    out->lightFadeInvRadius[pointLightCount] = 1.0f / fadeRadius;
-                }
+            const float fadeCutoff = lightFadeCutoff(light->radius);
+            if (fadeCutoff > 0) {
+                out->lightFadeInvRadius[pointLightCount] = 1.0f / fadeCutoff;
             }
 
             ++pointLightCount;

@@ -229,13 +229,11 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
         // is sticky: the engine keeps it until the object moves 64 units, and a
         // static never moves, so turning per-pixel lighting off at runtime
         // (MGEAPI::lightingModeSet, MacroFunctions::ToggleLightingMode) leaves
-        // lights already attached out to the fade radius but now drawn by
-        // fixed-function lighting, which does not fade: a faint halo past where
-        // the engine would have cut them, and more lights competing for each
-        // node's effect slots, until the cell reloads. Narrowing them again
-        // would mean detaching and retesting every reference in the active
-        // cells, which MGE has no way to walk; expanded_light_limit covers the
-        // half of it that matters.
+        // lights attached out past where the engine would have cut them. They
+        // are not drawn unfaded, because uploadLight carries the same cutoff to
+        // the ordinary fixed-function path in D3DLIGHT Range. What does survive
+        // is the extra pressure on each node's effect slots, since a light that
+        // fades to zero still occupies one; expanded_light_limit covers that.
         if (Configuration.PerPixelLightFade) {
             MWPatches::patchLightAttachRadius(&FixedFunctionShader::lightAttachRadius);
         }
@@ -556,18 +554,41 @@ HRESULT _stdcall MGEProxyDevice::SetLight(DWORD a, const D3DLIGHT8* b) {
 }
 
 HRESULT MGEProxyDevice::uploadLight(DWORD a, const D3DLIGHT8* absolute) {
-    if (!CameraRelative::installed()) {
-        // No scene can become active, so nothing would ever read the record.
-        return ProxyDevice::SetLight(a, absolute);
+    // The ordinary fixed-function path takes no draw packet, so the fade rides
+    // in Range, which Morrowind leaves effectively infinite. Without this a
+    // light the engine attached out at the widened radius is drawn unfaded by
+    // any draw the per-pixel shaders did not take, which is every draw once
+    // per-pixel lighting is switched off at runtime.
+    float fadeRange = 0.0f;
+    if (Configuration.PerPixelLightFade && absolute->Type == D3DLIGHT_POINT) {
+        auto iLight = lightrs.lights.find(a);
+        if (iLight != lightrs.lights.end()) {
+            fadeRange = FixedFunctionShader::lightFadeCutoff(iLight->second.radius);
+        }
     }
+
+    const bool cameraRelative = CameraRelative::installed()
+        && CameraRelative::active()
+        && absolute->Type != D3DLIGHT_DIRECTIONAL;
+
     HRESULT hr;
-    if (CameraRelative::active() && absolute->Type != D3DLIGHT_DIRECTIONAL) {
-        // Keep the fixed-function path's lights in the same space as its geometry.
+    if (fadeRange > 0 || cameraRelative) {
         D3DLIGHT8 light = *absolute;
-        CameraRelative::relativePosition(&absolute->Position, &light.Position);
+        if (fadeRange > 0) {
+            light.Range = fadeRange;
+        }
+        if (cameraRelative) {
+            // Keep the fixed-function path's lights in the same space as its geometry.
+            CameraRelative::relativePosition(&absolute->Position, &light.Position);
+        }
         hr = ProxyDevice::SetLight(a, &light);
     } else {
         hr = ProxyDevice::SetLight(a, absolute);
+    }
+
+    if (!CameraRelative::installed()) {
+        // No scene can become active, so nothing would ever read the record.
+        return hr;
     }
 
     // Recorded after the device call, so a rejected positional light stays

@@ -135,13 +135,23 @@ recommended.
 
 That test runs per attachment, but an attachment outlives it. The engine holds one until the
 object moves 64 units, and a static never moves, so turning per-pixel lighting off at runtime
-(`MGEAPI::lightingModeSet`, `MacroFunctions::ToggleLightingMode`) leaves lights already attached
-out to `R + 160` and now drawn by fixed-function lighting, which does not fade. That shows as a
-faint halo past where the engine would have cut the light, plus more lights competing for each
-node's effect slots, until the cell reloads. Narrowing them back would mean detaching and
-retesting every reference in the active cells, and MGE has no way to walk them. The
-interiors-only case does not hit this: stepping outdoors is a cell change, which reattaches
-everything anyway.
+(`MGEAPI::lightingModeSet`, `MacroFunctions::ToggleLightingMode`) leaves lights attached out to
+`R + 160` on draws the per-pixel shaders no longer take.
+
+`MGEProxyDevice::uploadLight` covers those. It writes the same cutoff `R` into `D3DLIGHT8::Range`
+for every point light it forwards, and the fork's fixed-function vertex shader fades over the last
+quarter of `Range` rather than stepping at it, so a widened attachment is faded on the ordinary
+path too and the two paths agree on where a light ends.
+
+Range reaches only the ordinary path. The native packet is self-contained by design and never
+reads device light state, which is why the fade also has to travel in the packet. Nothing gates
+the Range side: MGE writes a finite range only when the fade is on, a renderer without the soft
+falloff treats it as D3D9's hard cutoff, and the engine attaches nothing past `R` unless the
+attach patch widened it, so on an older build that cutoff is unreachable.
+
+What survives is slot pressure. A light faded to zero still occupies one of the node's effect
+slots, so a wider attach radius costs slots whether or not the light contributes. That is the
+other reason `expanded_light_limit` belongs with this.
 
 ## What falls back to legacy
 

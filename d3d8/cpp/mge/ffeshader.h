@@ -269,4 +269,9 @@ public:
     // The radius the engine attaches a light to objects within, given its record
     // radius. Installed by MWPatches::patchLightAttachRadius.
     static int __cdecl lightAttachRadius(const NI::PointLight* light, int radius);
+
+    // The distance at which a light's fade reaches zero, or 0 when it does not
+    // fade. The one definition the shader reciprocal, the attach radius and the
+    // fixed-function D3D Range all come from.
+    static float lightFadeCutoff(float recoveredRadius);
 };
