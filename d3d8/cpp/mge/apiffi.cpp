@@ -12,6 +12,7 @@
 // cpp\exports.def so ffi.load("d3d8") can resolve them.
 
 #include "configuration.h"
+#include "mwbridge.h"
 
 #include <algorithm>
 #include <cmath>
@@ -79,6 +80,12 @@ extern "C" {
         default: return;
         }
         g_horizonDirty = true;
+    }
+
+    // Replaces the set of water volumes. `volumes` is `count` boxes of six floats each:
+    // min x, y, z then max x, y, z. Called by MWSE on the main render thread.
+    void MGE_WaterVolumesSet(const MWBridge::WaterVolume* volumes, unsigned int count) {
+        MWBridge::get()->setWaterVolumes(volumes, count);
     }
 
 }

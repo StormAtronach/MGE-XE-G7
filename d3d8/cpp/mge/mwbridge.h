@@ -2,6 +2,7 @@
 
 #include "bc7format.h"
 #include <string>
+#include <vector>
 
 // Forward declared so the engine layout headers stay out of every translation
 // unit that only needs the bridge's public interface.
@@ -86,6 +87,17 @@ public:
     bool IntHasWater();
     float WaterLevel();
 
+    // Boxes of water placed by MWSE, independent of the cell's own water. min and max are
+    // world-space corners; the surface is at max[2].
+    struct WaterVolume {
+        float min[3];
+        float max[3];
+    };
+    void setWaterVolumes(const WaterVolume* volumes, unsigned int count);
+    // Picks the volume that contains the eye, if any. While one is selected, CellHasWater()
+    // and WaterLevel() describe that volume instead of the cell's water.
+    void selectWaterVolume(float x, float y, float z);
+
     const char* getInteriorName();
     const BYTE* getInteriorAmb();
     const BYTE* getInteriorSun();
@@ -156,6 +168,10 @@ protected:
     // engine patching and DistantLand::init() off `!IsLoaded() && CanLoad()`,
     // which only ever fires while the two disagree.
     bool m_loaded;
+
+    std::vector<WaterVolume> m_waterVolumes;
+    bool m_inWaterVolume = false;
+    float m_waterVolumeSurface = 0.0f;
 
     // Cached shadow-camera frustum. Resolved lazily because the shadow manager
     // does not exist until shadows are first enabled, and MGE writes FOV into it
