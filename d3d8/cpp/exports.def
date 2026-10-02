@@ -4,3 +4,4 @@ Direct3DCreate8=FakeDirect3DCreate
 DirectInput8Create=FakeDirectInputCreate
 MGE_HorizonGetParam
 MGE_HorizonSetParam
+MGE_WaterVolumesSet

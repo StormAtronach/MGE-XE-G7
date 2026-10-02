@@ -1186,6 +1186,10 @@ void DistantLand::setView(const D3DMATRIX* m) {
     eyeVec.y = m->_23;
     eyeVec.z = m->_33;
 
+    if (mwBridge->IsLoaded()) {
+        mwBridge->selectWaterVolume(eyePos.x, eyePos.y, eyePos.z);
+    }
+
     // Set sun disc position
     if (mwBridge->IsLoaded() && mwBridge->IntLikeExterior(true)) {
         mwBridge->GetSunDir(sunPos.x, sunPos.y, sunPos.z);
