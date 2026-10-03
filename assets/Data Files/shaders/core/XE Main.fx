@@ -15,6 +15,7 @@
 #include "XE Mod Grass.fx"
 #include "XE Mod Sky.fx"
 #include "XE Mod Water.fx"
+#include "XE Mod Water Volume.fx"
 #include "XE Mod Caustics.fx"
 
 //------------------------------------------------------------
@@ -477,6 +478,21 @@ Technique T0 {
 
         VertexShader = compile vs_3_0 RenderShadowsFFEIndexedVS();
         PixelShader = compile ps_3_0 RenderShadowsPS();
+    }
+    //------------------------------------------------------------
+    // Used for rendering the surface meshes of water volumes
+    Pass P15 {
+        ZEnable = true;
+        ZWriteEnable = true;
+        ZFunc = LessEqual;
+        StencilEnable = false;
+        CullMode = none;
+
+        AlphaBlendEnable = false;
+        AlphaTestEnable = false;
+
+        VertexShader = compile vs_3_0 WaterVS();
+        PixelShader = compile ps_3_0 WaterVolumePS();
     }
     //------------------------------------------------------------
 }

@@ -457,6 +457,58 @@ void DistantLand::simulateDynamicWaves() {
     effect->SetFloat(ehWaveHeight, (float)Configuration.DL.WaterWaveHeight);
 }
 
+bool DistantLand::waterVolumeDrawn = false;
+
+// renderWaterVolume - Draws the surface mesh of a water volume, as the game submits it, with the
+// water shading instead of its own material. Returns false when the draw should go ahead unchanged.
+bool DistantLand::renderWaterVolume(const RenderedState* rs) {
+    if (!canRenderDistantLand() || isRenderCached) {
+        return false;
+    }
+
+    auto mwBridge = MWBridge::get();
+    IDirect3DStateBlock9* stateSaved;
+    UINT passes;
+
+    // Save state block manually since we can change FVF/decl
+    device->CreateStateBlock(D3DSBT_ALL, &stateSaved);
+    effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
+
+    IDirect3DTexture9* texRefract = PostShaders::borrowBuffer(0);
+    effect->SetMatrix(ehWorld, &rs->worldTransforms[0]);
+    effect->SetTexture(ehTex0, texReflection);
+    effect->SetTexture(ehTex1, texWater);
+    effect->SetTexture(ehTex2, texRefract);
+    effect->SetTexture(ehTex3, texDepthFrame);
+    // The mesh is not tessellated for wave displacement, which would only rock it.
+    const bool ripples = (Configuration.MGEFlags & DYNAMIC_RIPPLES) != 0;
+    float waveHeight = 0.0f;
+    if (ripples) {
+        effect->SetTexture(ehTex4, texRain);
+        effect->SetTexture(ehTex5, texRipples);
+        effect->GetFloat(ehWaveHeight, &waveHeight);
+        effect->SetFloat(ehWaveHeight, 0.0f);
+    }
+
+    // From below, the planar reflection is the one of the volume the eye is in.
+    effect->BeginPass(mwBridge->IsUnderwater(eyePos.z) ? PASS_RENDERUNDERWATER : PASS_RENDERWATERVOLUME);
+    device->SetStreamSource(0, rs->vb, rs->vbOffset, rs->vbStride);
+    device->SetIndices(rs->ib);
+    device->SetFVF(rs->fvf);
+    device->DrawIndexedPrimitive(rs->primType, rs->baseIndex, rs->minIndex, rs->vertCount, rs->startIndex, rs->primCount);
+    effect->EndPass();
+
+    if (ripples) {
+        effect->SetFloat(ehWaveHeight, waveHeight);
+    }
+    effect->End();
+    stateSaved->Apply();
+    stateSaved->Release();
+
+    waterVolumeDrawn = true;
+    return true;
+}
+
 void DistantLand::renderWaterPlane() {
     D3DXMATRIX m;
     IDirect3DTexture9* texRefract = PostShaders::borrowBuffer(0);
