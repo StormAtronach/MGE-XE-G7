@@ -8,7 +8,7 @@
 // is reflected by marching the reflected ray through the depth frame.
 
 // Steps of the reflection march. Each is 1.25 times as long as the one before, starting at
-// 12 units, so 24 steps reach about 10000 units. 0 turns the march off.
+// 12 units, so 24 steps reach about 10000 units.
 static const int volumeReflectionSteps = 24;
 
 // Looks for the first thing on screen that the ray from origin along dir passes behind.
@@ -52,7 +52,8 @@ float4 reflectScene(float3 origin, float3 dir)
     return result;
 }
 
-float4 WaterVolumePS(in WaterVertOut IN): COLOR0
+// reflectsScene is fixed per pass: a surface either reflects what is on screen or the sky only.
+float4 WaterVolumePS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
 {
     // Calculate eye vector
     float3 EyeVec = IN.pos.xyz - eyePos.xyz;
@@ -109,7 +110,7 @@ float4 WaterVolumePS(in WaterVertOut IN): COLOR0
     float3 reflected = fogColourSky(reflectdir).rgb;
 
     // Reflect what is on screen over the sky
-    if(volumeReflectionSteps > 0)
+    if(reflectsScene)
     {
         float4 scene = reflectScene(IN.pos.xyz, reflectdir);
         reflected = lerp(reflected, scene.rgb, scene.a);

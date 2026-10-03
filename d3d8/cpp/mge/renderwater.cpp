@@ -461,7 +461,7 @@ bool DistantLand::waterVolumeDrawn = false;
 
 // renderWaterVolume - Draws the surface mesh of a water volume, as the game submits it, with the
 // water shading instead of its own material. Returns false when the draw should go ahead unchanged.
-bool DistantLand::renderWaterVolume(const RenderedState* rs) {
+bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene) {
     if (!canRenderDistantLand() || isRenderCached) {
         return false;
     }
@@ -491,7 +491,8 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs) {
     }
 
     // From below, the planar reflection is the one of the volume the eye is in.
-    effect->BeginPass(mwBridge->IsUnderwater(eyePos.z) ? PASS_RENDERUNDERWATER : PASS_RENDERWATERVOLUME);
+    const auto surfacePass = reflectsScene ? PASS_RENDERWATERVOLUME : PASS_RENDERWATERVOLUME_SKYONLY;
+    effect->BeginPass(mwBridge->IsUnderwater(eyePos.z) ? PASS_RENDERUNDERWATER : surfacePass);
     device->SetStreamSource(0, rs->vb, rs->vbOffset, rs->vbStride);
     device->SetIndices(rs->ib);
     device->SetFVF(rs->fvf);
