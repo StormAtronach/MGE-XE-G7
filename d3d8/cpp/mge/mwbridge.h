@@ -97,6 +97,7 @@ public:
     // Picks the volume that contains the eye, if any. While one is selected, CellHasWater()
     // and WaterLevel() describe that volume instead of the cell's water.
     void selectWaterVolume(float x, float y, float z);
+    bool InWaterVolume() const { return m_inWaterVolume; }
 
     const char* getInteriorName();
     const BYTE* getInteriorAmb();

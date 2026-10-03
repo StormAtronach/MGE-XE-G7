@@ -400,6 +400,8 @@ public:
     static void clearReflection();
     static void simulateDynamicWaves();
     static void renderWaterPlane();
+    static bool renderWaterVolume(const RenderedState* rs);
+    static bool waterVolumeDrawn;
 
     static void renderDepth();
     static void renderDepthAdditional();

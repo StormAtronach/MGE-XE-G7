@@ -602,6 +602,11 @@ void DistantLand::renderStageWater() {
         return;
     }
 
+    // Inside a water volume whose surface mesh was drawn, that mesh is the water surface.
+    if (mwBridge->InWaterVolume() && waterVolumeDrawn) {
+        return;
+    }
+
     if (mwBridge->CellHasWater()) {
         // Save state block manually since we can change FVF/decl
         device->CreateStateBlock(D3DSBT_ALL, &stateSaved);

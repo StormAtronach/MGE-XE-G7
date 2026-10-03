@@ -24,6 +24,8 @@ static bool isMainView, isStencilScene, isAmbientWhite;
 static DWORD stencilRef;
 static bool stage0Complete, isFrameComplete, isHUDComplete;
 static bool isWaterMaterial, waterDrawn, distantWater;
+// Marks the surface mesh of a water volume, set on its material by MWSE.
+static bool isWaterVolumeMaterial;
 
 static bool zoomSensSaved;
 static float zoomSensX, zoomSensY;
@@ -351,6 +353,7 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
     sceneCount = -1;
     stage0Complete = false;
     waterDrawn = false;
+    DistantLand::waterVolumeDrawn = false;
     isFrameComplete = false;
     isHUDComplete = false;
     DistantLand::beginDepthFrame();
@@ -551,6 +554,7 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
     captureMaterial(a);
     isWaterMaterial = (a->Power == 99999.0f);
+    isWaterVolumeMaterial = (a->Power == 99998.0f);
 
     return ProxyDevice::SetMaterial(a);
 }
@@ -716,6 +720,9 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
                 }
                 return D3D_OK;
             }
+        } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs)) {
+            // The surface of a water volume was drawn with the water shading.
+            return D3D_OK;
         } else {
             // DistantLand may record the draw for a later pass and signal that the original is
             // already represented; in that case suppress the game draw.
