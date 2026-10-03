@@ -4,7 +4,53 @@
 // Uses the vertex shader, samplers and helpers of XE Mod Water.fx.
 
 // A volume can sit at any height and can slope, so the planar reflection of the main water
-// does not apply to it. The sky is reflected from its analytic colour instead.
+// does not apply to it. The sky is reflected from its analytic colour, and what is on screen
+// is reflected by marching the reflected ray through the depth frame.
+
+// Steps of the reflection march. Each is 1.25 times as long as the one before, starting at
+// 12 units, so 24 steps reach about 10000 units. 0 turns the march off.
+static const int volumeReflectionSteps = 24;
+
+// Looks for the first thing on screen that the ray from origin along dir passes behind.
+// Returns its colour from the frame behind the water, and in alpha how much to trust it.
+float4 reflectScene(float3 origin, float3 dir)
+{
+    float4 result = 0;
+    float stepLength = 12;
+    float travelled = 0;
+
+    for(int i = 0; i < volumeReflectionSteps; i++)
+    {
+        travelled += stepLength;
+
+        float4 clip = mul(mul(float4(origin + dir * travelled, 1), view), proj);
+        if(clip.w <= 0)
+            break;
+
+        float2 uv = 0.5 * (1 + rcpRes) + float2(0.5, -0.5) * clip.xy / clip.w;
+        if(uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1)
+            break;
+
+        // The depth frame holds view depth; the sky is cleared to a huge value and never hits
+        float behind = clip.w - tex2Dlod(sampDepth, float4(uv, 0, 0)).r;
+        if(behind > 0)
+        {
+            // Only a surface near the ray counts; otherwise the ray went behind something
+            if(behind < 2 * stepLength + 8)
+            {
+                // Fade out towards the screen edge, where the ray would leave the frame
+                float2 edge = min(uv, 1 - uv);
+                result.rgb = tex2Dlod(sampRefract, float4(uv, 0, 0)).rgb;
+                result.a = saturate(12 * min(edge.x, edge.y));
+            }
+            break;
+        }
+
+        stepLength *= 1.25;
+    }
+
+    return result;
+}
 
 float4 WaterVolumePS(in WaterVertOut IN): COLOR0
 {
@@ -59,7 +105,15 @@ float4 WaterVolumePS(in WaterVertOut IN): COLOR0
     // Reflect the sky. The ripples tilt the reflected direction only a little, to keep it calm.
     float3 reflectdir = reflect(EyeVec, normalize(lerp(float3(0, 0, 1), normal, 0.35)));
     reflectdir.z = abs(reflectdir.z);
-    float3 reflected = fogColourSky(normalize(reflectdir)).rgb;
+    reflectdir = normalize(reflectdir);
+    float3 reflected = fogColourSky(reflectdir).rgb;
+
+    // Reflect what is on screen over the sky
+    if(volumeReflectionSteps > 0)
+    {
+        float4 scene = reflectScene(IN.pos.xyz, reflectdir);
+        reflected = lerp(reflected, scene.rgb, scene.a);
+    }
 
     // Fade reflection into an inscatter dominated horizon
     reflected = lerp(fog.rgb, reflected, fog.a);
