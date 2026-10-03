@@ -492,7 +492,22 @@ Technique T0 {
         AlphaTestEnable = false;
 
         VertexShader = compile vs_3_0 WaterVS();
-        PixelShader = compile ps_3_0 WaterVolumePS();
+        PixelShader = compile ps_3_0 WaterVolumePS(true);
+    }
+    //------------------------------------------------------------
+    // Used for rendering the surface meshes of water volumes that reflect the sky only
+    Pass P16 {
+        ZEnable = true;
+        ZWriteEnable = true;
+        ZFunc = LessEqual;
+        StencilEnable = false;
+        CullMode = none;
+
+        AlphaBlendEnable = false;
+        AlphaTestEnable = false;
+
+        VertexShader = compile vs_3_0 WaterVS();
+        PixelShader = compile ps_3_0 WaterVolumePS(false);
     }
     //------------------------------------------------------------
 }
