@@ -459,11 +459,42 @@ void DistantLand::simulateDynamicWaves() {
 
 bool DistantLand::waterVolumeDrawn = false;
 
-// renderWaterVolume - Draws the surface mesh of a water volume, as the game submits it, with the
-// water shading instead of its own material. Returns false when the draw should go ahead unchanged.
+// A surface mesh of a water volume, held until the scene it was submitted in ends.
+struct PendingWaterVolume {
+    RenderedState rs;
+    bool reflectsScene;
+};
+static std::vector<PendingWaterVolume> pendingWaterVolumes;
+
+// renderWaterVolume - Takes the surface mesh of a water volume, as the game submits it, to draw
+// it with the water shading instead of its own material. The draw happens in flushWaterVolumes,
+// so that every surface refracts and reflects the same frame, without the other surfaces in it.
+// Returns false when the draw should go ahead unchanged.
 bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene) {
     if (!canRenderDistantLand() || isRenderCached) {
         return false;
+    }
+
+    rs->vb->AddRef();
+    rs->ib->AddRef();
+    pendingWaterVolumes.push_back({ *rs, reflectsScene });
+    waterVolumeDrawn = true;
+    return true;
+}
+
+// discardWaterVolumes - Drops the surfaces that were taken and not drawn.
+void DistantLand::discardWaterVolumes() {
+    for (auto& pending : pendingWaterVolumes) {
+        pending.rs.vb->Release();
+        pending.rs.ib->Release();
+    }
+    pendingWaterVolumes.clear();
+}
+
+// flushWaterVolumes - Draws the surfaces taken by renderWaterVolume, all from one copy of the frame.
+void DistantLand::flushWaterVolumes() {
+    if (pendingWaterVolumes.empty()) {
+        return;
     }
 
     auto mwBridge = MWBridge::get();
@@ -475,7 +506,6 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene)
     effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
 
     IDirect3DTexture9* texRefract = PostShaders::borrowBuffer(0);
-    effect->SetMatrix(ehWorld, &rs->worldTransforms[0]);
     effect->SetTexture(ehTex0, texReflection);
     effect->SetTexture(ehTex1, texWater);
     effect->SetTexture(ehTex2, texRefract);
@@ -491,13 +521,31 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene)
     }
 
     // From below, the planar reflection is the one of the volume the eye is in.
-    const auto surfacePass = reflectsScene ? PASS_RENDERWATERVOLUME : PASS_RENDERWATERVOLUME_SKYONLY;
-    effect->BeginPass(mwBridge->IsUnderwater(eyePos.z) ? PASS_RENDERUNDERWATER : surfacePass);
-    device->SetStreamSource(0, rs->vb, rs->vbOffset, rs->vbStride);
-    device->SetIndices(rs->ib);
-    device->SetFVF(rs->fvf);
-    device->DrawIndexedPrimitive(rs->primType, rs->baseIndex, rs->minIndex, rs->vertCount, rs->startIndex, rs->primCount);
-    effect->EndPass();
+    const bool underwater = mwBridge->IsUnderwater(eyePos.z);
+    for (int reflectsScene = 0; reflectsScene < 2; reflectsScene++) {
+        bool passBegun = false;
+        for (const auto& pending : pendingWaterVolumes) {
+            if (pending.reflectsScene != (reflectsScene != 0)) {
+                continue;
+            }
+            const RenderedState* rs = &pending.rs;
+            effect->SetMatrix(ehWorld, &rs->worldTransforms[0]);
+            if (!passBegun) {
+                const auto surfacePass = reflectsScene ? PASS_RENDERWATERVOLUME : PASS_RENDERWATERVOLUME_SKYONLY;
+                effect->BeginPass(underwater ? PASS_RENDERUNDERWATER : surfacePass);
+                passBegun = true;
+            } else {
+                effect->CommitChanges();
+            }
+            device->SetStreamSource(0, rs->vb, rs->vbOffset, rs->vbStride);
+            device->SetIndices(rs->ib);
+            device->SetFVF(rs->fvf);
+            device->DrawIndexedPrimitive(rs->primType, rs->baseIndex, rs->minIndex, rs->vertCount, rs->startIndex, rs->primCount);
+        }
+        if (passBegun) {
+            effect->EndPass();
+        }
+    }
 
     if (ripples) {
         effect->SetFloat(ehWaveHeight, waveHeight);
@@ -506,8 +554,7 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene)
     stateSaved->Apply();
     stateSaved->Release();
 
-    waterVolumeDrawn = true;
-    return true;
+    discardWaterVolumes();
 }
 
 void DistantLand::renderWaterPlane() {

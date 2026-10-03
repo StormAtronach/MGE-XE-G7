@@ -401,6 +401,8 @@ public:
     static void simulateDynamicWaves();
     static void renderWaterPlane();
     static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene);
+    static void flushWaterVolumes();
+    static void discardWaterVolumes();
     static bool waterVolumeDrawn;
 
     static void renderDepth();
