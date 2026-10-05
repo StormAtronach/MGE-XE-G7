@@ -126,6 +126,7 @@ Each mesh path maps to a table containing one or more of the following propertie
 | `reduction` | integer | Mesh simplification percentage (`0` to `100`). `0` disables simplification (same as legacy `.ovr` `use_old_reduction`). |
 | `ignore_script` | boolean | If `true`, MGE XE ignores any scripts attached to references of this mesh (disabling dynamic script visibility checks for it, same as legacy `.ovr` `no_script`). |
 | `water` | boolean | `true` makes the mesh distant water even if nothing in it is named as water; every shape that is not under a body name is drawn as water. `false` keeps the mesh an ordinary static whatever its names say. Omit it to let the names decide (see below). |
+| `water_color` | array of three numbers | The colour of the water of a water mesh: red, green and blue, each from `0` to `1`. Omit it to take the colour from the mesh (see below). |
 
 ### Distant Water (`[tools.mge-xe.distantland.water]`)
 
@@ -153,6 +154,14 @@ sky_only_words = ["skyonly"]
 
 A later source replaces the whole table of an earlier one. A word counts only when no letter
 stands directly before or after it.
+
+Water can have a colour: the emissive colour of the material of a surface shape, or the
+`water_color` of the mesh entry, which comes first. Black, the emissive colour of most
+materials, is water of the usual colour. Deep water of a colour tends to that colour, and
+what is seen through it loses the other colours with depth. Near the player the colour is
+read from the material that the game submits, so a mod can also set it at run time.
+The water of the cell is coloured the same way and apart from the volumes: by the emissive
+colour of the material of the game's water node.
 
 Distant water reflects the sky. Up to `distant_land.water.volume_reflection_cells` cells from
 the camera it also reflects what is on screen. Water subsets are not atlased, are not merged

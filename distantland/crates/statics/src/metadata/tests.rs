@@ -347,7 +347,7 @@ plain_words = ["plain"]
 sky_only_words = ["SkyOnly"]
 
 [tools.mge-xe.distantland.statics]
-'x\ex_pond.nif' = { water = true }
+'x\ex_pond.nif' = { water = true, water_color = [0.25, 0.5, 2.0] }
 'wv\not_water.nif' = { water = false }
 'foo\rock.nif' = { type = "far" }
 "#;
@@ -358,7 +358,10 @@ sky_only_words = ["SkyOnly"]
     assert_eq!(overrides.water_names.plain_words, ["plain"]);
     assert_eq!(overrides.water_names.sky_only_words, ["skyonly"]);
     assert_eq!(overrides.mesh_overrides["x\\ex_pond.nif"].water, Some(true));
+    // A part of a colour is held between 0 and 1.
+    assert_eq!(overrides.mesh_overrides["x\\ex_pond.nif"].water_color, Some([0.25, 0.5, 1.0]));
     assert_eq!(overrides.mesh_overrides["wv\\not_water.nif"].water, Some(false));
+    assert_eq!(overrides.mesh_overrides["wv\\not_water.nif"].water_color, None);
     assert_eq!(overrides.mesh_overrides["foo\\rock.nif"].water, None);
 }
 

@@ -282,6 +282,7 @@ impl DistantStatic {
         normalize_texture_paths(&mut stream);
 
         let registered_water = overrides.mesh_overrides.get(rel_path).and_then(|ovr| ovr.water);
+        let registered_water_color = overrides.mesh_overrides.get(rel_path).and_then(|ovr| ovr.water_color);
         let water = mesh_water(&stream, &overrides.water_names, registered_water);
         let shapes: Vec<_> = visible_geometries(&stream, water).collect();
         if shapes.is_empty() {
@@ -359,6 +360,17 @@ impl DistantStatic {
             let material_color = material
                 .map(|material| material.diffuse_color.extend(material.alpha))
                 .unwrap_or(Vec4::ONE);
+            // A water subset carries the colour of its water in the vertex colour, where the
+            // water pass reads it: the registered colour, or the emissive colour of the
+            // material. Black is water of the usual colour.
+            let water_surface = water.map_or(crate::model::SubsetWater::None, |water| water.surface);
+            let water_color = water_surface.is_water().then(|| {
+                registered_water_color
+                    .map(Vec3::from)
+                    .or_else(|| material.map(|material| material.emissive_color))
+                    .unwrap_or(Vec3::ZERO)
+                    .extend(1.0)
+            });
 
             // Every vertex below gets the identity bound, so the subset's distinct set is that
             // one entry. Seeding it here rather than at the atlas stage makes the invariant
@@ -388,7 +400,11 @@ impl DistantStatic {
                         Vec3::Z
                     },
                     uv: *uv,
-                    color: if has_colors { data.vertex_colors[i] } else { material_color },
+                    color: match water_color {
+                        Some(color) => color,
+                        None if has_colors => data.vertex_colors[i],
+                        None => material_color,
+                    },
                     uv_bound: identity_bound,
                 })
                 .collect();
@@ -425,7 +441,7 @@ impl DistantStatic {
 
             subset.has_alpha = geometry.has_alpha(&stream);
             subset.has_uv_controller = geometry.has_uv_controller(&stream);
-            subset.water = water.map_or(crate::model::SubsetWater::None, |water| water.surface);
+            subset.water = water_surface;
             subset.emissive = material.map(average_emissive).unwrap_or(0.0);
 
             subsets.push(subset);

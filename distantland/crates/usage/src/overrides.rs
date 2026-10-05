@@ -21,6 +21,9 @@ pub struct StaticOverride {
     /// Says whether the mesh is distant water, whatever the names in it say. `None` leaves the
     /// answer to the names (see [`WaterNames`]).
     pub water: Option<bool>,
+    /// The colour of the water of a water mesh, red, green and blue from 0 to 1. `None` takes
+    /// the emissive colour of the material of each shape.
+    pub water_color: Option<[f32; 3]>,
 }
 
 impl Default for StaticOverride {
@@ -32,6 +35,7 @@ impl Default for StaticOverride {
             simplify: None,
             no_script: false,
             water: None,
+            water_color: None,
         }
     }
 }

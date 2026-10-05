@@ -54,7 +54,8 @@ float4 reflectScene(float3 origin, float3 dir)
 
 // reflectsScene and distant are fixed per pass. A surface either reflects what is on screen or
 // the sky only. A distant surface reflects what is on screen out to waterVolumeReflectRange.
-float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant)
+// tint is the colour of the water of this surface: the emissive colour of its material.
+float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant, float3 tint)
 {
     // Calculate eye vector
     float3 EyeVec = IN.pos.xyz - eyePos.xyz;
@@ -63,7 +64,7 @@ float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant)
 
     // Define fog
     float4 fog = fogColourWater(EyeVec, dist);
-    float3 depthColor = fogApply(depthBaseColor, fog);
+    float3 depthColor = fogApply(waterDepthBase(depthBaseColor, tint), fog);
 
     // Calculate water normal
     float3 normal = getFinalWaterNormal(IN.texcoords.xy, IN.texcoords.zw, dist, IN.pos.xy);
@@ -89,6 +90,7 @@ float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant)
         // Get distorted depth
         depth = max(0, tex2Dproj(sampDepth, newscrpos).r - IN.screenpos.w);
         depth /= dot(EyeVec, float3(view[0][2], view[1][2], view[2][2]));
+        refracted *= waterTransmission(tint, depth);
 
         // Small scale shoreline animation
         depth += 300 * (0.95 - normal.z);
@@ -144,21 +146,31 @@ float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant)
 
 float4 WaterVolumePS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
 {
-    return waterVolumeColour(IN, reflectsScene, false);
+    return waterVolumeColour(IN, reflectsScene, false, waterVolumeTint);
 }
 
 //------------------------------------------------------------
 // The same water among the distant statics, farther away than the game draws.
 
-// A distant static keeps a palette index in pos.w.
-WaterVertOut WaterVolumeDistantVS(in StatVertIn IN)
+struct WaterVolumeDistantVertOut
 {
-    return WaterVS(float4(IN.pos.xyz, 1));
+    WaterVertOut water;
+    float3 tint : TEXCOORD4;
+};
+
+// A distant static keeps a palette index in pos.w. The generator writes the colour of the
+// water into the vertex colour of a water subset.
+WaterVolumeDistantVertOut WaterVolumeDistantVS(in StatVertIn IN)
+{
+    WaterVolumeDistantVertOut OUT;
+    OUT.water = WaterVS(float4(IN.pos.xyz, 1));
+    OUT.tint = IN.color.rgb;
+    return OUT;
 }
 
-float4 WaterVolumeDistantPS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
+float4 WaterVolumeDistantPS(in WaterVolumeDistantVertOut IN, uniform bool reflectsScene): COLOR0
 {
     // Nearer than this the game draws the surface itself
-    clip(IN.screenpos.w - nearViewRange);
-    return waterVolumeColour(IN, reflectsScene, true);
+    clip(IN.water.screenpos.w - nearViewRange);
+    return waterVolumeColour(IN.water, reflectsScene, true, IN.tint);
 }

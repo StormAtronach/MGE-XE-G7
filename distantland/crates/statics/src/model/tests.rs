@@ -1567,7 +1567,18 @@ fn coincident_position_distinct_uv_stress_subset_optimizes() {
 /// A water mesh as a modeller writes it: a root with a surface shape and a body shape under it,
 /// both textured and both visible in the file.
 fn build_test_water_nif(surface_name: &str) -> Vec<u8> {
+    build_test_water_nif_of_color(surface_name, None)
+}
+
+/// A water mesh whose shapes have a material with this emissive colour, or no material.
+fn build_test_water_nif_of_color(surface_name: &str, emissive: Option<Vec3>) -> Vec<u8> {
     let mut stream = NiStream::new();
+    let material_link = emissive.map(|emissive_color| {
+        stream.insert(NiMaterialProperty {
+            emissive_color,
+            ..NiMaterialProperty::default()
+        })
+    });
 
     let texture_link = stream.insert(NiSourceTexture {
         source: TextureSource::External("uv_anim\\ghost.dds".into()),
@@ -1594,12 +1605,69 @@ fn build_test_water_nif(surface_name: &str) -> Vec<u8> {
         shape.name = name.into();
         shape.geometry_data = geometry_data_link.cast();
         shape.properties.push(texturing_property_link.cast());
+        if let Some(material_link) = material_link {
+            shape.properties.push(material_link.cast());
+        }
         root.children.push(stream.insert(shape).cast());
     }
 
     let root_link = stream.insert(root);
     stream.roots.push(root_link.cast());
     stream.save_bytes().expect("serialize test nif")
+}
+
+#[test]
+fn from_nif_writes_the_color_of_water_into_its_vertices() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    let green = Vec3::new(0.25, 0.5, 0.125);
+    write_test_static_asset(root, "usual.nif", &build_test_water_nif("WaterVolume"));
+    write_test_static_asset(root, "green.nif", &build_test_water_nif_of_color("WaterVolume", Some(green)));
+    write_test_static_asset(
+        root,
+        "plain.nif",
+        &build_test_water_nif_of_color("WaterVolume plain", Some(green)),
+    );
+
+    let mut overrides = StaticOverrides::default();
+    overrides.water_names = kit_water_names();
+    let colors = |mesh: &str, overrides: &StaticOverrides| -> Vec<Vec4> {
+        let water = water_test_static(root, mesh, overrides);
+        water.subsets[0].vertices.iter().map(|vertex| vertex.color).collect()
+    };
+
+    // Without a colour the vertices are black: water of the usual colour.
+    assert!(
+        colors("usual.nif", &overrides)
+            .iter()
+            .all(|color| *color == Vec4::new(0.0, 0.0, 0.0, 1.0))
+    );
+    // The emissive colour of the material is the colour of the water.
+    assert!(
+        colors("green.nif", &overrides)
+            .iter()
+            .all(|color| *color == green.extend(1.0))
+    );
+    // A mesh that keeps its own look keeps its own vertex colours.
+    assert!(
+        colors("plain.nif", &overrides)
+            .iter()
+            .all(|color| *color != green.extend(1.0))
+    );
+
+    // A registered colour comes before the material.
+    overrides.mesh_overrides.insert(
+        "green.nif".to_owned(),
+        crate::overrides::StaticOverride {
+            water_color: Some([1.0, 0.0, 0.5]),
+            ..Default::default()
+        },
+    );
+    assert!(
+        colors("green.nif", &overrides)
+            .iter()
+            .all(|color| *color == Vec4::new(1.0, 0.0, 0.5, 1.0))
+    );
 }
 
 fn water_test_static(root: &Path, mesh: &str, overrides: &StaticOverrides) -> DistantStatic {

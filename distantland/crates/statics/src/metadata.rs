@@ -303,6 +303,8 @@ struct StaticEntry {
     ignore_script: bool,
     /// Says that the mesh is distant water (`true`) or is not (`false`), whatever its names say.
     water: Option<bool>,
+    /// The colour of the water of a water mesh: red, green and blue from 0 to 1.
+    water_color: Option<[f32; 3]>,
 }
 
 impl StaticEntry {
@@ -312,6 +314,7 @@ impl StaticEntry {
             ignore: self.ignore,
             no_script: self.ignore_script,
             water: self.water,
+            water_color: self.water_color.map(|color| color.map(|part| part.clamp(0.0, 1.0))),
             ..StaticOverride::default()
         };
         if let Some(static_type) = self.static_type {
