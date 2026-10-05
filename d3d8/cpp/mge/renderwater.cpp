@@ -458,6 +458,7 @@ void DistantLand::simulateDynamicWaves() {
 }
 
 bool DistantLand::waterVolumeDrawn = false;
+bool DistantLand::distantWaterInView = false;
 
 // A surface mesh of a water volume, held until the scene it was submitted in ends.
 struct PendingWaterVolume {
@@ -492,12 +493,18 @@ void DistantLand::discardWaterVolumes() {
 }
 
 // flushWaterVolumes - Draws the surfaces taken by renderWaterVolume, all from one copy of the frame.
-void DistantLand::flushWaterVolumes() {
-    if (pendingWaterVolumes.empty()) {
+// withDistant: draw the water among the distant statics as well, from the same copy. It is the
+// same water farther away than the game draws, so it is wanted once per frame, with the first flush.
+void DistantLand::flushWaterVolumes(bool withDistant) {
+    auto mwBridge = MWBridge::get();
+    // From below, the planar reflection is the one of the volume the eye is in.
+    const bool underwater = mwBridge->IsUnderwater(eyePos.z);
+    const bool drawDistant = withDistant && distantWaterInView && !underwater && canRenderDistantLand() && !isRenderCached;
+    distantWaterInView = false;
+    if (pendingWaterVolumes.empty() && !drawDistant) {
         return;
     }
 
-    auto mwBridge = MWBridge::get();
     IDirect3DStateBlock9* stateSaved;
     UINT passes;
 
@@ -520,8 +527,20 @@ void DistantLand::flushWaterVolumes() {
         effect->SetFloat(ehWaveHeight, 0.0f);
     }
 
-    // From below, the planar reflection is the one of the volume the eye is in.
-    const bool underwater = mwBridge->IsUnderwater(eyePos.z);
+    if (drawDistant) {
+        // Depth as the distant land has it, so that the land hides the water behind it.
+        D3DXMATRIX distProj = mwProj;
+        editProjectionZ(&distProj, kDistantNearPlane - 1e-2, Configuration.DL.DrawDist * kCellSize);
+        effect->SetMatrix(ehProj, &distProj);
+        device->SetVertexDeclaration(StaticDecl);
+        for (std::uint8_t kind = 1; kind <= 2; kind++) {
+            effect->BeginPass(kind == 1 ? PASS_RENDERWATERVOLUME_DISTANT : PASS_RENDERWATERVOLUME_DISTANT_SKYONLY);
+            visDistantShared.RenderWater(device, effect, &ehWorld, SIZEOFSTATICVERT, kind);
+            effect->EndPass();
+        }
+        effect->SetMatrix(ehProj, &mwProj);
+    }
+
     for (int reflectsScene = 0; reflectsScene < 2; reflectsScene++) {
         bool passBegun = false;
         for (const auto& pending : pendingWaterVolumes) {

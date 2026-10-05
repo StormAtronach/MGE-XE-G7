@@ -515,6 +515,8 @@ pub struct WaterSettings {
     pub blur_reflections: bool,
     pub wave_height: u8,
     pub caustics_intensity: u8,
+    /// How far from the eye, in cells, distant water volumes reflect what is on screen.
+    pub volume_reflection_cells: f32,
 }
 
 impl Default for WaterSettings {
@@ -528,6 +530,7 @@ impl Default for WaterSettings {
             blur_reflections: false,
             wave_height: 50,
             caustics_intensity: 50,
+            volume_reflection_cells: 8.0,
         }
     }
 }

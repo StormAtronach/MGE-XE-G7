@@ -42,6 +42,15 @@ public:
                 unsigned int vertex_size,
                 bool parallelRead = false);
 
+    // The meshes that are distant water are left out of the two loops above. They have a loop
+    // of their own, which draws the ones of one kind (RenderMesh::water).
+    bool HasWater();
+    void RenderWater(IDirect3DDevice9* device,
+                     ID3DXEffect* effect,
+                     const D3DXHANDLE* world_matrix_handle,
+                     unsigned int vertex_size,
+                     std::uint8_t kind);
+
     void RemoveAll() {
         visible_set.clear();
     }

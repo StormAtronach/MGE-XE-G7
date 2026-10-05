@@ -137,6 +137,11 @@ const iniSetting iniSettings[] = {
         "distant_land.water.caustics_intensity",
         0),
     NUM(
+        Configuration.WaterVolume.ReflectCells,
+        t_float,
+        "distant_land.water.volume_reflection_cells",
+        0),
+    NUM(
         Configuration.DL.ShadowResolution,
         t_uint32,
         "distant_land.shadows.map_resolution",

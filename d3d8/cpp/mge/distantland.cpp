@@ -330,6 +330,7 @@ void DistantLand::renderStage0() {
 
             effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
 
+            distantWaterInView = false;
             if (!mwBridge->IsUnderwater(eyePos.z)) {
                 // Draw distant landscape
                 if (mwBridge->IsExterior()) {
@@ -346,6 +347,8 @@ void DistantLand::renderStage0() {
 
                     cullDistantStatics(&mwView, &distProj);
                     renderDistantStatics();
+                    // Water among the distant statics is drawn later, by flushWaterVolumes.
+                    distantWaterInView = mwBridge->IsExterior() && visDistantShared.HasWater();
 
                     vsr.endAlphaToCoverage(device);
                     effect->EndPass();
@@ -676,6 +679,7 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
     FixedFunctionShader::updatePplSceneState(
         proj, fogNearStart, fogNearEnd, nearFogCol);
     effect->SetFloat(ehNearViewRange, nearViewRange);
+    effect->SetFloat(ehWaterVolumeReflectRange, Configuration.WaterVolume.ReflectCells * kCellSize);
     effect->SetFloat(ehNiceWeather, niceWeather);
 
     if (ehOutscatter) {

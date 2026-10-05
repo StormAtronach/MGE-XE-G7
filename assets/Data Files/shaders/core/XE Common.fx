@@ -25,6 +25,7 @@ shared float4 skyScatterColFar;
 shared float fogStart, fogRange;
 shared float nearFogStart, nearFogRange;
 shared float nearViewRange;
+shared float waterVolumeReflectRange;
 shared float3 sunPos;
 shared float sunVis;
 shared float2 windVec;
