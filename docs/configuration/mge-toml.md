@@ -174,6 +174,11 @@ still installed.
 The host-only horizon setting with no obsolete C++ binding is
 `distant_land.horizon.rebuild_eye_threshold`.
 
+`distant_land.water.volume_reflection_cells` has no obsolete INI predecessor. It is how far
+from the camera, in cells, a water volume among the distant statics reflects what is on screen;
+farther away it reflects the sky only. The default is `8.0`, the range `0` to `64`, and `0`
+turns the screen reflection of distant water volumes off.
+
 `distant_land.grass.interior_wind` has no obsolete INI predecessor either. It
 is the constant wind applied to grass placed in interior cells, which have no
 weather to drive the per-weather wind factors. It uses the same units as those

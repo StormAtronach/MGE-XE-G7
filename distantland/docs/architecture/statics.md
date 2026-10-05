@@ -95,6 +95,11 @@ Only `cells` and `terrain_cells` retain their collected data for downstream stat
   adjustments.
 - Computes minimum bounding spheres (minsphere) and AABBs; applies the early size filter using
   the mesh's maximum placed scale, `min_static_size`, and `door_size_multiplier`.
+- Decides whether the mesh is distant water (`mesh_water` in `nif.rs`): a mesh override says so,
+  or an object in it has a surface or body name from the `water` table of the metadata. In a
+  water mesh everything under a body name is left out and the remaining shapes become water
+  subsets (`SubsetWater`). Water subsets keep their source texture path (no atlas), the static
+  is not merged, and it is exempt from the buried-in-terrain cull.
 
 The result is the `DistantStatics` map (`IndexMap<String, DistantStatic>` keyed by normalized
 mesh path) defined in [crates/statics/src/model.rs](../../crates/statics/src/model.rs).
@@ -308,6 +313,11 @@ Two layered configuration sources, merged into one `StaticOverrides` by `Overrid
   so mod-shipped directives override the legacy layer. IDs and cell names are case-insensitive;
   exclusion wins when the same value is both included and excluded. Per-mesh `ignore_script = true`
   is the metadata equivalent of the legacy `no_script` keyword.
+
+- **`distantwater.toml`** in a data directory: the same schema and fail-soft rule as plugin
+  metadata, discovered by `discover_water_rules` and merged between the override files and the
+  plugin metadata. It exists for the `water` table (`WaterNames`), which names the shapes that
+  mark distant water. The format is in [mod-metadata-guide.md](../../../docs/mod-metadata-guide.md).
 
 `DynamicVisData` (named visibility groups with ranges, deduplicated across sources) flows into
 `usage.data` so MGE-XE can toggle groups at runtime; references in a dynamic-vis group are

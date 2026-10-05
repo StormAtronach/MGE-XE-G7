@@ -10,6 +10,9 @@
   use no longer scales with the size of your mod list.
 - Grass rendering is new enabled in interiors. The interface now auto-detects interior grass mods. ([#21](https://github.com/Greatness7/MGE-XE/issues/21))
 - The `mgeXE.toml` file now automatically updates itself to include new settings as they released.
+- Water volumes: mods can place bodies of water at any height, apart from the cell's own water.
+  Their surfaces are drawn with the water shading, near the player and in distant land. Meshes
+  are marked as water through `distantwater.toml` or plugin metadata; see the mod metadata guide.
 
 ### Changed
 

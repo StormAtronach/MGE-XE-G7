@@ -93,7 +93,8 @@ and reserved bytes. v5 appends:
 | 132 | `component_count: u32` | Total component records across all subsets. |
 
 `SubsetRecord` still carries bounds, texture path offset, flags
-`hasAlpha`/`hasUVController`, vertex/face counts, geometry offsets, and the 56-byte
+`hasAlpha`/`hasUVController` and the two distant water bits (bit 2 water, bit 3 water that
+reflects the sky only), vertex/face counts, geometry offsets, and the 56-byte
 `HorizonFootprint` at offset 80. v5 appends `first_component_index: u32` at offset 136
 and `component_count: u32` at offset 140. A component-less subset is valid and means all
 tiers draw the full subset.
