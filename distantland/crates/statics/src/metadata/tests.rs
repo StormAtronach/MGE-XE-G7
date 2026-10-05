@@ -335,3 +335,46 @@ ranges = [[50, 100]]
     assert_eq!(overrides.dynamic_vis.scripts["script_a"], 1);
     assert_eq!(overrides.dynamic_vis.scripts["script_b"], 1);
 }
+
+#[test]
+fn water_table_and_water_key_map_to_overrides() {
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+body_names = ["WaterBody"]
+plain_words = ["plain"]
+sky_only_words = ["SkyOnly"]
+
+[tools.mge-xe.distantland.statics]
+'x\ex_pond.nif' = { water = true }
+'wv\not_water.nif' = { water = false }
+'foo\rock.nif' = { type = "far" }
+"#;
+    let overrides = parse_and_apply(text);
+
+    assert_eq!(overrides.water_names.surface, ["watervolume"]);
+    assert_eq!(overrides.water_names.body, ["waterbody"]);
+    assert_eq!(overrides.water_names.plain_words, ["plain"]);
+    assert_eq!(overrides.water_names.sky_only_words, ["skyonly"]);
+    assert_eq!(overrides.mesh_overrides["x\\ex_pond.nif"].water, Some(true));
+    assert_eq!(overrides.mesh_overrides["wv\\not_water.nif"].water, Some(false));
+    assert_eq!(overrides.mesh_overrides["foo\\rock.nif"].water, None);
+}
+
+#[test]
+fn water_table_of_an_unknown_version_is_left_out() {
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 99
+surface_names = ["WaterVolume"]
+
+[tools.mge-xe.distantland.statics]
+'x\ex_pond.nif' = { water = true }
+"#;
+    let overrides = parse_and_apply(text);
+
+    assert!(overrides.water_names.surface.is_empty());
+    // The mesh entries of the same file still count.
+    assert_eq!(overrides.mesh_overrides["x\\ex_pond.nif"].water, Some(true));
+}

@@ -66,6 +66,7 @@ fn subset(texture: &str, seed: u8, with_component: bool) -> PackedSubset {
         palette: vec![palette_entry(seed)],
         has_alpha: 1,
         has_uv_controller: 0,
+        water: 0,
         horizon_footprint: HorizonFootprint {
             max_z: 6.0,
             vertex_count: 3,

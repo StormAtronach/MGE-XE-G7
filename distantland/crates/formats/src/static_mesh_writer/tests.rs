@@ -78,6 +78,7 @@ fn make_test_subset(texture: &str, vertex_count: usize, triangle_count: usize) -
         palette: Vec::new(),
         has_alpha: 0,
         has_uv_controller: 1,
+        water: 0,
         horizon_footprint: HorizonFootprint::default(),
         texture: Box::<str>::from(texture),
     }
@@ -100,6 +101,7 @@ fn subset_with(texture: &str, vertices: Vec<PackedVertex>, triangles: Vec<[u16; 
         palette: Vec::new(),
         has_alpha: 0,
         has_uv_controller: 0,
+        water: 0,
         horizon_footprint: HorizonFootprint::default(),
         texture: Box::<str>::from(texture),
     }

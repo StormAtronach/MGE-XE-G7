@@ -1563,3 +1563,117 @@ fn coincident_position_distinct_uv_stress_subset_optimizes() {
     assert_eq!(subset.vertices.len(), vertex_count as usize);
     assert!(all_indices_in_range(&subset));
 }
+
+/// A water mesh as a modeller writes it: a root with a surface shape and a body shape under it,
+/// both textured and both visible in the file.
+fn build_test_water_nif(surface_name: &str) -> Vec<u8> {
+    let mut stream = NiStream::new();
+
+    let texture_link = stream.insert(NiSourceTexture {
+        source: TextureSource::External("uv_anim\\ghost.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture_link;
+    let texturing_property_link = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+
+    let mut root = NiNode::default();
+    for (name, z) in [(surface_name, 0.0), ("WaterBody", -100.0)] {
+        let mut geometry_data = NiTriShapeData::default();
+        geometry_data.vertices = vec![Vec3::new(0.0, 0.0, z), Vec3::new(1.0, 0.0, z), Vec3::new(0.0, 1.0, z)];
+        geometry_data.normals = vec![Vec3::Z; 3];
+        geometry_data.uv_sets = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+        geometry_data.triangles = vec![[0, 1, 2]];
+        geometry_data.update_center_radius();
+        let geometry_data_link = stream.insert(geometry_data);
+
+        let mut shape = NiTriShape::default();
+        shape.name = name.into();
+        shape.geometry_data = geometry_data_link.cast();
+        shape.properties.push(texturing_property_link.cast());
+        root.children.push(stream.insert(shape).cast());
+    }
+
+    let root_link = stream.insert(root);
+    stream.roots.push(root_link.cast());
+    stream.save_bytes().expect("serialize test nif")
+}
+
+fn water_test_static(root: &Path, mesh: &str, overrides: &StaticOverrides) -> DistantStatic {
+    let vfs = make_test_vfs(root);
+    DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, overrides)
+        .distant_static
+        .expect("water test static")
+}
+
+fn kit_water_names() -> crate::overrides::WaterNames {
+    crate::overrides::WaterNames {
+        surface: vec!["watervolume".to_owned()],
+        body: vec!["waterbody".to_owned()],
+        plain_words: vec!["plain".to_owned()],
+        sky_only_words: vec!["skyonly".to_owned()],
+    }
+}
+
+fn water_override(water: bool) -> crate::overrides::StaticOverride {
+    crate::overrides::StaticOverride {
+        water: Some(water),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn from_nif_takes_water_by_names_and_leaves_the_body_out() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "water.nif", &build_test_water_nif("WaterVolume"));
+    write_test_static_asset(root, "sky.nif", &build_test_water_nif("WaterVolume skyonly"));
+    write_test_static_asset(root, "plain.nif", &build_test_water_nif("WaterVolume plain"));
+    write_test_static_asset(root, "body_only.nif", &build_test_water_nif("Surface"));
+
+    // Without rules the mesh is an ordinary static: the surface and the body.
+    let ordinary = water_test_static(root, "water.nif", &StaticOverrides::default());
+    assert_eq!(ordinary.subsets.len(), 2);
+    assert!(!ordinary.has_water());
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+
+    // With the names the body is left out and the surface is water.
+    let water = water_test_static(root, "water.nif", &by_names);
+    assert_eq!(water.subsets.len(), 1);
+    assert_eq!(water.subsets[0].water, SubsetWater::ReflectsScene);
+    assert!(water.subsets[0].keeps_source_texture());
+    assert_eq!(water.bounding_box.min.z, 0.0);
+
+    // The words in the surface name choose the look.
+    let sky = water_test_static(root, "sky.nif", &by_names);
+    assert_eq!(sky.subsets.len(), 1);
+    assert_eq!(sky.subsets[0].water, SubsetWater::SkyOnly);
+    let plain = water_test_static(root, "plain.nif", &by_names);
+    assert_eq!(plain.subsets.len(), 1);
+    assert!(!plain.has_water());
+
+    // A body alone makes the mesh water.
+    let body_only = water_test_static(root, "body_only.nif", &by_names);
+    assert_eq!(body_only.subsets.len(), 1);
+    assert_eq!(body_only.subsets[0].water, SubsetWater::ReflectsScene);
+
+    // A mesh override can say that the mesh is not water, whatever its names say.
+    let mut refused = StaticOverrides::default();
+    refused.water_names = kit_water_names();
+    refused.mesh_overrides.insert("water.nif".to_owned(), water_override(false));
+    let not_water = water_test_static(root, "water.nif", &refused);
+    assert_eq!(not_water.subsets.len(), 2);
+    assert!(!not_water.has_water());
+
+    // A mesh override can make a mesh water without any name: every shape is surface.
+    let mut registered = StaticOverrides::default();
+    registered.mesh_overrides.insert("water.nif".to_owned(), water_override(true));
+    let by_override = water_test_static(root, "water.nif", &registered);
+    assert_eq!(by_override.subsets.len(), 2);
+    assert!(by_override.subsets.iter().all(|subset| subset.water == SubsetWater::ReflectsScene));
+}

@@ -395,6 +395,8 @@ pub(crate) struct MeshOverrideProjection {
     pub(crate) simplify: Option<u32>,
     /// Treats the mesh as scriptless.
     pub(crate) no_script: bool,
+    /// Says whether the mesh is distant water, whatever its names say.
+    pub(crate) water: Option<bool>,
 }
 
 impl From<&StaticOverride> for MeshOverrideProjection {
@@ -405,6 +407,7 @@ impl From<&StaticOverride> for MeshOverrideProjection {
             density: value.density.to_bits(),
             simplify: value.simplify.map(f32::to_bits),
             no_script: value.no_script,
+            water: value.water,
         }
     }
 }
@@ -422,6 +425,11 @@ impl CanonicalWrite for MeshOverrideProjection {
             None => writer.write_bool(false),
         }
         writer.write_bool(self.no_script);
+        // Written only when set, so that an override without it keeps the fingerprint it had
+        // before this field existed. It is the last field, so the encoding stays unambiguous.
+        if let Some(water) = self.water {
+            writer.write_bool(water);
+        }
     }
 }
 

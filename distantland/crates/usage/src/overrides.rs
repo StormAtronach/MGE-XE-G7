@@ -18,6 +18,9 @@ pub struct StaticOverride {
     pub simplify: Option<f32>,
     /// Treats the mesh as scriptless for classification purposes.
     pub no_script: bool,
+    /// Says whether the mesh is distant water, whatever the names in it say. `None` leaves the
+    /// answer to the names (see [`WaterNames`]).
+    pub water: Option<bool>,
 }
 
 impl Default for StaticOverride {
@@ -28,8 +31,27 @@ impl Default for StaticOverride {
             density: -1.0,
             simplify: None,
             no_script: false,
+            water: None,
         }
     }
+}
+
+/// Names that mark the water in a mesh, from the `water` table of a metadata file.
+///
+/// A mesh is water when an object in it has a surface name or a body name, or when its mesh
+/// override says so. All entries are lowercased.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WaterNames {
+    /// Name prefixes of the objects that are the surface of the water. The first such name in
+    /// a mesh also carries the words below.
+    pub surface: Vec<String>,
+    /// Name prefixes of the objects that hold the body of the water. They are left out of the
+    /// distant mesh, with everything under them.
+    pub body: Vec<String>,
+    /// Words in the surface name that keep the mesh's own look: the mesh is not drawn as water.
+    pub plain_words: Vec<String>,
+    /// Words in the surface name for water that reflects the sky only.
+    pub sky_only_words: Vec<String>,
 }
 
 /// Dynamic-visibility condition attached to a visibility group.
@@ -89,4 +111,6 @@ pub struct StaticOverrides {
     pub interiors: HashMap<Uncased<'static>, bool>,
     /// Dynamic-visibility groups and lookup tables from `[dynamic_vis]`.
     pub dynamic_vis: DynamicVisData,
+    /// Names that mark water meshes, from the `water` table of a metadata file.
+    pub water_names: WaterNames,
 }

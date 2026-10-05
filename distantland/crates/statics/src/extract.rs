@@ -281,7 +281,9 @@ impl DistantStatic {
         clear_root_node_transforms(&mut stream);
         normalize_texture_paths(&mut stream);
 
-        let shapes: Vec<_> = visible_geometries(&stream).collect();
+        let registered_water = overrides.mesh_overrides.get(rel_path).and_then(|ovr| ovr.water);
+        let water = mesh_water(&stream, &overrides.water_names, registered_water);
+        let shapes: Vec<_> = visible_geometries(&stream, water).collect();
         if shapes.is_empty() {
             return None;
         }
@@ -423,6 +425,7 @@ impl DistantStatic {
 
             subset.has_alpha = geometry.has_alpha(&stream);
             subset.has_uv_controller = geometry.has_uv_controller(&stream);
+            subset.water = water.map_or(crate::model::SubsetWater::None, |water| water.surface);
             subset.emissive = material.map(average_emissive).unwrap_or(0.0);
 
             subsets.push(subset);

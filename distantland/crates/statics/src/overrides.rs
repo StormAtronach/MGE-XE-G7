@@ -9,7 +9,7 @@ use std::path::Path;
 use hashbrown::HashMap;
 use uncased::Uncased;
 
-pub use crate::usage::{DynamicVisData, DynamicVisGroup, DynamicVisKind, StaticOverride, StaticOverrides};
+pub use crate::usage::{DynamicVisData, DynamicVisGroup, DynamicVisKind, StaticOverride, StaticOverrides, WaterNames};
 use distantland_foundation::identity::FileIdentity;
 use tracing::warn;
 
@@ -105,6 +105,11 @@ impl OverridesBuilder {
         }
         self.mesh_sources.insert(key.clone(), source);
         self.result.mesh_overrides.insert(key, value);
+    }
+
+    /// Sets the names that mark water meshes. A later source replaces an earlier one whole.
+    pub(crate) fn set_water_names(&mut self, names: WaterNames) {
+        self.result.water_names = names;
     }
 
     /// Inserts an object-name override and warns on conflicting cross-source replacement.

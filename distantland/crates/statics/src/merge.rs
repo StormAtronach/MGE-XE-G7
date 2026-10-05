@@ -337,6 +337,8 @@ pub fn plan_exterior_merge_groups<'a>(
 
         if let Some(ds) = distant_statics.get(reference.id.as_ref())
             && ds.static_type != StaticType::StaticGrass
+            // Water is drawn in a pass of its own, piece by piece.
+            && !ds.has_water()
             && (ds.bounding_sphere.radius * reference.scale) >= 32.0
         {
             cells.entry((cell_x, cell_y)).or_insert_with(Vec::new).push((*key, reference));

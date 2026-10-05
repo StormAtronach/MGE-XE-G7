@@ -196,6 +196,8 @@ pub struct PackedSubset {
     pub has_alpha: u8,
     /// Non-zero when this subset uses an animated UV controller.
     pub has_uv_controller: u8,
+    /// Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only.
+    pub water: u8,
     /// Optional generated terrain-horizon culling footprint.
     pub horizon_footprint: HorizonFootprint,
     /// Texture path serialized as a NUL-terminated path in the static mesh file.
@@ -213,6 +215,7 @@ impl Default for PackedSubset {
             palette: Vec::default(),
             has_alpha: 0,
             has_uv_controller: 0,
+            water: 0,
             horizon_footprint: HorizonFootprint::default(),
             texture: Box::<str>::from(""),
         }
@@ -355,7 +358,8 @@ pub struct SubsetRecord {
     pub vertex_count: u32,
     /// Number of triangles.
     pub triangle_count: u32,
-    /// Bitmask: bit 0 = has_alpha, bit 1 = has_uv_controller.
+    /// Bitmask: bit 0 = has_alpha, bit 1 = has_uv_controller, bit 2 = distant water,
+    /// bit 3 = distant water that reflects the sky only.
     pub flags: u32,
     /// Length of the texture path in bytes (excluding the trailing NUL).
     pub texture_path_length: u32,
@@ -596,7 +600,7 @@ fn decode_subset(
     expected_palette: &mut u32,
     geometry_cursor: &mut usize,
 ) -> io::Result<PackedSubset> {
-    if record.flags & !0b11 != 0 {
+    if record.flags & !0b1111 != 0 {
         return Err(invalid_data(format!(
             "static_meshes subset {subset_index} has unknown flags {:#x}",
             record.flags
@@ -720,6 +724,11 @@ fn decode_subset(
         palette,
         has_alpha: (record.flags & 1) as u8,
         has_uv_controller: ((record.flags >> 1) & 1) as u8,
+        water: match (record.flags >> 2) & 3 {
+            0 | 2 => 0,
+            1 => 1,
+            _ => 2,
+        },
         horizon_footprint: record.horizon_footprint,
         texture,
     })

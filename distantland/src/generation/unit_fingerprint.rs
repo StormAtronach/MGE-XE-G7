@@ -80,6 +80,11 @@ pub(crate) fn build_static_state(
                 for subset in &distant_static.subsets {
                     writer.write_bool(subset.has_alpha);
                     writer.write_bool(subset.has_uv_controller);
+                    // Written for water alone, so that the fingerprint of every other mesh stays
+                    // what it was before subsets could be water.
+                    if subset.water.is_water() {
+                        writer.write_u8(subset.water.packed());
+                    }
                     match subset.texture.source_sym().and_then(|sym| vfs.texture_key_for_sym(sym)) {
                         Some(texture) => {
                             writer.write_bool(true);
