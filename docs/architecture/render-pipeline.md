@@ -163,6 +163,26 @@ Draws MGE's water plane (`vbWater`/`ibWater`, radial grid) with
 depth-based shore fade.
 Interiors/underwater set a clip plane at the interior fog end to save fillrate.
 
+Water volumes are bodies of water that a mod places apart from the cell's water. Their
+surfaces are ordinary game meshes whose material carries a marker in the specular power:
+99998 (reflects the sky and what is on screen) or 99997 (reflects the sky only). `SetMaterial`
+recognises the marker, `DrawIndexedPrimitive` holds the draw (`renderWaterVolume`), and
+`flushWaterVolumes` draws all held surfaces after StageBlend and after each Stage 2, from one
+copy of the frame, with `PASS_RENDERWATERVOLUME` / `PASS_RENDERWATERVOLUME_SKYONLY`. The
+shading reuses `WaterVS` and the water plane's normals, fog and specular; the planar
+reflection is replaced by the analytic sky colour plus an optional screen-space march.
+
+The first flush of a frame also draws the distant statics whose subsets carry the water flag
+(`RenderMesh::water`), with `PASS_RENDERWATERVOLUME_DISTANT` /
+`PASS_RENDERWATERVOLUME_DISTANT_SKYONLY`. `VisibleSet` leaves those meshes out of every other
+pass (colour, depth, shadow, reflection). The pixel shader clips them nearer than
+`nearViewRange`, where the game draws the real mesh, and the screen-space march fades out at
+`distant_land.water.volume_reflection_cells`.
+
+A mod can also tell MGE which volume the camera is in, through the `MGE_WaterVolumesSet`
+export: while the camera is inside one, `CellHasWater()` and `WaterLevel()` describe that
+volume, which gives the underwater view and fog at the right height.
+
 ## 5. Post-processing and frame completion
 
 At `BeginScene` of the first UI scene (`isFrameComplete` not yet set):
