@@ -446,6 +446,23 @@ fn v4_subset_flags() {
 }
 
 #[test]
+fn subset_water_flags() {
+    // The two water bits; the test subset has other flags of its own.
+    let water_bits_of = |water: u8| {
+        let mut subset = make_test_subset("f.dds", 1, 1);
+        subset.water = water;
+        let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![subset])].into_iter().collect();
+        let bytes = serialize_static_meshes(&distant_statics).unwrap();
+        let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
+        subset_record(&bytes, header, 0).flags & 0b1100
+    };
+
+    assert_eq!(water_bits_of(0), 0);
+    assert_eq!(water_bits_of(1), 0b0100); // bit 2 (distant water)
+    assert_eq!(water_bits_of(2), 0b1100); // bit 2 + bit 3 (reflects the sky only)
+}
+
+#[test]
 fn v4_subset_record_includes_horizon_footprint_at_offset_80() {
     let mut subset = make_test_subset("f.dds", 3, 1);
     subset.horizon_footprint = HorizonFootprint {

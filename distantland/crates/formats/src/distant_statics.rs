@@ -600,7 +600,8 @@ fn decode_subset(
     expected_palette: &mut u32,
     geometry_cursor: &mut usize,
 ) -> io::Result<PackedSubset> {
-    if record.flags & !0b1111 != 0 {
+    // Bit 3 says what distant water reflects, so it is valid only with bit 2.
+    if record.flags & !0b1111 != 0 || record.flags & 0b1100 == 0b1000 {
         return Err(invalid_data(format!(
             "static_meshes subset {subset_index} has unknown flags {:#x}",
             record.flags
@@ -725,7 +726,7 @@ fn decode_subset(
         has_alpha: (record.flags & 1) as u8,
         has_uv_controller: ((record.flags >> 1) & 1) as u8,
         water: match (record.flags >> 2) & 3 {
-            0 | 2 => 0,
+            0 => 0,
             1 => 1,
             _ => 2,
         },
