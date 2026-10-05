@@ -23,8 +23,8 @@ static bool isMainView, isStencilScene, isAmbientWhite;
 static DWORD stencilRef;
 static bool stage0Complete, isFrameComplete, isHUDComplete;
 static bool isWaterMaterial, waterDrawn, distantWater;
-// Marks the surface mesh of a water volume, set on its material by MWSE: 99998 for a surface
-// that reflects what is on screen, 99997 for one that reflects the sky only.
+// Marks the surface mesh of a water volume, set on its material by the mod that owns the mesh:
+// 99998 for a surface that reflects what is on screen, 99997 for one that reflects the sky only.
 static bool isWaterVolumeMaterial, waterVolumeReflectsScene;
 
 static bool zoomSensSaved;

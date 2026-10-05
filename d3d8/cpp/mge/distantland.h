@@ -403,10 +403,11 @@ public:
     static void renderWaterPlane();
     static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene);
     static void flushWaterVolumes(bool withDistant);
+    static void discardWaterVolumes();
+    // A surface mesh of a water volume was taken this frame.
+    static bool waterVolumeDrawn;
     // Distant statics that are water are in view this frame, in visDistantShared.
     static bool distantWaterInView;
-    static void discardWaterVolumes();
-    static bool waterVolumeDrawn;
 
     static void renderDepth();
     static void renderDepthAdditional();

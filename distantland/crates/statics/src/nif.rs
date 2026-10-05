@@ -105,9 +105,9 @@ pub struct MeshWater<'a> {
 }
 
 fn name_starts_with_any(name: &str, prefixes: &[String]) -> bool {
-    prefixes.iter().any(|prefix| {
-        name.len() >= prefix.len() && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
-    })
+    prefixes
+        .iter()
+        .any(|prefix| name.len() >= prefix.len() && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes()))
 }
 
 /// Returns whether lowercased `text` holds one of `words` with no letter on either side.

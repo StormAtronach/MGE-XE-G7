@@ -84,8 +84,8 @@ public:
     bool IntHasWater();
     float WaterLevel();
 
-    // Boxes of water placed by MWSE, independent of the cell's own water. min and max are
-    // world-space corners; the surface is at max[2].
+    // Boxes of water that a mod reports through MGE_WaterVolumesSet, independent of the cell's
+    // own water. min and max are world-space corners; the surface is at max[2].
     struct WaterVolume {
         float min[3];
         float max[3];

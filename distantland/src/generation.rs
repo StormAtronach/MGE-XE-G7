@@ -35,8 +35,7 @@ use crate::statics::atlas::sizing::{
 };
 use crate::statics::atlas::{AtlasPageWrite, AtlasPublishPlan};
 use crate::statics::metadata::{
-    apply_override_source_with_identity, apply_plugin_metadata_with_identity, discover_plugin_metadata,
-    discover_water_rules,
+    apply_override_source_with_identity, apply_plugin_metadata_with_identity, discover_plugin_metadata, discover_water_rules,
 };
 use crate::{
     AtlasManager, AtlasTextureSet, IndexSet, OverridesBuilder, StaticTextureSizingMode, TraceSummary, UsageFilterOptions,
