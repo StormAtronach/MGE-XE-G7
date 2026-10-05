@@ -17,6 +17,9 @@ pub const VIS_VERY_FAR: Dword = 0x04;
 pub const VIS_GRASS: Dword = 0x08;
 /// Includes distant landscape tiles in a visible-set query.
 pub const VIS_LAND: Dword = 0x10;
+/// Includes the distant statics that are water in a visible-set query. They are kept apart from
+/// the static-detail buckets, so that no ordinary pass draws them.
+pub const VIS_WATER: Dword = 0x20;
 /// Convenience mask covering all static-detail visibility buckets.
 pub const VIS_STATIC: Dword = VIS_NEAR | VIS_FAR | VIS_VERY_FAR;
 

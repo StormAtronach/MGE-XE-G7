@@ -348,13 +348,14 @@ void DistantLand::renderStage0() {
                     cullDistantStatics(&mwView, &distProj);
                     renderDistantStatics();
                     // Water among the distant statics is drawn later, by flushWaterVolumes.
-                    distantWaterInView = distantWaterLoaded && mwBridge->IsExterior() && visDistantShared.HasWater();
+                    distantWaterInView = mwBridge->IsExterior() && !visWaterShared.Empty();
 
                     vsr.endAlphaToCoverage(device);
                     effect->EndPass();
                 }
                 else {
                     visDistantShared.RemoveAll();
+                    visWaterShared.RemoveAll();
                 }
             }
 

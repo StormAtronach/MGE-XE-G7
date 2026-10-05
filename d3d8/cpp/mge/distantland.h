@@ -197,6 +197,7 @@ public:
     static VisibleSet visLandShared;
     static VisibleSet visDistantShared;
     static VisibleSet visGrassShared;
+    static VisibleSet visWaterShared;
     static VisibleSet visExtraShared;
     static IPC::VecView<IPC::DynVisFlag> dynVisFlagsShared;
     static IPC::VecView<IPC::ResidencyPlan> residencyPlanShared;
@@ -205,6 +206,7 @@ public:
     static IPC::VecId visLandSharedId;
     static IPC::VecId visDistantSharedId;
     static IPC::VecId visGrassSharedId;
+    static IPC::VecId visWaterSharedId;
     static IPC::VecId visExtraSharedId;
     static IPC::VecId dynVisFlagsSharedId;
     static IPC::VecId residencyPlanSharedId;
@@ -406,9 +408,9 @@ public:
     static void discardWaterVolumes();
     // A surface mesh of a water volume was taken this frame.
     static bool waterVolumeDrawn;
-    // The loaded distant statics have water among them. Without any, no frame looks for it.
+    // The loaded distant statics have water among them. Without any, no frame asks for it.
     static bool distantWaterLoaded;
-    // Distant statics that are water are in view this frame, in visDistantShared.
+    // Distant statics that are water are in view this frame, in visWaterShared.
     static bool distantWaterInView;
 
     static void renderDepth();
