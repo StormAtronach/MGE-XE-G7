@@ -456,10 +456,10 @@ HRESULT _stdcall MGEProxyDevice::EndScene() {
 
             DistantLand::renderStage1();
             DistantLand::renderStageBlend();
-            DistantLand::flushWaterVolumes();
+            DistantLand::flushWaterVolumes(true);
         } else if (!isFrameComplete) {
             DistantLand::renderStage2();
-            DistantLand::flushWaterVolumes();
+            DistantLand::flushWaterVolumes(false);
 
             if (distantWater && !waterDrawn && !isStencilScene) {
                 // The Morrowind water grid can be out of view, or scene/stencil order can be

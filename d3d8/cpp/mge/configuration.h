@@ -174,6 +174,13 @@ struct ConfigurationStruct {
         float InteriorWind;
     } Grass;
 
+    // Water volumes. Kept outside DL for the same layout reason as Horizon.
+    struct {
+        // How far from the eye, in cells, the water among the distant statics reflects what is
+        // on screen. Farther away it reflects the sky only.
+        float ReflectCells;
+    } WaterVolume;
+
     struct {
         float SunMult[10];
         float AmbMult[10];

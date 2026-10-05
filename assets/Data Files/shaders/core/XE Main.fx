@@ -510,4 +510,34 @@ Technique T0 {
         PixelShader = compile ps_3_0 WaterVolumePS(false);
     }
     //------------------------------------------------------------
+    // Used for rendering water volumes among the distant statics
+    Pass P17 {
+        ZEnable = true;
+        ZWriteEnable = true;
+        ZFunc = LessEqual;
+        StencilEnable = false;
+        CullMode = none;
+
+        AlphaBlendEnable = false;
+        AlphaTestEnable = false;
+
+        VertexShader = compile vs_3_0 WaterVolumeDistantVS();
+        PixelShader = compile ps_3_0 WaterVolumeDistantPS(true);
+    }
+    //------------------------------------------------------------
+    // Used for rendering water volumes among the distant statics that reflect the sky only
+    Pass P18 {
+        ZEnable = true;
+        ZWriteEnable = true;
+        ZFunc = LessEqual;
+        StencilEnable = false;
+        CullMode = none;
+
+        AlphaBlendEnable = false;
+        AlphaTestEnable = false;
+
+        VertexShader = compile vs_3_0 WaterVolumeDistantVS();
+        PixelShader = compile ps_3_0 WaterVolumeDistantPS(false);
+    }
+    //------------------------------------------------------------
 }

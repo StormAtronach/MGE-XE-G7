@@ -13,7 +13,7 @@ void VisibleSet::Render(IDirect3DDevice9* device,
     visible_set.restart();
     while (!visible_set.at_end()) {
         const RenderMesh& mesh = visible_set.next();
-        if (mesh.faces <= 0) {
+        if (mesh.faces <= 0 || mesh.water != 0) {
             continue;
         }
         if (last_buffer != mesh.vBuffer) {
@@ -68,7 +68,7 @@ void VisibleSet::Render(IDirect3DDevice9* device,
     visible_set.restart();
     while (!visible_set.at_end()) {
         const RenderMesh& mesh = visible_set.next();
-        if (mesh.faces <= 0) {
+        if (mesh.faces <= 0 || mesh.water != 0) {
             continue;
         }
 
@@ -142,5 +142,42 @@ void VisibleSet::Render(IDirect3DDevice9* device,
     }
     if (animate_uv_handle) {
         effectPool->SetBool(*animate_uv_handle, false);
+    }
+}
+
+bool VisibleSet::HasWater() {
+    bool found = false;
+    visible_set.restart();
+    while (!visible_set.at_end()) {
+        const RenderMesh& mesh = visible_set.next();
+        if (mesh.water != 0 && mesh.faces > 0) {
+            found = true;
+        }
+    }
+    return found;
+}
+
+void VisibleSet::RenderWater(IDirect3DDevice9* device,
+                             ID3DXEffect* effect,
+                             const D3DXHANDLE* world_matrix_handle,
+                             unsigned int vertex_size,
+                             std::uint8_t kind) {
+    IDirect3DVertexBuffer9* last_buffer = nullptr;
+
+    visible_set.restart();
+    while (!visible_set.at_end()) {
+        const RenderMesh& mesh = visible_set.next();
+        if (mesh.faces <= 0 || mesh.water != kind) {
+            continue;
+        }
+        if (last_buffer != mesh.vBuffer) {
+            device->SetIndices(mesh.iBuffer);
+            device->SetStreamSource(0, mesh.vBuffer, 0, vertex_size);
+            last_buffer = mesh.vBuffer;
+        }
+
+        effect->SetMatrix(*world_matrix_handle, &mesh.transform);
+        effect->CommitChanges();
+        device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, mesh.verts, 0, mesh.faces);
     }
 }

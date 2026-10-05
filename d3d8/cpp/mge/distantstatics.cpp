@@ -1187,6 +1187,7 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.aabbMax = subsetRecord.aabb.maxRuntime();
             subset.hasAlpha = (subsetRecord.flags & 0x1u) != 0;
             subset.hasUVController = (subsetRecord.flags & 0x2u) != 0;
+            subset.water = (subsetRecord.flags & 0x4u) == 0 ? 0 : ((subsetRecord.flags & 0x8u) == 0 ? 1 : 2);
             subset.verts = runtimeVertexCount;
             subset.faces = runtimeTriangleCount;
             subset.farFaces = runtimeFarFaceCount;

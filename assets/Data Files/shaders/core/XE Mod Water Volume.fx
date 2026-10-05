@@ -52,8 +52,9 @@ float4 reflectScene(float3 origin, float3 dir)
     return result;
 }
 
-// reflectsScene is fixed per pass: a surface either reflects what is on screen or the sky only.
-float4 WaterVolumePS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
+// reflectsScene and distant are fixed per pass. A surface either reflects what is on screen or
+// the sky only. A distant surface reflects what is on screen out to waterVolumeReflectRange.
+float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant)
 {
     // Calculate eye vector
     float3 EyeVec = IN.pos.xyz - eyePos.xyz;
@@ -112,8 +113,13 @@ float4 WaterVolumePS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
     // Reflect what is on screen over the sky
     if(reflectsScene)
     {
-        float4 scene = reflectScene(IN.pos.xyz, reflectdir);
-        reflected = lerp(reflected, scene.rgb, scene.a);
+        // Far away the march is left out; it fades out over the last quarter of a cell.
+        float sceneWeight = distant ? saturate((waterVolumeReflectRange - dist) / 2048) : 1;
+        if(sceneWeight > 0)
+        {
+            float4 scene = reflectScene(IN.pos.xyz, reflectdir);
+            reflected = lerp(reflected, scene.rgb, scene.a * sceneWeight);
+        }
     }
 
     // Fade reflection into an inscatter dominated horizon
@@ -134,4 +140,25 @@ float4 WaterVolumePS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
     result = lerp(result, refracted, shorefactor * fog.a);
 
     return float4(result, 1);
+}
+
+float4 WaterVolumePS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
+{
+    return waterVolumeColour(IN, reflectsScene, false);
+}
+
+//------------------------------------------------------------
+// The same water among the distant statics, farther away than the game draws.
+
+// A distant static keeps a palette index in pos.w.
+WaterVertOut WaterVolumeDistantVS(in StatVertIn IN)
+{
+    return WaterVS(float4(IN.pos.xyz, 1));
+}
+
+float4 WaterVolumeDistantPS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
+{
+    // Nearer than this the game draws the surface itself
+    clip(IN.screenpos.w - nearViewRange);
+    return waterVolumeColour(IN, reflectsScene, true);
 }
