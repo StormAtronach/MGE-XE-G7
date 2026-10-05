@@ -406,6 +406,8 @@ public:
     static void discardWaterVolumes();
     // A surface mesh of a water volume was taken this frame.
     static bool waterVolumeDrawn;
+    // The loaded distant statics have water among them. Without any, no frame looks for it.
+    static bool distantWaterLoaded;
     // Distant statics that are water are in view this frame, in visDistantShared.
     static bool distantWaterInView;
 

@@ -458,6 +458,7 @@ void DistantLand::simulateDynamicWaves() {
 }
 
 bool DistantLand::waterVolumeDrawn = false;
+bool DistantLand::distantWaterLoaded = false;
 bool DistantLand::distantWaterInView = false;
 
 // A surface mesh of a water volume, held until the scene it was submitted in ends.
