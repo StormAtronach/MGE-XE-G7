@@ -26,6 +26,8 @@ shared float fogStart, fogRange;
 shared float nearFogStart, nearFogRange;
 shared float nearViewRange;
 shared float waterVolumeReflectRange;
+shared float3 waterVolumeTint;
+shared float3 waterPlaneTint;
 shared float3 sunPos;
 shared float sunVis;
 shared float2 windVec;
@@ -321,3 +323,23 @@ float calc_coverage(float a, float alpha_ref, float falloff_rate) {
 }
 
 //------------------------------------------------------------
+// Water of a colour. The colour is the emissive colour of the material of the water: of a
+// water volume (waterVolumeTint, or the vertex colour far away), or of the water of the cell
+// (waterPlaneTint). Black, which such a material has unless a mod changes it, is the usual
+// colour.
+
+// The colour that deep water tends to: the usual one, or the tint in the light of the sun and the sky.
+float3 waterDepthBase(float3 usual, float3 tint) {
+    float tinted = step(0.5 / 255, max(tint.r, max(tint.g, tint.b)));
+    float3 light = 0.05 * sunCol * (1 - pow(1 - sunVis, 2)) + 0.085 * (2 * skyCol + fogColFar);
+    return lerp(usual, light * tint, tinted);
+}
+
+// What is left of the light that comes through this much water: a colour takes the other
+// colours out, more with depth.
+float3 waterTransmission(float3 tint, float depth) {
+    float tintMax = max(tint.r, max(tint.g, tint.b));
+    float tinted = step(0.5 / 255, tintMax);
+    float3 hue = lerp(1, max(tint / max(tintMax, 1e-4), 0.05), tinted);
+    return pow(hue, depth / 200);
+}

@@ -99,7 +99,9 @@ Only `cells` and `terrain_cells` retain their collected data for downstream stat
   or an object in it has a surface or body name from the `water` table of the metadata. In a
   water mesh everything under a body name is left out and the remaining shapes become water
   subsets (`SubsetWater`). Water subsets keep their source texture path (no atlas), the static
-  is not merged, and it is exempt from the buried-in-terrain cull.
+  is not merged, and it is exempt from the buried-in-terrain cull. The vertex colour of a
+  water subset is the colour of its water: the `water_color` of the mesh override, or the
+  emissive colour of the material, with black for the usual colour.
 
 The result is the `DistantStatics` map (`IndexMap<String, DistantStatic>` keyed by normalized
 mesh path) defined in [crates/statics/src/model.rs](../../crates/statics/src/model.rs).

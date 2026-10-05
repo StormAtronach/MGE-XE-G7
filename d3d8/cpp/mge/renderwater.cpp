@@ -458,6 +458,7 @@ void DistantLand::simulateDynamicWaves() {
 }
 
 bool DistantLand::waterVolumeDrawn = false;
+float DistantLand::waterPlaneTint[3] = { 0.0f, 0.0f, 0.0f };
 bool DistantLand::distantWaterLoaded = false;
 bool DistantLand::distantWaterInView = false;
 
@@ -465,6 +466,8 @@ bool DistantLand::distantWaterInView = false;
 struct PendingWaterVolume {
     RenderedState rs;
     bool reflectsScene;
+    // The colour of the water: the emissive colour of the material. Black for the usual colour.
+    float tint[3];
 };
 static std::vector<PendingWaterVolume> pendingWaterVolumes;
 
@@ -472,14 +475,14 @@ static std::vector<PendingWaterVolume> pendingWaterVolumes;
 // it with the water shading instead of its own material. The draw happens in flushWaterVolumes,
 // so that every surface refracts and reflects the same frame, without the other surfaces in it.
 // Returns false when the draw should go ahead unchanged.
-bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene) {
+bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint) {
     if (!canRenderDistantLand() || isRenderCached) {
         return false;
     }
 
     rs->vb->AddRef();
     rs->ib->AddRef();
-    pendingWaterVolumes.push_back({ *rs, reflectsScene });
+    pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b } });
     waterVolumeDrawn = true;
     return true;
 }
@@ -550,6 +553,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             }
             const RenderedState* rs = &pending.rs;
             effect->SetMatrix(ehWorld, &rs->worldTransforms[0]);
+            effect->SetFloatArray(ehWaterVolumeTint, pending.tint, 3);
             if (!passBegun) {
                 const auto surfacePass = reflectsScene ? PASS_RENDERWATERVOLUME : PASS_RENDERWATERVOLUME_SKYONLY;
                 effect->BeginPass(underwater ? PASS_RENDERUNDERWATER : surfacePass);

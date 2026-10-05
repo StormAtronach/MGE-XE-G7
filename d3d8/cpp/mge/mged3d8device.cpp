@@ -26,7 +26,9 @@ static bool stage0Complete, isFrameComplete, isHUDComplete;
 static bool isWaterMaterial, waterDrawn, distantWater;
 // Marks the surface mesh of a water volume, set on its material by the mod that owns the mesh:
 // 99998 for a surface that reflects what is on screen, 99997 for one that reflects the sky only.
+// The emissive colour of that material is the colour of the water.
 static bool isWaterVolumeMaterial, waterVolumeReflectsScene;
+static D3DCOLORVALUE waterVolumeTint;
 
 static bool zoomSensSaved;
 static float zoomSensX, zoomSensY;
@@ -558,8 +560,14 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
     captureMaterial(a);
     isWaterMaterial = (a->Power == 99999.0f);
+    if (isWaterMaterial) {
+        DistantLand::waterPlaneTint[0] = a->Emissive.r;
+        DistantLand::waterPlaneTint[1] = a->Emissive.g;
+        DistantLand::waterPlaneTint[2] = a->Emissive.b;
+    }
     waterVolumeReflectsScene = (a->Power == 99998.0f);
     isWaterVolumeMaterial = waterVolumeReflectsScene || (a->Power == 99997.0f);
+    waterVolumeTint = a->Emissive;
 
     return ProxyDevice::SetMaterial(a);
 }
@@ -725,7 +733,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
                 }
                 return D3D_OK;
             }
-        } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene)) {
+        } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene, waterVolumeTint)) {
             // The surface of a water volume was drawn with the water shading.
             return D3D_OK;
         } else {

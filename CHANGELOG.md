@@ -13,6 +13,9 @@
 - Water volumes: mods can place bodies of water at any height, apart from the cell's own water.
   Their surfaces are drawn with the water shading, near the player and in distant land. Meshes
   are marked as water through `distantwater.toml` or plugin metadata; see the mod metadata guide.
+  A water volume can have a colour: the emissive colour of its material.
+- The water of a cell can have a colour: the emissive colour of the game's water material,
+  which a mod can set from Lua.
 
 ### Changed
 

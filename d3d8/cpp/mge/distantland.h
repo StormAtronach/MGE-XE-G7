@@ -282,6 +282,8 @@ public:
     static D3DXHANDLE ehFogNearStart, ehFogNearRange;
     static D3DXHANDLE ehNearViewRange;
     static D3DXHANDLE ehWaterVolumeReflectRange;
+    static D3DXHANDLE ehWaterVolumeTint;
+    static D3DXHANDLE ehWaterPlaneTint;
     static D3DXHANDLE ehWindVec;
     static D3DXHANDLE ehNiceWeather;
     static D3DXHANDLE ehTime;
@@ -403,11 +405,14 @@ public:
     static void clearReflection();
     static void simulateDynamicWaves();
     static void renderWaterPlane();
-    static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene);
+    static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint);
     static void flushWaterVolumes(bool withDistant);
     static void discardWaterVolumes();
     // A surface mesh of a water volume was taken this frame.
     static bool waterVolumeDrawn;
+    // The colour of the water of the cell: the emissive colour of the game's water material.
+    // Black for the usual colour. It has nothing to do with the colours of water volumes.
+    static float waterPlaneTint[3];
     // The loaded distant statics have water among them. Without any, no frame asks for it.
     static bool distantWaterLoaded;
     // Distant statics that are water are in view this frame, in visWaterShared.

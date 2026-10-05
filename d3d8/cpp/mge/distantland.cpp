@@ -629,6 +629,7 @@ void DistantLand::renderStageWater() {
         }
 
         // Switch to appropriate shader and render
+        effect->SetFloatArray(ehWaterPlaneTint, waterPlaneTint, 3);
         effect->BeginPass(u ? PASS_RENDERUNDERWATER : PASS_RENDERWATER);
         renderWaterPlane();
         effect->EndPass();

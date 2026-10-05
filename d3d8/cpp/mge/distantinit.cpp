@@ -273,6 +273,8 @@ D3DXHANDLE DistantLand::ehFogNearStart;
 D3DXHANDLE DistantLand::ehFogNearRange;
 D3DXHANDLE DistantLand::ehNearViewRange;
 D3DXHANDLE DistantLand::ehWaterVolumeReflectRange;
+D3DXHANDLE DistantLand::ehWaterVolumeTint;
+D3DXHANDLE DistantLand::ehWaterPlaneTint;
 D3DXHANDLE DistantLand::ehWindVec;
 D3DXHANDLE DistantLand::ehNiceWeather;
 D3DXHANDLE DistantLand::ehTime;
@@ -858,6 +860,8 @@ bool DistantLand::initShader() {
     ehFogNearRange = effect->GetParameterByName(0, "nearFogRange");
     ehNearViewRange = effect->GetParameterByName(0, "nearViewRange");
     ehWaterVolumeReflectRange = effect->GetParameterByName(0, "waterVolumeReflectRange");
+    ehWaterVolumeTint = effect->GetParameterByName(0, "waterVolumeTint");
+    ehWaterPlaneTint = effect->GetParameterByName(0, "waterPlaneTint");
     ehWindVec = effect->GetParameterByName(0, "windVec");
     ehNiceWeather = effect->GetParameterByName(0, "niceWeather");
     ehTime = effect->GetParameterByName(0, "time");

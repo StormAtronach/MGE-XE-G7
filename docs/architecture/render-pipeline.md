@@ -170,7 +170,15 @@ recognises the marker, `DrawIndexedPrimitive` holds the draw (`renderWaterVolume
 `flushWaterVolumes` draws all held surfaces after StageBlend and after each Stage 2, from one
 copy of the frame, with `PASS_RENDERWATERVOLUME` / `PASS_RENDERWATERVOLUME_SKYONLY`. The
 shading reuses `WaterVS` and the water plane's normals, fog and specular; the planar
-reflection is replaced by the analytic sky colour plus an optional screen-space march.
+reflection is replaced by the analytic sky colour plus an optional screen-space march. The
+emissive colour of the marked material is the colour of the water (`waterVolumeTint`, set for
+each held draw); black is the usual colour. A distant water subset has that colour in its
+vertex colour, written by the generator.
+
+The water of the cell has a colour of its own, by the same rule: the emissive colour of the
+game's water material (the one marked with 99999), read in `SetMaterial` into `waterPlaneTint`
+and used by `WaterPS`. A mod sets it from Lua on the material of the game's water node. The
+two colours are apart: each surface has its own material.
 
 The first flush of a frame also draws the distant statics whose subsets carry the water flag
 (`RenderMesh::water`), with `PASS_RENDERWATERVOLUME_DISTANT` /
