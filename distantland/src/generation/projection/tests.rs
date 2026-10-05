@@ -314,6 +314,45 @@ fn compact_terrain_hashes_match_prechange_interlock() {
 }
 
 #[test]
+fn a_change_of_the_water_color_of_a_mesh_changes_its_override() {
+    let temp = tempdir().unwrap();
+    let metadata = temp.path().join("fixture-metadata.toml");
+    let write_metadata = |entry: &str| {
+        std::fs::write(
+            &metadata,
+            format!("[tools.mge-xe.distantland.statics]\n'x/pond.nif' = {{ {entry} }}\n"),
+        )
+        .unwrap();
+        let mut builder = OverridesBuilder::new();
+        apply_plugin_metadata_with_identity(&metadata, &mut builder);
+        builder.finish()
+    };
+    let usage = UsageInfo::default();
+    let settings = GenerationSettings::default();
+    let mesh = |entry: &str| {
+        Projections::capture(&usage, &settings, &write_metadata(entry))
+            .overrides
+            .meshes["x\\pond.nif"]
+    };
+
+    let plain = mesh("ignore = false");
+    let water = mesh("water = true");
+    let green = mesh("water = true, water_color = [0.25, 0.5, 0.125]");
+    let red = mesh("water = true, water_color = [0.5, 0.125, 0.125]");
+    assert_ne!(water, green);
+    assert_ne!(green, red);
+
+    // An override without the water fields is written as before they existed.
+    let bytes = |projection: &MeshOverrideProjection| {
+        let mut writer = CanonicalWriter::new();
+        projection.write_canonical(&mut writer);
+        writer.into_bytes()
+    };
+    assert_eq!(bytes(&plain).len() + 1, bytes(&water).len());
+    assert_eq!(bytes(&water).len() + 13, bytes(&green).len());
+}
+
+#[test]
 fn metadata_change_updates_only_its_effective_override_partition() {
     let temp = tempdir().unwrap();
     let metadata = temp.path().join("fixture-metadata.toml");
