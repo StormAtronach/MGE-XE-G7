@@ -27,6 +27,7 @@ constexpr DWORD VIS_FAR =      0x02;
 constexpr DWORD VIS_VERY_FAR = 0x04;
 constexpr DWORD VIS_GRASS =    0x08;
 constexpr DWORD VIS_LAND =     0x10;
+constexpr DWORD VIS_WATER =    0x20;
 constexpr DWORD VIS_STATIC = VIS_NEAR | VIS_FAR | VIS_VERY_FAR;
 
 // ensure consistent layout between 32-bit and 64-bit processes

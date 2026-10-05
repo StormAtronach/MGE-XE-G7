@@ -1063,6 +1063,23 @@ fn horizon_culling_applies_to_all_static_ranges() {
 }
 
 #[test]
+fn water_has_a_bucket_of_its_own() {
+    let mut state = static_bucket_state(Configuration::default());
+    let world_space = &mut state.world_spaces[0];
+    world_space.water_statics.set_box(20000.0, D3dxVector2::default());
+    add_visible_mesh(&mut world_space.water_statics, 40, 4, 8192.0);
+    world_space.water_statics.calc_volume();
+
+    // A query for statics does not return the water, and a query for water returns only it.
+    let statics = collect_precise_meshes(&state, VIS_NEAR | VIS_FAR | VIS_VERY_FAR);
+    assert_eq!(statics.len(), 3);
+    assert!(statics.iter().all(|mesh| mesh.v_buffer != 4));
+    let water = collect_precise_meshes(&state, VIS_WATER);
+    assert_eq!(water.len(), 1);
+    assert_eq!(water[0].v_buffer, 4);
+}
+
+#[test]
 fn horizon_culling_does_not_apply_to_interior_world_spaces() {
     let mut state = static_bucket_state(horizon_test_configuration());
     state

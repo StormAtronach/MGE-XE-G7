@@ -536,7 +536,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         device->SetVertexDeclaration(StaticDecl);
         for (std::uint8_t kind = 1; kind <= 2; kind++) {
             effect->BeginPass(kind == 1 ? PASS_RENDERWATERVOLUME_DISTANT : PASS_RENDERWATERVOLUME_DISTANT_SKYONLY);
-            visDistantShared.RenderWater(device, effect, &ehWorld, SIZEOFSTATICVERT, kind);
+            visWaterShared.RenderWater(device, effect, &ehWorld, SIZEOFSTATICVERT, kind);
             effect->EndPass();
         }
         effect->SetMatrix(ehProj, &mwProj);

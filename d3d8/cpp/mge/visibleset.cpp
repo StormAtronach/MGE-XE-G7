@@ -13,7 +13,7 @@ void VisibleSet::Render(IDirect3DDevice9* device,
     visible_set.restart();
     while (!visible_set.at_end()) {
         const RenderMesh& mesh = visible_set.next();
-        if (mesh.faces <= 0 || mesh.water != 0) {
+        if (mesh.faces <= 0) {
             continue;
         }
         if (last_buffer != mesh.vBuffer) {
@@ -68,7 +68,7 @@ void VisibleSet::Render(IDirect3DDevice9* device,
     visible_set.restart();
     while (!visible_set.at_end()) {
         const RenderMesh& mesh = visible_set.next();
-        if (mesh.faces <= 0 || mesh.water != 0) {
+        if (mesh.faces <= 0) {
             continue;
         }
 
@@ -143,18 +143,6 @@ void VisibleSet::Render(IDirect3DDevice9* device,
     if (animate_uv_handle) {
         effectPool->SetBool(*animate_uv_handle, false);
     }
-}
-
-bool VisibleSet::HasWater() {
-    bool found = false;
-    visible_set.restart();
-    while (!visible_set.at_end()) {
-        const RenderMesh& mesh = visible_set.next();
-        if (mesh.water != 0 && mesh.faces > 0) {
-            found = true;
-        }
-    }
-    return found;
 }
 
 void VisibleSet::RenderWater(IDirect3DDevice9* device,

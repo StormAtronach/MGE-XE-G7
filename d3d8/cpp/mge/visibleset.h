@@ -42,9 +42,8 @@ public:
                 unsigned int vertex_size,
                 bool parallelRead = false);
 
-    // The meshes that are distant water are left out of the two loops above. They have a loop
-    // of their own, which draws the ones of one kind (RenderMesh::water).
-    bool HasWater();
+    // Distant water comes in a visible set of its own (VIS_WATER). This loop draws the meshes
+    // of one kind of water (RenderMesh::water) with the pass that is active.
     void RenderWater(IDirect3DDevice9* device,
                      ID3DXEffect* effect,
                      const D3DXHANDLE* world_matrix_handle,

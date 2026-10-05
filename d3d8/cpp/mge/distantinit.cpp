@@ -113,6 +113,7 @@ IPC::VecId DistantLand::subsetsHostVecId = IPC::InvalidVector;
 VisibleSet DistantLand::visLandShared;
 VisibleSet DistantLand::visDistantShared;
 VisibleSet DistantLand::visGrassShared;
+VisibleSet DistantLand::visWaterShared;
 VisibleSet DistantLand::visExtraShared;
 IPC::VecView<IPC::DynVisFlag> DistantLand::dynVisFlagsShared;
 IPC::VecView<IPC::ResidencyPlan> DistantLand::residencyPlanShared;
@@ -121,6 +122,7 @@ IPC::VecView<IPC::ResidencyCommit> DistantLand::residencyCommitShared;
 IPC::VecId DistantLand::visLandSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visDistantSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visGrassSharedId = IPC::InvalidVector;
+IPC::VecId DistantLand::visWaterSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visExtraSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::dynVisFlagsSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::residencyPlanSharedId = IPC::InvalidVector;
@@ -506,6 +508,12 @@ bool DistantLand::initIpcVectors() {
     auto& grassVec = maybeGrassVec.value();
     visGrassSharedId = grassVec.id();
     visGrassShared.SetVector((IpcClientVector(grassVec)));
+
+    auto maybeWaterVec = ipcClient.allocVecBlocking<RenderMesh>(1, 200000, 1);
+    if (!maybeWaterVec.has_value()) return false;
+    auto& waterVec = maybeWaterVec.value();
+    visWaterSharedId = waterVec.id();
+    visWaterShared.SetVector((IpcClientVector(waterVec)));
 
     auto maybeExtraVec = ipcClient.allocVecBlocking<RenderMesh>(1, 200000, 1);
     if (!maybeExtraVec.has_value()) return false;
