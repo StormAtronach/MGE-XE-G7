@@ -397,6 +397,8 @@ pub(crate) struct MeshOverrideProjection {
     pub(crate) no_script: bool,
     /// Says whether the mesh is distant water, whatever its names say.
     pub(crate) water: Option<bool>,
+    /// Raw bits of the colour of the water of a water mesh.
+    pub(crate) water_color: Option<[u32; 3]>,
 }
 
 impl From<&StaticOverride> for MeshOverrideProjection {
@@ -408,6 +410,7 @@ impl From<&StaticOverride> for MeshOverrideProjection {
             simplify: value.simplify.map(f32::to_bits),
             no_script: value.no_script,
             water: value.water,
+            water_color: value.water_color.map(|color| color.map(f32::to_bits)),
         }
     }
 }
@@ -425,10 +428,17 @@ impl CanonicalWrite for MeshOverrideProjection {
             None => writer.write_bool(false),
         }
         writer.write_bool(self.no_script);
-        // Written only when set, so that an override without it keeps the fingerprint it had
-        // before this field existed. It is the last field, so the encoding stays unambiguous.
+        // The two water fields are written only when set, so that an override without them
+        // keeps the fingerprint it had before they existed. They are the last fields, and the
+        // colour starts with a tag that is not a boolean, so the encoding stays unambiguous.
         if let Some(water) = self.water {
             writer.write_bool(water);
+        }
+        if let Some(color) = self.water_color {
+            writer.write_u8(2);
+            for part in color {
+                writer.write_u32(part);
+            }
         }
     }
 }
