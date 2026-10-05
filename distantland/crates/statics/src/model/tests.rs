@@ -1675,5 +1675,10 @@ fn from_nif_takes_water_by_names_and_leaves_the_body_out() {
     registered.mesh_overrides.insert("water.nif".to_owned(), water_override(true));
     let by_override = water_test_static(root, "water.nif", &registered);
     assert_eq!(by_override.subsets.len(), 2);
-    assert!(by_override.subsets.iter().all(|subset| subset.water == SubsetWater::ReflectsScene));
+    assert!(
+        by_override
+            .subsets
+            .iter()
+            .all(|subset| subset.water == SubsetWater::ReflectsScene)
+    );
 }

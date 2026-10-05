@@ -83,7 +83,7 @@ extern "C" {
     }
 
     // Replaces the set of water volumes. `volumes` is `count` boxes of six floats each:
-    // min x, y, z then max x, y, z. Called by MWSE on the main render thread.
+    // min x, y, z then max x, y, z. Called on the main thread by the mod that owns the volumes.
     void MGE_WaterVolumesSet(const MWBridge::WaterVolume* volumes, unsigned int count) {
         MWBridge::get()->setWaterVolumes(volumes, count);
     }
