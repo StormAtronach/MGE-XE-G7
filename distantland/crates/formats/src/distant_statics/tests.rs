@@ -365,7 +365,12 @@ fn flags_horizon_and_component_semantics_are_validated() {
     let (_, original) = fixture();
 
     let mut bytes = original.clone();
-    rewrite_subset(&mut bytes, 0, |record| record.flags |= 4);
+    rewrite_subset(&mut bytes, 0, |record| record.flags |= 16);
+    assert_invalid(&bytes);
+
+    // The sky-only bit of distant water without the water bit.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.flags = (record.flags & !0b1100) | 0b1000);
     assert_invalid(&bytes);
 
     let mut bytes = original.clone();
