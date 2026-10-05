@@ -763,6 +763,7 @@ void DistantLand::abortStaticsPhase() {
 // fixed static-mesh shards, preflight every header, map their metadata prefixes,
 // and create the fallback texture. Leaves cursors ready for stepStaticsPhase().
 bool DistantLand::beginStaticsPhase() {
+    distantWaterLoaded = false;
     staticsLoader = std::make_unique<StaticsLoader>();
     StaticsLoader& L = *staticsLoader;
 
@@ -1188,6 +1189,7 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.hasAlpha = (subsetRecord.flags & 0x1u) != 0;
             subset.hasUVController = (subsetRecord.flags & 0x2u) != 0;
             subset.water = (subsetRecord.flags & 0x4u) == 0 ? 0 : ((subsetRecord.flags & 0x8u) == 0 ? 1 : 2);
+            distantWaterLoaded |= subset.water != 0;
             subset.verts = runtimeVertexCount;
             subset.faces = runtimeTriangleCount;
             subset.farFaces = runtimeFarFaceCount;
