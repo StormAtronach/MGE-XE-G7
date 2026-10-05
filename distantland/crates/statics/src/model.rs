@@ -180,9 +180,40 @@ pub struct Subset {
     pub uv_bounds: Vec<UvBound>,
     pub has_alpha: bool,
     pub has_uv_controller: bool,
+    /// Whether the subset is the surface of distant water.
+    pub water: SubsetWater,
     /// Average emissive material contribution packed into `PackedVertex.normal[3]`.
     pub emissive: f32,
     pub texture: SubsetTexture,
+}
+
+/// Whether a subset is the surface of distant water, and what that water reflects.
+///
+/// The runtime draws such a subset with its water shading instead of the subset's texture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubsetWater {
+    /// An ordinary subset.
+    #[default]
+    None,
+    /// Water that reflects the sky and, near enough, what is on screen.
+    ReflectsScene,
+    /// Water that reflects the sky only.
+    SkyOnly,
+}
+
+impl SubsetWater {
+    pub fn is_water(self) -> bool {
+        self != SubsetWater::None
+    }
+
+    /// The value written to `PackedSubset::water`.
+    pub fn packed(self) -> u8 {
+        match self {
+            SubsetWater::None => 0,
+            SubsetWater::ReflectsScene => 1,
+            SubsetWater::SkyOnly => 2,
+        }
+    }
 }
 
 /// Returns whether the bit-distinct union of two subsets' bounds still fits the palette cap.
@@ -268,6 +299,7 @@ impl Default for Subset {
             uv_bounds: Vec::default(),
             has_alpha: false,
             has_uv_controller: false,
+            water: SubsetWater::None,
             emissive: 0.0,
             texture: SubsetTexture::default(),
         }
@@ -292,6 +324,11 @@ pub struct DistantStatic {
 }
 
 impl DistantStatic {
+    /// Returns whether any subset is the surface of distant water.
+    pub fn has_water(&self) -> bool {
+        self.subsets.iter().any(|subset| subset.water.is_water())
+    }
+
     pub fn update_bounds(&mut self) {
         update_bounds_with_context(self, &mut StaticMeshContext::default());
     }
@@ -474,12 +511,18 @@ impl Subset {
     /// The palette-cap test sits outside the empty-vertex short circuit deliberately: a
     /// contribution that culling emptied still unions its bounds into the destination, so
     /// skipping the test for it could push the destination past the cap.
+    /// Returns whether the subset keeps its own texture file: the atlas leaves it alone.
+    pub fn keeps_source_texture(&self) -> bool {
+        self.has_uv_controller || self.water.is_water()
+    }
+
     pub fn can_merge_with(&self, other: &Subset) -> bool {
         self.can_merge_vertices(other)
             && (self.vertices.is_empty()
                 || (self.is_opaque() == other.is_opaque()
                     && self.texture == other.texture
                     && self.has_uv_controller == other.has_uv_controller
+                    && self.water == other.water
                     && self.emissive == other.emissive))
             && uv_bound_union_fits(&self.uv_bounds, &other.uv_bounds)
     }
@@ -628,6 +671,7 @@ impl Subset {
     fn adopt_source_identity(&mut self, subset: &Subset, opaque: bool) {
         self.has_alpha = !opaque; // Ensure this as default() does not
         self.has_uv_controller = subset.has_uv_controller;
+        self.water = subset.water;
         self.emissive = subset.emissive;
         self.texture = subset.texture;
         union_uv_bounds(&mut self.uv_bounds, &subset.uv_bounds);

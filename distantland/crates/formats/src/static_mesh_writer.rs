@@ -353,7 +353,10 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
                 index_offset,
                 vertex_count,
                 triangle_count,
-                flags: u32::from(subset.has_alpha != 0) | (u32::from(subset.has_uv_controller != 0) << 1),
+                flags: u32::from(subset.has_alpha != 0)
+                    | (u32::from(subset.has_uv_controller != 0) << 1)
+                    | (u32::from(subset.water != 0) << 2)
+                    | (u32::from(subset.water == 2) << 3),
                 texture_path_length,
                 horizon_footprint: subset.horizon_footprint,
                 first_component_index: first_component,

@@ -16,7 +16,7 @@ use crate::vfs::normalize_mesh_override_key;
 use distantland_foundation::identity::FileIdentity;
 use tracing::{info, warn};
 
-use super::overrides::{DynamicVisKind, OverridesBuilder, StaticOverride};
+use super::overrides::{DynamicVisKind, OverridesBuilder, StaticOverride, WaterNames};
 
 /// Maximum dynamic-visibility ranges per group, fixed by the `usage.data` format.
 const MAX_RANGES: usize = 8;
@@ -25,6 +25,20 @@ const MAX_RANGES: usize = 8;
 pub fn plugin_metadata_path(plugin: &Path) -> PathBuf {
     let stem = plugin.file_stem().unwrap_or(plugin.as_os_str());
     plugin.with_file_name(format!("{}-metadata.toml", stem.to_string_lossy()))
+}
+
+/// File name of the water rules. A mod that owns water meshes ships it in a data directory.
+pub const WATER_RULES_FILE: &str = "distantwater.toml";
+
+/// Returns the existing water rules files, lowest-priority data directory first, so that a
+/// higher-priority directory overrides a lower one. They use the plugin metadata schema.
+pub fn discover_water_rules(data_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    data_dirs
+        .iter()
+        .rev()
+        .map(|dir| dir.join(WATER_RULES_FILE))
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 /// Returns existing metadata files in plugin order.
@@ -161,6 +175,54 @@ struct DistantLandMetadata {
     statics: BTreeMap<String, StaticEntry>,
     /// Dynamic-visibility group declarations.
     dynamic_visibility: Vec<DynamicVisibilityEntry>,
+    /// Names that mark water meshes.
+    water: Option<WaterSection>,
+}
+
+/// The newest `water.version` this generator reads.
+const WATER_RULES_VERSION: i64 = 1;
+
+/// The `[tools.mge-xe.distantland.water]` table: which names in a mesh mark distant water.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct WaterSection {
+    /// Version of the rules. A file with a version this generator does not know is left out.
+    version: i64,
+    /// Name prefixes of the objects that are the surface of the water.
+    surface_names: Vec<String>,
+    /// Name prefixes of the objects that hold the body of the water.
+    body_names: Vec<String>,
+    /// Words in the surface name that keep the mesh's own look.
+    plain_words: Vec<String>,
+    /// Words in the surface name for water that reflects the sky only.
+    sky_only_words: Vec<String>,
+}
+
+impl WaterSection {
+    /// Converts to [`WaterNames`], or warns and returns `None` for an unknown version.
+    fn to_names(&self, source: &str) -> Option<WaterNames> {
+        if !(1..=WATER_RULES_VERSION).contains(&self.version) {
+            warn!(
+                "{source}: water rules have version {}; this generator reads versions 1 to {WATER_RULES_VERSION}. \
+                 The water names are left out",
+                self.version
+            );
+            return None;
+        }
+        let lowercased = |names: &[String]| -> Vec<String> {
+            names
+                .iter()
+                .map(|name| name.trim().to_ascii_lowercase())
+                .filter(|name| !name.is_empty())
+                .collect()
+        };
+        Some(WaterNames {
+            surface: lowercased(&self.surface_names),
+            body: lowercased(&self.body_names),
+            plain_words: lowercased(&self.plain_words),
+            sky_only_words: lowercased(&self.sky_only_words),
+        })
+    }
 }
 
 impl DistantLandMetadata {
@@ -192,6 +254,10 @@ impl DistantLandMetadata {
             if let Some((key, kind)) = entry.to_group(&source) {
                 builder.insert_dynamic_vis(key, kind);
             }
+        }
+
+        if let Some(names) = self.water.as_ref().and_then(|water| water.to_names(&source)) {
+            builder.set_water_names(names);
         }
     }
 }
@@ -235,6 +301,8 @@ struct StaticEntry {
     reduction: Option<i64>,
     /// Classifies the mesh as if its object had no script.
     ignore_script: bool,
+    /// Says that the mesh is distant water (`true`) or is not (`false`), whatever its names say.
+    water: Option<bool>,
 }
 
 impl StaticEntry {
@@ -243,6 +311,7 @@ impl StaticEntry {
         let mut result = StaticOverride {
             ignore: self.ignore,
             no_script: self.ignore_script,
+            water: self.water,
             ..StaticOverride::default()
         };
         if let Some(static_type) = self.static_type {

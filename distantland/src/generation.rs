@@ -36,6 +36,7 @@ use crate::statics::atlas::sizing::{
 use crate::statics::atlas::{AtlasPageWrite, AtlasPublishPlan};
 use crate::statics::metadata::{
     apply_override_source_with_identity, apply_plugin_metadata_with_identity, discover_plugin_metadata,
+    discover_water_rules,
 };
 use crate::{
     AtlasManager, AtlasTextureSet, IndexSet, OverridesBuilder, StaticTextureSizingMode, TraceSummary, UsageFilterOptions,
@@ -466,6 +467,13 @@ fn run_generation(
         // Plugin metadata merges after all configured override sources, in load order, so mods
         // override the global override-file layer.
         if job.settings.use_plugin_metadata {
+            // Water rules ship with the mod that owns the water meshes. They use the metadata
+            // schema and merge ahead of the plugins, so that a plugin can override them.
+            for path in &discover_water_rules(vfs.data_dirs()) {
+                if let Some(identity) = apply_plugin_metadata_with_identity(path, &mut builder) {
+                    identities.record_metadata(identity);
+                }
+            }
             let metadata_files = discover_plugin_metadata(vfs.active_plugins());
             record_usize(&stage_span, "plugin_metadata_file_count", metadata_files.len());
             for path in &metadata_files {
@@ -611,7 +619,14 @@ fn run_generation(
                 .map(|static_| (static_.static_type, &static_.bounding_box))
         });
         metrics.usage.burial = usage_info.discard_low_visibility_references(
-            |key| distant_statics.get(key).map(|static_| static_.static_type),
+            // A water surface lies level with the land around it by design. An unknown type
+            // exempts it, as grass is exempted.
+            |key| {
+                distant_statics
+                    .get(key)
+                    .filter(|static_| !static_.has_water())
+                    .map(|static_| static_.static_type)
+            },
             |terrain_cells, reference, stats| {
                 distant_statics
                     .get(reference.id.as_ref())

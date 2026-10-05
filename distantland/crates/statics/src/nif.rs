@@ -7,6 +7,8 @@ use str_utils::*;
 
 use tes3::nif::*;
 
+use crate::model::SubsetWater;
+use crate::overrides::WaterNames;
 use crate::vfs::normalize::make_normalized;
 
 /// LOD distance threshold (in game units) used when selecting which LOD child to extract.
@@ -92,6 +94,72 @@ impl<'a> Geometry<'a> {
     }
 }
 
+/// What the water rules say about one mesh.
+#[derive(Clone, Copy, Debug)]
+pub struct MeshWater<'a> {
+    /// Name prefixes of the objects that are left out, with everything under them.
+    pub body_names: &'a [String],
+    /// How the shapes that are left are drawn. `SubsetWater::None` for a mesh that keeps its
+    /// own look.
+    pub surface: SubsetWater,
+}
+
+fn name_starts_with_any(name: &str, prefixes: &[String]) -> bool {
+    prefixes.iter().any(|prefix| {
+        name.len() >= prefix.len() && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+    })
+}
+
+/// Returns whether lowercased `text` holds one of `words` with no letter on either side.
+fn has_word(text: &str, words: &[String]) -> bool {
+    words.iter().any(|word| {
+        text.match_indices(word.as_str()).any(|(at, _)| {
+            let before = text[..at].chars().next_back();
+            let after = text[at + word.len()..].chars().next();
+            !before.is_some_and(|c| c.is_ascii_alphabetic()) && !after.is_some_and(|c| c.is_ascii_alphabetic())
+        })
+    })
+}
+
+/// Decides whether a mesh is distant water, and how its surface is drawn.
+///
+/// `registered` is the mesh override: `Some(false)` is never water, `Some(true)` is water
+/// without any name. Otherwise the mesh is water when an object in it has a surface name or a
+/// body name. The first surface name carries the words for the look.
+pub fn mesh_water<'a>(stream: &NiStream, names: &'a WaterNames, registered: Option<bool>) -> Option<MeshWater<'a>> {
+    if registered == Some(false) {
+        return None;
+    }
+
+    let mut tag: Option<String> = None;
+    let mut has_body = false;
+    for object in stream.objects.values() {
+        let Ok(object) = <&NiAVObject>::try_from(object) else {
+            continue;
+        };
+        if tag.is_none() && name_starts_with_any(&object.name, &names.surface) {
+            tag = Some(object.name.to_ascii_lowercase());
+        }
+        has_body |= name_starts_with_any(&object.name, &names.body);
+    }
+    if registered != Some(true) && tag.is_none() && !has_body {
+        return None;
+    }
+
+    let tag = tag.unwrap_or_default();
+    let surface = if has_word(&tag, &names.plain_words) {
+        SubsetWater::None
+    } else if has_word(&tag, &names.sky_only_words) {
+        SubsetWater::SkyOnly
+    } else {
+        SubsetWater::ReflectsScene
+    };
+    Some(MeshWater {
+        body_names: &names.body,
+        surface,
+    })
+}
+
 /// Clears root-node transforms before traversal.
 pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
     for root in &stream.roots {
@@ -111,7 +179,12 @@ pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
 ///
 /// Skinned shapes are included; callers are expected to have baked deformation first, via
 /// [`NiStream::apply_skins`], which clears the skin instance.
-pub(crate) fn visible_geometries(stream: &NiStream) -> impl Iterator<Item = Geometry<'_>> {
+///
+/// In a water mesh the body of the water is left out: the game hides it when it runs.
+pub(crate) fn visible_geometries<'a>(
+    stream: &'a NiStream,
+    water: Option<MeshWater<'a>>,
+) -> impl Iterator<Item = Geometry<'a>> {
     let root = stream.roots.first().copied().unwrap_or_default();
 
     // The engine only handles markers when the root has "mrk" string data.
@@ -135,6 +208,9 @@ pub(crate) fn visible_geometries(stream: &NiStream) -> impl Iterator<Item = Geom
 
             let properties = if let Ok(object) = <&NiAVObject>::try_from(this) {
                 if object.app_culled() || (has_markers && is_editor_marker(object)) {
+                    continue;
+                }
+                if water.is_some_and(|water| name_starts_with_any(&object.name, water.body_names)) {
                     continue;
                 }
                 resolved_properties(stream, object, properties)
@@ -238,4 +314,28 @@ fn is_editor_marker(object: &NiAVObject) -> bool {
 fn is_valid_texture_format(path: &str) -> bool {
     path.ends_with_ignore_ascii_case_with_lowercase_multiple(&[".bmp", ".dds", ".tga"])
         .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_word, name_starts_with_any};
+
+    #[test]
+    fn water_words_need_a_boundary_on_both_sides() {
+        let words = ["plain".to_owned()];
+        assert!(has_word("watervolume plain", &words));
+        assert!(has_word("watervolume depth=300 plain.001", &words));
+        assert!(!has_word("watervolume explained", &words));
+        assert!(!has_word("watervolume plains", &words));
+        assert!(!has_word("watervolume", &words));
+    }
+
+    #[test]
+    fn water_names_match_by_prefix_without_case() {
+        let names = ["waterbody".to_owned()];
+        assert!(name_starts_with_any("WaterBody", &names));
+        assert!(name_starts_with_any("WaterBody.001", &names));
+        assert!(!name_starts_with_any("Water", &names));
+        assert!(!name_starts_with_any("Tri WaterBody", &names));
+    }
 }

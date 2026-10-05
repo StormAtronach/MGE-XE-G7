@@ -286,6 +286,7 @@ impl Subset {
                 uv_bounds: source.uv_bounds.clone(),
                 has_alpha: source.has_alpha,
                 has_uv_controller: source.has_uv_controller,
+                water: source.water,
                 emissive: source.emissive,
                 texture: source.texture,
             };
@@ -310,6 +311,7 @@ impl Subset {
                 uv_bounds: source.uv_bounds.clone(),
                 has_alpha: source.has_alpha,
                 has_uv_controller: source.has_uv_controller,
+                water: source.water,
                 emissive: source.emissive,
                 texture: source.texture,
             };
@@ -333,6 +335,7 @@ impl Subset {
             uv_bounds: source.uv_bounds.clone(),
             has_alpha: source.has_alpha,
             has_uv_controller: source.has_uv_controller,
+            water: source.water,
             emissive: source.emissive,
             texture: source.texture,
         }

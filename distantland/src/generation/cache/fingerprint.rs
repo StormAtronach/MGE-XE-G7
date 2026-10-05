@@ -144,7 +144,7 @@ fn fingerprint_static_mesh_input(key: &str, static_mesh: &crate::mge_xe::distant
         hash_pod(&mut hasher, &(subset.palette.len() as u64));
         hasher.update(cast_slice(&subset.palette));
         hasher.update(&[subset.has_alpha]);
-        hasher.update(&[subset.has_uv_controller]);
+        hasher.update(&[subset.has_uv_controller | (subset.water << 1)]);
         hash_bytes(&mut hasher, subset.texture.as_ref().as_bytes());
     }
     *hasher.finalize().as_bytes()
