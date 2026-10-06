@@ -188,8 +188,16 @@ The first flush of a frame also draws the distant statics whose subsets carry th
 (`RenderMesh::water`), with `PASS_RENDERWATERVOLUME_DISTANT` /
 `PASS_RENDERWATERVOLUME_DISTANT_SKYONLY`. `VisibleSet` leaves those meshes out of every other
 pass (colour, depth, shadow, reflection). The pixel shader clips them nearer than
-`nearViewRange`, where the game draws the real mesh, and the screen-space march fades out at
-`distant_land.water.volume_reflection_cells`.
+`waterVolumeHandoff`, where the game draws the real mesh. `VisibleSet::RenderWater` sets that
+depth for each mesh: `nearViewRange` for a mesh whose reference is in one of the loaded cells
+(the cell of the player and the eight around it), and zero for any other mesh, because the
+game has no mesh to draw in its place. The screen-space march fades out at
+`distant_land.water.volume_reflection_cells`; a value of zero turns the march off for the
+surfaces near the camera as well.
+
+`renderStageWater` leaves the water plane of the cell out, with its copy of the frame, when
+the plane is more than twice the view distance below the camera. A mod that needs the water
+flag on a dry interior puts the level that far down.
 
 A mod can also tell MGE which volume the camera is in, through the `MGE_WaterVolumesSet`
 export: while the camera is inside one, `CellHasWater()` and `WaterLevel()` describe that

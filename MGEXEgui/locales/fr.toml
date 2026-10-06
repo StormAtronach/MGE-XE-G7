@@ -101,7 +101,7 @@ interiors_tip = "Active les reflets dans les intérieurs distants générés. N�
 dynamic_ripples_tip = "Active la simulation dynamique des ondulations et permet de régler la hauteur des vagues."
 wave_height_tip = "Définit la hauteur des vagues en unités de Morrowind. Disponible lorsque les ondulations dynamiques sont activées."
 caustics_tip = "Définit l'intensité des caustiques sous-marines. 0 % désactive l'effet ; la valeur par défaut est 50 %."
-volume_reflection_tip = "Définit jusqu'à quelle distance de la caméra, en cellules, un volume d'eau lointain reflète ce qui est à l'écran. Au-delà, il ne reflète que le ciel. 0 désactive ces reflets ; la valeur par défaut est 8."
+volume_reflection_tip = "Définit jusqu'à quelle distance de la caméra, en cellules, un volume d'eau lointain reflète ce qui est à l'écran. Au-delà, il ne reflète que le ciel. 0 désactive ces reflets pour tous les volumes d'eau, y compris les proches ; la valeur par défaut est 8."
 
 [distant.lighting]
 title = "Éclairage et ombres"
