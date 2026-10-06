@@ -3,9 +3,18 @@
 // Surfaces of water volumes: meshes the game submits, shaded like the water plane.
 // Uses the vertex shader, samplers and helpers of XE Mod Water.fx.
 
-// A volume can sit at any height and can slope, so the planar reflection of the main water
-// does not apply to it. The sky is reflected from its analytic colour, and what is on screen
-// is reflected by marching the reflected ray through the depth frame.
+// A volume can sit at any height and its surface can face any way, so the planar reflection
+// of the main water does not apply to it. The sky is reflected from its analytic colour, and
+// what is on screen is reflected by marching the reflected ray through the depth frame.
+// The shading follows the normal of the mesh: the ripples are tilted to it, and the reflection
+// and the Fresnel term are taken from it.
+
+// Turns a direction by the turn that takes straight up to the given direction.
+float3 tiltTo(float3 up, float3 v)
+{
+    float3 axis = float3(-up.y, up.x, 0);
+    return v * up.z + cross(axis, v) + axis * (dot(axis, v) / max(1 + up.z, 1e-3));
+}
 
 // Steps of the reflection march. Each is 1.25 times as long as the one before, starting at
 // 12 units, so 24 steps reach about 10000 units.
@@ -95,7 +104,8 @@ float4 reflectScene(float3 origin, float3 dir)
 // reflectsScene and distant are fixed per pass. A surface either reflects what is on screen or
 // the sky only. A distant surface reflects what is on screen out to waterVolumeReflectRange.
 // tint is the colour of the water of this surface: the emissive colour of its material.
-float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant, float3 tint)
+// facing is the normal of the mesh. A mesh without normals faces up.
+float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint)
 {
     // Calculate eye vector
     float3 EyeVec = IN.pos.xyz - eyePos.xyz;
@@ -106,11 +116,16 @@ float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant, f
     float4 fog = fogColourWater(EyeVec, dist);
     float3 depthColor = fogApply(waterDepthBase(depthBaseColor, tint), fog);
 
-    // Calculate water normal
-    float3 normal = getFinalWaterNormal(IN.texcoords.xy, IN.texcoords.zw, dist, IN.pos.xy);
+    // The way the surface faces, turned to the side of the eye
+    float3 face = dot(facing, facing) > 0.25 ? normalize(facing) : float3(0, 0, 1);
+    face = dot(face, EyeVec) > 0 ? -face : face;
+
+    // Calculate water normal: the ripples of a level surface, tilted to the surface
+    float3 ripple = getFinalWaterNormal(IN.texcoords.xy, IN.texcoords.zw, dist, IN.pos.xy);
+    float3 normal = tiltTo(face, ripple);
 
     // Refraction pixel distortion factor, wind strength increases distortion
-    float2 reffactor = (windFactor * dist + 0.1) * normal.xy;
+    float2 reffactor = (windFactor * dist + 0.1) * ripple.xy;
 
     // Distort refraction dependent on depth
     float4 newscrpos = IN.screenpos + float4(reffactor.yx, 0, 0);
@@ -133,7 +148,7 @@ float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant, f
         refracted *= waterTransmission(tint, depth);
 
         // Small scale shoreline animation
-        depth += 300 * (0.95 - normal.z);
+        depth += 300 * (0.95 - ripple.z);
 
         float depthscale = saturate(exp(-depth / 800));
         shorefactor = pow(depthscale, 90);
@@ -143,12 +158,13 @@ float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant, f
     }
 
     // Smooth out high frequencies at a distance
-    float3 adjustnormal = lerp(float3(0, 0, 0.1), normal, pow(saturate(1.05 * fog.a), 2));
-    adjustnormal = lerp(adjustnormal, float3(0, 0, 1.0), (1 + EyeVec.z) * (1 - saturate(1 / (dist / 1000 + 1))));
+    float3 adjustnormal = lerp(0.1 * face, normal, pow(saturate(1.05 * fog.a), 2));
+    adjustnormal = lerp(adjustnormal, face, (1 + dot(EyeVec, face)) * (1 - saturate(1 / (dist / 1000 + 1))));
 
     // Reflect the sky. The ripples tilt the reflected direction only a little, to keep it calm.
-    float3 reflectdir = reflect(EyeVec, normalize(lerp(float3(0, 0, 1), normal, 0.35)));
-    reflectdir.z = abs(reflectdir.z);
+    // A reflected direction that points into the surface is turned back out of it.
+    float3 reflectdir = reflect(EyeVec, normalize(lerp(face, normal, 0.35)));
+    reflectdir -= 2 * min(0, dot(reflectdir, face)) * face;
     reflectdir = normalize(reflectdir);
     float3 reflected = fogColourSky(reflectdir).rgb;
 
@@ -184,9 +200,24 @@ float4 waterVolumeColour(in WaterVertOut IN, bool reflectsScene, bool distant, f
     return float4(result, 1);
 }
 
-float4 WaterVolumePS(in WaterVertOut IN, uniform bool reflectsScene): COLOR0
+// A vertex of a surface, with the normal of the mesh in world space.
+struct WaterVolumeVertOut
 {
-    return waterVolumeColour(IN, reflectsScene, false, waterVolumeTint);
+    WaterVertOut water;
+    float3 facing : TEXCOORD5;
+};
+
+WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NORMAL)
+{
+    WaterVolumeVertOut OUT;
+    OUT.water = WaterVS(pos);
+    OUT.facing = mul(float4(normal, 0), world).xyz;
+    return OUT;
+}
+
+float4 WaterVolumePS(in WaterVolumeVertOut IN, uniform bool reflectsScene): COLOR0
+{
+    return waterVolumeColour(IN.water, IN.facing, reflectsScene, false, waterVolumeTint);
 }
 
 //------------------------------------------------------------
@@ -196,6 +227,7 @@ struct WaterVolumeDistantVertOut
 {
     WaterVertOut water;
     float3 tint : TEXCOORD4;
+    float3 facing : TEXCOORD5;
 };
 
 // A distant static keeps a palette index in pos.w. The generator writes the colour of the
@@ -205,6 +237,7 @@ WaterVolumeDistantVertOut WaterVolumeDistantVS(in StatVertIn IN)
     WaterVolumeDistantVertOut OUT;
     OUT.water = WaterVS(float4(IN.pos.xyz, 1));
     OUT.tint = IN.color.rgb;
+    OUT.facing = mul(float4(2 * IN.normal.xyz - 1, 0), world).xyz;
     return OUT;
 }
 
@@ -212,5 +245,5 @@ float4 WaterVolumeDistantPS(in WaterVolumeDistantVertOut IN, uniform bool reflec
 {
     // Nearer than this the game draws the surface itself
     clip(IN.water.screenpos.w - nearViewRange);
-    return waterVolumeColour(IN.water, reflectsScene, true, IN.tint);
+    return waterVolumeColour(IN.water, IN.facing, reflectsScene, true, IN.tint);
 }

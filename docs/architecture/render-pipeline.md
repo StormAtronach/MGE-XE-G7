@@ -169,8 +169,12 @@ surfaces are ordinary game meshes whose material carries a marker in the specula
 recognises the marker, `DrawIndexedPrimitive` holds the draw (`renderWaterVolume`), and
 `flushWaterVolumes` draws all held surfaces after StageBlend and after each Stage 2, from one
 copy of the frame, with `PASS_RENDERWATERVOLUME` / `PASS_RENDERWATERVOLUME_SKYONLY`. The
-shading reuses `WaterVS` and the water plane's normals, fog and specular; the planar
+shading reuses the water plane's ripples, fog and specular. It follows the normal of the mesh
+(`WaterVolumeVS`): the ripples are tilted to it, and the reflection and the Fresnel term are
+taken from it, so a surface can face any way. A mesh without normals faces up. The planar
 reflection is replaced by the analytic sky colour plus an optional screen-space march. The
+march reflects only what is on screen: the reflection of a thing ends where the thing leaves
+the view. The
 emissive colour of the marked material is the colour of the water (`waterVolumeTint`, set for
 each held draw); black is the usual colour. A distant water subset has that colour in its
 vertex colour, written by the generator.

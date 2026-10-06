@@ -491,7 +491,7 @@ Technique T0 {
         AlphaBlendEnable = false;
         AlphaTestEnable = false;
 
-        VertexShader = compile vs_3_0 WaterVS();
+        VertexShader = compile vs_3_0 WaterVolumeVS();
         PixelShader = compile ps_3_0 WaterVolumePS(true);
     }
     //------------------------------------------------------------
@@ -506,7 +506,7 @@ Technique T0 {
         AlphaBlendEnable = false;
         AlphaTestEnable = false;
 
-        VertexShader = compile vs_3_0 WaterVS();
+        VertexShader = compile vs_3_0 WaterVolumeVS();
         PixelShader = compile ps_3_0 WaterVolumePS(false);
     }
     //------------------------------------------------------------
