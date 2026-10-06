@@ -1340,11 +1340,18 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             }
 
             auto textureStart = DistantLoadInstrumentation::counter_now();
-            IDirect3DTexture9* tex = BSA::loadTexture(device, reinterpret_cast<const char*>(texturePathBytesView));
-            if (!tex) {
-                LOG::logline("Cannot load texture %s", reinterpret_cast<const char*>(texturePathBytesView));
+            IDirect3DTexture9* tex = nullptr;
+            if (subset.water != 0) {
+                // The water passes do not bind the texture of the mesh, so it is not loaded.
                 L.errorTexture->AddRef();
                 tex = L.errorTexture;
+            } else {
+                tex = BSA::loadTexture(device, reinterpret_cast<const char*>(texturePathBytesView));
+                if (!tex) {
+                    LOG::logline("Cannot load texture %s", reinterpret_cast<const char*>(texturePathBytesView));
+                    L.errorTexture->AddRef();
+                    tex = L.errorTexture;
+                }
             }
             L.loadTexturesMs += DistantLoadInstrumentation::elapsed_ms(textureStart);
 
