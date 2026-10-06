@@ -612,13 +612,22 @@ void DistantLand::renderStageWater() {
     }
 
     if (mwBridge->CellHasWater()) {
+        bool u = mwBridge->IsUnderwater(eyePos.z);
+        bool i = !mwBridge->IsExterior();
+
+        // A plane this far below the camera is past the end of the view at every angle, so
+        // the copy of the frame and the draw are left out. A mod can put the water of a cell
+        // that far down to keep it out of the way.
+        const float viewEnd = (i ? Configuration.DL.InteriorFogEnd : Configuration.DL.DrawDist) * kCellSize;
+        if (eyePos.z - mwBridge->WaterLevel() > 2.0f * viewEnd) {
+            return;
+        }
+
         // Save state block manually since we can change FVF/decl
         device->CreateStateBlock(D3DSBT_ALL, &stateSaved);
         effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
 
         // Draw water plane
-        bool u = mwBridge->IsUnderwater(eyePos.z);
-        bool i = !mwBridge->IsExterior();
 
         if (u || i) {
             // Set up clip plane at fog end for certain environments to save fillrate
