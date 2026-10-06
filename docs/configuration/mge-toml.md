@@ -176,8 +176,10 @@ The host-only horizon setting with no obsolete C++ binding is
 
 `distant_land.water.volume_reflection_cells` has no obsolete INI predecessor. It is how far
 from the camera, in cells, a water volume among the distant statics reflects what is on screen;
-farther away it reflects the sky only. The default is `8.0`, the range `0` to `64`, and `0`
-turns the screen reflection of distant water volumes off.
+farther away it reflects the sky only. A water volume that the game draws itself, near the
+camera, reflects what is on screen for every value but `0`. The default is `8.0`, the range
+`0` to `64`, and `0` turns the screen reflection of all water volumes off, near ones too:
+they reflect the sky only.
 
 `distant_land.grass.interior_wind` has no obsolete INI predecessor either. It
 is the constant wind applied to grass placed in interior cells, which have no

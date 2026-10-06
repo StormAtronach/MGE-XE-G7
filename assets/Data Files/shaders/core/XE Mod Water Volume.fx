@@ -103,6 +103,7 @@ float4 reflectScene(float3 origin, float3 dir)
 
 // reflectsScene and distant are fixed per pass. A surface either reflects what is on screen or
 // the sky only. A distant surface reflects what is on screen out to waterVolumeReflectRange.
+// A range of zero turns the reflection of what is on screen off, near and far.
 // tint is the colour of the water of this surface: the emissive colour of its material.
 // facing is the normal of the mesh. A mesh without normals faces up.
 float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint)
@@ -172,7 +173,7 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
     if(reflectsScene)
     {
         // Far away the march is left out; it fades out over the last quarter of a cell.
-        float sceneWeight = distant ? saturate((waterVolumeReflectRange - dist) / 2048) : 1;
+        float sceneWeight = distant ? saturate((waterVolumeReflectRange - dist) / 2048) : step(1, waterVolumeReflectRange);
         if(sceneWeight > 0)
         {
             float4 scene = reflectScene(IN.pos.xyz, reflectdir);
