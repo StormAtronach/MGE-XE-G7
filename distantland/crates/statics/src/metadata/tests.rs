@@ -242,6 +242,58 @@ ranges = [[1, 1]]
 }
 
 #[test]
+fn configured_toml_source_sets_the_water_names_and_plugin_metadata_replaces_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let global = dir.path().join("global.toml");
+    fs::write(
+        &global,
+        r#"
+[tools.mge-xe.distantland]
+exclude_objects = ["x"]
+
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+body_names = ["WaterBody"]
+plain_words = ["plain"]
+sky_only_words = ["skyonly"]
+"#,
+    )
+    .unwrap();
+
+    let silent = dir.path().join("Silent-metadata.toml");
+    fs::write(&silent, "[tools.mge-xe.distantland]\nexclude_objects = [\"y\"]\n").unwrap();
+    let pond = dir.path().join("Pond-metadata.toml");
+    fs::write(
+        &pond,
+        "[tools.mge-xe.distantland.water]\nversion = 1\nsurface_names = [\"Pond\"]\n",
+    )
+    .unwrap();
+    let merged = |plugin_metadata: &[&Path]| {
+        let mut builder = OverridesBuilder::new();
+        apply_override_source_with_identity(&global, &mut builder).unwrap();
+        for path in plugin_metadata {
+            apply_plugin_metadata_with_identity(path, &mut builder).unwrap();
+        }
+        builder.finish()
+    };
+
+    // A plugin metadata file without the table leaves the names of the global file.
+    let names = merged(&[&silent]).water_names;
+    assert_eq!(names.surface, ["watervolume"]);
+    assert_eq!(names.body, ["waterbody"]);
+    assert_eq!(names.plain_words, ["plain"]);
+    assert_eq!(names.sky_only_words, ["skyonly"]);
+
+    // A plugin metadata file with the table replaces the whole table.
+    let names = merged(&[&silent, &pond]).water_names;
+    assert_eq!(names.surface, ["pond"]);
+    assert!(names.body.is_empty());
+    assert!(names.plain_words.is_empty());
+    assert!(names.sky_only_words.is_empty());
+}
+
+#[test]
 fn metadata_matches_equivalent_ovr() {
     let ovr = b"\
 meshes\\foo\\rock.nif = very_far reduction_50

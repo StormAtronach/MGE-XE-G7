@@ -321,6 +321,9 @@ pub struct DistantStatic {
     pub is_door: bool,
     /// Whether generated horizon footprints may be emitted for this synthetic static.
     pub horizon_footprint_eligible: bool,
+    /// Whether the water rules chose the shapes of this static: the mesh is water by its names
+    /// or by its mesh override. True also for a water mesh that keeps its own look.
+    pub water_rules: bool,
 }
 
 impl DistantStatic {

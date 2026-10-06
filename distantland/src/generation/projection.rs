@@ -17,7 +17,7 @@ use crate::usage::ObjectKind;
 use crate::vfs::normalize;
 use crate::{
     DistantReference, DynamicVisKind, GenerationSettings, InteriorMetadata, ObjectDefinition, StaticOverride,
-    StaticOverrides, UsageInfo,
+    StaticOverrides, UsageInfo, WaterNames,
 };
 
 /// Cell coordinates used to partition exterior reference and landscape projections.
@@ -357,6 +357,8 @@ pub(crate) struct OverrideStateProjection {
     pub(crate) interiors: BTreeMap<String, bool>,
     /// Dynamic-visibility groups and lookup tables.
     pub(crate) dynamic_visibility: DynamicVisibilityProjection,
+    /// Names that mark water meshes. They enter the fingerprint of a water mesh alone.
+    pub(crate) water_names: WaterNames,
 }
 
 impl From<&StaticOverrides> for OverrideStateProjection {
@@ -378,6 +380,7 @@ impl From<&StaticOverrides> for OverrideStateProjection {
                 .map(|(key, enabled)| (key.as_str().to_ascii_lowercase(), *enabled))
                 .collect(),
             dynamic_visibility: DynamicVisibilityProjection::from(value),
+            water_names: value.water_names.clone(),
         }
     }
 }

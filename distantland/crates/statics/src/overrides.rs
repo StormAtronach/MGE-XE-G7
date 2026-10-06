@@ -26,7 +26,8 @@ type DedupMap = HashMap<DedupKey, usize>;
 /// (see `statics::metadata`). Later sources override earlier sources for scalar
 /// settings; dynamic-visibility groups are deduplicated across all sources. When a
 /// source replaces a *different* source's directive for the same key with a different
-/// value, a warning naming both sources is logged.
+/// value, a warning naming both sources is logged. The water names are one such directive:
+/// a later source replaces the whole table.
 #[derive(Default)]
 pub struct OverridesBuilder {
     result: StaticOverrides,
@@ -35,6 +36,7 @@ pub struct OverridesBuilder {
     mesh_sources: HashMap<String, usize>,
     name_sources: HashMap<String, usize>,
     interior_sources: HashMap<Uncased<'static>, usize>,
+    water_names_source: Option<usize>,
 }
 
 impl OverridesBuilder {
@@ -107,8 +109,21 @@ impl OverridesBuilder {
         self.result.mesh_overrides.insert(key, value);
     }
 
-    /// Sets the names that mark water meshes. A later source replaces an earlier one whole.
+    /// Sets the names that mark water meshes. A later source replaces an earlier one whole, and
+    /// a warning is logged when it replaces different names from another source.
     pub(crate) fn set_water_names(&mut self, names: WaterNames) {
+        let source = self.current_source_index();
+        if let Some(prev_source) = self.water_names_source
+            && prev_source != source
+            && self.result.water_names != names
+        {
+            warn!(
+                "Water names from {} replace conflicting names from {}",
+                self.source_label(source),
+                self.source_label(prev_source)
+            );
+        }
+        self.water_names_source = Some(source);
         self.result.water_names = names;
     }
 

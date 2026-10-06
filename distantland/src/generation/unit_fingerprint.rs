@@ -24,7 +24,7 @@ use crate::mge_xe::distant_statics::StaticType;
 use crate::statics::atlas::sizing::{AtlasDomain, SizingPlan, SourceTextureInfo};
 use crate::terrain::package::TerrainGateInputs;
 use crate::usage::StableRefKey;
-use crate::{AtlasTextureSet, DistantStatics, GenerationSettings, IndexSet, TerrainAtlasLayout, UsageInfo, Vfs};
+use crate::{AtlasTextureSet, DistantStatics, GenerationSettings, IndexSet, TerrainAtlasLayout, UsageInfo, Vfs, WaterNames};
 
 /// Builds all statics-domain state before atlas lowering and merge mutation destroy logical inputs.
 pub(crate) fn build_static_state(
@@ -93,6 +93,12 @@ pub(crate) fn build_static_state(
                         }
                         None => writer.write_bool(false),
                     }
+                }
+                // The names choose the shapes of a water mesh, and two choices can have the
+                // same summary above. Written for a mesh that the water rules apply to alone,
+                // so that the fingerprint of every other mesh stays what it was.
+                if distant_static.water_rules {
+                    write_water_names(&mut writer, &projections.overrides.water_names);
                 }
             }
             None => writer.write_u8(absent_mesh_status(
@@ -696,6 +702,15 @@ fn absent_mesh_status(has_resolution: bool, has_content: bool) -> u8 {
         (true, true) => 2,
         (true, false) => 3,
         (false, _) => 4,
+    }
+}
+
+fn write_water_names(writer: &mut CanonicalWriter, names: &WaterNames) {
+    for list in [&names.surface, &names.body, &names.plain_words, &names.sky_only_words] {
+        writer.write_u64(list.len() as u64);
+        for name in list {
+            writer.write_str(name);
+        }
     }
 }
 
