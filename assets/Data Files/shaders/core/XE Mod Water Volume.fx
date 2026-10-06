@@ -243,7 +243,8 @@ WaterVolumeDistantVertOut WaterVolumeDistantVS(in StatVertIn IN)
 
 float4 WaterVolumeDistantPS(in WaterVolumeDistantVertOut IN, uniform bool reflectsScene): COLOR0
 {
-    // Nearer than this the game draws the surface itself
-    clip(IN.water.screenpos.w - nearViewRange);
+    // Nearer than this the game draws the surface itself. It is zero for a mesh whose
+    // reference the game has not loaded.
+    clip(IN.water.screenpos.w - waterVolumeHandoff);
     return waterVolumeColour(IN.water, IN.facing, reflectsScene, true, IN.tint);
 }

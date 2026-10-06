@@ -118,6 +118,8 @@ public:
     bool isPlayerCasting();
     bool isPlayerAimingWeapon();
     void* getPlayerCell();
+    // Gets the grid position of the exterior cell the player is in. False in an interior.
+    bool getExteriorGrid(int& x, int& y);
 
     void HaggleMore(DWORD num);
     void HaggleLess(DWORD num);
