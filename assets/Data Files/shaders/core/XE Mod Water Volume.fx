@@ -11,42 +11,82 @@
 // 12 units, so 24 steps reach about 10000 units.
 static const int volumeReflectionSteps = 24;
 
+// Halvings of the step the ray went behind something in, to find the place where it did.
+static const int volumeReflectionRefinements = 5;
+
+// How far along a ray it leaves the screen. The ray is given in clip space.
+float reflectionReach(float4 origin, float4 dir)
+{
+    // The ray is on screen while each of these is positive
+    float4 room = float4(origin.w - origin.x, origin.w + origin.x, origin.w - origin.y, origin.w + origin.y);
+    float4 closing = float4(dir.x - dir.w, -dir.x - dir.w, dir.y - dir.w, -dir.y - dir.w);
+    float4 reach = closing > 0 ? room / closing : 1e9;
+    return min(min(reach.x, reach.y), min(reach.z, reach.w));
+}
+
+// The ray at one distance along it: where it is on screen, and in z how far it is behind what
+// the depth frame has there. The depth frame holds view depth; the sky is cleared to a huge
+// value, so the ray is never behind it.
+float3 reflectionSample(float4 origin, float4 dir, float travelled)
+{
+    float4 clip = origin + dir * travelled;
+    float2 uv = 0.5 * (1 + rcpRes) + float2(0.5, -0.5) * clip.xy / clip.w;
+    return float3(uv, clip.w - tex2Dlod(sampDepth, float4(uv, 0, 0)).r);
+}
+
 // Looks for the first thing on screen that the ray from origin along dir passes behind.
 // Returns its colour from the frame behind the water, and in alpha how much to trust it.
 float4 reflectScene(float3 origin, float3 dir)
 {
-    float4 result = 0;
+    float4 clipOrigin = mul(mul(float4(origin, 1), view), proj);
+    float4 clipDir = mul(mul(float4(dir, 0), view), proj);
+
+    // The march stops where the ray leaves the screen
+    float reach = 0.999 * reflectionReach(clipOrigin, clipDir);
+
     float stepLength = 12;
-    float travelled = 0;
+    float before = 0;
+    float after = 0;
+    bool behind = false;
 
     for(int i = 0; i < volumeReflectionSteps; i++)
     {
-        travelled += stepLength;
-
-        float4 clip = mul(mul(float4(origin + dir * travelled, 1), view), proj);
-        if(clip.w <= 0)
-            break;
-
-        float2 uv = 0.5 * (1 + rcpRes) + float2(0.5, -0.5) * clip.xy / clip.w;
-        if(uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1)
-            break;
-
-        // The depth frame holds view depth; the sky is cleared to a huge value and never hits
-        float behind = clip.w - tex2Dlod(sampDepth, float4(uv, 0, 0)).r;
-        if(behind > 0)
+        after = min(before + stepLength, reach);
+        if(reflectionSample(clipOrigin, clipDir, after).z > 0)
         {
-            // Only a surface near the ray counts; otherwise the ray went behind something
-            if(behind < 2 * stepLength + 8)
-            {
-                // Fade out towards the screen edge, where the ray would leave the frame
-                float2 edge = min(uv, 1 - uv);
-                result.rgb = tex2Dlod(sampRefract, float4(uv, 0, 0)).rgb;
-                result.a = saturate(12 * min(edge.x, edge.y));
-            }
+            behind = true;
             break;
         }
+        if(after >= reach)
+            break;
 
+        before = after;
         stepLength *= 1.25;
+    }
+
+    float4 result = 0;
+    if(behind)
+    {
+        // The ray went behind something between before and after. Find where, so that the
+        // reflection does not jump from one step to the next.
+        for(int j = 0; j < volumeReflectionRefinements; j++)
+        {
+            float middle = 0.5 * (before + after);
+            if(reflectionSample(clipOrigin, clipDir, middle).z > 0)
+                after = middle;
+            else
+                before = middle;
+        }
+
+        // Only a surface near the ray counts; otherwise the ray went behind something
+        float3 hit = reflectionSample(clipOrigin, clipDir, after);
+        if(hit.z < 2 * stepLength + 8)
+        {
+            // Fade out towards the screen edge, where the ray would leave the frame
+            float2 edge = min(hit.xy, 1 - hit.xy);
+            result.rgb = tex2Dlod(sampRefract, float4(hit.xy, 0, 0)).rgb;
+            result.a = saturate(12 * min(edge.x, edge.y));
+        }
     }
 
     return result;
