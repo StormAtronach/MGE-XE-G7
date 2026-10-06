@@ -2,6 +2,7 @@
 
 use bytemuck::must_cast_slice;
 use glam::Affine3A;
+use hashbrown::HashSet;
 use minsphere::{BoundingSphere, BoundingSphereScratch};
 use str_utils::*;
 
@@ -126,6 +127,10 @@ fn has_word(text: &str, words: &[String]) -> bool {
 /// `registered` is the mesh override: `Some(false)` is never water, `Some(true)` is water
 /// without any name. Otherwise the mesh is water when an object in it has a surface name or a
 /// body name. The first surface name carries the words for the look.
+///
+/// The objects are taken in the order of the mod that makes the water near the player: from
+/// the root, depth first, the children of a node in their order, and no farther than the first
+/// surface name. An object that nothing under the root refers to does not count.
 pub fn mesh_water<'a>(stream: &NiStream, names: &'a WaterNames, registered: Option<bool>) -> Option<MeshWater<'a>> {
     if registered == Some(false) {
         return None;
@@ -133,14 +138,30 @@ pub fn mesh_water<'a>(stream: &NiStream, names: &'a WaterNames, registered: Opti
 
     let mut tag: Option<String> = None;
     let mut has_body = false;
-    for object in stream.objects.values() {
-        let Ok(object) = <&NiAVObject>::try_from(object) else {
+    let root = stream.roots.first().copied().unwrap_or_default();
+    let mut stack = vec![root.key];
+    // A malformed file can have a cycle. An object is looked at once.
+    let mut seen = HashSet::new();
+    while let Some(key) = stack.pop() {
+        let Some(this) = stream.objects.get(key) else {
             continue;
         };
-        if tag.is_none() && name_starts_with_any(&object.name, &names.surface) {
+        let Ok(object) = <&NiAVObject>::try_from(this) else {
+            continue;
+        };
+        if !seen.insert(key) {
+            continue;
+        }
+        if name_starts_with_any(&object.name, &names.surface) {
             tag = Some(object.name.to_ascii_lowercase());
+            break;
         }
         has_body |= name_starts_with_any(&object.name, &names.body);
+        if let Ok(node) = <&NiNode>::try_from(this) {
+            for child in node.children.iter().rev() {
+                stack.push(child.key);
+            }
+        }
     }
     if registered != Some(true) && tag.is_none() && !has_body {
         return None;
@@ -180,12 +201,15 @@ pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
 /// Skinned shapes are included; callers are expected to have baked deformation first, via
 /// [`NiStream::apply_skins`], which clears the skin instance.
 ///
-/// In a water mesh the body of the water is left out: the game hides it when it runs.
+/// In a water mesh the body of the water is left out: the game hides it when it runs. A shape
+/// that is drawn as water is kept without a texture and without UVs: the water pass reads
+/// neither.
 pub(crate) fn visible_geometries<'a>(
     stream: &'a NiStream,
     water: Option<MeshWater<'a>>,
 ) -> impl Iterator<Item = Geometry<'a>> {
     let root = stream.roots.first().copied().unwrap_or_default();
+    let drawn_as_water = water.is_some_and(|water| water.surface.is_water());
 
     // The engine only handles markers when the root has "mrk" string data.
     let has_markers = stream.root_has_string_data_starting_with("mrk");
@@ -253,7 +277,10 @@ pub(crate) fn visible_geometries<'a>(
                 continue;
             };
 
-            if data.vertices.is_empty() || data.uv_sets.is_empty() || data.triangles.is_empty() {
+            if data.vertices.is_empty() || data.triangles.is_empty() {
+                continue;
+            }
+            if data.uv_sets.is_empty() && !drawn_as_water {
                 continue;
             }
 
@@ -265,7 +292,7 @@ pub(crate) fn visible_geometries<'a>(
                 properties,
             };
 
-            if !geometry.base_texture_path(stream).is_some_and(is_valid_texture_format) {
+            if !drawn_as_water && !geometry.base_texture_path(stream).is_some_and(is_valid_texture_format) {
                 continue;
             }
 
@@ -318,7 +345,85 @@ fn is_valid_texture_format(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_word, name_starts_with_any};
+    use tes3::nif::*;
+
+    use super::{has_word, mesh_water, name_starts_with_any};
+    use crate::model::SubsetWater;
+    use crate::overrides::WaterNames;
+
+    fn kit_names() -> WaterNames {
+        WaterNames {
+            surface: vec!["watervolume".to_owned()],
+            body: vec!["waterbody".to_owned()],
+            plain_words: vec!["plain".to_owned()],
+            sky_only_words: vec!["skyonly".to_owned()],
+        }
+    }
+
+    fn named_shape(name: &str) -> NiTriShape {
+        let mut shape = NiTriShape::default();
+        shape.name = name.into();
+        shape
+    }
+
+    #[test]
+    fn the_first_water_name_is_the_first_in_the_scene_graph_not_in_the_file() {
+        // The file holds the objects in this order: the sky-only shape, the plain shape, the
+        // rock, the group, the root. The scene graph is root -> [group -> [rock, plain],
+        // sky-only]. The group is a switch node that shows the rock: all its children count.
+        let mut stream = NiStream::new();
+        let sky_only = stream.insert(named_shape("WaterVolume skyonly"));
+        let plain = stream.insert(named_shape("WaterVolume plain"));
+        let rock = stream.insert(named_shape("Rock"));
+        let mut group = NiSwitchNode::default();
+        group.children.push(rock.cast());
+        group.children.push(plain.cast());
+        let group = stream.insert(group);
+        let mut root = NiNode::default();
+        root.children.push(group.cast());
+        root.children.push(sky_only.cast());
+        let root = stream.insert(root);
+        stream.roots.push(root.cast());
+
+        // Depth first, the plain shape comes before the sky-only shape.
+        let names = kit_names();
+        let water = mesh_water(&stream, &names, None).expect("water mesh");
+        assert_eq!(water.surface, SubsetWater::None);
+
+        // With the children the other way round, the sky-only shape is first.
+        let Some(NiType::NiNode(root)) = stream.objects.get_mut(root.key) else {
+            panic!("root node");
+        };
+        root.children.reverse();
+        let water = mesh_water(&stream, &names, None).expect("water mesh");
+        assert_eq!(water.surface, SubsetWater::SkyOnly);
+    }
+
+    #[test]
+    fn a_water_name_that_nothing_refers_to_does_not_count() {
+        let names = kit_names();
+        for unreachable in ["WaterVolume plain", "WaterBody"] {
+            let mut stream = NiStream::new();
+            stream.insert(named_shape(unreachable));
+            let rock = stream.insert(named_shape("Rock"));
+            let mut root = NiNode::default();
+            root.children.push(rock.cast());
+            let root = stream.insert(root);
+            stream.roots.push(root.cast());
+
+            // Nothing under the root is named as water.
+            assert!(mesh_water(&stream, &names, None).is_none());
+
+            // The surface under the root gives the look, not the object that is first in the file.
+            let sky_only = stream.insert(named_shape("WaterVolume skyonly"));
+            let Some(NiType::NiNode(root)) = stream.objects.get_mut(root.key) else {
+                panic!("root node");
+            };
+            root.children.push(sky_only.cast());
+            let water = mesh_water(&stream, &names, None).expect("water mesh");
+            assert_eq!(water.surface, SubsetWater::SkyOnly);
+        }
+    }
 
     #[test]
     fn water_words_need_a_boundary_on_both_sides() {

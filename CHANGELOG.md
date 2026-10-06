@@ -12,7 +12,8 @@
 - The `mgeXE.toml` file now automatically updates itself to include new settings as they released.
 - Water volumes: mods can place bodies of water at any height, apart from the cell's own water.
   Their surfaces are drawn with the water shading, near the player and in distant land. Meshes
-  are marked as water through `distantwater.toml` or plugin metadata; see the mod metadata guide.
+  are marked as water by the names in them, which the default statics classifiers set, or
+  through plugin metadata; see the mod metadata guide. Distant land must be generated again.
   A water volume can have a colour: the emissive colour of its material.
 - The water of a cell can have a colour: the emissive colour of the game's water material,
   which a mod can set from Lua.

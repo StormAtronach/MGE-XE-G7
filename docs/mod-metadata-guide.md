@@ -24,20 +24,14 @@ OpenMW `.omwaddon` package is never a plugin input.
 2. **Coexistence**: The file is shared with other tools (such as MWSE). MGE XE only reads the `[tools.mge-xe.distantland]` table; all other sections are ignored.
 3. **Fail-Soft**: If the file contains syntax errors, MGE XE logs a warning and skips the file but continues generating distant land.
 
-### Water Rules File
-
-A file named `distantwater.toml` in a data directory is read as well, with the same
-`[tools.mge-xe.distantland]` schema and the same fail-soft rule. It is meant for a mod that
-owns water meshes rather than a plugin: it carries the `water` table described below. It is
-merged ahead of the plugin metadata files, so a plugin's own file overrides it.
-
 ### Global Override TOML
 
 The generator's ordered override-file list also accepts TOML documents using the same
 `[tools.mge-xe.distantland]` schema. These explicitly selected files are global rather than tied
 to an active plugin, and malformed configured files stop generation with an error instead of being
 skipped. MGE XE ships `MGE3\MGE XE Default Statics Classifiers.toml` as an enabled-by-default,
-commented example.
+commented example. That file also holds the names that mark distant water (see
+[Distant Water](#distant-water-toolsmge-xedistantlandwater)).
 
 ---
 
@@ -135,6 +129,11 @@ the game draws it and MGE XE shades its surface as water. Far away it is a dista
 this table tells the generator which distant statics are water, so that they are drawn with
 the same shading instead of their texture.
 
+The names are one convention for all mods. MGE XE ships the table below in
+`MGE3\MGE XE Default Statics Classifiers.toml`, so a mod whose meshes use these names needs no
+file of its own. There is no separate water rules file. The default file is an entry of the
+override-file list: the names apply only while that list is enabled and the file is in it.
+
 ```toml
 [tools.mge-xe.distantland.water]
 version = 1
@@ -152,8 +151,30 @@ sky_only_words = ["skyonly"]
 | `plain_words` | array of strings | Words in the surface name for a mesh that keeps its own look. The body is still left out, and the rest stays an ordinary distant static. |
 | `sky_only_words` | array of strings | Words in the surface name for water that reflects the sky only. |
 
-A later source replaces the whole table of an earlier one. A word counts only when no letter
-stands directly before or after it.
+A word counts only when no letter stands directly before or after it.
+
+The first surface name is the first one that the generator finds when it goes through the
+mesh from the root, depth first, with the children of a node in their order. An object that
+nothing under the root refers to does not count. The mod that makes the near water reads the
+mesh in the same order, so near water and distant water get the same look.
+
+A plugin metadata file can hold this table too, to change the names. A later source replaces
+the whole table of an earlier one: the lists are not joined. A file that adds a name must
+therefore repeat the names that it keeps. When a table replaces a different table from another
+source, a warning that names the two sources is written to the generation log. The table is
+one for the whole load order, so a table in the metadata of one plugin changes the names for
+the meshes of all mods. For one mesh that does not follow the names, use the `water` key of
+its mesh entry instead.
+
+The generator reads the mesh files and the metadata. It does not see the game as it runs. A
+mesh is distant water only when the names in it say so, or when its mesh entry has
+`water = true`. A material marker that a mod sets at run time makes near water, but it does not
+make distant water. In the same way, this table is for the generator alone: when a plugin
+changes the names, the mod that makes the near water must get the same names by its own means.
+
+A shape that is drawn as water needs no texture and no UVs, because the water shading uses
+neither. A mesh that keeps its own look is an ordinary static, and its shapes need a texture
+and UVs as the shapes of any static do.
 
 Water can have a colour: the emissive colour of the material of a surface shape, or the
 `water_color` of the mesh entry, which comes first. Black, the emissive colour of most
@@ -165,9 +186,16 @@ colour of the material of the game's water node.
 
 Distant water reflects the sky. Up to `distant_land.water.volume_reflection_cells` cells from
 the camera it also reflects what is on screen. Water subsets are not atlased, are not merged
-with their neighbours, and are exempt from the buried-in-terrain cull. They are still subject
-to the size and distance tiers of any static, so a small piece is not drawn very far away
-unless its entry also sets `type`.
+with their neighbours, and are exempt from the buried-in-terrain cull.
+
+Water has a distance rule of its own. At run time all water subsets are in one group, and that
+group is drawn as far as the very-far range of distant statics, whatever the size of a piece.
+The size and distance tiers of ordinary statics do not apply to water. A `type` in the mesh
+entry does not change how far water is drawn, and `type = "very_far"` is no exception. Only the
+size filter of the generator applies: a mesh below the minimum static size is left out of
+distant land, so it is not distant water. As for any static, a mesh entry with
+`type = "near"`, `"far"` or `"very_far"` passes that filter at any size. A mesh that keeps its
+own look is not water here: it follows the tiers of ordinary statics.
 
 ---
 
@@ -202,13 +230,13 @@ script- and quest-value conditions use the `journal` or `global` kinds instead.
 When distant land is generated, overrides from different sources are merged in a strict order:
 
 1. **Configured Override Files**: `.ovr`, `.txt`, and TOML sources are applied first, in the order configured in the GUI.
-2. **Water Rules Files**: `distantwater.toml` from each data directory, lowest priority first.
-3. **Metadata Files**: Applied last, processed in the load order of the active plugins.
+2. **Metadata Files**: Applied last, processed in the load order of the active plugins.
 
 ### Merging Behavior
 * **Scalar Overrides**: For mesh types, ignore flags, and cell/object filters, the **last writer wins**. If a plugin metadata file overrides a setting that was previously set by a legacy `.ovr` file or a prior plugin, the new value takes precedence.
 * **Conflict Logs**: If a plugin metadata file overwrites a directive established by a different source file for the same key, a diagnostic warning is logged in the generation log.
 * **Dynamic Visibility**: Visibility groups are merged and deduplicated across all sources rather than overwritten. Multiple plugins or `.ovr` files can register scripts or ranges to the same group.
+* **Water Names**: The `water` table is one value. A later source replaces the whole table, and a warning is logged when it replaces a different table from another source.
 
 ---
 

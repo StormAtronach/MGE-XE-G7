@@ -96,12 +96,16 @@ Only `cells` and `terrain_cells` retain their collected data for downstream stat
 - Computes minimum bounding spheres (minsphere) and AABBs; applies the early size filter using
   the mesh's maximum placed scale, `min_static_size`, and `door_size_multiplier`.
 - Decides whether the mesh is distant water (`mesh_water` in `nif.rs`): a mesh override says so,
-  or an object in it has a surface or body name from the `water` table of the metadata. In a
-  water mesh everything under a body name is left out and the remaining shapes become water
-  subsets (`SubsetWater`). Water subsets keep their source texture path (no atlas), the static
-  is not merged, and it is exempt from the buried-in-terrain cull. The vertex colour of a
-  water subset is the colour of its water: the `water_color` of the mesh override, or the
-  emissive colour of the material, with black for the usual colour.
+  or an object in it has a surface or body name from the `water` table of the metadata. The
+  objects are taken from the root, depth first, the children of a node in their order, and the
+  first surface name gives the look. An object that nothing under the root refers to does not
+  count. In a water mesh everything under a body name is left out and the remaining shapes
+  become water subsets (`SubsetWater`). Water subsets keep their source texture path (no
+  atlas), the static is not merged, and it is exempt from the buried-in-terrain cull. A water
+  subset needs no texture and no UVs: without them it gets zero UVs and the path of the
+  embedded error texture, because `static_meshes` has no subset without a texture path. The
+  vertex colour of a water subset is the colour of its water: the `water_color` of the mesh
+  override, or the emissive colour of the material, with black for the usual colour.
 
 The result is the `DistantStatics` map (`IndexMap<String, DistantStatic>` keyed by normalized
 mesh path) defined in [crates/statics/src/model.rs](../../crates/statics/src/model.rs).
@@ -316,10 +320,11 @@ Two layered configuration sources, merged into one `StaticOverrides` by `Overrid
   exclusion wins when the same value is both included and excluded. Per-mesh `ignore_script = true`
   is the metadata equivalent of the legacy `no_script` keyword.
 
-- **`distantwater.toml`** in a data directory: the same schema and fail-soft rule as plugin
-  metadata, discovered by `discover_water_rules` and merged between the override files and the
-  plugin metadata. It exists for the `water` table (`WaterNames`), which names the shapes that
-  mark distant water. The format is in [mod-metadata-guide.md](../../../docs/mod-metadata-guide.md).
+The `water` table (`WaterNames`) names the shapes that mark distant water. It has no file of
+its own: the shipped default override TOML sets it, and plugin metadata can replace it. A later
+source replaces the whole table, and `OverridesBuilder::set_water_names` warns when it replaces
+a different table from another source. The format is in
+[mod-metadata-guide.md](../../../docs/mod-metadata-guide.md).
 
 `DynamicVisData` (named visibility groups with ranges, deduplicated across sources) flows into
 `usage.data` so MGE-XE can toggle groups at runtime; references in a dynamic-vis group are
@@ -330,8 +335,9 @@ excluded from merging.
 Before atlas application replaces texture symbols and before merge mutation removes member
 references, `generation::unit_fingerprint` captures mesh, merge-cell, and static-texture unit
 fingerprints. Mesh units include unresolved/read-failed/filtered states, resolution facts, raw
-content identity, settings/override/admission inputs, bounds, and ordered source textures. A
-BVH-free enumerator applies the same merge eligibility filter on every run, including legacy
+content identity, settings/override/admission inputs, bounds, and ordered source textures. The
+unit of a mesh that the water rules apply to also includes the water names, because the names
+choose its shapes. A BVH-free enumerator applies the same merge eligibility filter on every run, including legacy
 bundle hits, and fingerprints cells with at least two eligible stable-key members. Merge units are
 the one statics-domain unit with terrain inputs: because merged geometry is culled against the
 heightmap, each carries the `height_hash` of the 3x3 cell block around its own cell plus the

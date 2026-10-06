@@ -27,20 +27,6 @@ pub fn plugin_metadata_path(plugin: &Path) -> PathBuf {
     plugin.with_file_name(format!("{}-metadata.toml", stem.to_string_lossy()))
 }
 
-/// File name of the water rules. A mod that owns water meshes ships it in a data directory.
-pub const WATER_RULES_FILE: &str = "distantwater.toml";
-
-/// Returns the existing water rules files, lowest-priority data directory first, so that a
-/// higher-priority directory overrides a lower one. They use the plugin metadata schema.
-pub fn discover_water_rules(data_dirs: &[PathBuf]) -> Vec<PathBuf> {
-    data_dirs
-        .iter()
-        .rev()
-        .map(|dir| dir.join(WATER_RULES_FILE))
-        .filter(|path| path.is_file())
-        .collect()
-}
-
 /// Returns existing metadata files in plugin order.
 pub fn discover_plugin_metadata(plugins: &[PathBuf]) -> Vec<PathBuf> {
     plugins

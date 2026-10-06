@@ -1750,3 +1750,94 @@ fn from_nif_takes_water_by_names_and_leaves_the_body_out() {
             .all(|subset| subset.water == SubsetWater::ReflectsScene)
     );
 }
+
+/// A water mesh whose surface shape has no texture and no UVs. Its body is textured.
+fn build_test_bare_water_nif(surface_name: &str) -> Vec<u8> {
+    let mut stream = NiStream::new();
+    let texture_link = stream.insert(NiSourceTexture {
+        source: TextureSource::External("uv_anim\\ghost.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture_link;
+    let texturing_property_link = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+
+    let mut root = NiNode::default();
+    for (name, z, textured) in [(surface_name, 0.0, false), ("WaterBody", -100.0, true)] {
+        let mut geometry_data = NiTriShapeData::default();
+        geometry_data.vertices = vec![Vec3::new(0.0, 0.0, z), Vec3::new(1.0, 0.0, z), Vec3::new(0.0, 1.0, z)];
+        geometry_data.normals = vec![Vec3::Z; 3];
+        geometry_data.triangles = vec![[0, 1, 2]];
+        if textured {
+            geometry_data.uv_sets = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+        }
+        geometry_data.update_center_radius();
+        let geometry_data_link = stream.insert(geometry_data);
+
+        let mut shape = NiTriShape::default();
+        shape.name = name.into();
+        shape.geometry_data = geometry_data_link.cast();
+        if textured {
+            shape.properties.push(texturing_property_link.cast());
+        }
+        root.children.push(stream.insert(shape).cast());
+    }
+
+    let root_link = stream.insert(root);
+    stream.roots.push(root_link.cast());
+    stream.save_bytes().expect("serialize test nif")
+}
+
+#[test]
+fn from_nif_keeps_a_water_subset_without_texture_and_uvs() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "bare.nif", &build_test_bare_water_nif("WaterVolume"));
+    write_test_static_asset(root, "bare_plain.nif", &build_test_bare_water_nif("WaterVolume plain"));
+    let vfs = make_test_vfs(root);
+
+    // As an ordinary static the surface is left out: it has no texture and no UVs.
+    let ordinary = water_test_static(root, "bare.nif", &StaticOverrides::default());
+    assert_eq!(ordinary.subsets.len(), 1);
+    assert_eq!(ordinary.bounding_box.min.z, -100.0);
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+
+    // As water the surface is kept, with zero UVs and the error texture as its texture.
+    let water = DistantStatic::from_nif_with_identity("bare.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+        .distant_static
+        .expect("water static");
+    assert_eq!(water.subsets.len(), 1);
+    let subset = &water.subsets[0];
+    assert_eq!(subset.water, SubsetWater::ReflectsScene);
+    assert_eq!(subset.vertices.len(), 3);
+    assert_eq!(subset.triangles.len(), 1);
+    assert_eq!(water.bounding_box.min.z, 0.0);
+    assert!(subset.vertices.iter().all(|vertex| vertex.uv == Vec2::ZERO));
+    let sym = subset.texture.source_sym().expect("source texture");
+    assert_eq!(vfs.texture_key_for_sym(sym), Some(crate::vfs::STATIC_ERROR_TEXTURE_KEY));
+
+    // The static_meshes file takes the subset, and gives it back.
+    let mut packed = crate::PackedDistantStatics::default();
+    packed.insert("bare.nif".to_owned(), water.into_distant_static(&vfs, 1.0));
+    let bytes = crate::serialize_static_meshes(&packed).expect("serialize");
+    let read = crate::mge_xe::distant_statics::deserialize_static_meshes(&bytes).expect("deserialize");
+    assert_eq!(read[0].subsets.len(), 1);
+    assert_eq!(read[0].subsets[0].water, 1);
+    assert_eq!(read[0].subsets[0].texture.as_ref(), crate::vfs::STATIC_ERROR_TEXTURE_KEY);
+    assert!(
+        read[0].subsets[0]
+            .vertices
+            .iter()
+            .all(|vertex| vertex.uv == [half::f16::ZERO; 2])
+    );
+
+    // A mesh that keeps its own look is an ordinary static: the surface is left out as before,
+    // and the body is left out as the body of water.
+    let plain = DistantStatic::from_nif_with_identity("bare_plain.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names);
+    assert!(plain.distant_static.is_none());
+}
