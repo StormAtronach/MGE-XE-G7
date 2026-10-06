@@ -913,6 +913,18 @@ void* MWBridge::getPlayerCell() {
 
 //-----------------------------------------------------------------------------
 
+bool MWBridge::getExteriorGrid(int& x, int& y) {
+    auto cell = dataHandler()->currentCell;
+    if (cell == nullptr || cell->getIsInterior()) {
+        return false;
+    }
+    x = cell->variantData.exterior.gridX;
+    y = cell->variantData.exterior.gridY;
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+
 // toggleRipples - Turns off ripple generation from all sources
 void MWBridge::toggleRipples(BOOL enabled) {
     auto* site = reinterpret_cast<DWORD*>(TES3::Address::patch_ripples);

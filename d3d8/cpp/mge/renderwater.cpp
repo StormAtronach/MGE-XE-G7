@@ -500,11 +500,16 @@ void DistantLand::discardWaterVolumes() {
 // withDistant: draw the water among the distant statics as well, from the same copy. It is the
 // same water farther away than the game draws, so it is wanted once per frame, with the first flush.
 void DistantLand::flushWaterVolumes(bool withDistant) {
+    const bool distantWanted = withDistant && distantWaterInView;
+    distantWaterInView = false;
+    if (pendingWaterVolumes.empty() && !distantWanted) {
+        return;
+    }
+
     auto mwBridge = MWBridge::get();
     // From below, the planar reflection is the one of the volume the eye is in.
     const bool underwater = mwBridge->IsUnderwater(eyePos.z);
-    const bool drawDistant = withDistant && distantWaterInView && !underwater && canRenderDistantLand() && !isRenderCached;
-    distantWaterInView = false;
+    const bool drawDistant = distantWanted && !underwater && canRenderDistantLand() && !isRenderCached;
     if (pendingWaterVolumes.empty() && !drawDistant) {
         return;
     }
@@ -537,9 +542,18 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         editProjectionZ(&distProj, kDistantNearPlane - 1e-2, Configuration.DL.DrawDist * kCellSize);
         effect->SetMatrix(ehProj, &distProj);
         device->SetVertexDeclaration(StaticDecl);
+        // The game has the cell of the player and the eight cells around it.
+        float loadedCells[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        int gridX, gridY;
+        if (mwBridge->getExteriorGrid(gridX, gridY)) {
+            loadedCells[0] = (gridX - 1) * kCellSize;
+            loadedCells[1] = (gridY - 1) * kCellSize;
+            loadedCells[2] = (gridX + 2) * kCellSize;
+            loadedCells[3] = (gridY + 2) * kCellSize;
+        }
         for (std::uint8_t kind = 1; kind <= 2; kind++) {
             effect->BeginPass(kind == 1 ? PASS_RENDERWATERVOLUME_DISTANT : PASS_RENDERWATERVOLUME_DISTANT_SKYONLY);
-            visWaterShared.RenderWater(device, effect, &ehWorld, SIZEOFSTATICVERT, kind);
+            visWaterShared.RenderWater(device, effect, &ehWorld, &ehWaterVolumeHandoff, nearViewRange, loadedCells, SIZEOFSTATICVERT, kind);
             effect->EndPass();
         }
         effect->SetMatrix(ehProj, &mwProj);

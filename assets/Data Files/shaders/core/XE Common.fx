@@ -26,6 +26,7 @@ shared float fogStart, fogRange;
 shared float nearFogStart, nearFogRange;
 shared float nearViewRange;
 shared float waterVolumeReflectRange;
+shared float waterVolumeHandoff;
 shared float3 waterVolumeTint;
 shared float3 waterPlaneTint;
 shared float3 sunPos;
