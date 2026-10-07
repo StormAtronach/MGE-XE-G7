@@ -20,7 +20,8 @@
   A mod can also ship a water shader of its own for its surfaces
   (`Data Files\shaders\water\<name>.fx`); see `docs/water-shaders.md`. The look and the
   shader of a mesh apply in distant land too. The `wv` key of a mesh entry in plugin
-  metadata gives a look to a mesh that cannot be edited.
+  metadata gives a look to a mesh that cannot be edited. A water shader also gets the second
+  texture of the mesh (a decal, a detail or a dark map).
 - The water of a cell can have a colour: the emissive colour of the game's water material,
   which a mod can set from Lua.
 

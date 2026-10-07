@@ -14,6 +14,9 @@
 
 // The base texture of the mesh, for the water shader of a mod
 sampler sampMesh0 = sampler_state { texture = <texMesh0>; minfilter = linear; magfilter = linear; mipfilter = linear; addressu = wrap; addressv = wrap; };
+// The second texture of the mesh (a decal, a detail or a dark map), for the same. A surface
+// from the distant land has none.
+sampler sampMesh1 = sampler_state { texture = <texMesh1>; minfilter = linear; magfilter = linear; mipfilter = linear; addressu = wrap; addressv = wrap; };
 
 // The look of a surface beyond its colour, from waterVolumeFlow, waterVolumeMix and the vertex.
 struct WaterSurfaceLook
@@ -49,7 +52,7 @@ WaterSurfaceLook surfaceLook(float4 vertexColour)
     look.opacity = waterVolumeMix.y * lerp(1, vertexColour.a, opacityFromVertex);
     look.tint = lerp(1, vertexColour.rgb, tintFromVertex);
     look.reflectsScene = fmod(waterVolumeMix.w, 2) > 0.5;
-    look.distant = waterVolumeMix.w > 1.5;
+    look.distant = fmod(waterVolumeMix.w, 4) > 1.5;
     look.p0 = waterVolumeParams[0];
     look.p1 = waterVolumeParams[1];
     look.p2 = waterVolumeParams[2];
@@ -342,18 +345,19 @@ struct WaterVolumeVertOut
     float3 facing : TEXCOORD5;
     // The vertex colour of the mesh; 1 for a surface from the distant land
     float4 color : COLOR0;
-    // The first texture coordinates of the mesh
-    float2 uv : TEXCOORD6;
+    // The texture coordinates of the mesh: the first in xy and the second in zw. A mesh with
+    // one set, and a surface from the distant land, has the first in both.
+    float4 uv : TEXCOORD6;
 };
 
-WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NORMAL, in float4 color : COLOR0, in float2 uv : TEXCOORD0)
+WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NORMAL, in float4 color : COLOR0, in float2 uv : TEXCOORD0, in float2 uv1 : TEXCOORD1)
 {
     WaterVolumeVertOut OUT;
     OUT.water = WaterVS(pos);
     OUT.tint = waterVolumeTint;
     OUT.facing = mul(float4(normal, 0), world).xyz;
     OUT.color = color;
-    OUT.uv = uv;
+    OUT.uv = float4(uv, waterVolumeMix.w >= 4 ? uv1 : uv);
     return OUT;
 }
 
@@ -375,6 +379,6 @@ WaterVolumeVertOut WaterVolumeDistantVS(in StatVertIn IN)
     OUT.tint = IN.color.rgb;
     OUT.facing = mul(float4(2 * IN.normal.xyz - 1, 0), world).xyz;
     OUT.color = float4(1, 1, 1, IN.color.a);
-    OUT.uv = IN.texcoords;
+    OUT.uv = IN.texcoords.xyxy;
     return OUT;
 }
