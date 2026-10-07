@@ -12,6 +12,7 @@
 #include "distantland.h"
 #include "morrowindskinning.h"
 #include "mwbridge.h"
+#include "waterlook.h"
 #include "mwpatches.h"
 #include "statusoverlay.h"
 #include "userhud.h"
@@ -27,6 +28,7 @@ static bool isWaterMaterial, waterDrawn, distantWater;
 // 99998 for a surface that reflects what is on screen, 99997 for one that reflects the sky only.
 // The emissive colour of that material is the colour of the water.
 static bool isWaterVolumeMaterial, waterVolumeReflectsScene;
+static unsigned int waterVolumeSlot;
 static D3DCOLORVALUE waterVolumeTint;
 
 static bool zoomSensSaved;
@@ -534,8 +536,15 @@ HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
         DistantLand::waterPlaneTint[1] = a->Emissive.g;
         DistantLand::waterPlaneTint[2] = a->Emissive.b;
     }
+    // A surface of a water volume: the two old markers, or a look slot
     waterVolumeReflectsScene = (a->Power == 99998.0f);
     isWaterVolumeMaterial = waterVolumeReflectsScene || (a->Power == 99997.0f);
+    waterVolumeSlot = 0;
+    if (a->Power >= WaterLooks::slotMarkerBase && a->Power < WaterLooks::slotMarkerBase + WaterLooks::maxSlots) {
+        waterVolumeSlot = static_cast<unsigned int>(a->Power - WaterLooks::slotMarkerBase);
+        waterVolumeReflectsScene = (WaterLooks::get(waterVolumeSlot).flags & WATER_LOOK_REFLECTS_SCENE) != 0;
+        isWaterVolumeMaterial = true;
+    }
     waterVolumeTint = a->Emissive;
 
     return ProxyDevice::SetMaterial(a);
@@ -673,7 +682,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
                 }
                 return D3D_OK;
             }
-        } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene, waterVolumeTint)) {
+        } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene, waterVolumeTint, waterVolumeSlot)) {
             // The surface of a water volume was drawn with the water shading.
             return D3D_OK;
         } else {

@@ -199,6 +199,17 @@ surfaces near the camera as well.
 the plane is more than twice the view distance below the camera. A mod that needs the water
 flag on a dry interior puts the level that far down.
 
+A surface can have a look beyond its colour: the drift, speed and size of its ripples, foam,
+glow, opacity, and whether the vertex colour of the mesh tints it (`WaterLook` in
+`waterlook.h`). A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
+marks a surface with its slot in the specular power of the material, `100000 + slot`; the two
+old markers stay valid. `SetMaterial` reads the slot, the held draw carries it, and
+`flushWaterVolumes` sets `waterVolumeFlow` and `waterVolumeMix` for each draw from the slot's
+look. The shader (`WaterSurfaceLook`) drifts the ripple coordinates by the flow turned into
+the world, scales the ripple time by the speed, and mixes foam, glow and the frame behind the
+surface by the opacity. A slot stands for a look, so every surface with the same look shares
+it.
+
 A mod can also tell MGE which volume the camera is in, through the `MGE_WaterVolumesSet`
 export: while the camera is inside one, `CellHasWater()` and `WaterLevel()` describe that
 volume, which gives the underwater view and fog at the right height.

@@ -5,6 +5,7 @@
 #include "doublesurface.h"
 #include "mwbridge.h"
 #include "postshaders.h"
+#include "waterlook.h"
 
 #include <cmath>
 
@@ -468,6 +469,8 @@ struct PendingWaterVolume {
     bool reflectsScene;
     // The colour of the water: the emissive colour of the material. Black for the usual colour.
     float tint[3];
+    // The look slot of the material; 0 for the standard look
+    unsigned int lookSlot;
 };
 static std::vector<PendingWaterVolume> pendingWaterVolumes;
 
@@ -475,14 +478,14 @@ static std::vector<PendingWaterVolume> pendingWaterVolumes;
 // it with the water shading instead of its own material. The draw happens in flushWaterVolumes,
 // so that every surface refracts and reflects the same frame, without the other surfaces in it.
 // Returns false when the draw should go ahead unchanged.
-bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint) {
+bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot) {
     if (!canRenderDistantLand() || isRenderCached) {
         return false;
     }
 
     rs->vb->AddRef();
     rs->ib->AddRef();
-    pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b } });
+    pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot });
     waterVolumeDrawn = true;
     return true;
 }
@@ -568,6 +571,18 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             const RenderedState* rs = &pending.rs;
             effect->SetMatrix(ehWorld, &rs->worldTransforms[0]);
             effect->SetFloatArray(ehWaterVolumeTint, pending.tint, 3);
+            // The look of the surface. The vertex colour counts only when the look asks for it
+            // and the mesh has one: 1 for the tint, 2 for the opacity.
+            const WaterLook& look = WaterLooks::get(pending.lookSlot);
+            const float flow[4] = { look.flow[0], look.flow[1], look.speed, look.scale };
+            float vertexUse = 0.0f;
+            if ((rs->fvf & D3DFVF_DIFFUSE) != 0) {
+                vertexUse += (look.flags & WATER_LOOK_TINT_FROM_VERTEX) != 0 ? 1.0f : 0.0f;
+                vertexUse += (look.flags & WATER_LOOK_OPACITY_FROM_VERTEX) != 0 ? 2.0f : 0.0f;
+            }
+            const float mix[4] = { look.foam, look.glow, look.opacity, vertexUse };
+            effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
+            effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
             if (!passBegun) {
                 const auto surfacePass = reflectsScene ? PASS_RENDERWATERVOLUME : PASS_RENDERWATERVOLUME_SKYONLY;
                 effect->BeginPass(underwater ? PASS_RENDERUNDERWATER : surfacePass);

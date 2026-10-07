@@ -14,7 +14,9 @@
   Their surfaces are drawn with the water shading, near the player and in distant land. Meshes
   are marked as water by the names in them, which the default statics classifiers set, or
   through plugin metadata; see the mod metadata guide. Distant land must be generated again.
-  A water volume can have a colour: the emissive colour of its material.
+  A water volume can have a colour: the emissive colour of its material, and a look of its own:
+  flowing ripples, their speed and size, foam, glow, opacity, and a tint from the vertex
+  colours of the mesh, which the mod that owns the volume reports through `MGE_WaterLookSet`.
 - The water of a cell can have a colour: the emissive colour of the game's water material,
   which a mod can set from Lua.
 

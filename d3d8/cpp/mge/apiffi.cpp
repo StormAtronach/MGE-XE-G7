@@ -13,6 +13,7 @@
 
 #include "configuration.h"
 #include "mwbridge.h"
+#include "waterlook.h"
 
 #include <algorithm>
 #include <cmath>
@@ -86,6 +87,13 @@ extern "C" {
     // min x, y, z then max x, y, z. Called on the main thread by the mod that owns the volumes.
     void MGE_WaterVolumesSet(const MWBridge::WaterVolume* volumes, unsigned int count) {
         MWBridge::get()->setWaterVolumes(volumes, count);
+    }
+
+    // Sets the look of a slot, which a surface names in the specular power of its material
+    // (100000 + slot). A null look clears the slot. Called on the main thread by the mod that
+    // owns the volumes.
+    void MGE_WaterLookSet(unsigned int slot, const WaterLook* look) {
+        WaterLooks::set(slot, look);
     }
 
 }

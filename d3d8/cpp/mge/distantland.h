@@ -285,6 +285,8 @@ public:
     static D3DXHANDLE ehWaterVolumeHandoff;
     static D3DXHANDLE ehWaterVolumeTint;
     static D3DXHANDLE ehWaterPlaneTint;
+    static D3DXHANDLE ehWaterVolumeFlow;
+    static D3DXHANDLE ehWaterVolumeMix;
     static D3DXHANDLE ehWindVec;
     static D3DXHANDLE ehNiceWeather;
     static D3DXHANDLE ehTime;
@@ -406,7 +408,7 @@ public:
     static void clearReflection();
     static void simulateDynamicWaves();
     static void renderWaterPlane();
-    static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint);
+    static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot);
     static void flushWaterVolumes(bool withDistant);
     static void discardWaterVolumes();
     // A surface mesh of a water volume was taken this frame.
