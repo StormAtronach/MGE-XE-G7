@@ -16,6 +16,11 @@
 #include "XE Mod Sky.fx"
 #include "XE Mod Water.fx"
 #include "XE Mod Water Volume.fx"
+// Each water shader names its pixel shader WaterShaderPS
+#define WaterShaderPS WaterStandardPS
+#include "XE Mod Water Standard.fx"
+#undef WaterShaderPS
+#include "XE Water Shaders.fx"
 #include "XE Mod Caustics.fx"
 
 //------------------------------------------------------------
@@ -492,26 +497,11 @@ Technique T0 {
         AlphaTestEnable = false;
 
         VertexShader = compile vs_3_0 WaterVolumeVS();
-        PixelShader = compile ps_3_0 WaterVolumePS(true);
-    }
-    //------------------------------------------------------------
-    // Used for rendering the surface meshes of water volumes that reflect the sky only
-    Pass P16 {
-        ZEnable = true;
-        ZWriteEnable = true;
-        ZFunc = LessEqual;
-        StencilEnable = false;
-        CullMode = none;
-
-        AlphaBlendEnable = false;
-        AlphaTestEnable = false;
-
-        VertexShader = compile vs_3_0 WaterVolumeVS();
-        PixelShader = compile ps_3_0 WaterVolumePS(false);
+        PixelShader = compile ps_3_0 WaterStandardPS();
     }
     //------------------------------------------------------------
     // Used for rendering water volumes among the distant statics
-    Pass P17 {
+    Pass P16 {
         ZEnable = true;
         ZWriteEnable = true;
         ZFunc = LessEqual;
@@ -526,7 +516,7 @@ Technique T0 {
     }
     //------------------------------------------------------------
     // Used for rendering water volumes among the distant statics that reflect the sky only
-    Pass P18 {
+    Pass P17 {
         ZEnable = true;
         ZWriteEnable = true;
         ZFunc = LessEqual;
@@ -539,5 +529,8 @@ Technique T0 {
         VertexShader = compile vs_3_0 WaterVolumeDistantVS();
         PixelShader = compile ps_3_0 WaterVolumeDistantPS(false);
     }
+    //------------------------------------------------------------
+    // Used for rendering the surface meshes of water volumes with the water shader of a mod
+#include "XE Water Shader Passes.fx"
     //------------------------------------------------------------
 }

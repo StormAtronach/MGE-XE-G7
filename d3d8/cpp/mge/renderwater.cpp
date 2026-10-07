@@ -485,6 +485,9 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene,
 
     rs->vb->AddRef();
     rs->ib->AddRef();
+    if (rs->texture) {
+        rs->texture->AddRef();
+    }
     pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot });
     waterVolumeDrawn = true;
     return true;
@@ -495,6 +498,9 @@ void DistantLand::discardWaterVolumes() {
     for (auto& pending : pendingWaterVolumes) {
         pending.rs.vb->Release();
         pending.rs.ib->Release();
+        if (pending.rs.texture) {
+            pending.rs.texture->Release();
+        }
     }
     pendingWaterVolumes.clear();
 }
@@ -562,31 +568,43 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         effect->SetMatrix(ehProj, &mwProj);
     }
 
-    for (int reflectsScene = 0; reflectsScene < 2; reflectsScene++) {
-        bool passBegun = false;
+    // Each surface is drawn with the pass of its look: the water shader of a mod, or the
+    // standard one. From below all surfaces have the underwater pass.
+    {
+        int passInUse = -1;
         for (const auto& pending : pendingWaterVolumes) {
-            if (pending.reflectsScene != (reflectsScene != 0)) {
-                continue;
-            }
             const RenderedState* rs = &pending.rs;
+            const WaterLook& look = WaterLooks::get(pending.lookSlot);
+            int pass = PASS_RENDERUNDERWATER;
+            if (!underwater) {
+                pass = waterShaderPass(look.shader);
+                if (pass < 0) {
+                    pass = PASS_RENDERWATERVOLUME;
+                }
+            }
             effect->SetMatrix(ehWorld, &rs->worldTransforms[0]);
             effect->SetFloatArray(ehWaterVolumeTint, pending.tint, 3);
             // The look of the surface. The vertex colour counts only when the look asks for it
             // and the mesh has one: 1 for the tint, 2 for the opacity.
-            const WaterLook& look = WaterLooks::get(pending.lookSlot);
             const float flow[4] = { look.flow[0], look.flow[1], look.speed, look.scale };
             float vertexUse = 0.0f;
             if ((rs->fvf & D3DFVF_DIFFUSE) != 0) {
                 vertexUse += (look.flags & WATER_LOOK_TINT_FROM_VERTEX) != 0 ? 1.0f : 0.0f;
                 vertexUse += (look.flags & WATER_LOOK_OPACITY_FROM_VERTEX) != 0 ? 2.0f : 0.0f;
             }
-            const float mix[4] = { look.foam, look.glow, look.opacity, vertexUse };
+            const float mix[4] = { look.glow, look.opacity, vertexUse, pending.reflectsScene ? 1.0f : 0.0f };
             effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
             effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
-            if (!passBegun) {
-                const auto surfacePass = reflectsScene ? PASS_RENDERWATERVOLUME : PASS_RENDERWATERVOLUME_SKYONLY;
-                effect->BeginPass(underwater ? PASS_RENDERUNDERWATER : surfacePass);
-                passBegun = true;
+            if (pass >= PASS_WATERSHADER_FIRST) {
+                effect->SetFloatArray(ehWaterVolumeParams, &look.params[0][0], 16);
+                effect->SetTexture(ehMeshTex0, rs->texture);
+            }
+            if (pass != passInUse) {
+                if (passInUse >= 0) {
+                    effect->EndPass();
+                }
+                effect->BeginPass(pass);
+                passInUse = pass;
             } else {
                 effect->CommitChanges();
             }
@@ -595,9 +613,10 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             device->SetFVF(rs->fvf);
             device->DrawIndexedPrimitive(rs->primType, rs->baseIndex, rs->minIndex, rs->vertCount, rs->startIndex, rs->primCount);
         }
-        if (passBegun) {
+        if (passInUse >= 0) {
             effect->EndPass();
         }
+        effect->SetTexture(ehMeshTex0, NULL);
     }
 
     if (ripples) {

@@ -9,6 +9,12 @@
 // The shading follows the normal of the mesh: the ripples are tilted to it, and the reflection
 // and the Fresnel term are taken from it.
 
+// A mod can replace the pixel shader of a surface with one of its own: see WaterShade below
+// and docs/water-shaders.md.
+
+// The base texture of the mesh, for the water shader of a mod
+sampler sampMesh0 = sampler_state { texture = <texMesh0>; minfilter = linear; magfilter = linear; mipfilter = linear; addressu = wrap; addressv = wrap; };
+
 // The look of a surface beyond its colour, from waterVolumeFlow, waterVolumeMix and the vertex.
 struct WaterSurfaceLook
 {
@@ -16,12 +22,15 @@ struct WaterSurfaceLook
     float2 drift;
     float speed;
     float scale;
-    float foam;
     float glow;
     // 1 is water; lower shows what is behind the surface
     float opacity;
     // The vertex colour, or 1
     float3 tint;
+    // The surface reflects what is on screen; otherwise the sky only
+    bool reflectsScene;
+    // Free values p0 to p3 of the look, for the water shader of a mod
+    float4 p0, p1, p2, p3;
 };
 
 // The look of the surface that is drawn near the player. The drift is given in the axes of
@@ -32,12 +41,16 @@ WaterSurfaceLook nearSurfaceLook(float4 vertexColour)
     look.drift = mul(float4(waterVolumeFlow.xy, 0, 0), world).xy;
     look.speed = waterVolumeFlow.z;
     look.scale = waterVolumeFlow.w;
-    look.foam = waterVolumeMix.x;
-    look.glow = waterVolumeMix.y;
-    float tintFromVertex = fmod(waterVolumeMix.w, 2);
-    float opacityFromVertex = floor(waterVolumeMix.w / 2);
-    look.opacity = waterVolumeMix.z * lerp(1, vertexColour.a, opacityFromVertex);
+    look.glow = waterVolumeMix.x;
+    float tintFromVertex = fmod(waterVolumeMix.z, 2);
+    float opacityFromVertex = floor(waterVolumeMix.z / 2);
+    look.opacity = waterVolumeMix.y * lerp(1, vertexColour.a, opacityFromVertex);
     look.tint = lerp(1, vertexColour.rgb, tintFromVertex);
+    look.reflectsScene = waterVolumeMix.w > 0.5;
+    look.p0 = waterVolumeParams[0];
+    look.p1 = waterVolumeParams[1];
+    look.p2 = waterVolumeParams[2];
+    look.p3 = waterVolumeParams[3];
     return look;
 }
 
@@ -48,10 +61,14 @@ WaterSurfaceLook standardSurfaceLook()
     look.drift = 0;
     look.speed = 1;
     look.scale = 1;
-    look.foam = 0;
     look.glow = 0;
     look.opacity = 1;
     look.tint = 1;
+    look.reflectsScene = true;
+    look.p0 = 0;
+    look.p1 = 0;
+    look.p2 = 0;
+    look.p3 = 0;
     return look;
 }
 
@@ -171,13 +188,34 @@ float4 reflectScene(float3 origin, float3 dir)
     return result;
 }
 
-// reflectsScene and distant are fixed per pass. A surface either reflects what is on screen or
-// the sky only. A distant surface reflects what is on screen out to waterVolumeReflectRange.
+// The shading of a surface point before the look finishes it. The water shader of a mod
+// gets it from shadeWaterVolume, changes the colour, and gives it to finishWaterVolume.
+struct WaterShade
+{
+    // The colour of the water at this point
+    float3 colour;
+    // From the eye to the point, and how far that is
+    float3 eyeVec;
+    float dist;
+    // Fog at the point: rgb what the fog adds, a how much of the surface is left
+    float4 fog;
+    // The ripple normal as on a level surface, and the way the surface faces
+    float3 ripple;
+    float3 face;
+    // How far the view ray goes through the water to what is behind the surface, and how
+    // deep that is under the surface. Both are 4000 or more where the water is deep.
+    float rayDepth;
+    float waterDepth;
+};
+
+// A surface either reflects what is on screen or the sky only: near the player that is a
+// value of the look, far away it is fixed per pass, as distant is. A distant surface
+// reflects what is on screen out to waterVolumeReflectRange.
 // A range of zero turns the reflection of what is on screen off, near and far.
 // tint is the colour of the water of this surface: the emissive colour of its material.
 // facing is the normal of the mesh. A mesh without normals faces up.
 // look is the rest of what the mesh and its mod say about the surface.
-float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint, WaterSurfaceLook look)
+WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint, WaterSurfaceLook look)
 {
     // Calculate eye vector
     float3 EyeVec = IN.pos.xyz - eyePos.xyz;
@@ -206,7 +244,7 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
     // Refraction
     float3 refracted = depthColor;
     float shorefactor = 0;
-    float foam = 0;
+    float rayDepth = depth;
 
     // Avoid sampling deep water
     if(depth < 4000)
@@ -219,9 +257,7 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
         depth = max(0, tex2Dproj(sampDepth, newscrpos).r - IN.screenpos.w);
         depth /= dot(EyeVec, float3(view[0][2], view[1][2], view[2][2]));
         refracted *= waterTransmission(tint, depth) * look.tint;
-
-        // Foam where the water is shallow, broken up by the ripples
-        foam = look.foam * pow(saturate(1 - depth / 160), 2) * saturate(3 * length(ripple.xy));
+        rayDepth = depth;
 
         // Small scale shoreline animation
         depth += 300 * (0.95 - ripple.z);
@@ -276,14 +312,27 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
     // Smooth transition at shore line
     result = lerp(result, refracted, shorefactor * fog.a);
 
-    // Foam, lit by the sun and the sky
-    float3 foamColour = fogApply(0.75 * sunColAdjusted + 0.35 * skyCol, fog);
-    result = lerp(result, foamColour, foam);
+    WaterShade shade;
+    shade.colour = result;
+    shade.eyeVec = EyeVec;
+    shade.dist = dist;
+    shade.fog = fog;
+    shade.ripple = ripple;
+    shade.face = face;
+    shade.rayDepth = rayDepth;
+    shade.waterDepth = rayDepth * abs(dot(EyeVec, face));
+    return shade;
+}
+
+// The last steps of the shading, which belong to the look: glow and opacity.
+float4 finishWaterVolume(in WaterVertOut IN, WaterShade shade, float3 tint, WaterSurfaceLook look)
+{
+    float3 result = shade.colour;
 
     // Light of the surface's own, in the colour of the water. It does not follow the daylight,
     // so a surface of the usual colour glows in a water blue of its own.
     float3 glowColour = dot(tint, 1) > 0 ? tint : float3(0.25, 0.5, 0.6);
-    result += look.glow * glowColour * fog.a;
+    result += look.glow * glowColour * shade.fog.a;
 
     // A surface that is not fully water shows what is behind it
     float3 behind = tex2Dproj(sampRefract, IN.screenpos).rgb;
@@ -292,27 +341,33 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
     return float4(result, 1);
 }
 
+float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint, WaterSurfaceLook look)
+{
+    return finishWaterVolume(IN, shadeWaterVolume(IN, facing, reflectsScene, distant, tint, look), tint, look);
+}
+
 // A vertex of a surface, with the normal of the mesh in world space.
 struct WaterVolumeVertOut
 {
     WaterVertOut water;
     float3 facing : TEXCOORD5;
     float4 color : COLOR0;
+    // The first texture coordinates of the mesh
+    float2 uv : TEXCOORD6;
 };
 
-WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NORMAL, in float4 color : COLOR0)
+WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NORMAL, in float4 color : COLOR0, in float2 uv : TEXCOORD0)
 {
     WaterVolumeVertOut OUT;
     OUT.water = WaterVS(pos);
     OUT.facing = mul(float4(normal, 0), world).xyz;
     OUT.color = color;
+    OUT.uv = uv;
     return OUT;
 }
 
-float4 WaterVolumePS(in WaterVolumeVertOut IN, uniform bool reflectsScene): COLOR0
-{
-    return waterVolumeColour(IN.water, IN.facing, reflectsScene, false, waterVolumeTint, nearSurfaceLook(IN.color));
-}
+// The pixel shader of a surface near the player is a water shader: the standard one in
+// XE Mod Water Standard.fx, or the one of a mod.
 
 //------------------------------------------------------------
 // The same water among the distant statics, farther away than the game draws.
