@@ -39,7 +39,7 @@ water volume that names no shader, put a file of that name into `shaders\core-mo
 | `IN.uv` | The texture coordinates of the mesh: the first set in `xy`, the second in `zw` (the first again when the mesh has one set) |
 | `sampMesh0` | The base texture of the mesh, with mip levels, wrapped |
 | `sampMesh1` | The second texture of the mesh (a decal, a detail or a dark map), the same way. Near the player only |
-| `surfaceLook(IN.color)` | The look of the surface: `drift`, `speed`, `scale`, `glow`, `opacity`, `tint`, `reflectsScene`, `distant`, and the free values `p0` to `p3` |
+| `surfaceLook(IN.color)` | The look of the surface: `drift`, `speed`, `scale`, `glow`, `opacity`, `tint`, `reflectsScene`, `distant`, `noDepthTest`, and the free values `p0` to `p3` |
 | `shadeWaterVolume(...)` | The standard shading up to the look |
 | `WaterShade` | Its result: `colour`, `eyeVec`, `dist`, `fog`, `ripple`, `face`, `rayDepth` (how far the view ray goes through the water) and `waterDepth` (how deep the water is under the point) |
 | `finishWaterVolume(...)` | The last steps: glow and opacity |

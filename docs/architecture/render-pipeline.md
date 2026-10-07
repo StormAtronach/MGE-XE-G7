@@ -211,7 +211,18 @@ A surface can have a look beyond its colour: the drift, speed and size of its ri
 glow, opacity, whether the vertex colour of the mesh tints it, and a colour that it reflects
 in place of the sky (`WaterLook` in `waterlook.h`). Without that colour a surface reflects
 the sky outdoors and the light of the room in an interior, as `clearReflection` takes it for
-the water of the cell. A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
+the water of the cell.
+
+A held surface keeps the stencil test and the depth test of its mesh (`NiStencilProperty`,
+`NiZBufferProperty`): `renderWaterVolume` reads them from the device and the flush sets them
+again for the draw, after the states of the pass. So a mesh can show its water only through
+a mask that another of its shapes wrote into the stencil buffer, and at any depth: the water
+in a well, under the ground. The shadow scenes that use the stencil buffer come later. A
+surface without the depth test tells the shader so (`look.noDepthTest`): the depth of the
+scene is then that of the ground over the water, and the water is taken as deep. Such a
+surface is not held: `renderWaterVolume` draws it at once, in its place among the draws of
+its mesh, so that what the mesh draws after it covers it, as the wall of a well covers the
+rim of its water. A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
 marks a surface with its slot in the specular power of the material, `100000 + slot`; the two
 old markers stay valid. `SetMaterial` reads the slot, the held draw carries it, and
 `flushWaterVolumes` sets `waterVolumeFlow` and `waterVolumeMix` for each draw from the slot's

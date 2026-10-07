@@ -34,6 +34,10 @@ struct WaterSurfaceLook
     bool reflectsScene;
     // The surface is drawn from the distant land, farther away than the game draws
     bool distant;
+    // The surface is drawn without the depth test (a mesh that shows its water through a
+    // stencil mask, as in a well). The depth of the scene is then not that of what lies
+    // under the water, and the water is taken as deep.
+    bool noDepthTest;
     // Free values p0 to p3 of the look, for the water shader of a mod
     float4 p0, p1, p2, p3;
 };
@@ -51,7 +55,8 @@ WaterSurfaceLook surfaceLook(float4 vertexColour)
     float opacityFromVertex = floor(waterVolumeMix.z / 2);
     look.opacity = waterVolumeMix.y * lerp(1, vertexColour.a, opacityFromVertex);
     look.tint = lerp(1, vertexColour.rgb, tintFromVertex);
-    look.reflectsScene = fmod(waterVolumeMix.w, 2) > 0.5;
+    look.noDepthTest = fmod(waterVolumeMix.w, 16) > 7.5;
+    look.reflectsScene = fmod(waterVolumeMix.w, 2) > 0.5 && !look.noDepthTest;
     look.distant = fmod(waterVolumeMix.w, 4) > 1.5;
     look.p0 = waterVolumeParams[0];
     look.p1 = waterVolumeParams[1];
@@ -235,6 +240,9 @@ WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, Wate
     // Distort refraction dependent on depth
     float4 newscrpos = IN.screenpos + float4(reffactor.yx, 0, 0);
     float depth = max(0, tex2Dproj(sampDepth, newscrpos).r - IN.screenpos.w);
+    if (look.noDepthTest) {
+        depth = 4000;
+    }
 
     // Refraction
     float3 refracted = depthColor;
