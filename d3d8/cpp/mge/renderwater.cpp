@@ -473,6 +473,15 @@ struct PendingWaterVolume {
     unsigned int lookSlot;
     // The second texture of the mesh, for a water shader; null if it has none
     IDirect3DTexture9* secondTexture;
+    // The stencil test and the depth test that the mesh asks for (NiStencilProperty,
+    // NiZBufferProperty). A mesh can show its water only through a mask that another of its
+    // shapes wrote into the stencil buffer, at any depth: the water in a well.
+    struct Tests {
+        DWORD stencil, func, ref, mask, writeMask, fail, zFail, pass;
+        // False when the mesh is drawn whatever the depth is: the depth test off, or on with
+        // the function "always", which is how the game does it.
+        bool depthTest;
+    } tests;
 };
 static std::vector<PendingWaterVolume> pendingWaterVolumes;
 
@@ -506,7 +515,38 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene,
     if (rs->texture) {
         rs->texture->AddRef();
     }
-    pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot, nullptr });
+    PendingWaterVolume::Tests tests = {};
+    DWORD depthEnabled = D3DZB_TRUE, depthFunction = D3DCMP_LESSEQUAL;
+    device->GetRenderState(D3DRS_ZENABLE, &depthEnabled);
+    device->GetRenderState(D3DRS_ZFUNC, &depthFunction);
+    tests.depthTest = depthEnabled != D3DZB_FALSE && depthFunction != D3DCMP_ALWAYS;
+    device->GetRenderState(D3DRS_STENCILENABLE, &tests.stencil);
+    if (tests.stencil) {
+        device->GetRenderState(D3DRS_STENCILFUNC, &tests.func);
+        device->GetRenderState(D3DRS_STENCILREF, &tests.ref);
+        device->GetRenderState(D3DRS_STENCILMASK, &tests.mask);
+        device->GetRenderState(D3DRS_STENCILWRITEMASK, &tests.writeMask);
+        device->GetRenderState(D3DRS_STENCILFAIL, &tests.fail);
+        device->GetRenderState(D3DRS_STENCILZFAIL, &tests.zFail);
+        device->GetRenderState(D3DRS_STENCILPASS, &tests.pass);
+    }
+    if (!tests.depthTest) {
+        // A surface that is drawn whatever the depth is has its place in the order of the
+        // draws of its mesh: what the mesh draws after it covers it, as the wall of a well
+        // covers the rim of its water. So it is drawn now and not held. It shows nothing of
+        // what is behind it, and needs no copy of the frame.
+        std::vector<PendingWaterVolume> held;
+        held.swap(pendingWaterVolumes);
+        const bool distantInView = distantWaterInView;
+        pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot, nullptr, tests });
+        flushWaterVolumes(false);
+        pendingWaterVolumes.swap(held);
+        distantWaterInView = distantInView;
+        waterVolumeDrawn = true;
+        return true;
+    }
+
+    pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot, nullptr, tests });
     waterVolumeDrawn = true;
     return true;
 }
@@ -614,9 +654,12 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
                 vertexUse += (look.flags & WATER_LOOK_OPACITY_FROM_VERTEX) != 0 ? 2.0f : 0.0f;
             }
             // The last value: 1 the surface reflects what is on screen, 2 it is from the distant
-            // land, 4 the mesh has second texture coordinates.
+            // land, 4 the mesh has second texture coordinates, 8 the surface is drawn without
+            // the depth test, so the depth of the scene says nothing about what is under it.
             const bool secondCoordinates = (rs->fvf & D3DFVF_TEXCOUNT_MASK) >= D3DFVF_TEX2;
-            const float mix[4] = { look.glow, look.opacity, vertexUse, (pending.reflectsScene ? 1.0f : 0.0f) + (secondCoordinates ? 4.0f : 0.0f) };
+            const bool noDepthTest = !pending.tests.depthTest;
+            const float mix[4] = { look.glow, look.opacity, vertexUse,
+                                   (pending.reflectsScene ? 1.0f : 0.0f) + (secondCoordinates ? 4.0f : 0.0f) + (noDepthTest ? 8.0f : 0.0f) };
             effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
             effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
             setSky(look);
@@ -634,6 +677,22 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             } else {
                 effect->CommitChanges();
             }
+            // The tests of the mesh, after the states of the pass
+            const auto& tests = pending.tests;
+            // A surface that is drawn whatever the depth is does not write its own depth: it
+            // can lie under the ground.
+            device->SetRenderState(D3DRS_ZFUNC, tests.depthTest ? D3DCMP_LESSEQUAL : D3DCMP_ALWAYS);
+            device->SetRenderState(D3DRS_ZWRITEENABLE, tests.depthTest ? TRUE : FALSE);
+            device->SetRenderState(D3DRS_STENCILENABLE, tests.stencil);
+            if (tests.stencil) {
+                device->SetRenderState(D3DRS_STENCILFUNC, tests.func);
+                device->SetRenderState(D3DRS_STENCILREF, tests.ref);
+                device->SetRenderState(D3DRS_STENCILMASK, tests.mask);
+                device->SetRenderState(D3DRS_STENCILWRITEMASK, tests.writeMask);
+                device->SetRenderState(D3DRS_STENCILFAIL, tests.fail);
+                device->SetRenderState(D3DRS_STENCILZFAIL, tests.zFail);
+                device->SetRenderState(D3DRS_STENCILPASS, tests.pass);
+            }
             device->SetStreamSource(0, rs->vb, rs->vbOffset, rs->vbStride);
             device->SetIndices(rs->ib);
             device->SetFVF(rs->fvf);
@@ -642,6 +701,9 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         if (passInUse >= 0) {
             effect->EndPass();
         }
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
         effect->SetTexture(ehMeshTex0, NULL);
         effect->SetTexture(ehMeshTex1, NULL);
     }

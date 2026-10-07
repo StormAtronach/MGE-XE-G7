@@ -23,6 +23,8 @@
   metadata gives a look to a mesh that cannot be edited. A water shader also gets the second
   texture of the mesh (a decal, a detail or a dark map). In an interior a water volume
   reflects the light of the room in place of the sky, and a look can give that colour itself.
+  A water volume keeps the stencil test and the depth test of its mesh, so that a mesh can
+  show its water through a mask: the water in a well.
 - The water of a cell can have a colour: the emissive colour of the game's water material,
   which a mod can set from Lua.
 
