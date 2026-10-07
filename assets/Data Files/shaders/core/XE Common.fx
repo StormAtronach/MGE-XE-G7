@@ -33,8 +33,8 @@ shared float3 waterPlaneTint;
 // axes of the mesh, z the speed and w the size of the ripples
 shared float4 waterVolumeFlow;
 // x glow, y opacity, z what the vertex colour of the mesh is used for: 1 added for the tint,
-// 2 added for the opacity, w 1 when the surface reflects what is on screen and 0 when it
-// reflects the sky only
+// 2 added for the opacity, w 1 added when the surface reflects what is on screen and not the
+// sky only, 2 added when the surface is drawn from the distant land
 shared float4 waterVolumeMix;
 // Free values of the look, p0 to p3, for the water shader of a mod
 shared float4 waterVolumeParams[4];

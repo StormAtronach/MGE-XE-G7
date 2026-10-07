@@ -186,13 +186,20 @@ and used by `WaterPS`. A mod sets it from Lua on the material of the game's wate
 two colours are apart: each surface has its own material.
 
 The first flush of a frame also draws the distant statics whose subsets carry the water flag
-(`RenderMesh::water`), with `PASS_RENDERWATERVOLUME_DISTANT` /
-`PASS_RENDERWATERVOLUME_DISTANT_SKYONLY`. `VisibleSet` leaves those meshes out of every other
-pass (colour, depth, shadow, reflection). The pixel shader clips them nearer than
-`waterVolumeHandoff`, where the game draws the real mesh. `VisibleSet::RenderWater` sets that
+(`RenderMesh::water`), with `PASS_RENDERWATERVOLUME_DISTANT`: the distant vertex shader
+gives the pixel shader the same vertex as a surface near the player, so the standard water
+shader, or the one of a mod, draws both. A distant subset has the look of its mesh: the
+generator copies the look line (`wv:` string data) into the subset record, the loader reads
+it with `WaterLooks::parse` and gives each different look an index, and the subset carries
+`WaterLooks::firstDistantLook` plus that index in its water byte, which the host passes
+through. `VisibleSet` leaves those meshes out of every other
+pass (colour, depth, shadow, reflection). `shadeWaterVolume` clips them nearer than
+`waterVolumeHandoff`, where the game draws the real mesh. `flushWaterVolumes` sets that
 depth for each mesh: `nearViewRange` for a mesh whose reference is in one of the loaded cells
 (the cell of the player and the eight around it), and zero for any other mesh, because the
-game has no mesh to draw in its place. The screen-space march fades out at
+game has no mesh to draw in its place. The flush draws the surfaces near the player first and
+the distant water after them: the game draws a mesh in full when a part of it is nearer than
+its view distance, and there the depth test leaves the distant mesh out. The screen-space march fades out at
 `distant_land.water.volume_reflection_cells`; a value of zero turns the march off for the
 surfaces near the camera as well.
 

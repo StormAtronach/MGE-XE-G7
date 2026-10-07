@@ -1,7 +1,11 @@
 
 #include "waterlook.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -18,6 +22,90 @@ namespace {
     };
 
     std::vector<WaterLook> looks;
+    std::vector<WaterLook> distantLooks;
+
+    // Up to count numbers with commas between them.
+    void readNumbers(const std::string& value, float* out, int count) {
+        const char* at = value.c_str();
+        for (int i = 0; i < count && *at != '\0'; ++i) {
+            char* end = nullptr;
+            const float number = std::strtof(at, &end);
+            if (end == at) {
+                return;
+            }
+            out[i] = number;
+            at = *end == ',' ? end + 1 : end;
+        }
+    }
+}
+
+WaterLook WaterLooks::parse(const char* text, size_t length) {
+    WaterLook look = standardLook;
+    size_t at = 0;
+    while (at < length) {
+        while (at < length && std::isspace(static_cast<unsigned char>(text[at]))) {
+            ++at;
+        }
+        size_t end = at;
+        while (end < length && !std::isspace(static_cast<unsigned char>(text[end]))) {
+            ++end;
+        }
+        std::string word(text + at, end - at);
+        at = end;
+        const auto equals = word.find('=');
+        if (equals == std::string::npos) {
+            continue;
+        }
+        std::string key = word.substr(0, equals);
+        const std::string value = word.substr(equals + 1);
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (key == "flow") {
+            readNumbers(value, look.flow, 2);
+        } else if (key == "speed") {
+            readNumbers(value, &look.speed, 1);
+        } else if (key == "scale") {
+            readNumbers(value, &look.scale, 1);
+        } else if (key == "glow") {
+            readNumbers(value, &look.glow, 1);
+        } else if (key == "opacity") {
+            // The word "vertex" is for the surface near the player; it leaves the number as it is.
+            readNumbers(value, &look.opacity, 1);
+        } else if (key == "reflect") {
+            if (_stricmp(value.c_str(), "sky") == 0) {
+                look.flags &= ~static_cast<std::uint32_t>(WATER_LOOK_REFLECTS_SCENE);
+            }
+        } else if (key == "shader") {
+            strncpy_s(look.shader, value.c_str(), _TRUNCATE);
+        } else if (key.length() == 2 && key[0] == 'p' && key[1] >= '0' && key[1] <= '3') {
+            readNumbers(value, look.params[key[1] - '0'], 4);
+        }
+    }
+    return look;
+}
+
+void WaterLooks::clearDistant() {
+    distantLooks.clear();
+}
+
+std::uint8_t WaterLooks::addDistant(const WaterLook& look, std::uint8_t kind) {
+    for (size_t i = 0; i < distantLooks.size(); ++i) {
+        if (std::memcmp(&distantLooks[i], &look, sizeof(WaterLook)) == 0) {
+            return static_cast<std::uint8_t>(firstDistantLook + i);
+        }
+    }
+    if (firstDistantLook + distantLooks.size() > 255) {
+        return kind;
+    }
+    distantLooks.push_back(look);
+    return static_cast<std::uint8_t>(firstDistantLook + distantLooks.size() - 1);
+}
+
+const WaterLook& WaterLooks::distant(std::uint8_t water) {
+    if (water < firstDistantLook || water - firstDistantLook >= distantLooks.size()) {
+        return standardLook;
+    }
+    return distantLooks[water - firstDistantLook];
 }
 
 void WaterLooks::set(unsigned int slot, const WaterLook* look) {

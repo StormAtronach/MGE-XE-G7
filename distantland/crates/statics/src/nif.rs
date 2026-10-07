@@ -181,6 +181,59 @@ pub fn mesh_water<'a>(stream: &NiStream, names: &'a WaterNames, registered: Opti
     })
 }
 
+/// Returns the text after the `wv:` prefix of a string, if the string has the prefix.
+///
+/// The match is the pattern `^%s*[Ww][Vv]:%s*(.*)$` of the mod that makes the water near the
+/// player. White space is the white space of C.
+fn text_after_look_prefix(value: &str) -> Option<&str> {
+    let is_space = |c: char| matches!(c, ' ' | '\t'..='\r');
+    let rest = value.trim_start_matches(is_space);
+    if !rest.get(..3)?.eq_ignore_ascii_case("wv:") {
+        return None;
+    }
+    Some(rest[3..].trim_start_matches(is_space).trim_end_matches(is_space))
+}
+
+/// Finds the look line of a water mesh: the text after the `wv:` prefix of string extra data,
+/// without white space at its ends. The text is not read here: the runtime knows the keys.
+///
+/// The objects are taken in the order of the mod that makes the water near the player: from
+/// the root, depth first, the children of a node in their order, and at each object its extra
+/// data in the order of the chain. The first string with the prefix is the look line, also when
+/// no text follows the prefix. An object that nothing under the root refers to does not count.
+pub fn mesh_water_look(stream: &NiStream) -> Option<&str> {
+    let root = stream.roots.first().copied().unwrap_or_default();
+    let mut stack = vec![root.key];
+    // A malformed file can have a cycle. An object is looked at once.
+    let mut seen = HashSet::new();
+    while let Some(key) = stack.pop() {
+        let Some(this) = stream.objects.get(key) else {
+            continue;
+        };
+        let Ok(object) = <&NiAVObject>::try_from(this) else {
+            continue;
+        };
+        if !seen.insert(key) {
+            continue;
+        }
+        // The chain of a malformed file can have a cycle too. It has no more links than the
+        // file has objects.
+        let look = object
+            .extra_datas_of_type::<NiStringExtraData>(stream)
+            .take(stream.objects.len())
+            .find_map(|data| text_after_look_prefix(&data.value));
+        if look.is_some() {
+            return look;
+        }
+        if let Ok(node) = <&NiNode>::try_from(this) {
+            for child in node.children.iter().rev() {
+                stack.push(child.key);
+            }
+        }
+    }
+    None
+}
+
 /// Clears root-node transforms before traversal.
 pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
     for root in &stream.roots {
@@ -347,7 +400,7 @@ fn is_valid_texture_format(path: &str) -> bool {
 mod tests {
     use tes3::nif::*;
 
-    use super::{has_word, mesh_water, name_starts_with_any};
+    use super::{has_word, mesh_water, mesh_water_look, name_starts_with_any, text_after_look_prefix};
     use crate::model::SubsetWater;
     use crate::overrides::WaterNames;
 
@@ -423,6 +476,123 @@ mod tests {
             let water = mesh_water(&stream, &names, None).expect("water mesh");
             assert_eq!(water.surface, SubsetWater::SkyOnly);
         }
+    }
+
+    /// Adds string extra data in front of the chain that `next` starts.
+    fn string_data(stream: &mut NiStream, value: &str, next: NiLink<NiExtraData>) -> NiLink<NiExtraData> {
+        let mut data = NiStringExtraData::default();
+        data.value = value.into();
+        data.next = next;
+        stream.insert(data).cast()
+    }
+
+    #[test]
+    fn the_look_line_is_the_first_in_the_scene_graph_not_in_the_file() {
+        // The file holds the objects in this order: the look of the far shape, the look of the
+        // near shape, the far shape, the near shape, the rock, the group, the root. The scene
+        // graph is root -> [group -> [rock, near], far].
+        let mut stream = NiStream::new();
+        let far_look = string_data(&mut stream, "wv: speed=2", NiLink::default());
+        let near_look = string_data(&mut stream, "WV:flow=0,-140", NiLink::default());
+        let mut far = named_shape("Far");
+        far.extra_data = far_look;
+        let far = stream.insert(far);
+        let mut near = named_shape("Near");
+        near.extra_data = near_look;
+        let near = stream.insert(near);
+        let rock = stream.insert(named_shape("Rock"));
+        let mut group = NiNode::default();
+        group.children.push(rock.cast());
+        group.children.push(near.cast());
+        let group = stream.insert(group);
+        let mut root = NiNode::default();
+        root.children.push(group.cast());
+        root.children.push(far.cast());
+        let root = stream.insert(root);
+        stream.roots.push(root.cast());
+
+        // Depth first, the near shape comes before the far shape.
+        assert_eq!(mesh_water_look(&stream), Some("flow=0,-140"));
+
+        // With the children the other way round, the far shape is first.
+        let Some(NiType::NiNode(node)) = stream.objects.get_mut(root.key) else {
+            panic!("root node");
+        };
+        node.children.reverse();
+        assert_eq!(mesh_water_look(&stream), Some("speed=2"));
+
+        // A look line on the root comes before every child. In a chain the first string with
+        // the prefix counts, not the first string.
+        let last = string_data(&mut stream, "wv: glow=1", NiLink::default());
+        let first = string_data(&mut stream, "wv: scale=3", last);
+        let other = string_data(&mut stream, "NCO", first);
+        let Some(NiType::NiNode(node)) = stream.objects.get_mut(root.key) else {
+            panic!("root node");
+        };
+        node.extra_data = other;
+        assert_eq!(mesh_water_look(&stream), Some("scale=3"));
+    }
+
+    #[test]
+    fn a_look_line_that_nothing_refers_to_does_not_count() {
+        let mut stream = NiStream::new();
+        // String data that no object has, and a shape with a look line that no node has.
+        string_data(&mut stream, "wv: speed=2", NiLink::default());
+        let lost_look = string_data(&mut stream, "wv: speed=3", NiLink::default());
+        let mut lost = named_shape("Lost");
+        lost.extra_data = lost_look;
+        stream.insert(lost);
+        let rock = stream.insert(named_shape("Rock"));
+        let mut root = NiNode::default();
+        root.children.push(rock.cast());
+        let root = stream.insert(root);
+        stream.roots.push(root.cast());
+
+        assert_eq!(mesh_water_look(&stream), None);
+
+        // The look line under the root is found, not the one that is first in the file.
+        let look = string_data(&mut stream, "wv: speed=4", NiLink::default());
+        let Some(NiType::NiTriShape(rock)) = stream.objects.get_mut(rock.key) else {
+            panic!("rock shape");
+        };
+        rock.extra_data = look;
+        assert_eq!(mesh_water_look(&stream), Some("speed=4"));
+    }
+
+    #[test]
+    fn the_first_look_prefix_wins_also_without_text() {
+        let mut stream = NiStream::new();
+        let later = string_data(&mut stream, "wv: speed=2", NiLink::default());
+        let mut shape = named_shape("Shape");
+        shape.extra_data = later;
+        let shape = stream.insert(shape);
+        let empty = string_data(&mut stream, "wv:  ", NiLink::default());
+        let mut root = NiNode::default();
+        root.extra_data = empty;
+        root.children.push(shape.cast());
+        let root = stream.insert(root);
+        stream.roots.push(root.cast());
+
+        assert_eq!(mesh_water_look(&stream), Some(""));
+    }
+
+    #[test]
+    fn the_look_prefix_matches_without_case_after_white_space() {
+        assert_eq!(
+            text_after_look_prefix("wv: flow=0,-140 speed=1.2"),
+            Some("flow=0,-140 speed=1.2")
+        );
+        assert_eq!(
+            text_after_look_prefix(" \t\r\nWv:\tshader=tw_foam \r\n"),
+            Some("shader=tw_foam")
+        );
+        assert_eq!(text_after_look_prefix("wV:p0=0.4,0.5,1.5"), Some("p0=0.4,0.5,1.5"));
+        assert_eq!(text_after_look_prefix("wv:"), Some(""));
+        assert_eq!(text_after_look_prefix("wv :speed=2"), None);
+        assert_eq!(text_after_look_prefix("x wv: speed=2"), None);
+        assert_eq!(text_after_look_prefix("wv"), None);
+        assert_eq!(text_after_look_prefix("w\u{e9}:"), None);
+        assert_eq!(text_after_look_prefix("mge.distant.scroll"), None);
     }
 
     #[test]

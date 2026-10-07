@@ -11,12 +11,12 @@ named `WaterShaderPS`:
 ```hlsl
 float4 WaterShaderPS(in WaterVolumeVertOut IN) : COLOR0
 {
-    WaterSurfaceLook look = nearSurfaceLook(IN.color);
-    WaterShade shade = shadeWaterVolume(IN.water, IN.facing, look.reflectsScene, false, waterVolumeTint, look);
+    WaterSurfaceLook look = surfaceLook(IN.color);
+    WaterShade shade = shadeWaterVolume(IN.water, IN.facing, IN.tint, look);
 
     // Change shade.colour here.
 
-    return finishWaterVolume(IN.water, shade, waterVolumeTint, look);
+    return finishWaterVolume(IN.water, shade, IN.tint, look);
 }
 ```
 
@@ -34,12 +34,12 @@ water volume that names no shader, put a file of that name into `shaders\core-mo
 | --- | --- |
 | `IN.water` | The vertex of the water plane shader: `pos` (world), `texcoords`, `screenpos` |
 | `IN.facing` | The normal of the mesh, in the world |
-| `IN.color` | The vertex colour of the mesh |
+| `IN.tint` | The colour of the water: the emissive colour of the material |
+| `IN.color` | The vertex colour of the mesh; 1 for a surface from the distant land |
 | `IN.uv` | The first texture coordinates of the mesh |
 | `sampMesh0` | The base texture of the mesh, with mip levels, wrapped |
-| `nearSurfaceLook(IN.color)` | The look of the surface: `drift`, `speed`, `scale`, `glow`, `opacity`, `tint`, `reflectsScene`, and the free values `p0` to `p3` |
-| `waterVolumeTint` | The colour of the water: the emissive colour of the material |
-| `shadeWaterVolume(...)` | The standard shading up to the look. The third argument says whether the surface reflects what is on screen or the sky only; the fourth is `false` |
+| `surfaceLook(IN.color)` | The look of the surface: `drift`, `speed`, `scale`, `glow`, `opacity`, `tint`, `reflectsScene`, `distant`, and the free values `p0` to `p3` |
+| `shadeWaterVolume(...)` | The standard shading up to the look |
 | `WaterShade` | Its result: `colour`, `eyeVec`, `dist`, `fog`, `ripple`, `face`, `rayDepth` (how far the view ray goes through the water) and `waterDepth` (how deep the water is under the point) |
 | `finishWaterVolume(...)` | The last steps: glow and opacity |
 
@@ -63,9 +63,18 @@ that fails with the compiler's message in `mgeXE.log`, and shows a line on the s
 overlay. The surfaces then have the standard look. The same happens to a surface whose look
 names a shader that is not there.
 
+## Near and far
+
+The same pixel shader draws a surface near the player and the same surface from the distant
+land; MGE XE gives both the same vertex. Far away:
+
+- `look.distant` is true, and `IN.color` is 1.
+- The look is the one in the mesh: the generator copies the look line of a water mesh into
+  the distant land. A look that a script sets while the game runs does not reach it.
+- The base texture and the texture coordinates are those of the baked mesh.
+
 ## Limits
 
-- A surface far away, in distant land, has the standard look.
 - From under the surface every surface has the underwater pass.
 - The cost of a water shader is the cost of its author. The standard pass has about 360
   instruction slots.

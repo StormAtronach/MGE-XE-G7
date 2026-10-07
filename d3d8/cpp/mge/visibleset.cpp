@@ -146,19 +146,14 @@ void VisibleSet::Render(IDirect3DDevice9* device,
 }
 
 void VisibleSet::RenderWater(IDirect3DDevice9* device,
-                             ID3DXEffect* effect,
-                             const D3DXHANDLE* world_matrix_handle,
-                             const D3DXHANDLE* handoff_handle,
-                             float handoff_depth,
-                             const float loaded_rect[4],
                              unsigned int vertex_size,
-                             std::uint8_t kind) {
+                             const std::function<void(const RenderMesh&)>& prepare) {
     IDirect3DVertexBuffer9* last_buffer = nullptr;
 
     visible_set.restart();
     while (!visible_set.at_end()) {
         const RenderMesh& mesh = visible_set.next();
-        if (mesh.faces <= 0 || mesh.water != kind) {
+        if (mesh.faces <= 0 || mesh.water == 0) {
             continue;
         }
         if (last_buffer != mesh.vBuffer) {
@@ -167,11 +162,7 @@ void VisibleSet::RenderWater(IDirect3DDevice9* device,
             last_buffer = mesh.vBuffer;
         }
 
-        const float x = mesh.transform._41, y = mesh.transform._42;
-        const bool loaded = x >= loaded_rect[0] && y >= loaded_rect[1] && x < loaded_rect[2] && y < loaded_rect[3];
-        effect->SetFloat(*handoff_handle, loaded ? handoff_depth : 0.0f);
-        effect->SetMatrix(*world_matrix_handle, &mesh.transform);
-        effect->CommitChanges();
+        prepare(mesh);
         device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, mesh.verts, 0, mesh.faces);
     }
 }

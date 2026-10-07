@@ -29,13 +29,15 @@ struct WaterSurfaceLook
     float3 tint;
     // The surface reflects what is on screen; otherwise the sky only
     bool reflectsScene;
+    // The surface is drawn from the distant land, farther away than the game draws
+    bool distant;
     // Free values p0 to p3 of the look, for the water shader of a mod
     float4 p0, p1, p2, p3;
 };
 
-// The look of the surface that is drawn near the player. The drift is given in the axes of
-// the mesh and turned into the world.
-WaterSurfaceLook nearSurfaceLook(float4 vertexColour)
+// The look of the surface that is drawn. The drift is given in the axes of the mesh and
+// turned into the world.
+WaterSurfaceLook surfaceLook(float4 vertexColour)
 {
     WaterSurfaceLook look;
     look.drift = mul(float4(waterVolumeFlow.xy, 0, 0), world).xy;
@@ -46,29 +48,12 @@ WaterSurfaceLook nearSurfaceLook(float4 vertexColour)
     float opacityFromVertex = floor(waterVolumeMix.z / 2);
     look.opacity = waterVolumeMix.y * lerp(1, vertexColour.a, opacityFromVertex);
     look.tint = lerp(1, vertexColour.rgb, tintFromVertex);
-    look.reflectsScene = waterVolumeMix.w > 0.5;
+    look.reflectsScene = fmod(waterVolumeMix.w, 2) > 0.5;
+    look.distant = waterVolumeMix.w > 1.5;
     look.p0 = waterVolumeParams[0];
     look.p1 = waterVolumeParams[1];
     look.p2 = waterVolumeParams[2];
     look.p3 = waterVolumeParams[3];
-    return look;
-}
-
-// The standard look, for a surface far away
-WaterSurfaceLook standardSurfaceLook()
-{
-    WaterSurfaceLook look;
-    look.drift = 0;
-    look.speed = 1;
-    look.scale = 1;
-    look.glow = 0;
-    look.opacity = 1;
-    look.tint = 1;
-    look.reflectsScene = true;
-    look.p0 = 0;
-    look.p1 = 0;
-    look.p2 = 0;
-    look.p3 = 0;
     return look;
 }
 
@@ -208,15 +193,22 @@ struct WaterShade
     float waterDepth;
 };
 
-// A surface either reflects what is on screen or the sky only: near the player that is a
-// value of the look, far away it is fixed per pass, as distant is. A distant surface
-// reflects what is on screen out to waterVolumeReflectRange.
+// A surface either reflects what is on screen or the sky only; that is a value of the look.
+// A distant surface reflects what is on screen out to waterVolumeReflectRange.
 // A range of zero turns the reflection of what is on screen off, near and far.
 // tint is the colour of the water of this surface: the emissive colour of its material.
 // facing is the normal of the mesh. A mesh without normals faces up.
 // look is the rest of what the mesh and its mod say about the surface.
-WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint, WaterSurfaceLook look)
+WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, WaterSurfaceLook look)
 {
+    // A distant surface is left out nearer than the handoff depth, where the game draws the
+    // surface itself. The depth is zero for a surface near the player, and for a distant mesh
+    // whose reference the game has not loaded.
+    clip(IN.screenpos.w - waterVolumeHandoff);
+
+    bool reflectsScene = look.reflectsScene;
+    bool distant = look.distant;
+
     // Calculate eye vector
     float3 EyeVec = IN.pos.xyz - eyePos.xyz;
     float dist = length(EyeVec);
@@ -341,16 +333,14 @@ float4 finishWaterVolume(in WaterVertOut IN, WaterShade shade, float3 tint, Wate
     return float4(result, 1);
 }
 
-float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint, WaterSurfaceLook look)
-{
-    return finishWaterVolume(IN, shadeWaterVolume(IN, facing, reflectsScene, distant, tint, look), tint, look);
-}
-
 // A vertex of a surface, with the normal of the mesh in world space.
 struct WaterVolumeVertOut
 {
     WaterVertOut water;
+    // The colour of the water: the emissive colour of the material
+    float3 tint : TEXCOORD4;
     float3 facing : TEXCOORD5;
+    // The vertex colour of the mesh; 1 for a surface from the distant land
     float4 color : COLOR0;
     // The first texture coordinates of the mesh
     float2 uv : TEXCOORD6;
@@ -360,6 +350,7 @@ WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NO
 {
     WaterVolumeVertOut OUT;
     OUT.water = WaterVS(pos);
+    OUT.tint = waterVolumeTint;
     OUT.facing = mul(float4(normal, 0), world).xyz;
     OUT.color = color;
     OUT.uv = uv;
@@ -372,28 +363,17 @@ WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NO
 //------------------------------------------------------------
 // The same water among the distant statics, farther away than the game draws.
 
-struct WaterVolumeDistantVertOut
-{
-    WaterVertOut water;
-    float3 tint : TEXCOORD4;
-    float3 facing : TEXCOORD5;
-};
-
+// It gives the pixel shader the same vertex as a surface near the player, so one water
+// shader draws both.
 // A distant static keeps a palette index in pos.w. The generator writes the colour of the
 // water into the vertex colour of a water subset.
-WaterVolumeDistantVertOut WaterVolumeDistantVS(in StatVertIn IN)
+WaterVolumeVertOut WaterVolumeDistantVS(in StatVertIn IN)
 {
-    WaterVolumeDistantVertOut OUT;
+    WaterVolumeVertOut OUT;
     OUT.water = WaterVS(float4(IN.pos.xyz, 1));
     OUT.tint = IN.color.rgb;
     OUT.facing = mul(float4(2 * IN.normal.xyz - 1, 0), world).xyz;
+    OUT.color = 1;
+    OUT.uv = IN.texcoords;
     return OUT;
-}
-
-float4 WaterVolumeDistantPS(in WaterVolumeDistantVertOut IN, uniform bool reflectsScene): COLOR0
-{
-    // Nearer than this the game draws the surface itself. It is zero for a mesh whose
-    // reference the game has not loaded.
-    clip(IN.water.screenpos.w - waterVolumeHandoff);
-    return waterVolumeColour(IN.water, IN.facing, reflectsScene, true, IN.tint, standardSurfaceLook());
 }

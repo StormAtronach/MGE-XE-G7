@@ -6,7 +6,7 @@
 
 float4 WaterShaderPS(in WaterVolumeVertOut IN) : COLOR0
 {
-    WaterSurfaceLook look = nearSurfaceLook(IN.color);
-    WaterShade shade = shadeWaterVolume(IN.water, IN.facing, look.reflectsScene, false, waterVolumeTint, look);
-    return finishWaterVolume(IN.water, shade, waterVolumeTint, look);
+    WaterSurfaceLook look = surfaceLook(IN.color);
+    WaterShade shade = shadeWaterVolume(IN.water, IN.facing, IN.tint, look);
+    return finishWaterVolume(IN.water, shade, IN.tint, look);
 }

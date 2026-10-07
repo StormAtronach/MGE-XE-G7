@@ -411,8 +411,9 @@ public:
     static void simulateDynamicWaves();
     static void renderWaterPlane();
     static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot);
-    // The pass of the water shader of a mod with this name (Data Files\shaders\water\<name>.fx),
-    // or -1 when there is none or it did not compile.
+    // The pass of the water shader of a mod with this name (Data Files\shaders\water\<name>.fx)
+    // for a surface near the player, or -1 when there is none or it did not compile. The pass
+    // after it is the one for a surface from the distant land.
     static int waterShaderPass(const char* name);
     static void flushWaterVolumes(bool withDistant);
     static void discardWaterVolumes();

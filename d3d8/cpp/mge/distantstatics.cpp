@@ -2,6 +2,7 @@
 #include "support/log.h"
 #include "configuration.h"
 #include "distantland.h"
+#include "waterlook.h"
 #include "dlformat.h"
 #include "dlmapping.h"
 #include "morrowindbsa.h"
@@ -764,6 +765,7 @@ void DistantLand::abortStaticsPhase() {
 // and create the fallback texture. Leaves cursors ready for stepStaticsPhase().
 bool DistantLand::beginStaticsPhase() {
     distantWaterLoaded = false;
+    WaterLooks::clearDistant();
     staticsLoader = std::make_unique<StaticsLoader>();
     StaticsLoader& L = *staticsLoader;
 
@@ -1190,6 +1192,26 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.hasUVController = (subsetRecord.flags & 0x2u) != 0;
             subset.water = (subsetRecord.flags & 0x4u) == 0 ? 0 : ((subsetRecord.flags & 0x8u) == 0 ? 1 : 2);
             distantWaterLoaded |= subset.water != 0;
+            // A water subset with a look line carries the index of its look in place of the kind.
+            bool waterShaderTexture = false;
+            if (subset.water != 0 && subsetRecord.look_length != 0) {
+                std::uint64_t lookEnd = 0;
+                const auto* lookText = StaticMeshesBin::TryAdd(subsetRecord.look_offset, static_cast<std::uint64_t>(subsetRecord.look_length) + 1u, lookEnd)
+                        && subsetRecord.look_offset >= L.header.texture_blob_offset && lookEnd <= L.textureBlobEnd
+                    ? L.activeShard->mapping.getPersistentRange(subsetRecord.look_offset, static_cast<std::uint64_t>(subsetRecord.look_length) + 1u)
+                    : nullptr;
+                if (!lookText) {
+                    LOG::logline("!! static_meshes subset %lu look line is outside the texture blob.", subsetTableIndex);
+                    LOG::flush();
+                    return false;
+                }
+                WaterLook look = WaterLooks::parse(reinterpret_cast<const char*>(lookText), subsetRecord.look_length);
+                if (subset.water == 2) {
+                    look.flags &= ~static_cast<std::uint32_t>(WATER_LOOK_REFLECTS_SCENE);
+                }
+                waterShaderTexture = look.shader[0] != '\0';
+                subset.water = WaterLooks::addDistant(look, subset.water);
+            }
             subset.verts = runtimeVertexCount;
             subset.faces = runtimeTriangleCount;
             subset.farFaces = runtimeFarFaceCount;
@@ -1341,8 +1363,9 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
 
             auto textureStart = DistantLoadInstrumentation::counter_now();
             IDirect3DTexture9* tex = nullptr;
-            if (subset.water != 0) {
+            if (subset.water != 0 && !waterShaderTexture) {
                 // The water passes do not bind the texture of the mesh, so it is not loaded.
+                // Only the water shader of a mod gets the texture.
                 L.errorTexture->AddRef();
                 tex = L.errorTexture;
             } else {

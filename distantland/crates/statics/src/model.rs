@@ -11,6 +11,7 @@ pub(crate) use process::{StaticMeshContext, update_bounds_with_context};
 pub use process::{optimize_statics, optimize_statics_keys};
 
 use std::mem::take;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Affine3A, Vec2, Vec3, Vec4};
@@ -182,6 +183,9 @@ pub struct Subset {
     pub has_uv_controller: bool,
     /// Whether the subset is the surface of distant water.
     pub water: SubsetWater,
+    /// Look line of the water mesh: the text after the `wv:` prefix. Only a subset that is drawn
+    /// as water has one. The runtime reads the keys in it, the generator does not.
+    pub water_look: Option<Arc<str>>,
     /// Average emissive material contribution packed into `PackedVertex.normal[3]`.
     pub emissive: f32,
     pub texture: SubsetTexture,
@@ -300,6 +304,7 @@ impl Default for Subset {
             has_alpha: false,
             has_uv_controller: false,
             water: SubsetWater::None,
+            water_look: None,
             emissive: 0.0,
             texture: SubsetTexture::default(),
         }
@@ -526,6 +531,7 @@ impl Subset {
                     && self.texture == other.texture
                     && self.has_uv_controller == other.has_uv_controller
                     && self.water == other.water
+                    && self.water_look == other.water_look
                     && self.emissive == other.emissive))
             && uv_bound_union_fits(&self.uv_bounds, &other.uv_bounds)
     }
@@ -675,6 +681,7 @@ impl Subset {
         self.has_alpha = !opaque; // Ensure this as default() does not
         self.has_uv_controller = subset.has_uv_controller;
         self.water = subset.water;
+        self.water_look = subset.water_look.clone();
         self.emissive = subset.emissive;
         self.texture = subset.texture;
         union_uv_bounds(&mut self.uv_bounds, &subset.uv_bounds);

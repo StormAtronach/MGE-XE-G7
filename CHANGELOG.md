@@ -18,7 +18,8 @@
   flowing ripples, their speed and size, glow, opacity, and a tint from the vertex
   colours of the mesh, which the mod that owns the volume reports through `MGE_WaterLookSet`.
   A mod can also ship a water shader of its own for its surfaces
-  (`Data Files\shaders\water\<name>.fx`); see `docs/water-shaders.md`.
+  (`Data Files\shaders\water\<name>.fx`); see `docs/water-shaders.md`. The look and the
+  shader of a mesh apply in distant land too.
 - The water of a cell can have a colour: the emissive colour of the game's water material,
   which a mod can set from Lua.
 

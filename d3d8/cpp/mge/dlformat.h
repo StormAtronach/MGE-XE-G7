@@ -85,7 +85,7 @@ namespace StaticMeshesBin {
     static constexpr std::uint32_t FileVersion = 6;
     static constexpr std::uint32_t SerializedHeaderSize = 160;
     static constexpr std::uint32_t SerializedStaticRecordSize = 52;
-    static constexpr std::uint32_t SerializedSubsetRecordSize = 152;
+    static constexpr std::uint32_t SerializedSubsetRecordSize = 168;
     static constexpr std::uint32_t SerializedComponentRecordSize = 16;
     static constexpr std::uint32_t SerializedPaletteRecordSize = 16;
     static constexpr std::uint32_t VertexStride = 20;
@@ -191,6 +191,10 @@ namespace StaticMeshesBin {
         std::uint32_t component_count;
         std::uint32_t first_palette_index;
         std::uint32_t palette_count;
+        // The look line of a water mesh, NUL terminated in the texture blob; zero for none
+        std::uint64_t look_offset;
+        std::uint32_t look_length;
+        std::uint32_t reserved;
     };
 
     struct ComponentRecord {
@@ -294,6 +298,9 @@ namespace StaticMeshesBin {
     static_assert(offsetof(SubsetRecord, component_count) == 140, "Static mesh subset component_count drifted");
     static_assert(offsetof(SubsetRecord, first_palette_index) == 144, "Static mesh subset first_palette_index drifted");
     static_assert(offsetof(SubsetRecord, palette_count) == 148, "Static mesh subset palette_count drifted");
+    static_assert(offsetof(SubsetRecord, look_offset) == 152, "Static mesh subset look_offset drifted");
+    static_assert(offsetof(SubsetRecord, look_length) == 160, "Static mesh subset look_length drifted");
+    static_assert(offsetof(SubsetRecord, reserved) == 164, "Static mesh subset reserved drifted");
     static_assert(offsetof(ComponentRecord, first_triangle) == 0, "Static mesh component first_triangle drifted");
     static_assert(offsetof(ComponentRecord, triangle_count) == 4, "Static mesh component triangle_count drifted");
     static_assert(offsetof(ComponentRecord, radius) == 8, "Static mesh component radius drifted");

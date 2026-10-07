@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // The look of a water volume surface, beyond its colour: what the mesh and the mod that owns
@@ -56,4 +57,19 @@ namespace WaterLooks {
 
     // The standard look
     const WaterLook& standard();
+
+    // Reads a look line, the text of the string data of a mesh after "wv:", for example
+    // "flow=0,-140 speed=1.2 shader=foam p0=0.4,0.5". Keys it does not know are left out.
+    // The mod that owns the water reads the same line for the surfaces near the player.
+    WaterLook parse(const char* text, size_t length);
+
+    // The looks of distant water. The generator copies the look line of a water mesh into the
+    // distant land, and the loader gives each different look an index, which a distant subset
+    // carries in its water byte: firstDistantLook plus the index. The values under it are a
+    // subset without a look: 1 reflects the scene, 2 the sky only.
+    constexpr unsigned int firstDistantLook = 3;
+    void clearDistant();
+    // The water byte for a look; kind (1 or 2) when the table is full.
+    std::uint8_t addDistant(const WaterLook& look, std::uint8_t kind);
+    const WaterLook& distant(std::uint8_t water);
 }
