@@ -154,9 +154,12 @@ float4 reflectScene(float3 origin, float3 dir)
                 before = middle;
         }
 
-        // Only a surface near the ray counts; otherwise the ray went behind something
+        // Only a surface near the ray counts; otherwise the ray went behind something that
+        // is nearer to the eye. The halvings leave a thirty-second of the step, so a surface
+        // that the ray meets is no farther in front of it than that. A wider limit takes a
+        // thing in the foreground for a hit at some pixels and not at others.
         float3 hit = reflectionSample(clipOrigin, clipDir, after);
-        if(hit.z < 2 * stepLength + 8)
+        if(hit.z < stepLength / 16 + 16)
         {
             // Fade out towards the screen edge, where the ray would leave the frame
             float2 edge = min(hit.xy, 1 - hit.xy);
@@ -231,12 +234,15 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
     }
 
     // Smooth out high frequencies at a distance
+    float calm = (1 + dot(EyeVec, face)) * (1 - saturate(1 / (dist / 1000 + 1)));
     float3 adjustnormal = lerp(0.1 * face, normal, pow(saturate(1.05 * fog.a), 2));
-    adjustnormal = lerp(adjustnormal, face, (1 + dot(EyeVec, face)) * (1 - saturate(1 / (dist / 1000 + 1))));
+    adjustnormal = lerp(adjustnormal, face, calm);
 
-    // Reflect the sky. The ripples tilt the reflected direction only a little, to keep it calm.
+    // Reflect the sky. The ripples tilt the reflected direction only a little, to keep it calm,
+    // and less far away and at a flat angle, where a ripple is smaller than a pixel and the
+    // reflection would break up into dots.
     // A reflected direction that points into the surface is turned back out of it.
-    float3 reflectdir = reflect(EyeVec, normalize(lerp(face, normal, 0.35)));
+    float3 reflectdir = reflect(EyeVec, normalize(lerp(face, normal, 0.35 * (1 - calm))));
     reflectdir -= 2 * min(0, dot(reflectdir, face)) * face;
     reflectdir = normalize(reflectdir);
     float3 reflected = fogColourSky(reflectdir).rgb;
