@@ -39,7 +39,7 @@ shared float4 waterVolumeMix;
 // Free values of the look, p0 to p3, for the water shader of a mod
 shared float4 waterVolumeParams[4];
 // The base texture of the mesh of the surface, for the water shader of a mod
-shared texture texMesh0;
+shared texture texMesh0, texMesh1;
 shared float3 sunPos;
 shared float sunVis;
 shared float2 windVec;

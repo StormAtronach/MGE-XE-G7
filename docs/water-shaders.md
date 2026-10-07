@@ -36,8 +36,9 @@ water volume that names no shader, put a file of that name into `shaders\core-mo
 | `IN.facing` | The normal of the mesh, in the world |
 | `IN.tint` | The colour of the water: the emissive colour of the material |
 | `IN.color` | The vertex colour of the mesh. From the distant land: white, with the alpha of the mesh when the look has `opacity=vertex`, else 1 |
-| `IN.uv` | The first texture coordinates of the mesh |
+| `IN.uv` | The texture coordinates of the mesh: the first set in `xy`, the second in `zw` (the first again when the mesh has one set) |
 | `sampMesh0` | The base texture of the mesh, with mip levels, wrapped |
+| `sampMesh1` | The second texture of the mesh (a decal, a detail or a dark map), the same way. Near the player only |
 | `surfaceLook(IN.color)` | The look of the surface: `drift`, `speed`, `scale`, `glow`, `opacity`, `tint`, `reflectsScene`, `distant`, and the free values `p0` to `p3` |
 | `shadeWaterVolume(...)` | The standard shading up to the look |
 | `WaterShade` | Its result: `colour`, `eyeVec`, `dist`, `fog`, `ripple`, `face`, `rayDepth` (how far the view ray goes through the water) and `waterDepth` (how deep the water is under the point) |
@@ -71,7 +72,8 @@ land; MGE XE gives both the same vertex. Far away:
 - `look.distant` is true, and the colour part of `IN.color` is 1. A tint from the vertex colour is not there.
 - The look is the one in the mesh: the generator copies the look line of a water mesh into
   the distant land. A look that a script sets while the game runs does not reach it.
-- The base texture and the texture coordinates are those of the baked mesh.
+- The base texture and the texture coordinates are those of the baked mesh. There is no
+  second texture: do not read `sampMesh1` when `look.distant` is true.
 
 ## Limits
 

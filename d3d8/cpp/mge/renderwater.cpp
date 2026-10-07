@@ -471,6 +471,8 @@ struct PendingWaterVolume {
     float tint[3];
     // The look slot of the material; 0 for the standard look
     unsigned int lookSlot;
+    // The second texture of the mesh, for a water shader; null if it has none
+    IDirect3DTexture9* secondTexture;
 };
 static std::vector<PendingWaterVolume> pendingWaterVolumes;
 
@@ -483,12 +485,28 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene,
         return false;
     }
 
+    // The game draws a mesh with a second texture (a decal, a detail or a dark map) two times,
+    // the second time with that texture. The surface is water one time: the second draw gives
+    // its texture to the first and is not held.
+    if (!pendingWaterVolumes.empty()) {
+        auto& last = pendingWaterVolumes.back();
+        if (last.rs.vb == rs->vb && last.rs.ib == rs->ib && last.rs.vbOffset == rs->vbOffset && last.rs.baseIndex == rs->baseIndex
+            && last.rs.startIndex == rs->startIndex && last.rs.primCount == rs->primCount && last.lookSlot == lookSlot
+            && memcmp(&last.rs.worldTransforms[0], &rs->worldTransforms[0], sizeof(D3DXMATRIX)) == 0) {
+            if (last.secondTexture == nullptr && rs->texture && rs->texture != last.rs.texture) {
+                last.secondTexture = rs->texture;
+                last.secondTexture->AddRef();
+            }
+            return true;
+        }
+    }
+
     rs->vb->AddRef();
     rs->ib->AddRef();
     if (rs->texture) {
         rs->texture->AddRef();
     }
-    pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot });
+    pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot, nullptr });
     waterVolumeDrawn = true;
     return true;
 }
@@ -500,6 +518,9 @@ void DistantLand::discardWaterVolumes() {
         pending.rs.ib->Release();
         if (pending.rs.texture) {
             pending.rs.texture->Release();
+        }
+        if (pending.secondTexture) {
+            pending.secondTexture->Release();
         }
     }
     pendingWaterVolumes.clear();
@@ -572,12 +593,16 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
                 vertexUse += (look.flags & WATER_LOOK_TINT_FROM_VERTEX) != 0 ? 1.0f : 0.0f;
                 vertexUse += (look.flags & WATER_LOOK_OPACITY_FROM_VERTEX) != 0 ? 2.0f : 0.0f;
             }
-            const float mix[4] = { look.glow, look.opacity, vertexUse, pending.reflectsScene ? 1.0f : 0.0f };
+            // The last value: 1 the surface reflects what is on screen, 2 it is from the distant
+            // land, 4 the mesh has second texture coordinates.
+            const bool secondCoordinates = (rs->fvf & D3DFVF_TEXCOUNT_MASK) >= D3DFVF_TEX2;
+            const float mix[4] = { look.glow, look.opacity, vertexUse, (pending.reflectsScene ? 1.0f : 0.0f) + (secondCoordinates ? 4.0f : 0.0f) };
             effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
             effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
             if (pass >= PASS_WATERSHADER_FIRST) {
                 effect->SetFloatArray(ehWaterVolumeParams, &look.params[0][0], 16);
                 effect->SetTexture(ehMeshTex0, rs->texture);
+                effect->SetTexture(ehMeshTex1, pending.secondTexture);
             }
             if (pass != passInUse) {
                 if (passInUse >= 0) {
@@ -597,6 +622,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             effect->EndPass();
         }
         effect->SetTexture(ehMeshTex0, NULL);
+        effect->SetTexture(ehMeshTex1, NULL);
     }
 
     // The distant water comes after the surfaces near the player. The game draws a mesh that

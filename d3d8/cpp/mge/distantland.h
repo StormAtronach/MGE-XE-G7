@@ -287,7 +287,7 @@ public:
     static D3DXHANDLE ehWaterPlaneTint;
     static D3DXHANDLE ehWaterVolumeFlow;
     static D3DXHANDLE ehWaterVolumeParams;
-    static D3DXHANDLE ehMeshTex0;
+    static D3DXHANDLE ehMeshTex0, ehMeshTex1;
     static D3DXHANDLE ehWaterVolumeMix;
     static D3DXHANDLE ehWindVec;
     static D3DXHANDLE ehNiceWeather;
