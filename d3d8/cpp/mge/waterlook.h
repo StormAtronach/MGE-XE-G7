@@ -18,15 +18,15 @@ struct WaterLook {
     float speed;
     // Size of the ripples; 1 is the standard
     float scale;
-    // Foam at the shore, 0 to 1
-    float foam;
     // Light that the surface gives, 0 to 1
     float glow;
     // 1 is water; lower shows what is behind the surface
     float opacity;
-    // Free parameters p0 to p3, for a shader of the mod's own
+    // Free parameters p0 to p3, for a water shader of the mod's own
     float params[4][4];
-    // The name of the shader, NUL terminated; empty for the standard shading
+    // The name of the water shader of a mod, the file Data Files\shaders\water\<name>.fx,
+    // NUL terminated; empty for the standard shading. A name that MGE has no shader for
+    // gives the standard shading.
     char shader[32];
 };
 

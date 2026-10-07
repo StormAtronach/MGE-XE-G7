@@ -168,7 +168,8 @@ surfaces are ordinary game meshes whose material carries a marker in the specula
 99998 (reflects the sky and what is on screen) or 99997 (reflects the sky only). `SetMaterial`
 recognises the marker, `DrawIndexedPrimitive` holds the draw (`renderWaterVolume`), and
 `flushWaterVolumes` draws all held surfaces after StageBlend and after each Stage 2, from one
-copy of the frame, with `PASS_RENDERWATERVOLUME` / `PASS_RENDERWATERVOLUME_SKYONLY`. The
+copy of the frame, with `PASS_RENDERWATERVOLUME`, whose pixel shader is the standard water
+shader (`XE Mod Water Standard.fx`); the marker reaches it as a value of the look. The
 shading reuses the water plane's ripples, fog and specular. It follows the normal of the mesh
 (`WaterVolumeVS`): the ripples are tilted to it, and the reflection and the Fresnel term are
 taken from it, so a surface can face any way. A mesh without normals faces up. The planar
@@ -199,16 +200,25 @@ surfaces near the camera as well.
 the plane is more than twice the view distance below the camera. A mod that needs the water
 flag on a dry interior puts the level that far down.
 
-A surface can have a look beyond its colour: the drift, speed and size of its ripples, foam,
+A surface can have a look beyond its colour: the drift, speed and size of its ripples,
 glow, opacity, and whether the vertex colour of the mesh tints it (`WaterLook` in
 `waterlook.h`). A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
 marks a surface with its slot in the specular power of the material, `100000 + slot`; the two
 old markers stay valid. `SetMaterial` reads the slot, the held draw carries it, and
 `flushWaterVolumes` sets `waterVolumeFlow` and `waterVolumeMix` for each draw from the slot's
 look. The shader (`WaterSurfaceLook`) drifts the ripple coordinates by the flow turned into
-the world, scales the ripple time by the speed, and mixes foam, glow and the frame behind the
+the world, scales the ripple time by the speed, and mixes glow and the frame behind the
 surface by the opacity. A slot stands for a look, so every surface with the same look shares
 it.
+
+A look can name a water shader of a mod, `Data Files\shaders\water\<name>.fx`. When the main
+effect is compiled, `findWaterShaders` lists the files, and `CoreModInclude` writes an include
+of each into `XE Water Shaders.fx` and a pass for each into `XE Water Shader Passes.fx`; both
+files are empty on disk. The passes come after the last fixed pass
+(`PASS_WATERSHADER_FIRST`). `flushWaterVolumes` asks `waterShaderPass` for the pass of each
+held draw and gives it the free values of the look and the base texture of the mesh. When the
+effect does not compile with the water shaders, it is compiled without them and each failing
+file is named in the log. The contract is in `docs/water-shaders.md`.
 
 A mod can also tell MGE which volume the camera is in, through the `MGE_WaterVolumesSet`
 export: while the camera is inside one, `CellHasWater()` and `WaterLevel()` describe that

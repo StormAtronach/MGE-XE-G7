@@ -286,6 +286,8 @@ public:
     static D3DXHANDLE ehWaterVolumeTint;
     static D3DXHANDLE ehWaterPlaneTint;
     static D3DXHANDLE ehWaterVolumeFlow;
+    static D3DXHANDLE ehWaterVolumeParams;
+    static D3DXHANDLE ehMeshTex0;
     static D3DXHANDLE ehWaterVolumeMix;
     static D3DXHANDLE ehWindVec;
     static D3DXHANDLE ehNiceWeather;
@@ -409,6 +411,9 @@ public:
     static void simulateDynamicWaves();
     static void renderWaterPlane();
     static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot);
+    // The pass of the water shader of a mod with this name (Data Files\shaders\water\<name>.fx),
+    // or -1 when there is none or it did not compile.
+    static int waterShaderPass(const char* name);
     static void flushWaterVolumes(bool withDistant);
     static void discardWaterVolumes();
     // A surface mesh of a water volume was taken this frame.
