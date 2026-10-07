@@ -29,6 +29,12 @@ shared float waterVolumeReflectRange;
 shared float waterVolumeHandoff;
 shared float3 waterVolumeTint;
 shared float3 waterPlaneTint;
+// The look of the water volume surface that is drawn: x, y the drift of the ripples in the
+// axes of the mesh, z the speed and w the size of the ripples
+shared float4 waterVolumeFlow;
+// x foam, y glow, z opacity, w what the vertex colour of the mesh is used for: 1 added for
+// the tint, 2 added for the opacity
+shared float4 waterVolumeMix;
 shared float3 sunPos;
 shared float sunVis;
 shared float2 windVec;

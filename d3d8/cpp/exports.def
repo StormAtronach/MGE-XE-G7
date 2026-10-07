@@ -5,3 +5,4 @@ DirectInput8Create=FakeDirectInputCreate
 MGE_HorizonGetParam
 MGE_HorizonSetParam
 MGE_WaterVolumesSet
+MGE_WaterLookSet

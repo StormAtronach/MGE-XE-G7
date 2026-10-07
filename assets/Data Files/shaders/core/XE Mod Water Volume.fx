@@ -9,6 +9,73 @@
 // The shading follows the normal of the mesh: the ripples are tilted to it, and the reflection
 // and the Fresnel term are taken from it.
 
+// The look of a surface beyond its colour, from waterVolumeFlow, waterVolumeMix and the vertex.
+struct WaterSurfaceLook
+{
+    // Drift of the ripples in world units per second, speed and size of the ripples
+    float2 drift;
+    float speed;
+    float scale;
+    float foam;
+    float glow;
+    // 1 is water; lower shows what is behind the surface
+    float opacity;
+    // The vertex colour, or 1
+    float3 tint;
+};
+
+// The look of the surface that is drawn near the player. The drift is given in the axes of
+// the mesh and turned into the world.
+WaterSurfaceLook nearSurfaceLook(float4 vertexColour)
+{
+    WaterSurfaceLook look;
+    look.drift = mul(float4(waterVolumeFlow.xy, 0, 0), world).xy;
+    look.speed = waterVolumeFlow.z;
+    look.scale = waterVolumeFlow.w;
+    look.foam = waterVolumeMix.x;
+    look.glow = waterVolumeMix.y;
+    float tintFromVertex = fmod(waterVolumeMix.w, 2);
+    float opacityFromVertex = floor(waterVolumeMix.w / 2);
+    look.opacity = waterVolumeMix.z * lerp(1, vertexColour.a, opacityFromVertex);
+    look.tint = lerp(1, vertexColour.rgb, tintFromVertex);
+    return look;
+}
+
+// The standard look, for a surface far away
+WaterSurfaceLook standardSurfaceLook()
+{
+    WaterSurfaceLook look;
+    look.drift = 0;
+    look.speed = 1;
+    look.scale = 1;
+    look.foam = 0;
+    look.glow = 0;
+    look.opacity = 1;
+    look.tint = 1;
+    return look;
+}
+
+// The ripples of the water plane, with a drift, a speed and a size of their own. The drift
+// moves the ripple coordinates; it is wrapped so that it keeps its precision over hours.
+float3 surfaceRipples(float2 texcoord1, float2 texcoord2, float dist, float2 vertXY, WaterSurfaceLook look)
+{
+    float t = 0.4 * time * look.speed;
+    float2 moved = look.drift * time;
+    float3 w1 = float3(texcoord1 / look.scale + frac(moved / 3900), t);
+    float3 w2 = float3(texcoord2 / look.scale + frac(moved / 527), t);
+
+    float2 far_normal = tex3D(sampWater3d, w1).rg;
+    float2 close_normal = tex3D(sampWater3d, w2).rg;
+
+#ifdef DYNAMIC_RIPPLES
+    close_normal.rg += tex2Dlod(sampRain, float4(texcoord2, 0, 0)).ba;
+    close_normal.rg += tex2Dlod(sampWave, float4((vertXY - rippleOrigin) / waveTexWorldSize, 0, 0)).ba;
+#endif
+
+    float2 normal_R = 2 * lerp(close_normal, far_normal, saturate(dist / 8000)) - 1;
+    return normalize(float3(normal_R, 1));
+}
+
 // Turns a direction by the turn that takes straight up to the given direction.
 float3 tiltTo(float3 up, float3 v)
 {
@@ -106,7 +173,8 @@ float4 reflectScene(float3 origin, float3 dir)
 // A range of zero turns the reflection of what is on screen off, near and far.
 // tint is the colour of the water of this surface: the emissive colour of its material.
 // facing is the normal of the mesh. A mesh without normals faces up.
-float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint)
+// look is the rest of what the mesh and its mod say about the surface.
+float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, bool distant, float3 tint, WaterSurfaceLook look)
 {
     // Calculate eye vector
     float3 EyeVec = IN.pos.xyz - eyePos.xyz;
@@ -115,14 +183,14 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
 
     // Define fog
     float4 fog = fogColourWater(EyeVec, dist);
-    float3 depthColor = fogApply(waterDepthBase(depthBaseColor, tint), fog);
+    float3 depthColor = fogApply(waterDepthBase(depthBaseColor, tint) * look.tint, fog);
 
     // The way the surface faces, turned to the side of the eye
     float3 face = dot(facing, facing) > 0.25 ? normalize(facing) : float3(0, 0, 1);
     face = dot(face, EyeVec) > 0 ? -face : face;
 
     // Calculate water normal: the ripples of a level surface, tilted to the surface
-    float3 ripple = getFinalWaterNormal(IN.texcoords.xy, IN.texcoords.zw, dist, IN.pos.xy);
+    float3 ripple = surfaceRipples(IN.texcoords.xy, IN.texcoords.zw, dist, IN.pos.xy, look);
     float3 normal = tiltTo(face, ripple);
 
     // Refraction pixel distortion factor, wind strength increases distortion
@@ -135,6 +203,7 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
     // Refraction
     float3 refracted = depthColor;
     float shorefactor = 0;
+    float foam = 0;
 
     // Avoid sampling deep water
     if(depth < 4000)
@@ -146,7 +215,10 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
         // Get distorted depth
         depth = max(0, tex2Dproj(sampDepth, newscrpos).r - IN.screenpos.w);
         depth /= dot(EyeVec, float3(view[0][2], view[1][2], view[2][2]));
-        refracted *= waterTransmission(tint, depth);
+        refracted *= waterTransmission(tint, depth) * look.tint;
+
+        // Foam where the water is shallow, broken up by the ripples
+        foam = look.foam * pow(saturate(1 - depth / 160), 2) * saturate(3 * length(ripple.xy));
 
         // Small scale shoreline animation
         depth += 300 * (0.95 - ripple.z);
@@ -198,6 +270,19 @@ float4 waterVolumeColour(in WaterVertOut IN, float3 facing, bool reflectsScene, 
     // Smooth transition at shore line
     result = lerp(result, refracted, shorefactor * fog.a);
 
+    // Foam, lit by the sun and the sky
+    float3 foamColour = fogApply(0.75 * sunColAdjusted + 0.35 * skyCol, fog);
+    result = lerp(result, foamColour, foam);
+
+    // Light of the surface's own, in the colour of the water. It does not follow the daylight,
+    // so a surface of the usual colour glows in a water blue of its own.
+    float3 glowColour = dot(tint, 1) > 0 ? tint : float3(0.25, 0.5, 0.6);
+    result += look.glow * glowColour * fog.a;
+
+    // A surface that is not fully water shows what is behind it
+    float3 behind = tex2Dproj(sampRefract, IN.screenpos).rgb;
+    result = lerp(behind, result, look.opacity);
+
     return float4(result, 1);
 }
 
@@ -206,19 +291,21 @@ struct WaterVolumeVertOut
 {
     WaterVertOut water;
     float3 facing : TEXCOORD5;
+    float4 color : COLOR0;
 };
 
-WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NORMAL)
+WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NORMAL, in float4 color : COLOR0)
 {
     WaterVolumeVertOut OUT;
     OUT.water = WaterVS(pos);
     OUT.facing = mul(float4(normal, 0), world).xyz;
+    OUT.color = color;
     return OUT;
 }
 
 float4 WaterVolumePS(in WaterVolumeVertOut IN, uniform bool reflectsScene): COLOR0
 {
-    return waterVolumeColour(IN.water, IN.facing, reflectsScene, false, waterVolumeTint);
+    return waterVolumeColour(IN.water, IN.facing, reflectsScene, false, waterVolumeTint, nearSurfaceLook(IN.color));
 }
 
 //------------------------------------------------------------
@@ -247,5 +334,5 @@ float4 WaterVolumeDistantPS(in WaterVolumeDistantVertOut IN, uniform bool reflec
     // Nearer than this the game draws the surface itself. It is zero for a mesh whose
     // reference the game has not loaded.
     clip(IN.water.screenpos.w - waterVolumeHandoff);
-    return waterVolumeColour(IN.water, IN.facing, reflectsScene, true, IN.tint);
+    return waterVolumeColour(IN.water, IN.facing, reflectsScene, true, IN.tint, standardSurfaceLook());
 }

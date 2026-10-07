@@ -276,6 +276,8 @@ D3DXHANDLE DistantLand::ehWaterVolumeReflectRange;
 D3DXHANDLE DistantLand::ehWaterVolumeHandoff;
 D3DXHANDLE DistantLand::ehWaterVolumeTint;
 D3DXHANDLE DistantLand::ehWaterPlaneTint;
+D3DXHANDLE DistantLand::ehWaterVolumeFlow;
+D3DXHANDLE DistantLand::ehWaterVolumeMix;
 D3DXHANDLE DistantLand::ehWindVec;
 D3DXHANDLE DistantLand::ehNiceWeather;
 D3DXHANDLE DistantLand::ehTime;
@@ -864,6 +866,8 @@ bool DistantLand::initShader() {
     ehWaterVolumeHandoff = effect->GetParameterByName(0, "waterVolumeHandoff");
     ehWaterVolumeTint = effect->GetParameterByName(0, "waterVolumeTint");
     ehWaterPlaneTint = effect->GetParameterByName(0, "waterPlaneTint");
+    ehWaterVolumeFlow = effect->GetParameterByName(0, "waterVolumeFlow");
+    ehWaterVolumeMix = effect->GetParameterByName(0, "waterVolumeMix");
     ehWindVec = effect->GetParameterByName(0, "windVec");
     ehNiceWeather = effect->GetParameterByName(0, "niceWeather");
     ehTime = effect->GetParameterByName(0, "time");
