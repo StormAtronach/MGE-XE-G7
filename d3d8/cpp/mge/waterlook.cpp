@@ -69,8 +69,14 @@ WaterLook WaterLooks::parse(const char* text, size_t length) {
         } else if (key == "glow") {
             readNumbers(value, &look.glow, 1);
         } else if (key == "opacity") {
-            // The word "vertex" is for the surface near the player; it leaves the number as it is.
-            readNumbers(value, &look.opacity, 1);
+            // The word "vertex": the generator wrote the opacity of the mesh's vertex into
+            // the vertex of the distant subset.
+            if (_stricmp(value.c_str(), "vertex") == 0) {
+                look.flags |= WATER_LOOK_OPACITY_FROM_VERTEX;
+            } else {
+                look.flags &= ~WATER_LOOK_OPACITY_FROM_VERTEX;
+                readNumbers(value, &look.opacity, 1);
+            }
         } else if (key == "reflect") {
             if (_stricmp(value.c_str(), "sky") == 0) {
                 look.flags &= ~static_cast<std::uint32_t>(WATER_LOOK_REFLECTS_SCENE);

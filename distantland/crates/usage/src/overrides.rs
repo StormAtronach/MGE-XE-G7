@@ -1,5 +1,7 @@
 //! Shared override value types consumed while parsing plugin usage.
 
+use std::sync::Arc;
+
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 use uncased::Uncased;
@@ -24,6 +26,10 @@ pub struct StaticOverride {
     /// The colour of the water of a water mesh, red, green and blue from 0 to 1. `None` takes
     /// the emissive colour of the material of each shape.
     pub water_color: Option<[f32; 3]>,
+    /// The look line of a water mesh, without the `wv:` prefix and without white space at its
+    /// ends. It replaces the look line in the mesh, and an empty text takes the look line away.
+    /// `None` takes the look line of the mesh.
+    pub water_look: Option<Arc<str>>,
 }
 
 impl Default for StaticOverride {
@@ -36,6 +42,7 @@ impl Default for StaticOverride {
             no_script: false,
             water: None,
             water_color: None,
+            water_look: None,
         }
     }
 }

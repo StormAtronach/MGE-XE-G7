@@ -8,6 +8,7 @@ use str_utils::*;
 
 use tes3::nif::*;
 
+use crate::mge_xe::distant_statics::WATER_LOOK_MAX_LENGTH;
 use crate::model::SubsetWater;
 use crate::overrides::WaterNames;
 use crate::vfs::normalize::make_normalized;
@@ -186,12 +187,49 @@ pub fn mesh_water<'a>(stream: &NiStream, names: &'a WaterNames, registered: Opti
 /// The match is the pattern `^%s*[Ww][Vv]:%s*(.*)$` of the mod that makes the water near the
 /// player. White space is the white space of C.
 fn text_after_look_prefix(value: &str) -> Option<&str> {
-    let is_space = |c: char| matches!(c, ' ' | '\t'..='\r');
-    let rest = value.trim_start_matches(is_space);
+    let rest = value.trim_start_matches(is_c_space);
     if !rest.get(..3)?.eq_ignore_ascii_case("wv:") {
         return None;
     }
-    Some(rest[3..].trim_start_matches(is_space).trim_end_matches(is_space))
+    Some(rest[3..].trim_matches(is_c_space))
+}
+
+/// White space as `isspace` of C knows it.
+fn is_c_space(c: char) -> bool {
+    matches!(c, ' ' | '\t'..='\r')
+}
+
+/// Returns a look line as a metadata file gives it: without white space at its ends, and
+/// without the `wv:` prefix if the text has one.
+pub fn look_line_without_prefix(value: &str) -> &str {
+    text_after_look_prefix(value).unwrap_or_else(|| value.trim_matches(is_c_space))
+}
+
+/// Says why the file format does not take a look line, or `None` when it takes the line.
+///
+/// The format takes at most [`WATER_LOOK_MAX_LENGTH`] bytes of ASCII without NUL.
+pub fn water_look_fault(look: &str) -> Option<&'static str> {
+    const { assert!(WATER_LOOK_MAX_LENGTH == 255) };
+    if look.len() > WATER_LOOK_MAX_LENGTH {
+        Some("is longer than 255 bytes")
+    } else if !look.is_ascii() || look.contains('\0') {
+        Some("is not ASCII")
+    } else {
+        None
+    }
+}
+
+/// Returns whether a look line takes the opacity of the water from the vertex colours: its
+/// last `opacity` key has the value `vertex`.
+///
+/// The words are read as the runtime reads them: white space is between the words, the key is
+/// the text before the first `=` of a word, and the case of the key does not count. The case of
+/// the value does not count either, as for the mod that makes the water near the player.
+pub fn look_has_vertex_opacity(look: &str) -> bool {
+    look.split(is_c_space)
+        .filter_map(|word| word.split_once('='))
+        .rfind(|(key, _)| key.eq_ignore_ascii_case("opacity"))
+        .is_some_and(|(_, value)| value.eq_ignore_ascii_case("vertex"))
 }
 
 /// Finds the look line of a water mesh: the text after the `wv:` prefix of string extra data,
@@ -400,7 +438,10 @@ fn is_valid_texture_format(path: &str) -> bool {
 mod tests {
     use tes3::nif::*;
 
-    use super::{has_word, mesh_water, mesh_water_look, name_starts_with_any, text_after_look_prefix};
+    use super::{
+        has_word, look_has_vertex_opacity, look_line_without_prefix, mesh_water, mesh_water_look, name_starts_with_any,
+        text_after_look_prefix, water_look_fault,
+    };
     use crate::model::SubsetWater;
     use crate::overrides::WaterNames;
 
@@ -593,6 +634,53 @@ mod tests {
         assert_eq!(text_after_look_prefix("wv"), None);
         assert_eq!(text_after_look_prefix("w\u{e9}:"), None);
         assert_eq!(text_after_look_prefix("mge.distant.scroll"), None);
+    }
+
+    #[test]
+    fn a_look_line_of_a_metadata_file_can_have_the_prefix() {
+        assert_eq!(look_line_without_prefix("flow=0,-140 glow=0.3"), "flow=0,-140 glow=0.3");
+        assert_eq!(look_line_without_prefix(" \tflow=0,-140 \r\n"), "flow=0,-140");
+        assert_eq!(look_line_without_prefix("wv: flow=0,-140"), "flow=0,-140");
+        assert_eq!(look_line_without_prefix(" WV:flow=0,-140 "), "flow=0,-140");
+        assert_eq!(look_line_without_prefix("wv:"), "");
+        assert_eq!(look_line_without_prefix("  "), "");
+        // The prefix is taken away once.
+        assert_eq!(look_line_without_prefix("wv: wv: speed=2"), "wv: speed=2");
+    }
+
+    #[test]
+    fn the_file_format_takes_255_bytes_of_ascii() {
+        assert_eq!(water_look_fault(""), None);
+        assert_eq!(water_look_fault(&"x".repeat(255)), None);
+        assert_eq!(water_look_fault(&"x".repeat(256)), Some("is longer than 255 bytes"));
+        assert_eq!(water_look_fault("shader=caf\u{e9}"), Some("is not ASCII"));
+        assert_eq!(water_look_fault("speed=2\0"), Some("is not ASCII"));
+    }
+
+    #[test]
+    fn opacity_from_vertices_is_the_last_opacity_key_with_the_value_vertex() {
+        assert!(look_has_vertex_opacity("opacity=vertex"));
+        assert!(look_has_vertex_opacity("flow=0,-140 opacity=vertex shader=tw_foam"));
+        assert!(look_has_vertex_opacity("flow=0,-140\topacity=vertex\r\nspeed=2"));
+        // The case of the key and of the value does not count.
+        assert!(look_has_vertex_opacity("Opacity=Vertex"));
+        assert!(look_has_vertex_opacity("OPACITY=VERTEX"));
+        // The last key decides.
+        assert!(look_has_vertex_opacity("opacity=0.5 opacity=vertex"));
+        assert!(!look_has_vertex_opacity("opacity=vertex opacity=0.5"));
+
+        assert!(!look_has_vertex_opacity(""));
+        assert!(!look_has_vertex_opacity("flow=0,-140"));
+        assert!(!look_has_vertex_opacity("opacity=0.5"));
+        assert!(!look_has_vertex_opacity("tint=vertex"));
+        // A word is a key and a value with one `=` and no white space between them.
+        assert!(!look_has_vertex_opacity("opacity = vertex"));
+        assert!(!look_has_vertex_opacity("opacity= vertex"));
+        assert!(!look_has_vertex_opacity("opacity=vertex,1"));
+        assert!(!look_has_vertex_opacity("opacity=vertexes"));
+        assert!(!look_has_vertex_opacity("opacity==vertex"));
+        assert!(!look_has_vertex_opacity("my_opacity=vertex"));
+        assert!(!look_has_vertex_opacity("opacity"));
     }
 
     #[test]

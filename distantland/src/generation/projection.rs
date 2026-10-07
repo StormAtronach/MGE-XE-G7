@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -386,7 +387,7 @@ impl From<&StaticOverrides> for OverrideStateProjection {
 }
 
 /// One per-mesh override.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MeshOverrideProjection {
     /// Excludes the mesh by default.
     pub(crate) ignore: bool,
@@ -402,6 +403,8 @@ pub(crate) struct MeshOverrideProjection {
     pub(crate) water: Option<bool>,
     /// Raw bits of the colour of the water of a water mesh.
     pub(crate) water_color: Option<[u32; 3]>,
+    /// The look line of a water mesh that replaces the look line in the mesh.
+    pub(crate) water_look: Option<Arc<str>>,
 }
 
 impl From<&StaticOverride> for MeshOverrideProjection {
@@ -414,6 +417,7 @@ impl From<&StaticOverride> for MeshOverrideProjection {
             no_script: value.no_script,
             water: value.water,
             water_color: value.water_color.map(|color| color.map(f32::to_bits)),
+            water_look: value.water_look.clone(),
         }
     }
 }
@@ -431,9 +435,10 @@ impl CanonicalWrite for MeshOverrideProjection {
             None => writer.write_bool(false),
         }
         writer.write_bool(self.no_script);
-        // The two water fields are written only when set, so that an override without them
-        // keeps the fingerprint it had before they existed. They are the last fields, and the
-        // colour starts with a tag that is not a boolean, so the encoding stays unambiguous.
+        // The water fields are written only when set, so that an override without them keeps
+        // the fingerprint it had before they existed. They are the last fields, and the colour
+        // and the look line each start with a tag of their own that is not a boolean, so the
+        // encoding stays unambiguous.
         if let Some(water) = self.water {
             writer.write_bool(water);
         }
@@ -442,6 +447,10 @@ impl CanonicalWrite for MeshOverrideProjection {
             for part in color {
                 writer.write_u32(part);
             }
+        }
+        if let Some(look) = &self.water_look {
+            writer.write_u8(3);
+            writer.write_str(look);
         }
     }
 }

@@ -333,6 +333,7 @@ fn a_change_of_the_water_color_of_a_mesh_changes_its_override() {
         Projections::capture(&usage, &settings, &write_metadata(entry))
             .overrides
             .meshes["x\\pond.nif"]
+            .clone()
     };
 
     let plain = mesh("ignore = false");
@@ -350,6 +351,55 @@ fn a_change_of_the_water_color_of_a_mesh_changes_its_override() {
     };
     assert_eq!(bytes(&plain).len() + 1, bytes(&water).len());
     assert_eq!(bytes(&water).len() + 13, bytes(&green).len());
+}
+
+#[test]
+fn a_change_of_the_look_line_of_a_mesh_changes_its_override() {
+    let temp = tempdir().unwrap();
+    let metadata = temp.path().join("fixture-metadata.toml");
+    let write_metadata = |entry: &str| {
+        std::fs::write(
+            &metadata,
+            format!("[tools.mge-xe.distantland.statics]\n'x/pond.nif' = {{ {entry} }}\n"),
+        )
+        .unwrap();
+        let mut builder = OverridesBuilder::new();
+        apply_plugin_metadata_with_identity(&metadata, &mut builder);
+        builder.finish()
+    };
+    let usage = UsageInfo::default();
+    let settings = GenerationSettings::default();
+    let mesh = |entry: &str| {
+        Projections::capture(&usage, &settings, &write_metadata(entry))
+            .overrides
+            .meshes["x\\pond.nif"]
+            .clone()
+    };
+    let bytes = |projection: &MeshOverrideProjection| {
+        let mut writer = CanonicalWriter::new();
+        projection.write_canonical(&mut writer);
+        writer.into_bytes()
+    };
+
+    let water = mesh("water = true");
+    let slow = mesh("water = true, wv = \"speed=2\"");
+    let fast = mesh("water = true, wv = \"speed=3\"");
+    let no_look = mesh("water = true, wv = \"\"");
+    let green = mesh("water = true, water_color = [0.25, 0.5, 0.125]");
+    let green_slow = mesh("water = true, water_color = [0.25, 0.5, 0.125], wv = \"speed=2\"");
+
+    assert_ne!(bytes(&water), bytes(&slow));
+    assert_ne!(bytes(&slow), bytes(&fast));
+    // An empty look line takes the look line of the mesh away, so it is not the same as no key.
+    assert_ne!(bytes(&water), bytes(&no_look));
+    assert_ne!(bytes(&green), bytes(&green_slow));
+    // The prefix and the white space at the ends are not part of the look line.
+    assert_eq!(bytes(&slow), bytes(&mesh("water = true, wv = \" wv: speed=2 \"")));
+
+    // An override without the look line is written as before the key existed.
+    assert_eq!(bytes(&water).len(), bytes(&mesh("ignore = false")).len() + 1);
+    assert!(bytes(&slow).starts_with(&bytes(&water)));
+    assert!(bytes(&green_slow).starts_with(&bytes(&green)));
 }
 
 #[test]

@@ -366,14 +366,15 @@ WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NO
 // It gives the pixel shader the same vertex as a surface near the player, so one water
 // shader draws both.
 // A distant static keeps a palette index in pos.w. The generator writes the colour of the
-// water into the vertex colour of a water subset.
+// water into the vertex colour of a water subset, and the opacity of the mesh's vertex
+// into its alpha when the look asks for it.
 WaterVolumeVertOut WaterVolumeDistantVS(in StatVertIn IN)
 {
     WaterVolumeVertOut OUT;
     OUT.water = WaterVS(float4(IN.pos.xyz, 1));
     OUT.tint = IN.color.rgb;
     OUT.facing = mul(float4(2 * IN.normal.xyz - 1, 0), world).xyz;
-    OUT.color = 1;
+    OUT.color = float4(1, 1, 1, IN.color.a);
     OUT.uv = IN.texcoords;
     return OUT;
 }

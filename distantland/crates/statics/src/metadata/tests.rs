@@ -433,3 +433,71 @@ surface_names = ["WaterVolume"]
     // The mesh entries of the same file still count.
     assert_eq!(overrides.mesh_overrides["x\\ex_pond.nif"].water, Some(true));
 }
+
+#[test]
+fn wv_key_maps_to_the_look_line_of_the_mesh_override() {
+    let too_long = "x".repeat(256);
+    let text = format!(
+        r#"
+[tools.mge-xe.distantland.statics]
+'x\pond.nif' = {{ water = true, wv = "flow=0,-140 glow=0.3" }}
+'x\prefix.nif' = {{ wv = " WV: opacity=vertex  " }}
+'x\empty.nif' = {{ wv = "" }}
+'x\prefix_only.nif' = {{ wv = "wv:" }}
+'x\no_key.nif' = {{ water = true }}
+'x\too_long.nif' = {{ water = true, wv = "{too_long}" }}
+'x\not_ascii.nif' = {{ water = true, wv = "shader=caf\u00e9" }}
+"#
+    );
+    let overrides = parse_and_apply(&text);
+    let look = |mesh: &str| overrides.mesh_overrides[mesh].water_look.as_deref();
+
+    assert_eq!(look("x\\pond.nif"), Some("flow=0,-140 glow=0.3"));
+    // The prefix and the white space at the ends are taken away.
+    assert_eq!(look("x\\prefix.nif"), Some("opacity=vertex"));
+    // An empty look line is a look line: it takes the look line of the mesh away.
+    assert_eq!(look("x\\empty.nif"), Some(""));
+    assert_eq!(look("x\\prefix_only.nif"), Some(""));
+    assert_eq!(look("x\\no_key.nif"), None);
+    // A look line that the file format does not take is left out. The rest of the entry stays.
+    assert_eq!(look("x\\too_long.nif"), None);
+    assert_eq!(look("x\\not_ascii.nif"), None);
+    assert_eq!(overrides.mesh_overrides["x\\too_long.nif"].water, Some(true));
+    assert_eq!(overrides.mesh_overrides["x\\not_ascii.nif"].water, Some(true));
+}
+
+#[test]
+fn wv_key_takes_a_look_line_of_255_bytes() {
+    let longest = "x".repeat(255);
+    let text = format!("[tools.mge-xe.distantland.statics]\n'x\\pond.nif' = {{ wv = \"wv: {longest}\" }}\n");
+    let overrides = parse_and_apply(&text);
+    assert_eq!(
+        overrides.mesh_overrides["x\\pond.nif"].water_look.as_deref(),
+        Some(longest.as_str())
+    );
+}
+
+#[test]
+fn a_later_mesh_entry_replaces_the_look_line_with_the_whole_entry() {
+    let apply = |builder: &mut OverridesBuilder, label: &str, entry: &str| {
+        let text = format!("[tools.mge-xe.distantland.statics]\n'x\\pond.nif' = {{ {entry} }}\n");
+        let metadata = parse_distantland_section(&text).expect("parse").expect("section");
+        builder.begin_source(label);
+        metadata.apply(builder);
+    };
+
+    let mut builder = OverridesBuilder::new();
+    apply(&mut builder, "A-metadata.toml", "water = true, wv = \"speed=2\"");
+    apply(&mut builder, "B-metadata.toml", "water = true, wv = \"speed=3\"");
+    let overrides = builder.finish();
+    assert_eq!(overrides.mesh_overrides["x\\pond.nif"].water_look.as_deref(), Some("speed=3"));
+
+    // An entry is one value, as for the other keys: a later entry without the key has no look
+    // line.
+    let mut builder = OverridesBuilder::new();
+    apply(&mut builder, "A-metadata.toml", "water = true, wv = \"speed=2\"");
+    apply(&mut builder, "B-metadata.toml", "water = true");
+    let overrides = builder.finish();
+    assert_eq!(overrides.mesh_overrides["x\\pond.nif"].water, Some(true));
+    assert_eq!(overrides.mesh_overrides["x\\pond.nif"].water_look, None);
+}

@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use str_utils::*;
 use tes3::nif::*;
 
-use crate::mge_xe::distant_statics::{StaticType, WATER_LOOK_MAX_LENGTH};
+use crate::mge_xe::distant_statics::StaticType;
 use crate::model::{DistantStatic, Subset, UvBound, Vertex, passes_min_radius};
 use crate::nif::*;
 use crate::overrides::StaticOverrides;
@@ -282,8 +282,10 @@ impl DistantStatic {
         clear_root_node_transforms(&mut stream);
         normalize_texture_paths(&mut stream);
 
-        let registered_water = overrides.mesh_overrides.get(rel_path).and_then(|ovr| ovr.water);
-        let registered_water_color = overrides.mesh_overrides.get(rel_path).and_then(|ovr| ovr.water_color);
+        let registered = overrides.mesh_overrides.get(rel_path);
+        let registered_water = registered.and_then(|ovr| ovr.water);
+        let registered_water_color = registered.and_then(|ovr| ovr.water_color);
+        let registered_water_look = registered.and_then(|ovr| ovr.water_look.as_deref());
         let water = mesh_water(&stream, &overrides.water_names, registered_water);
         let shapes: Vec<_> = visible_geometries(&stream, water).collect();
         if shapes.is_empty() {
@@ -322,11 +324,16 @@ impl DistantStatic {
 
         let mut subsets = Vec::with_capacity(shapes.len());
         let water_surface = water.map_or(crate::model::SubsetWater::None, |water| water.surface);
+        // The look line of the mesh entry comes before the look line in the mesh.
         let water_look = if water_surface.is_water() {
-            stored_water_look(rel_path, &stream)
+            match registered_water_look {
+                Some(look) => stored_water_look(rel_path, look, "of the mesh entry"),
+                None => mesh_water_look(&stream).and_then(|look| stored_water_look(rel_path, look, "of the water mesh")),
+            }
         } else {
             None
         };
+        let opacity_from_vertices = water_look.as_deref().is_some_and(look_has_vertex_opacity);
 
         for geometry in shapes {
             let data = geometry.data;
@@ -371,14 +378,16 @@ impl DistantStatic {
                 .unwrap_or(Vec4::ONE);
             // A water subset carries the colour of its water in the vertex colour, where the
             // water pass reads it: the registered colour, or the emissive colour of the
-            // material. Black is water of the usual colour.
+            // material. Black is water of the usual colour. The alpha is 1, or the alpha of the
+            // vertex colour of the mesh when the look line has `opacity=vertex` and the shape has
+            // vertex colours.
             let water_color = water_surface.is_water().then(|| {
                 registered_water_color
                     .map(Vec3::from)
                     .or_else(|| material.map(|material| material.emissive_color))
                     .unwrap_or(Vec3::ZERO)
-                    .extend(1.0)
             });
+            let water_alpha_from_vertices = opacity_from_vertices && has_colors;
 
             // Every vertex below gets the identity bound, so the subset's distinct set is that
             // one entry. Seeding it here rather than at the atlas stage makes the invariant
@@ -409,7 +418,8 @@ impl DistantStatic {
                     },
                     uv: uv_set.map_or(Vec2::ZERO, |uv_set| uv_set[i]),
                     color: match water_color {
-                        Some(color) => color,
+                        Some(color) if water_alpha_from_vertices => color.extend(data.vertex_colors[i].w),
+                        Some(color) => color.extend(1.0),
                         None if has_colors => data.vertex_colors[i],
                         None => material_color,
                     },
@@ -475,24 +485,16 @@ impl DistantStatic {
     }
 }
 
-/// Returns the look line that the water subsets of a mesh carry.
+/// Returns the look line that the water subsets of a mesh carry. An empty text is no look line.
 ///
-/// The file format takes at most [`WATER_LOOK_MAX_LENGTH`] bytes of ASCII. A look line that does
-/// not fit is left out, with a warning.
-fn stored_water_look(rel_path: &str, stream: &NiStream) -> Option<Arc<str>> {
-    let look = mesh_water_look(stream)?;
+/// The file format takes at most `WATER_LOOK_MAX_LENGTH` bytes of ASCII. A look line that does
+/// not fit is left out, with a warning. `origin` says where the look line comes from.
+fn stored_water_look(rel_path: &str, look: &str, origin: &str) -> Option<Arc<str>> {
     if look.is_empty() {
         return None;
     }
-    if look.len() > WATER_LOOK_MAX_LENGTH {
-        warn!(
-            "{rel_path}: the look line of the water mesh is longer than {WATER_LOOK_MAX_LENGTH} bytes. \
-             Distant water does not get the look"
-        );
-        return None;
-    }
-    if !look.is_ascii() || look.contains('\0') {
-        warn!("{rel_path}: the look line of the water mesh is not ASCII. Distant water does not get the look");
+    if let Some(fault) = water_look_fault(look) {
+        warn!("{rel_path}: the look line {origin} {fault}. Distant water does not get the look");
         return None;
     }
     Some(look.into())
