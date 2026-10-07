@@ -44,7 +44,7 @@ shard id, then key bytes within the shard. Each file has this layout:
   after the v5 component fields.
 - **`StaticRecord`** (52 bytes/entry): whole-static bounding sphere + AABB, `StaticType`
   classification, subset range.
-- **`SubsetRecord`** (152 bytes/entry): per-subset bounds, vertex/index ranges, the flags (bit 0
+- **`SubsetRecord`** (168 bytes/entry): per-subset bounds, vertex/index ranges, the flags (bit 0
   alpha, bit 1 UV controller, bit 2 distant water, bit 3 distant water that reflects the sky
   only), the NUL-terminated texture path (atlas page name or passthrough path),
   a 56-byte generated `HorizonFootprint` at offset 80, `first_component_index` at offset 136,

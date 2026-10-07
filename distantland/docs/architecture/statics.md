@@ -106,6 +106,32 @@ Only `cells` and `terrain_cells` retain their collected data for downstream stat
   embedded error texture, because `static_meshes` has no subset without a texture path. The
   vertex colour of a water subset is the colour of its water: the `water_color` of the mesh
   override, or the emissive colour of the material, with black for the usual colour.
+- Finds the look line of a mesh that is drawn as water (`mesh_water_look` in `nif.rs`): the
+  text after the `wv:` prefix of the first string extra data that has the prefix, without white
+  space at its ends. The walk is the walk of the water names, with the extra data of each
+  object in the order of its chain. The generator does not read the keys in the text: the
+  runtime does, so a new key needs no generator change. Every water subset of the mesh carries
+  the text (`Subset::water_look`); a subset that is not water has none. An empty text is no
+  look line. A text longer than 255 bytes (`WATER_LOOK_MAX_LENGTH`) or with a byte that is not
+  ASCII is left out, with a warning that names the mesh. Subsets with different look lines do
+  not merge.
+
+The subset record of `static_meshes` (`SubsetRecord`, 168 bytes) stores the look line in three
+fields after `palette_count`. The fields before them keep their offsets. `MGE_DL_VERSION` 20
+is the first version with these fields.
+
+| Offset | Field | Type | Meaning |
+| --- | --- | --- | --- |
+| 152 | `look_offset` | `u64` | File-absolute offset of the look line in the texture blob. `0` when there is none. |
+| 160 | `look_length` | `u32` | Length of the look line in bytes, without the trailing NUL. `0` when there is none. |
+| 164 | `reserved` | `u32` | Zero. |
+
+The look line is NUL-terminated in the texture blob, with the texture paths. The writer stores
+equal strings once, also when one is a texture path and the other is a look line: each record
+gives the offset and the length of its own string. The reader rejects a look line on a subset
+that is not water, a range that is not inside the blob, a missing or an interior NUL, a byte
+that is not ASCII, a length above 255, an offset without a length, and a `reserved` field that
+is not zero. The shard input fingerprint includes the look line of a subset that has one.
 
 The result is the `DistantStatics` map (`IndexMap<String, DistantStatic>` keyed by normalized
 mesh path) defined in [crates/statics/src/model.rs](../../crates/statics/src/model.rs).
@@ -337,7 +363,8 @@ references, `generation::unit_fingerprint` captures mesh, merge-cell, and static
 fingerprints. Mesh units include unresolved/read-failed/filtered states, resolution facts, raw
 content identity, settings/override/admission inputs, bounds, and ordered source textures. The
 unit of a mesh that the water rules apply to also includes the water names, because the names
-choose its shapes. A BVH-free enumerator applies the same merge eligibility filter on every run, including legacy
+choose its shapes. The look line of a water mesh needs no entry of its own: it is in the bytes
+of the mesh file, and the raw content identity is the hash of those bytes. A BVH-free enumerator applies the same merge eligibility filter on every run, including legacy
 bundle hits, and fingerprints cells with at least two eligible stable-key members. Merge units are
 the one statics-domain unit with terrain inputs: because merged geometry is culled against the
 heightmap, each carries the `height_hash` of the 3x3 cell block around its own cell plus the

@@ -3,6 +3,7 @@
 #include "ipc/vecwrap.h"
 
 #include <cstdint>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -42,20 +43,11 @@ public:
                 unsigned int vertex_size,
                 bool parallelRead = false);
 
-    // Distant water comes in a visible set of its own (VIS_WATER). This loop draws the meshes
-    // of one kind of water (RenderMesh::water) with the pass that is active.
-    // The pass leaves a distant mesh out nearer than the handoff depth, where the game draws
-    // the mesh itself. The game does that only for a reference in a loaded cell, so a mesh
-    // placed inside loaded_rect (min x, min y, max x, max y) gets handoff_depth and any other
-    // mesh gets zero.
+    // Distant water comes in a visible set of its own (VIS_WATER). This loop draws each mesh
+    // of it. Before a mesh is drawn, prepare sets the pass and the values of its look.
     void RenderWater(IDirect3DDevice9* device,
-                     ID3DXEffect* effect,
-                     const D3DXHANDLE* world_matrix_handle,
-                     const D3DXHANDLE* handoff_handle,
-                     float handoff_depth,
-                     const float loaded_rect[4],
                      unsigned int vertex_size,
-                     std::uint8_t kind);
+                     const std::function<void(const RenderMesh&)>& prepare);
 
     void RemoveAll() {
         visible_set.clear();

@@ -1841,3 +1841,130 @@ fn from_nif_keeps_a_water_subset_without_texture_and_uvs() {
     let plain = DistantStatic::from_nif_with_identity("bare_plain.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names);
     assert!(plain.distant_static.is_none());
 }
+
+/// The same mesh with this string as the string extra data of its root.
+fn with_root_string(nif: &[u8], value: &str) -> Vec<u8> {
+    let mut stream = NiStream::from_bytes(nif).expect("parse test nif");
+    let mut data = NiStringExtraData::default();
+    data.value = value.into();
+    let data_link = stream.insert(data);
+    let root = stream.roots[0];
+    let Some(NiType::NiNode(root)) = stream.objects.get_mut(root.key) else {
+        panic!("root node");
+    };
+    root.extra_data = data_link.cast();
+    stream.save_bytes().expect("serialize test nif")
+}
+
+fn water_looks(distant_static: &DistantStatic) -> Vec<Option<&str>> {
+    distant_static
+        .subsets
+        .iter()
+        .map(|subset| subset.water_look.as_deref())
+        .collect()
+}
+
+#[test]
+fn from_nif_gives_the_look_line_to_water_subsets_alone() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    let look_string = "wv: flow=0,-140 speed=1.2 shader=tw_foam p0=0.4,0.5,1.5 ";
+    let look = "flow=0,-140 speed=1.2 shader=tw_foam p0=0.4,0.5,1.5";
+    write_test_static_asset(
+        root,
+        "water.nif",
+        &with_root_string(&build_test_water_nif("WaterVolume"), look_string),
+    );
+    write_test_static_asset(
+        root,
+        "plain.nif",
+        &with_root_string(&build_test_water_nif("WaterVolume plain"), look_string),
+    );
+    write_test_static_asset(root, "no_look.nif", &build_test_water_nif("WaterVolume"));
+    let vfs = make_test_vfs(root);
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+
+    // The water subset carries the text after the prefix, without the white space at its end.
+    let water = water_test_static(root, "water.nif", &by_names);
+    assert_eq!(water_looks(&water), [Some(look)]);
+
+    // A water mesh that keeps its own look is not drawn as water: no subset has the look line.
+    let plain = water_test_static(root, "plain.nif", &by_names);
+    assert!(!plain.has_water());
+    assert_eq!(water_looks(&plain), [None]);
+
+    // Without water rules the same file is an ordinary mesh.
+    let ordinary = water_test_static(root, "water.nif", &StaticOverrides::default());
+    assert_eq!(water_looks(&ordinary), [None, None]);
+
+    // A water mesh without the string has no look line.
+    let no_look = water_test_static(root, "no_look.nif", &by_names);
+    assert!(no_look.has_water());
+    assert_eq!(water_looks(&no_look), [None]);
+
+    // Every subset of a mesh that a mesh override makes water is water, and has the look line.
+    let mut registered = StaticOverrides::default();
+    registered.mesh_overrides.insert("water.nif".to_owned(), water_override(true));
+    let by_override = water_test_static(root, "water.nif", &registered);
+    assert_eq!(water_looks(&by_override), [Some(look), Some(look)]);
+
+    // The static_meshes file takes the look line, and gives it back.
+    let mut packed = crate::PackedDistantStatics::default();
+    for mesh in ["water.nif", "no_look.nif"] {
+        let water = DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+            .distant_static
+            .expect("water static");
+        packed.insert(mesh.to_owned(), water.into_distant_static(&vfs, 1.0));
+    }
+    let bytes = crate::serialize_static_meshes(&packed).expect("serialize");
+    let read = crate::mge_xe::distant_statics::deserialize_static_meshes(&bytes).expect("deserialize");
+    assert_eq!(read[0].subsets[0].water_look.as_ref(), look);
+    assert_eq!(read[1].subsets[0].water_look.as_ref(), "");
+}
+
+#[test]
+fn from_nif_leaves_out_a_look_line_that_the_file_format_does_not_take() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    let water_nif = build_test_water_nif("WaterVolume");
+    let longest = "x".repeat(WATER_LOOK_MAX_LENGTH);
+    for (mesh, look_string) in [
+        ("longest.nif", format!("wv: {longest}")),
+        ("too_long.nif", format!("wv: {longest}x")),
+        ("not_ascii.nif", "wv: shader=caf\u{e9}".to_owned()),
+        ("empty.nif", "wv:   ".to_owned()),
+    ] {
+        write_test_static_asset(root, mesh, &with_root_string(&water_nif, &look_string));
+    }
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+    let look_of = |mesh: &str| {
+        let water = water_test_static(root, mesh, &by_names);
+        // The mesh stays water with or without its look line.
+        assert!(water.has_water());
+        water.subsets[0].water_look.clone()
+    };
+
+    assert_eq!(look_of("longest.nif").as_deref(), Some(longest.as_str()));
+    assert_eq!(look_of("too_long.nif"), None);
+    assert_eq!(look_of("not_ascii.nif"), None);
+    assert_eq!(look_of("empty.nif"), None);
+}
+
+#[test]
+fn subsets_with_different_look_lines_do_not_merge() {
+    let water_subset = |look: Option<&str>| Subset {
+        vertices: vec![Vertex::default(); 3],
+        triangles: vec![[0, 1, 2]],
+        water: SubsetWater::ReflectsScene,
+        water_look: look.map(Arc::from),
+        ..Subset::default()
+    };
+
+    assert!(water_subset(Some("speed=2")).can_merge_with(&water_subset(Some("speed=2"))));
+    assert!(!water_subset(Some("speed=2")).can_merge_with(&water_subset(Some("speed=3"))));
+    assert!(!water_subset(Some("speed=2")).can_merge_with(&water_subset(None)));
+}

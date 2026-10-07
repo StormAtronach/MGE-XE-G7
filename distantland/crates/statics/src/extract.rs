@@ -1,5 +1,6 @@
 //! NIF input adapter that builds intermediate distant statics from mesh files.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use glam::{Vec2, Vec3, Vec4};
@@ -9,7 +10,7 @@ use rayon::prelude::*;
 use str_utils::*;
 use tes3::nif::*;
 
-use crate::mge_xe::distant_statics::StaticType;
+use crate::mge_xe::distant_statics::{StaticType, WATER_LOOK_MAX_LENGTH};
 use crate::model::{DistantStatic, Subset, UvBound, Vertex, passes_min_radius};
 use crate::nif::*;
 use crate::overrides::StaticOverrides;
@@ -321,6 +322,11 @@ impl DistantStatic {
 
         let mut subsets = Vec::with_capacity(shapes.len());
         let water_surface = water.map_or(crate::model::SubsetWater::None, |water| water.surface);
+        let water_look = if water_surface.is_water() {
+            stored_water_look(rel_path, &stream)
+        } else {
+            None
+        };
 
         for geometry in shapes {
             let data = geometry.data;
@@ -446,6 +452,7 @@ impl DistantStatic {
             subset.has_alpha = geometry.has_alpha(&stream);
             subset.has_uv_controller = geometry.has_uv_controller(&stream);
             subset.water = water_surface;
+            subset.water_look = water_look.clone();
             subset.emissive = material.map(average_emissive).unwrap_or(0.0);
 
             subsets.push(subset);
@@ -466,6 +473,29 @@ impl DistantStatic {
 
         Some(this)
     }
+}
+
+/// Returns the look line that the water subsets of a mesh carry.
+///
+/// The file format takes at most [`WATER_LOOK_MAX_LENGTH`] bytes of ASCII. A look line that does
+/// not fit is left out, with a warning.
+fn stored_water_look(rel_path: &str, stream: &NiStream) -> Option<Arc<str>> {
+    let look = mesh_water_look(stream)?;
+    if look.is_empty() {
+        return None;
+    }
+    if look.len() > WATER_LOOK_MAX_LENGTH {
+        warn!(
+            "{rel_path}: the look line of the water mesh is longer than {WATER_LOOK_MAX_LENGTH} bytes. \
+             Distant water does not get the look"
+        );
+        return None;
+    }
+    if !look.is_ascii() || look.contains('\0') {
+        warn!("{rel_path}: the look line of the water mesh is not ASCII. Distant water does not get the look");
+        return None;
+    }
+    Some(look.into())
 }
 
 #[cfg(test)]

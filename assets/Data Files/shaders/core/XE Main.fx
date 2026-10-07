@@ -512,25 +512,10 @@ Technique T0 {
         AlphaTestEnable = false;
 
         VertexShader = compile vs_3_0 WaterVolumeDistantVS();
-        PixelShader = compile ps_3_0 WaterVolumeDistantPS(true);
+        PixelShader = compile ps_3_0 WaterStandardPS();
     }
     //------------------------------------------------------------
-    // Used for rendering water volumes among the distant statics that reflect the sky only
-    Pass P17 {
-        ZEnable = true;
-        ZWriteEnable = true;
-        ZFunc = LessEqual;
-        StencilEnable = false;
-        CullMode = none;
-
-        AlphaBlendEnable = false;
-        AlphaTestEnable = false;
-
-        VertexShader = compile vs_3_0 WaterVolumeDistantVS();
-        PixelShader = compile ps_3_0 WaterVolumeDistantPS(false);
-    }
-    //------------------------------------------------------------
-    // Used for rendering the surface meshes of water volumes with the water shader of a mod
+    // Used for rendering water volumes with the water shader of a mod, near and distant
 #include "XE Water Shader Passes.fx"
     //------------------------------------------------------------
 }

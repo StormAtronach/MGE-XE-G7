@@ -7,7 +7,7 @@ use crate::PackedDistantStatics;
 use crate::distant_statics::{
     COMPONENT_RECORD_SIZE, ComponentRecord, GRASS_VERTEX_STRIDE, HEADER_SIZE, INDEX_ELEMENT_SIZE, PALETTE_RECORD_SIZE,
     STATIC_MESHES_MAGIC, STATIC_MESHES_VERSION, STATIC_RECORD_SIZE, STATIC_VERTEX_STRIDE, SUBSET_RECORD_SIZE,
-    StaticMeshesFileHeader, StaticRecord, StaticType, SubsetRecord, UV_BOUND_PALETTE_CAP,
+    StaticMeshesFileHeader, StaticRecord, StaticType, SubsetRecord, UV_BOUND_PALETTE_CAP, WATER_LOOK_MAX_LENGTH,
 };
 
 /// Returns the geometry vertex stride for a static's classification.
@@ -95,11 +95,16 @@ fn validate_component_records(components: &[ComponentRecord], triangle_count: u3
 /// writes header, tables, component records, palette records, texture paths, and geometry
 /// blocks in order.
 ///
+/// The look line of a water subset is stored in the texture blob like a texture path. Equal
+/// strings are stored once, also when one is a path and the other is a look: each record gives
+/// the offset and the length of its own string, and nothing reads the blob as a list.
+///
 /// # Errors
 ///
 /// Returns an error if any count or size exceeds the serialized field widths, or if a subset's
 /// palette exceeds [`UV_BOUND_PALETTE_CAP`] — the shader's palette array is fixed at that size,
-/// so an over-cap subset would index past it.
+/// so an over-cap subset would index past it. Also returns an error for a look line that is not
+/// on a water subset, is longer than [`WATER_LOOK_MAX_LENGTH`], or is not ASCII without NUL.
 pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow::Result<Vec<u8>> {
     // --- PASS 1: count and validate ---
     let static_count: u32 = distant_statics
@@ -131,6 +136,27 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
                     .ok_or_else(|| anyhow!("texture blob size overflow"))?;
                 texture_paths.insert(texture_path, (texture_offset, texture_len));
                 texture_path_order.push(texture_path);
+            }
+
+            let water_look = subset.water_look.as_ref();
+            if !water_look.is_empty() {
+                if subset.water == 0 {
+                    bail!("subset has a look but is not distant water");
+                }
+                if water_look.len() > WATER_LOOK_MAX_LENGTH {
+                    bail!("subset look is longer than {WATER_LOOK_MAX_LENGTH} bytes");
+                }
+                if !water_look.is_ascii() || water_look.contains('\0') {
+                    bail!("subset look must be ASCII without NUL");
+                }
+                if !texture_paths.contains_key(water_look) {
+                    let look_offset = texture_blob_size;
+                    texture_blob_size = texture_blob_size
+                        .checked_add(water_look.len() as u64 + 1) // +1 for NUL
+                        .ok_or_else(|| anyhow!("texture blob size overflow"))?;
+                    texture_paths.insert(water_look, (look_offset, water_look.len() as u32));
+                    texture_path_order.push(water_look);
+                }
             }
 
             let vertex_count: u32 = subset
@@ -328,6 +354,18 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
             let texture_path_offset = texture_blob_offset
                 .checked_add(texture_relative_offset)
                 .ok_or_else(|| anyhow!("texture path offset overflow"))?;
+            // A subset without a look has a zero offset and a zero length.
+            let (look_offset, look_length) = match subset.water_look.as_ref() {
+                "" => (0, 0),
+                water_look => {
+                    let (look_relative_offset, look_length) =
+                        *texture_paths.get(water_look).expect("validated look must have an offset");
+                    let look_offset = texture_blob_offset
+                        .checked_add(look_relative_offset)
+                        .ok_or_else(|| anyhow!("look offset overflow"))?;
+                    (look_offset, look_length)
+                }
+            };
             let vertex_offset = geometry_blob_offset
                 .checked_add(geom_cursor)
                 .ok_or_else(|| anyhow!("vertex offset overflow"))?;
@@ -363,6 +401,9 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
                 component_count: subset_component_count,
                 first_palette_index: first_palette,
                 palette_count: subset_palette_count,
+                look_offset,
+                look_length,
+                reserved: 0,
             };
             buf.extend_from_slice(bytemuck::bytes_of(&rec));
             first_component = first_component

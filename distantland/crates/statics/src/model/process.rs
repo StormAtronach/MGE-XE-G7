@@ -287,6 +287,7 @@ impl Subset {
                 has_alpha: source.has_alpha,
                 has_uv_controller: source.has_uv_controller,
                 water: source.water,
+                water_look: source.water_look.clone(),
                 emissive: source.emissive,
                 texture: source.texture,
             };
@@ -312,6 +313,7 @@ impl Subset {
                 has_alpha: source.has_alpha,
                 has_uv_controller: source.has_uv_controller,
                 water: source.water,
+                water_look: source.water_look.clone(),
                 emissive: source.emissive,
                 texture: source.texture,
             };
@@ -336,6 +338,7 @@ impl Subset {
             has_alpha: source.has_alpha,
             has_uv_controller: source.has_uv_controller,
             water: source.water,
+            water_look: source.water_look.clone(),
             emissive: source.emissive,
             texture: source.texture,
         }

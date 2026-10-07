@@ -646,7 +646,7 @@ int DistantLand::waterShaderPass(const char* name) {
     }
     for (size_t i = 0; i < waterShadersActive.size(); ++i) {
         if (_stricmp(waterShadersActive[i].c_str(), name) == 0) {
-            return PASS_WATERSHADER_FIRST + static_cast<int>(i);
+            return PASS_WATERSHADER_FIRST + 2 * static_cast<int>(i);
         }
     }
     return -1;
@@ -664,12 +664,15 @@ struct CoreModInclude : public ID3DXInclude {
         for (size_t i = 0; i < waterShaders.size(); ++i) {
             const string n = std::to_string(i);
             if (passes) {
-                text += "    Pass WS" + n + " {\n"
-                    "        ZEnable = true;\n        ZWriteEnable = true;\n        ZFunc = LessEqual;\n"
-                    "        StencilEnable = false;\n        CullMode = none;\n"
-                    "        AlphaBlendEnable = false;\n        AlphaTestEnable = false;\n"
-                    "        VertexShader = compile vs_3_0 WaterVolumeVS();\n"
-                    "        PixelShader = compile ps_3_0 WaterShaderPS_" + n + "();\n    }\n";
+                // The pass for a surface near the player, then the one for the distant land.
+                for (const char* vertexShader : { "WaterVolumeVS", "WaterVolumeDistantVS" }) {
+                    text += "    Pass {\n"
+                        "        ZEnable = true;\n        ZWriteEnable = true;\n        ZFunc = LessEqual;\n"
+                        "        StencilEnable = false;\n        CullMode = none;\n"
+                        "        AlphaBlendEnable = false;\n        AlphaTestEnable = false;\n"
+                        "        VertexShader = compile vs_3_0 " + string(vertexShader) + "();\n"
+                        "        PixelShader = compile ps_3_0 WaterShaderPS_" + n + "();\n    }\n";
+                }
             } else {
                 // Each file names its pixel shader WaterShaderPS; the define gives each a name of its own.
                 text += "#define WaterShaderPS WaterShaderPS_" + n + "\n"

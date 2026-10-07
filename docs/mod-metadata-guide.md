@@ -184,6 +184,16 @@ read from the material that the game submits, so a mod can also set it at run ti
 The water of the cell is coloured the same way and apart from the volumes: by the emissive
 colour of the material of the game's water node.
 
+A water mesh can also have a look line: string data that starts with `wv:`, for example
+`wv: flow=0,-140 speed=1.2`. The generator copies the look line of a water mesh into distant
+land. It takes the first such string from the root, depth first, as the mod that makes the
+near water does, and it does not read the keys in the line. Far away the runtime shows `flow`,
+`speed`, `scale`, `glow`, `opacity` as a number, `reflect`, `shader` and `p0` to `p3`.
+`tint=vertex`, `opacity=vertex` and a look that a script sets at run time are for near water
+only. The look line that is copied can have at most 255 characters, all ASCII. A longer line
+or a line with other characters is left out of distant land, and the generation log names the
+mesh. A change to the look line of a mesh rebuilds its distant static at the next generation.
+
 Distant water reflects the sky. Up to `distant_land.water.volume_reflection_cells` cells from
 the camera it also reflects what is on screen. Water subsets are not atlased, are not merged
 with their neighbours, and are exempt from the buried-in-terrain cull.

@@ -545,28 +545,8 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         effect->SetFloat(ehWaveHeight, 0.0f);
     }
 
-    if (drawDistant) {
-        // Depth as the distant land has it, so that the land hides the water behind it.
-        D3DXMATRIX distProj = mwProj;
-        editProjectionZ(&distProj, kDistantNearPlane - 1e-2, Configuration.DL.DrawDist * kCellSize);
-        effect->SetMatrix(ehProj, &distProj);
-        device->SetVertexDeclaration(StaticDecl);
-        // The game has the cell of the player and the eight cells around it.
-        float loadedCells[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-        int gridX, gridY;
-        if (mwBridge->getExteriorGrid(gridX, gridY)) {
-            loadedCells[0] = (gridX - 1) * kCellSize;
-            loadedCells[1] = (gridY - 1) * kCellSize;
-            loadedCells[2] = (gridX + 2) * kCellSize;
-            loadedCells[3] = (gridY + 2) * kCellSize;
-        }
-        for (std::uint8_t kind = 1; kind <= 2; kind++) {
-            effect->BeginPass(kind == 1 ? PASS_RENDERWATERVOLUME_DISTANT : PASS_RENDERWATERVOLUME_DISTANT_SKYONLY);
-            visWaterShared.RenderWater(device, effect, &ehWorld, &ehWaterVolumeHandoff, nearViewRange, loadedCells, SIZEOFSTATICVERT, kind);
-            effect->EndPass();
-        }
-        effect->SetMatrix(ehProj, &mwProj);
-    }
+    // A surface near the player is drawn at every depth.
+    effect->SetFloat(ehWaterVolumeHandoff, 0.0f);
 
     // Each surface is drawn with the pass of its look: the water shader of a mod, or the
     // standard one. From below all surfaces have the underwater pass.
@@ -617,6 +597,64 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             effect->EndPass();
         }
         effect->SetTexture(ehMeshTex0, NULL);
+    }
+
+    // The distant water comes after the surfaces near the player. The game draws a mesh that
+    // reaches past its view distance in full, and the distant mesh lies a little behind it in
+    // depth, so the depth test leaves the distant mesh out there and it is not shaded twice.
+    if (drawDistant) {
+        // Depth as the distant land has it, so that the land hides the water behind it.
+        D3DXMATRIX distProj = mwProj;
+        editProjectionZ(&distProj, kDistantNearPlane - 1e-2, Configuration.DL.DrawDist * kCellSize);
+        effect->SetMatrix(ehProj, &distProj);
+        device->SetVertexDeclaration(StaticDecl);
+        // The game has the cell of the player and the eight cells around it.
+        float loadedCells[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        int gridX, gridY;
+        if (mwBridge->getExteriorGrid(gridX, gridY)) {
+            loadedCells[0] = (gridX - 1) * kCellSize;
+            loadedCells[1] = (gridY - 1) * kCellSize;
+            loadedCells[2] = (gridX + 2) * kCellSize;
+            loadedCells[3] = (gridY + 2) * kCellSize;
+        }
+        // Each mesh is drawn with the pass and the values of its look. The pass leaves a mesh
+        // out nearer than the handoff depth, where the game draws the mesh itself. The game
+        // does that only for a reference in a loaded cell, so any other mesh gets zero.
+        int distantPassInUse = -1;
+        visWaterShared.RenderWater(device, SIZEOFSTATICVERT, [&](const RenderMesh& mesh) {
+            const WaterLook& look = WaterLooks::distant(mesh.water);
+            const bool reflectsScene = mesh.water >= WaterLooks::firstDistantLook
+                ? (look.flags & WATER_LOOK_REFLECTS_SCENE) != 0
+                : mesh.water == 1;
+            int pass = waterShaderPass(look.shader);
+            pass = pass < 0 ? PASS_RENDERWATERVOLUME_DISTANT : pass + 1;
+
+            const float x = mesh.transform._41, y = mesh.transform._42;
+            const bool loaded = x >= loadedCells[0] && y >= loadedCells[1] && x < loadedCells[2] && y < loadedCells[3];
+            const float flow[4] = { look.flow[0], look.flow[1], look.speed, look.scale };
+            const float mix[4] = { look.glow, look.opacity, 0.0f, (reflectsScene ? 1.0f : 0.0f) + 2.0f };
+            effect->SetFloat(ehWaterVolumeHandoff, loaded ? nearViewRange : 0.0f);
+            effect->SetMatrix(ehWorld, &mesh.transform);
+            effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
+            effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
+            if (pass >= PASS_WATERSHADER_FIRST) {
+                effect->SetFloatArray(ehWaterVolumeParams, &look.params[0][0], 16);
+                effect->SetTexture(ehMeshTex0, mesh.tex);
+            }
+            if (pass != distantPassInUse) {
+                if (distantPassInUse >= 0) {
+                    effect->EndPass();
+                }
+                effect->BeginPass(pass);
+                distantPassInUse = pass;
+            } else {
+                effect->CommitChanges();
+            }
+        });
+        if (distantPassInUse >= 0) {
+            effect->EndPass();
+        }
+        effect->SetMatrix(ehProj, &mwProj);
     }
 
     if (ripples) {
