@@ -6,12 +6,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Deserialize;
 use smallvec::SmallVec;
 use uncased::Uncased;
 
 use crate::mge_xe::distant_statics::StaticType;
+use crate::nif::{look_line_without_prefix, water_look_fault};
 use crate::vfs::normalize_mesh_override_key;
 use distantland_foundation::identity::FileIdentity;
 use tracing::{info, warn};
@@ -291,6 +293,9 @@ struct StaticEntry {
     water: Option<bool>,
     /// The colour of the water of a water mesh: red, green and blue from 0 to 1.
     water_color: Option<[f32; 3]>,
+    /// The look line of a water mesh, with or without the `wv:` prefix. It replaces the look
+    /// line in the mesh.
+    wv: Option<String>,
 }
 
 impl StaticEntry {
@@ -301,6 +306,7 @@ impl StaticEntry {
             no_script: self.ignore_script,
             water: self.water,
             water_color: self.water_color.map(|color| color.map(|part| part.clamp(0.0, 1.0))),
+            water_look: self.wv.as_deref().and_then(|wv| registered_water_look(wv, mesh, source)),
             ..StaticOverride::default()
         };
         if let Some(static_type) = self.static_type {
@@ -317,6 +323,19 @@ impl StaticEntry {
         }
         result
     }
+}
+
+/// Returns the look line of a `wv` key, without the prefix and the white space at its ends.
+///
+/// A look line that the file format does not take is left out with a warning: the mesh entry
+/// is then as it is without the key.
+fn registered_water_look(wv: &str, mesh: &str, source: &str) -> Option<Arc<str>> {
+    let look = look_line_without_prefix(wv);
+    if let Some(fault) = water_look_fault(look) {
+        warn!("{source}: '{mesh}' has a wv look line that {fault}. The key is left out");
+        return None;
+    }
+    Some(look.into())
 }
 
 /// Clamps a percentage field to `0..=100`, warning when the value was out of range.

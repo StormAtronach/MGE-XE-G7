@@ -105,16 +105,31 @@ Only `cells` and `terrain_cells` retain their collected data for downstream stat
   subset needs no texture and no UVs: without them it gets zero UVs and the path of the
   embedded error texture, because `static_meshes` has no subset without a texture path. The
   vertex colour of a water subset is the colour of its water: the `water_color` of the mesh
-  override, or the emissive colour of the material, with black for the usual colour.
+  override, or the emissive colour of the material, with black for the usual colour. The alpha
+  is 1, or the alpha of the vertex colour of the mesh when the look line of the subset has
+  `opacity=vertex` and the shape has vertex colours.
 - Finds the look line of a mesh that is drawn as water (`mesh_water_look` in `nif.rs`): the
   text after the `wv:` prefix of the first string extra data that has the prefix, without white
   space at its ends. The walk is the walk of the water names, with the extra data of each
-  object in the order of its chain. The generator does not read the keys in the text: the
-  runtime does, so a new key needs no generator change. Every water subset of the mesh carries
-  the text (`Subset::water_look`); a subset that is not water has none. An empty text is no
-  look line. A text longer than 255 bytes (`WATER_LOOK_MAX_LENGTH`) or with a byte that is not
-  ASCII is left out, with a warning that names the mesh. Subsets with different look lines do
-  not merge.
+  object in the order of its chain. The look line of the mesh override
+  (`StaticOverride::water_look`, the `wv` key of a mesh entry in the metadata) comes first: when
+  the override has one, the mesh is not searched, and an empty text takes the look line away.
+  The metadata parser takes the `wv:` prefix and the white space at the ends away, and it
+  leaves out a text that the file format does not take, with a warning that names the source
+  and the mesh. Every water subset of the mesh carries the text (`Subset::water_look`); a
+  subset that is not water has none. An empty text is no look line. A text longer than 255
+  bytes (`WATER_LOOK_MAX_LENGTH`) or with a byte that is not ASCII is left out
+  (`water_look_fault` in `nif.rs`), with a warning that names the mesh. Subsets with different
+  look lines do not merge.
+- Reads one key of the look line (`look_has_vertex_opacity` in `nif.rs`): `opacity` with the
+  value `vertex`. The runtime reads all other keys, so a new key needs no generator change.
+  The words are split as `WaterLooks::parse` of the runtime splits them: white space of C is
+  between the words, the key is the text before the first `=` of a word, and the case of the
+  key does not count. The case of the value does not count, and the last `opacity` key
+  decides. With the key, the alpha of each vertex of a water subset is the alpha of the vertex
+  colour of the mesh. The rest of the pipeline keeps the alpha: the weld keys and the
+  simplifier take all four parts of the colour, water statics are not merged, and
+  `into_distant_static` packs the alpha into the fourth byte of the vertex colour.
 
 The subset record of `static_meshes` (`SubsetRecord`, 168 bytes) stores the look line in three
 fields after `palette_count`. The fields before them keep their offsets. `MGE_DL_VERSION` 20
@@ -364,7 +379,9 @@ fingerprints. Mesh units include unresolved/read-failed/filtered states, resolut
 content identity, settings/override/admission inputs, bounds, and ordered source textures. The
 unit of a mesh that the water rules apply to also includes the water names, because the names
 choose its shapes. The look line of a water mesh needs no entry of its own: it is in the bytes
-of the mesh file, and the raw content identity is the hash of those bytes. A BVH-free enumerator applies the same merge eligibility filter on every run, including legacy
+of the mesh file, and the raw content identity is the hash of those bytes. The look line of a
+mesh override is in the override input (`MeshOverrideProjection::water_look`), written for an
+override that has one alone. A BVH-free enumerator applies the same merge eligibility filter on every run, including legacy
 bundle hits, and fingerprints cells with at least two eligible stable-key members. Merge units are
 the one statics-domain unit with terrain inputs: because merged geometry is culled against the
 heightmap, each carries the `height_hash` of the 3x3 cell block around its own cell plus the

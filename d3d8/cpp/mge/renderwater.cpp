@@ -632,7 +632,10 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             const float x = mesh.transform._41, y = mesh.transform._42;
             const bool loaded = x >= loadedCells[0] && y >= loadedCells[1] && x < loadedCells[2] && y < loadedCells[3];
             const float flow[4] = { look.flow[0], look.flow[1], look.speed, look.scale };
-            const float mix[4] = { look.glow, look.opacity, 0.0f, (reflectsScene ? 1.0f : 0.0f) + 2.0f };
+            // The vertex colour of a distant subset is the colour of the water. Its alpha is
+            // the opacity of the mesh's vertex when the look asks for it.
+            const float vertexUse = (look.flags & WATER_LOOK_OPACITY_FROM_VERTEX) != 0 ? 2.0f : 0.0f;
+            const float mix[4] = { look.glow, look.opacity, vertexUse, (reflectsScene ? 1.0f : 0.0f) + 2.0f };
             effect->SetFloat(ehWaterVolumeHandoff, loaded ? nearViewRange : 0.0f);
             effect->SetMatrix(ehWorld, &mesh.transform);
             effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);

@@ -35,7 +35,7 @@ water volume that names no shader, put a file of that name into `shaders\core-mo
 | `IN.water` | The vertex of the water plane shader: `pos` (world), `texcoords`, `screenpos` |
 | `IN.facing` | The normal of the mesh, in the world |
 | `IN.tint` | The colour of the water: the emissive colour of the material |
-| `IN.color` | The vertex colour of the mesh; 1 for a surface from the distant land |
+| `IN.color` | The vertex colour of the mesh. From the distant land: white, with the alpha of the mesh when the look has `opacity=vertex`, else 1 |
 | `IN.uv` | The first texture coordinates of the mesh |
 | `sampMesh0` | The base texture of the mesh, with mip levels, wrapped |
 | `surfaceLook(IN.color)` | The look of the surface: `drift`, `speed`, `scale`, `glow`, `opacity`, `tint`, `reflectsScene`, `distant`, and the free values `p0` to `p3` |
@@ -68,7 +68,7 @@ names a shader that is not there.
 The same pixel shader draws a surface near the player and the same surface from the distant
 land; MGE XE gives both the same vertex. Far away:
 
-- `look.distant` is true, and `IN.color` is 1.
+- `look.distant` is true, and the colour part of `IN.color` is 1. A tint from the vertex colour is not there.
 - The look is the one in the mesh: the generator copies the look line of a water mesh into
   the distant land. A look that a script sets while the game runs does not reach it.
 - The base texture and the texture coordinates are those of the baked mesh.

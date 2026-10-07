@@ -121,6 +121,7 @@ Each mesh path maps to a table containing one or more of the following propertie
 | `ignore_script` | boolean | If `true`, MGE XE ignores any scripts attached to references of this mesh (disabling dynamic script visibility checks for it, same as legacy `.ovr` `no_script`). |
 | `water` | boolean | `true` makes the mesh distant water even if nothing in it is named as water; every shape that is not under a body name is drawn as water. `false` keeps the mesh an ordinary static whatever its names say. Omit it to let the names decide (see below). |
 | `water_color` | array of three numbers | The colour of the water of a water mesh: red, green and blue, each from `0` to `1`. Omit it to take the colour from the mesh (see below). |
+| `wv` | string | The look line of a water mesh, for a mesh that cannot be edited: the text that the mesh would have after `wv:`, for example `"flow=0,-140 glow=0.3"`. It replaces the look line in the mesh. Omit it to take the look line from the mesh (see below). |
 
 ### Distant Water (`[tools.mge-xe.distantland.water]`)
 
@@ -187,12 +188,36 @@ colour of the material of the game's water node.
 A water mesh can also have a look line: string data that starts with `wv:`, for example
 `wv: flow=0,-140 speed=1.2`. The generator copies the look line of a water mesh into distant
 land. It takes the first such string from the root, depth first, as the mod that makes the
-near water does, and it does not read the keys in the line. Far away the runtime shows `flow`,
-`speed`, `scale`, `glow`, `opacity` as a number, `reflect`, `shader` and `p0` to `p3`.
-`tint=vertex`, `opacity=vertex` and a look that a script sets at run time are for near water
-only. The look line that is copied can have at most 255 characters, all ASCII. A longer line
-or a line with other characters is left out of distant land, and the generation log names the
-mesh. A change to the look line of a mesh rebuilds its distant static at the next generation.
+near water does. Far away the runtime shows `flow`, `speed`, `scale`, `glow`, `opacity`,
+`reflect`, `shader` and `p0` to `p3`. `tint=vertex` and a look that a script sets at run time
+are for near water only. The look line that is copied can have at most 255 characters, all
+ASCII. A longer line or a line with other characters is left out of distant land, and the
+generation log names the mesh. A change to the look line of a mesh rebuilds its distant static
+at the next generation.
+
+The generator reads one key of the look line: `opacity`. With `opacity=vertex` the opacity of
+distant water is the alpha of the vertex colours of the mesh, as it is for near water. A shape
+without vertex colours is fully opaque. The words of the line have white space between them,
+and a word is the key, `=` and the value with no white space in it. The case of `opacity` and
+of `vertex` does not count. When the line has the key more than once, the last one counts.
+
+The `wv` key of a mesh entry gives a look line to a mesh that cannot be edited, for example a
+mesh of another mod:
+
+```toml
+[tools.mge-xe.distantland.statics]
+'x\pond.nif' = { water = true, wv = "flow=0,-140 glow=0.3" }
+```
+
+The text is the look line without the `wv:` prefix. A text with the prefix is also accepted,
+and the prefix is taken away. When the mesh entry has the key, the look line in the mesh is not
+read for distant land: the text of the key is the whole look line, `opacity=vertex` included.
+An empty text, `wv = ""`, gives distant water no look line, whatever the mesh has. The limits
+are those of the look line of a mesh: at most 255 characters, all ASCII. A text that breaks
+them is left out with a warning in the generation log that names the file and the mesh, and
+the mesh entry is then as it is without the key. A change to the key rebuilds the distant
+static of the mesh at the next generation. The key is for the generator alone: near water
+takes its look from the mesh, or from the mod that makes the near water.
 
 Distant water reflects the sky. Up to `distant_land.water.volume_reflection_cells` cells from
 the camera it also reflects what is on screen. Water subsets are not atlased, are not merged
@@ -244,6 +269,7 @@ When distant land is generated, overrides from different sources are merged in a
 
 ### Merging Behavior
 * **Scalar Overrides**: For mesh types, ignore flags, and cell/object filters, the **last writer wins**. If a plugin metadata file overrides a setting that was previously set by a legacy `.ovr` file or a prior plugin, the new value takes precedence.
+* **Mesh Entries**: The entry of a mesh is one value. A later entry for the same mesh replaces the whole earlier entry, so it must repeat the keys that it keeps, `water`, `water_color` and `wv` included.
 * **Conflict Logs**: If a plugin metadata file overwrites a directive established by a different source file for the same key, a diagnostic warning is logged in the generation log.
 * **Dynamic Visibility**: Visibility groups are merged and deduplicated across all sources rather than overwritten. Multiple plugins or `.ovr` files can register scripts or ranges to the same group.
 * **Water Names**: The `water` table is one value. A later source replaces the whole table, and a warning is logged when it replaces a different table from another source.

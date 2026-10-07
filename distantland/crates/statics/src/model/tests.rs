@@ -1968,3 +1968,201 @@ fn subsets_with_different_look_lines_do_not_merge() {
     assert!(!water_subset(Some("speed=2")).can_merge_with(&water_subset(Some("speed=3"))));
     assert!(!water_subset(Some("speed=2")).can_merge_with(&water_subset(None)));
 }
+
+fn look_override(look: &str) -> crate::overrides::StaticOverride {
+    crate::overrides::StaticOverride {
+        water_look: Some(look.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn from_nif_takes_the_look_line_of_the_mesh_entry_before_the_look_line_of_the_mesh() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(
+        root,
+        "water.nif",
+        &with_root_string(&build_test_water_nif("WaterVolume"), "wv: speed=2"),
+    );
+    write_test_static_asset(root, "no_look.nif", &build_test_water_nif("WaterVolume"));
+    write_test_static_asset(
+        root,
+        "plain.nif",
+        &with_root_string(&build_test_water_nif("WaterVolume plain"), "wv: speed=2"),
+    );
+
+    let look_of = |mesh: &str, entry: Option<&str>| {
+        let mut overrides = StaticOverrides::default();
+        overrides.water_names = kit_water_names();
+        if let Some(look) = entry {
+            overrides.mesh_overrides.insert(mesh.to_owned(), look_override(look));
+        }
+        water_test_static(root, mesh, &overrides).subsets[0].water_look.clone()
+    };
+
+    assert_eq!(look_of("water.nif", None).as_deref(), Some("speed=2"));
+    // The look line of the mesh entry replaces the look line of the mesh.
+    assert_eq!(
+        look_of("water.nif", Some("flow=0,-140 glow=0.3")).as_deref(),
+        Some("flow=0,-140 glow=0.3")
+    );
+    // A mesh without a look line gets one.
+    assert_eq!(look_of("no_look.nif", Some("glow=0.3")).as_deref(), Some("glow=0.3"));
+    // An empty look line of the mesh entry takes the look line of the mesh away.
+    assert_eq!(look_of("water.nif", Some("")), None);
+    // A look line that the file format does not take is left out, and the look line of the mesh
+    // does not come back.
+    let too_long = "x".repeat(WATER_LOOK_MAX_LENGTH + 1);
+    assert_eq!(look_of("water.nif", Some(&too_long)), None);
+    assert_eq!(look_of("water.nif", Some("shader=caf\u{e9}")), None);
+    // A mesh that is not drawn as water has no look line.
+    assert_eq!(look_of("plain.nif", Some("glow=0.3")), None);
+
+    // A mesh entry can make the mesh water and give it the look line.
+    let mut registered = StaticOverrides::default();
+    registered.mesh_overrides.insert(
+        "no_look.nif".to_owned(),
+        crate::overrides::StaticOverride {
+            water: Some(true),
+            ..look_override("glow=0.3")
+        },
+    );
+    let by_override = water_test_static(root, "no_look.nif", &registered);
+    assert_eq!(water_looks(&by_override), [Some("glow=0.3"), Some("glow=0.3")]);
+}
+
+/// The same mesh with vertex colours in every shape: a colour that is not the colour of the
+/// water, with these alphas.
+fn with_vertex_alphas(nif: &[u8], alphas: [f32; 3]) -> Vec<u8> {
+    let mut stream = NiStream::from_bytes(nif).expect("parse test nif");
+    for object in stream.objects.values_mut() {
+        if let NiType::NiTriShapeData(data) = object {
+            data.vertex_colors = alphas.iter().map(|alpha| Vec4::new(0.75, 0.5, 0.25, *alpha)).collect();
+        }
+    }
+    stream.save_bytes().expect("serialize test nif")
+}
+
+#[test]
+fn from_nif_writes_the_vertex_alpha_of_water_with_opacity_from_vertices() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    let alphas = [0.0, 0.5, 1.0];
+    let green = Vec3::new(0.25, 0.5, 0.125);
+    let colored = with_vertex_alphas(&build_test_water_nif_of_color("WaterVolume", Some(green)), alphas);
+    let look_string = "wv: flow=0,-140 Opacity=Vertex shader=tw_foam";
+    write_test_static_asset(root, "vertex.nif", &with_root_string(&colored, look_string));
+    write_test_static_asset(root, "number.nif", &with_root_string(&colored, "wv: opacity=0.5"));
+    write_test_static_asset(root, "no_look.nif", &colored);
+    write_test_static_asset(
+        root,
+        "no_colors.nif",
+        &with_root_string(&build_test_water_nif_of_color("WaterVolume", Some(green)), look_string),
+    );
+    let vfs = make_test_vfs(root);
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+    let colors = |mesh: &str, overrides: &StaticOverrides| -> Vec<Vec4> {
+        let water = water_test_static(root, mesh, overrides);
+        assert!(water.has_water());
+        water.subsets[0].vertices.iter().map(|vertex| vertex.color).collect()
+    };
+    let with_alphas = alphas.map(|alpha| green.extend(alpha));
+    let opaque = [green.extend(1.0); 3];
+
+    // The alpha is the alpha of the vertex colour of the mesh. The colour stays the colour of
+    // the water.
+    assert_eq!(colors("vertex.nif", &by_names), with_alphas);
+    // Without the key with the value `vertex` the alpha is 1.
+    assert_eq!(colors("number.nif", &by_names), opaque);
+    assert_eq!(colors("no_look.nif", &by_names), opaque);
+    // Without vertex colours the alpha is 1.
+    assert_eq!(colors("no_colors.nif", &by_names), opaque);
+
+    // The look line of the mesh entry decides when there is one.
+    let with_entry = |mesh: &str, look: &str| {
+        let mut overrides = StaticOverrides::default();
+        overrides.water_names = kit_water_names();
+        overrides.mesh_overrides.insert(mesh.to_owned(), look_override(look));
+        overrides
+    };
+    assert_eq!(
+        colors("no_look.nif", &with_entry("no_look.nif", "opacity=vertex")),
+        with_alphas
+    );
+    assert_eq!(colors("vertex.nif", &with_entry("vertex.nif", "glow=0.3")), opaque);
+    assert_eq!(colors("vertex.nif", &with_entry("vertex.nif", "")), opaque);
+    // A registered colour does not change the alpha.
+    let mut registered = with_entry("no_look.nif", "opacity=vertex");
+    registered
+        .mesh_overrides
+        .get_mut("no_look.nif")
+        .expect("mesh entry")
+        .water_color = Some([1.0, 0.0, 0.5]);
+    assert_eq!(
+        colors("no_look.nif", &registered),
+        alphas.map(|alpha| Vec4::new(1.0, 0.0, 0.5, alpha))
+    );
+
+    // The static_meshes file takes the alpha, and gives it back.
+    let mut packed = crate::PackedDistantStatics::default();
+    for mesh in ["vertex.nif", "number.nif"] {
+        let water = DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+            .distant_static
+            .expect("water static");
+        packed.insert(mesh.to_owned(), water.into_distant_static(&vfs, 1.0));
+    }
+    let bytes = crate::serialize_static_meshes(&packed).expect("serialize");
+    let read = crate::mge_xe::distant_statics::deserialize_static_meshes(&bytes).expect("deserialize");
+    let stored_alphas = |index: usize| -> Vec<u8> {
+        assert_eq!(read[index].subsets[0].water, 1);
+        let mut alphas: Vec<u8> = read[index].subsets[0].vertices.iter().map(|vertex| vertex.color[3]).collect();
+        alphas.sort_unstable();
+        alphas
+    };
+    let from_vertices = stored_alphas(0);
+    assert_eq!(from_vertices[0], 0);
+    assert!((127..=128).contains(&from_vertices[1]));
+    assert_eq!(from_vertices[2], 255);
+    assert_eq!(stored_alphas(1), [255, 255, 255]);
+}
+
+#[test]
+fn optimization_keeps_water_vertices_that_differ_in_alpha_alone() {
+    // Two triangles with a common edge. Each triangle has its own copy of the two vertices of
+    // the edge.
+    let quad = |edge_alpha: f32| {
+        let vertex = |x: f32, y: f32, alpha: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            normal: Vec3::Z,
+            color: Vec4::new(0.25, 0.5, 0.125, alpha),
+            ..Vertex::default()
+        };
+        let mut subset = Subset {
+            vertices: vec![
+                vertex(0.0, 0.0, 1.0),
+                vertex(1.0, 0.0, 1.0),
+                vertex(0.0, 1.0, 1.0),
+                vertex(1.0, 0.0, edge_alpha),
+                vertex(1.0, 1.0, 1.0),
+                vertex(0.0, 1.0, edge_alpha),
+            ],
+            triangles: vec![[0, 1, 2], [3, 4, 5]],
+            water: SubsetWater::ReflectsScene,
+            water_look: Some("opacity=vertex".into()),
+            ..Subset::default()
+        };
+        subset.optimize_with(&mut StaticMeshContext::default(), "test.nif", 0);
+        assert!(all_indices_in_range(&subset));
+        subset
+    };
+
+    // With one alpha the copies become one vertex.
+    assert_eq!(quad(1.0).vertices.len(), 4);
+    // With two alphas the copies stay, each with its alpha.
+    let two_alphas = quad(0.25);
+    assert_eq!(two_alphas.vertices.len(), 6);
+    assert_eq!(two_alphas.vertices.iter().filter(|vertex| vertex.color.w == 0.25).count(), 2);
+}
