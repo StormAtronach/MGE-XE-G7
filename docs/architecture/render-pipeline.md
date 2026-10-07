@@ -208,8 +208,10 @@ the plane is more than twice the view distance below the camera. A mod that need
 flag on a dry interior puts the level that far down.
 
 A surface can have a look beyond its colour: the drift, speed and size of its ripples,
-glow, opacity, and whether the vertex colour of the mesh tints it (`WaterLook` in
-`waterlook.h`). A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
+glow, opacity, whether the vertex colour of the mesh tints it, and a colour that it reflects
+in place of the sky (`WaterLook` in `waterlook.h`). Without that colour a surface reflects
+the sky outdoors and the light of the room in an interior, as `clearReflection` takes it for
+the water of the cell. A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
 marks a surface with its slot in the specular power of the material, `100000 + slot`; the two
 old markers stay valid. `SetMaterial` reads the slot, the held draw carries it, and
 `flushWaterVolumes` sets `waterVolumeFlow` and `waterVolumeMix` for each draw from the slot's

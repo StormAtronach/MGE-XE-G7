@@ -21,7 +21,8 @@
   (`Data Files\shaders\water\<name>.fx`); see `docs/water-shaders.md`. The look and the
   shader of a mesh apply in distant land too. The `wv` key of a mesh entry in plugin
   metadata gives a look to a mesh that cannot be edited. A water shader also gets the second
-  texture of the mesh (a decal, a detail or a dark map).
+  texture of the mesh (a decal, a detail or a dark map). In an interior a water volume
+  reflects the light of the room in place of the sky, and a look can give that colour itself.
 - The water of a cell can have a colour: the emissive colour of the game's water material,
   which a mod can set from Lua.
 
@@ -37,6 +38,8 @@
 - Fixed malformed assets causing crashes or render incorrectly with `indexed_skinning` enabled.
 - Fixed distant land generation failing on mods that place cells very far from the world origin.
 - Fixed enabling per-pixel lighting not updating light attenuation values to `Morrowind.ini`.
+- Fixed the fog on water in an interior that has no distant land: the exponential fog kept
+  the values of the last cell that had distant land.
 - Fixed several inherited (MGE XE) bugs related to water ripple logic.
 
 ## v0.20.3 beta

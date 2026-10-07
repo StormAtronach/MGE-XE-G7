@@ -19,6 +19,7 @@ namespace {
         1.0f,
         {},
         "",
+        { 0.0f, 0.0f, 0.0f },
     };
 
     std::vector<WaterLook> looks;
@@ -77,6 +78,19 @@ WaterLook WaterLooks::parse(const char* text, size_t length) {
                 look.flags &= ~WATER_LOOK_OPACITY_FROM_VERTEX;
                 readNumbers(value, &look.opacity, 1);
             }
+        } else if (key == "sky") {
+            // A colour as RRGGBB, or as three numbers from 0 to 1
+            const char* digits = value.c_str() + (value[0] == '#' ? 1 : 0);
+            const bool isHex = std::strlen(digits) == 6 && std::strspn(digits, "0123456789abcdefABCDEF") == 6;
+            if (isHex) {
+                const unsigned long colour = std::strtoul(digits, nullptr, 16);
+                look.sky[0] = ((colour >> 16) & 255) / 255.0f;
+                look.sky[1] = ((colour >> 8) & 255) / 255.0f;
+                look.sky[2] = (colour & 255) / 255.0f;
+            } else {
+                readNumbers(value, look.sky, 3);
+            }
+            look.flags |= WATER_LOOK_HAS_SKY;
         } else if (key == "reflect") {
             if (_stricmp(value.c_str(), "sky") == 0) {
                 look.flags &= ~static_cast<std::uint32_t>(WATER_LOOK_REFLECTS_SCENE);

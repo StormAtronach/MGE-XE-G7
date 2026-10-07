@@ -29,6 +29,9 @@ struct WaterLook {
     // NUL terminated; empty for the standard shading. A name that MGE has no shader for
     // gives the standard shading.
     char shader[32];
+    // What the surface reflects in place of the sky, red, green and blue from 0 to 1. It
+    // counts with WATER_LOOK_HAS_SKY.
+    float sky[3];
 };
 
 enum WaterLookFlags : std::uint32_t {
@@ -38,6 +41,9 @@ enum WaterLookFlags : std::uint32_t {
     WATER_LOOK_TINT_FROM_VERTEX = 2,
     // The vertex alpha of the mesh is the opacity of the water
     WATER_LOOK_OPACITY_FROM_VERTEX = 4,
+    // The look gives the colour that the surface reflects in place of the sky. Without it
+    // that is the sky outdoors, and the light of the room in an interior.
+    WATER_LOOK_HAS_SKY = 8,
 };
 
 namespace WaterLooks {
