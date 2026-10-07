@@ -569,6 +569,26 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
     // A surface near the player is drawn at every depth.
     effect->SetFloat(ehWaterVolumeHandoff, 0.0f);
 
+    // What a surface reflects in place of the sky in an interior: the light of the room, as
+    // clearReflection takes it for the water of the cell. The last value is 1 in an interior.
+    // A look with a sky colour of its own has that in its place.
+    float indoors[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    if (!mwBridge->IntLikeExterior(true)) {
+        const BYTE* sun = mwBridge->getInteriorSun();
+        indoors[0] = std::min(1.0f, sun[0] / 255.0f + ambCol.r);
+        indoors[1] = std::min(1.0f, sun[1] / 255.0f + ambCol.g);
+        indoors[2] = std::min(1.0f, sun[2] / 255.0f + ambCol.b);
+        indoors[3] = 1.0f;
+    }
+    const auto setSky = [&](const WaterLook& look) {
+        if ((look.flags & WATER_LOOK_HAS_SKY) != 0) {
+            const float own[4] = { look.sky[0], look.sky[1], look.sky[2], 1.0f };
+            effect->SetFloatArray(ehWaterVolumeSky, own, 4);
+        } else {
+            effect->SetFloatArray(ehWaterVolumeSky, indoors, 4);
+        }
+    };
+
     // Each surface is drawn with the pass of its look: the water shader of a mod, or the
     // standard one. From below all surfaces have the underwater pass.
     {
@@ -599,6 +619,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             const float mix[4] = { look.glow, look.opacity, vertexUse, (pending.reflectsScene ? 1.0f : 0.0f) + (secondCoordinates ? 4.0f : 0.0f) };
             effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
             effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
+            setSky(look);
             if (pass >= PASS_WATERSHADER_FIRST) {
                 effect->SetFloatArray(ehWaterVolumeParams, &look.params[0][0], 16);
                 effect->SetTexture(ehMeshTex0, rs->texture);
@@ -666,6 +687,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             effect->SetMatrix(ehWorld, &mesh.transform);
             effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
             effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
+            setSky(look);
             if (pass >= PASS_WATERSHADER_FIRST) {
                 effect->SetFloatArray(ehWaterVolumeParams, &look.params[0][0], 16);
                 effect->SetTexture(ehMeshTex0, mesh.tex);

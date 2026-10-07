@@ -277,6 +277,10 @@ WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, Wate
     reflectdir -= 2 * min(0, dot(reflectdir, face)) * face;
     reflectdir = normalize(reflectdir);
     float3 reflected = fogColourSky(reflectdir).rgb;
+    // The look can give a colour in place of the sky. An interior has no sky, and its fog
+    // colour is too bright for one: there the surface reflects the light of the room, as the
+    // water of the cell does, unless the look says otherwise.
+    reflected = lerp(reflected, waterVolumeSky.rgb, waterVolumeSky.a);
 
     // Reflect what is on screen over the sky
     if(reflectsScene)

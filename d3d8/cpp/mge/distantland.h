@@ -282,7 +282,7 @@ public:
     static D3DXHANDLE ehFogNearStart, ehFogNearRange;
     static D3DXHANDLE ehNearViewRange;
     static D3DXHANDLE ehWaterVolumeReflectRange;
-    static D3DXHANDLE ehWaterVolumeHandoff;
+    static D3DXHANDLE ehWaterVolumeHandoff, ehWaterVolumeSky;
     static D3DXHANDLE ehWaterVolumeTint;
     static D3DXHANDLE ehWaterPlaneTint;
     static D3DXHANDLE ehWaterVolumeFlow;

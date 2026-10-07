@@ -27,6 +27,7 @@ shared float nearFogStart, nearFogRange;
 shared float nearViewRange;
 shared float waterVolumeReflectRange;
 shared float waterVolumeHandoff;
+shared float4 waterVolumeSky;
 shared float3 waterVolumeTint;
 shared float3 waterPlaneTint;
 // The look of the water volume surface that is drawn: x, y the drift of the ripples in the

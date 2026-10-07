@@ -848,6 +848,11 @@ void DistantLand::adjustFog() {
         fogNearStart = fogNearEnd * std::min(1.0f - mwBridge->getScenegraphFogDensity(), 0.99f);
         fogStart = fogNearStart;
         fogEnd = fogNearEnd;
+        // The shaders that fog by the exponential curve take these two. Without this they keep
+        // the values of the last cell that had distant land.
+        constexpr float expFogDistScale = 4.4f;
+        fogExpStart = fogStart / expFogDistScale;
+        fogExpDivisor = (fogEnd - fogExpStart) / expFogDistScale;
 
         if (doFogUpdate) {
             device->SetRenderState(D3DRS_FOGSTART, *(DWORD*)&fogNearStart);

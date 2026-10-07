@@ -189,7 +189,7 @@ A water mesh can also have a look line: string data that starts with `wv:`, for 
 `wv: flow=0,-140 speed=1.2`. The generator copies the look line of a water mesh into distant
 land. It takes the first such string from the root, depth first, as the mod that makes the
 near water does. Far away the runtime shows `flow`, `speed`, `scale`, `glow`, `opacity`,
-`reflect`, `shader` and `p0` to `p3`. `tint=vertex` and a look that a script sets at run time
+`reflect`, `sky`, `shader` and `p0` to `p3`. `tint=vertex` and a look that a script sets at run time
 are for near water only. The look line that is copied can have at most 255 characters, all
 ASCII. A longer line or a line with other characters is left out of distant land, and the
 generation log names the mesh. A change to the look line of a mesh rebuilds its distant static
