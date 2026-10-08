@@ -424,7 +424,7 @@ public:
     // front of the depth that is there; with a level, for every face on the far side of the
     // level plane at that height, whatever the depth is. The effect must be begun,
     // with no pass open.
-    static void countDrySpaces(const float* level = nullptr);
+    static void countDrySpaces(const float* level = nullptr, bool behindDepth = false);
     // Sets the dry space bit back to zero over the whole screen, after the draw that tested
     // it. The effect must be begun, with no pass open.
     static void endDrySpaceCount();
