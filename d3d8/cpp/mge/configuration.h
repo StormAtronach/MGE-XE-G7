@@ -179,6 +179,13 @@ struct ConfigurationStruct {
         // How far from the eye, in cells, the water among the distant statics reflects what is
         // on screen. Farther away it reflects the sky only.
         float ReflectCells;
+        // Light on the surface of a water volume, each an option that is off unless it is
+        // set, and that is compiled out of the water shading when it is off: the shadows of
+        // the shadow map, the point lights of the game, and caustics on what is under the
+        // surface.
+        BYTE Shadows;
+        BYTE PointLights;
+        BYTE Caustics;
     } WaterVolume;
 
     struct {

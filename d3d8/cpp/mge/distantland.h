@@ -283,6 +283,7 @@ public:
     static D3DXHANDLE ehNearViewRange;
     static D3DXHANDLE ehWaterVolumeReflectRange;
     static D3DXHANDLE ehWaterVolumeHandoff, ehWaterVolumeSky, ehWaterVolumeClarity;
+    static D3DXHANDLE ehWaterVolumeCaustics, ehWaterVolumeLightPos, ehWaterVolumeLightCol, ehWaterVolumeLightFalloff;
     static D3DXHANDLE ehWaterVolumeTint;
     static D3DXHANDLE ehWaterPlaneTint;
     static D3DXHANDLE ehWaterVolumeFlow;
@@ -410,7 +411,7 @@ public:
     static void clearReflection();
     static void simulateDynamicWaves();
     static void renderWaterPlane();
-    static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot);
+    static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot, const LightState* lights);
     // The pass of the water shader of a mod with this name (Data Files\shaders\water\<name>.fx)
     // for a surface near the player, or -1 when there is none or it did not compile. The pass
     // after it is the one for a surface from the distant land.

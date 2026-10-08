@@ -742,7 +742,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
                 }
                 return D3D_OK;
             }
-        } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene, waterVolumeTint, waterVolumeSlot)) {
+        } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene, waterVolumeTint, waterVolumeSlot, &lightrs)) {
             // The surface of a water volume was drawn with the water shading.
             return D3D_OK;
         } else {

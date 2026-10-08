@@ -5,6 +5,7 @@
 #include "doublesurface.h"
 #include "mwbridge.h"
 #include "postshaders.h"
+#include "ffeshader.h"
 #include "waterlook.h"
 
 #include <cmath>
@@ -463,6 +464,9 @@ float DistantLand::waterPlaneTint[3] = { 0.0f, 0.0f, 0.0f };
 bool DistantLand::distantWaterLoaded = false;
 bool DistantLand::distantWaterInView = false;
 
+// How many point lights a water volume surface takes. The water shading has rows for as many.
+static const int kWaterVolumeLights = 4;
+
 // A surface mesh of a water volume, held until the scene it was submitted in ends.
 struct PendingWaterVolume {
     RenderedState rs;
@@ -482,8 +486,48 @@ struct PendingWaterVolume {
         // the function "always", which is how the game does it.
         bool depthTest;
     } tests;
+    // The point lights that the game lit the mesh with, for the option that puts them on the
+    // water: place in the world, colour, and falloff (constant, linear, quadratic). The
+    // fourth number of a place is 1 for a light and 0 for an empty row.
+    struct Lights {
+        float place[kWaterVolumeLights][4];
+        float colour[kWaterVolumeLights][4];
+        float falloff[kWaterVolumeLights][4];
+    } lights;
 };
 static std::vector<PendingWaterVolume> pendingWaterVolumes;
+
+// Takes the point lights that are on for the draw at hand, the nearest rows first as the game
+// has them.
+static void takePointLights(const LightState* state, PendingWaterVolume::Lights& out) {
+    out = {};
+    if (state == nullptr) {
+        return;
+    }
+    // Decoding in reverse is load-bearing: a light can set the constant of the falloff that
+    // the lights before it in the list use (see FixedFunctionShader).
+    float sharedConstant = 1.0f;
+    int count = 0;
+    for (size_t n = state->active.size(); n-- > 0 && count < kWaterVolumeLights; ) {
+        const auto found = state->lights.find(state->active[n]);
+        if (found == state->lights.end() || found->second.type != D3DLIGHT_POINT) {
+            continue;
+        }
+        const LightState::Light& light = found->second;
+        const DecodedPointLight decoded = decodeMorrowindPointLight(light.diffuse, light.falloff, sharedConstant);
+        out.place[count][0] = light.position.x;
+        out.place[count][1] = light.position.y;
+        out.place[count][2] = light.position.z;
+        out.place[count][3] = 1.0f;
+        out.colour[count][0] = decoded.diffuse.r;
+        out.colour[count][1] = decoded.diffuse.g;
+        out.colour[count][2] = decoded.diffuse.b;
+        out.falloff[count][0] = decoded.attenuation.x;
+        out.falloff[count][1] = decoded.attenuation.y;
+        out.falloff[count][2] = decoded.attenuation.z;
+        ++count;
+    }
+}
 
 // The dry spaces: three corners for each triangle of the closed meshes, in the world.
 static std::vector<D3DXVECTOR3> waterMaskCorners;
@@ -626,7 +670,7 @@ void DistantLand::testOutsideDrySpaces(bool countedBehind) {
 // it with the water shading instead of its own material. The draw happens in flushWaterVolumes,
 // so that every surface refracts and reflects the same frame, without the other surfaces in it.
 // Returns false when the draw should go ahead unchanged.
-bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot) {
+bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot, const LightState* lights) {
     if (!canRenderDistantLand() || isRenderCached) {
         return false;
     }
@@ -676,6 +720,9 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene,
         held.swap(pendingWaterVolumes);
         const bool distantInView = distantWaterInView;
         pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot, nullptr, tests });
+        if (Configuration.WaterVolume.PointLights) {
+            takePointLights(lights, pendingWaterVolumes.back().lights);
+        }
         flushWaterVolumes(false);
         pendingWaterVolumes.swap(held);
         distantWaterInView = distantInView;
@@ -684,6 +731,9 @@ bool DistantLand::renderWaterVolume(const RenderedState* rs, bool reflectsScene,
     }
 
     pendingWaterVolumes.push_back({ *rs, reflectsScene, { tint.r, tint.g, tint.b }, lookSlot, nullptr, tests });
+    if (Configuration.WaterVolume.PointLights) {
+        takePointLights(lights, pendingWaterVolumes.back().lights);
+    }
     waterVolumeDrawn = true;
     return true;
 }
@@ -767,6 +817,35 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         effect->SetFloat(ehWaterVolumeClarity, std::max(0.0f, look.clarity));
     };
 
+    // The options for light on the water. The shadow map is that of the distant land, and is
+    // there only in a cell with weather and with shadows on: elsewhere the matrices put every
+    // place outside it, which the shading takes as full sun. The surfaces do not use the
+    // reflection of the water plane, so the shadow map has its texture place. Caustics are
+    // from the sun, so they have a strength only where the sky is.
+    const bool outdoors = mwBridge->IntLikeExterior(true);
+    if (Configuration.WaterVolume.Shadows && !underwater) {
+        if ((Configuration.MGEFlags & USE_SHADOWS) && outdoors) {
+            effect->SetMatrixArray(ehShadowViewproj, smViewproj, kShadowCascades);
+            effect->SetTexture(ehTex0, texSoftShadow);
+        } else {
+            static const D3DXMATRIX outsideAtlas(
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                2, 0, 0, 1);
+            static const D3DXMATRIX noShadow[2] = { outsideAtlas, outsideAtlas };
+            effect->SetMatrixArray(ehShadowViewproj, noShadow, 2);
+        }
+    }
+    if (Configuration.WaterVolume.Caustics) {
+        effect->SetFloat(ehWaterVolumeCaustics, outdoors ? float(Configuration.DL.WaterCaustics) : 0.0f);
+    }
+    if (Configuration.WaterVolume.PointLights) {
+        // Distant water has no lights of the game: the rows stay empty for it.
+        static const PendingWaterVolume::Lights none = {};
+        effect->SetFloatArray(ehWaterVolumeLightPos, &none.place[0][0], 4 * kWaterVolumeLights);
+    }
+
     // A surface is not drawn inside a dry space: see countDrySpaces.
     const bool cutDrySpaces = hasDrySpaces() && !underwater && !pendingWaterVolumes.empty();
 
@@ -808,6 +887,11 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
             effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
             setSky(look);
+            if (Configuration.WaterVolume.PointLights) {
+                effect->SetFloatArray(ehWaterVolumeLightPos, &pending.lights.place[0][0], 4 * kWaterVolumeLights);
+                effect->SetFloatArray(ehWaterVolumeLightCol, &pending.lights.colour[0][0], 4 * kWaterVolumeLights);
+                effect->SetFloatArray(ehWaterVolumeLightFalloff, &pending.lights.falloff[0][0], 4 * kWaterVolumeLights);
+            }
             if (pass >= PASS_WATERSHADER_FIRST) {
                 effect->SetFloatArray(ehWaterVolumeParams, &look.params[0][0], 16);
                 effect->SetTexture(ehMeshTex0, rs->texture);
