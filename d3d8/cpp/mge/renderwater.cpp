@@ -567,7 +567,10 @@ bool DistantLand::hasDrySpaces() {
 // side of the plane, which a clip plane picks. That count does not ask where the eye is, and
 // its faces are far from the eye: a face that the eye is about to pass, the top of the dry
 // space as the eye goes down into a boat, is cut by the near plane and would be missed.
-void DistantLand::countDrySpaces(const float* level) {
+// A water volume surface has its faces counted the same way, behind the depth that it wrote
+// (behindDepth). Only the caustics count the faces in front: there the depth is that of the
+// scene, and the floor of a boat lies in a face of its dry space.
+void DistantLand::countDrySpaces(const float* level, bool behindDepth) {
     D3DXMATRIX identity;
     D3DXMatrixIdentity(&identity);
     effect->SetMatrix(ehWorld, &identity);
@@ -575,7 +578,7 @@ void DistantLand::countDrySpaces(const float* level) {
     effect->SetFloat(ehWaterVolumeHandoff, 0.0f);
     effect->BeginPass(PASS_RENDERWATERVOLUME);
     zeroDrySpaceBit();
-    device->SetRenderState(D3DRS_ZFUNC, level ? D3DCMP_ALWAYS : D3DCMP_LESS);
+    device->SetRenderState(D3DRS_ZFUNC, level ? D3DCMP_ALWAYS : (behindDepth ? D3DCMP_GREATER : D3DCMP_LESS));
     DWORD clipPlanes = 0;
     device->GetRenderState(D3DRS_CLIPPLANEENABLE, &clipPlanes);
     if (level) {
@@ -835,7 +838,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
                 device->SetRenderState(D3DRS_STENCILZFAIL, tests.zFail);
                 device->SetRenderState(D3DRS_STENCILPASS, tests.pass);
             } else if (cutDrySpaces && !depthOnly) {
-                testOutsideDrySpaces();
+                testOutsideDrySpaces(true);
             }
             device->SetRenderState(D3DRS_COLORWRITEENABLE, depthOnly ? 0 : 0x0f);
             device->SetStreamSource(0, rs->vb, rs->vbOffset, rs->vbStride);
@@ -855,7 +858,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
     };
     if (cutDrySpaces) {
         drawHeld(true);
-        countDrySpaces();
+        countDrySpaces(nullptr, true);
         drawHeld(false);
         endDrySpaceCount();
         device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);

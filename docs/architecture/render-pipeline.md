@@ -234,18 +234,22 @@ Whether a pixel of a water surface is inside is counted in one bit of the stenci
 a quad over the screen sets the bit to zero, every face of the dry spaces turns it over, and
 after the draw the bit is set to zero again (`countDrySpaces`, `endDrySpaceCount`).
 
-- Held water volume surfaces (`flushWaterVolumes`) and the caustics (`renderStageBlend`): the
-  faces in front of the depth of the surface, or of the scene, are counted. An odd count is
-  inside when the eye is outside, and the other way round when the eye is in a dry space.
+- Held water volume surfaces (`flushWaterVolumes`): the surfaces write their depth, and the
+  faces behind that depth are counted. An odd count is inside, wherever the eye is.
 - The water plane of the cell (`renderStageWater`): the faces on the far side of the level of
   the water are counted, with a clip plane and without the depth. An odd count is inside,
   wherever the eye is. With the eye in a dry space and within `kDrySpaceLevelMargin` of the
   level, the plane is left out: it is edge-on, and its waves put it now over the eye and now
   under it.
+- The caustics (`renderStageBlend`): the faces in front of the depth of the scene are
+  counted. An odd count is inside when the eye is outside, and the other way round when the
+  eye is in a dry space. The faces behind are not used here: the floor of a boat lies in a
+  face of its dry space, and which side of it the depth falls on is not sure.
 
-Known limit: the count of the faces in front misses a face that the near plane cuts. For a
-few frames, as the eye passes a face of a dry space, a volume surface or the caustics can
-show inside it. The water plane of the cell does not have this.
+Known limits: the count of the faces in front misses a face that the near plane cuts, so
+for a few frames, as the eye passes a face of a dry space, the caustics can show inside it.
+The counts of the faces behind miss a face beyond the far plane of the game's view, at the
+end of the view distance. The depth that a cut surface wrote stays in the depth buffer.
 
 ### Stencil bits
 
