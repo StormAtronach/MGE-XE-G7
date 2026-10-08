@@ -276,6 +276,10 @@ D3DXHANDLE DistantLand::ehWaterVolumeReflectRange;
 D3DXHANDLE DistantLand::ehWaterVolumeHandoff;
 D3DXHANDLE DistantLand::ehWaterVolumeSky;
 D3DXHANDLE DistantLand::ehWaterVolumeClarity;
+D3DXHANDLE DistantLand::ehWaterVolumeCaustics;
+D3DXHANDLE DistantLand::ehWaterVolumeLightPos;
+D3DXHANDLE DistantLand::ehWaterVolumeLightCol;
+D3DXHANDLE DistantLand::ehWaterVolumeLightFalloff;
 D3DXHANDLE DistantLand::ehWaterVolumeTint;
 D3DXHANDLE DistantLand::ehWaterPlaneTint;
 D3DXHANDLE DistantLand::ehWaterVolumeFlow;
@@ -899,6 +903,9 @@ static const D3DXMACRO macroExpFog = { "USE_EXPFOG", "" };
 static const D3DXMACRO macroScattering = { "USE_SCATTERING", "" };
 static const D3DXMACRO macroFilterReflection = { "FILTER_WATER_REFLECTION", "" };
 static const D3DXMACRO macroDynamicRipples = { "DYNAMIC_RIPPLES", "" };
+static const D3DXMACRO macroWaterVolumeShadows = { "WATER_VOLUME_SHADOWS", "" };
+static const D3DXMACRO macroWaterVolumeLights = { "WATER_VOLUME_LIGHTS", "" };
+static const D3DXMACRO macroWaterVolumeCaustics = { "WATER_VOLUME_CAUSTICS", "" };
 static const D3DXMACRO macroTerminator = { 0, 0 };
 
 bool DistantLand::initShader() {
@@ -926,6 +933,16 @@ bool DistantLand::initShader() {
     }
     if (Configuration.MGEFlags & DYNAMIC_RIPPLES) {
         features.push_back(macroDynamicRipples);
+    }
+    // Light on water volumes: each option is code in the water shading only when it is on.
+    if (Configuration.WaterVolume.Shadows) {
+        features.push_back(macroWaterVolumeShadows);
+    }
+    if (Configuration.WaterVolume.PointLights) {
+        features.push_back(macroWaterVolumeLights);
+    }
+    if (Configuration.WaterVolume.Caustics) {
+        features.push_back(macroWaterVolumeCaustics);
     }
     features.push_back(macroTerminator);
 
@@ -997,6 +1014,10 @@ bool DistantLand::initShader() {
     ehWaterVolumeHandoff = effect->GetParameterByName(0, "waterVolumeHandoff");
     ehWaterVolumeSky = effect->GetParameterByName(0, "waterVolumeSky");
     ehWaterVolumeClarity = effect->GetParameterByName(0, "waterVolumeClarity");
+    ehWaterVolumeCaustics = effect->GetParameterByName(0, "waterVolumeCaustics");
+    ehWaterVolumeLightPos = effect->GetParameterByName(0, "waterVolumeLightPos");
+    ehWaterVolumeLightCol = effect->GetParameterByName(0, "waterVolumeLightCol");
+    ehWaterVolumeLightFalloff = effect->GetParameterByName(0, "waterVolumeLightFalloff");
     ehWaterVolumeTint = effect->GetParameterByName(0, "waterVolumeTint");
     ehWaterPlaneTint = effect->GetParameterByName(0, "waterPlaneTint");
     ehWaterVolumeFlow = effect->GetParameterByName(0, "waterVolumeFlow");

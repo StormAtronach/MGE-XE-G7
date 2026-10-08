@@ -40,6 +40,15 @@ shared float4 waterVolumeFlow;
 // 2 added for the opacity, w 1 added when the surface reflects what is on screen and not the
 // sky only, 2 added when the surface is drawn from the distant land
 shared float4 waterVolumeMix;
+// Light on a water volume, for the options that are compiled in (WATER_VOLUME_LIGHTS,
+// WATER_VOLUME_CAUSTICS). The point lights that the game lit the mesh with: place in the
+// world with 1 in w, or all zero for an empty row; colour; falloff as constant, linear,
+// quadratic. The strength of the caustics is that of the water of the cell, 0 to 100, and 0
+// where there is no sun.
+shared float4 waterVolumeLightPos[4];
+shared float4 waterVolumeLightCol[4];
+shared float4 waterVolumeLightFalloff[4];
+shared float waterVolumeCaustics;
 // Free values of the look, p0 to p3, for the water shader of a mod
 shared float4 waterVolumeParams[4];
 // The base texture of the mesh of the surface, for the water shader of a mod

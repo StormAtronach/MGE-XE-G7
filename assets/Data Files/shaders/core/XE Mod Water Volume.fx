@@ -249,7 +249,80 @@ struct WaterShade
     // deep that is under the surface. Both are 4000 or more where the water is deep.
     float rayDepth;
     float waterDepth;
+    // How much of the sun reaches the point, 0 to 1: less in the shadow of a thing. It is 1
+    // unless the option for shadows on water volumes is on.
+    float sun;
 };
+
+//------------------------------------------------------------
+// Light on the water. Each part is an option of MGE XE, and is compiled only when it is on.
+
+#ifdef WATER_VOLUME_SHADOWS
+// The shadow map of the distant land. The surfaces of water volumes do not use the reflection
+// of the water plane, so it has that texture place.
+sampler sampVolumeShadow = sampler_state { texture = <tex0>; minfilter = linear; magfilter = linear; mipfilter = none; addressu = clamp; addressv = clamp; };
+
+// How much of the sun reaches a place in the world. A place outside the shadow map has it all.
+float volumeSunlight(float3 place)
+{
+    float4 inner = mul(float4(place, 1), shadowViewProj[0]);
+    float4 outer = mul(float4(place, 1), shadowViewProj[1]);
+    inner.z /= inner.w;
+    outer.z /= outer.w;
+
+    float dz = 1e-6;
+    [branch] if(all(saturate(atlasMargin - abs(inner.xyz))))
+    {
+        float2 uv = (0.5 + 0.5 * shadowRcpRes) + float2(0.5, -0.5) * inner.xy;
+        dz = tex2Dlod(sampVolumeShadow, mapShadowToAtlas(uv, 0)).r / ESM_scale - inner.z;
+    }
+    else if(all(saturate(atlasMargin - abs(outer.xyz))))
+    {
+        float2 uv = (0.5 + 0.5 * shadowRcpRes) + float2(0.5, -0.5) * outer.xy;
+        dz = tex2Dlod(sampVolumeShadow, mapShadowToAtlas(uv, 1)).r / ESM_scale - outer.z;
+    }
+    return 1 - shadowESM(dz);
+}
+#endif
+
+#ifdef WATER_VOLUME_LIGHTS
+// The point lights of the game on the surface: in glint, the mirror image of each light in
+// the ripples; in glow, the light that the body of the water takes from them.
+void volumePointLights(float3 place, float3 eyeVec, float3 normal, float3 face, out float3 glint, out float3 glow)
+{
+    glint = 0;
+    glow = 0;
+    for(int i = 0; i < 4; i++)
+    {
+        float3 toLight = waterVolumeLightPos[i].xyz - place;
+        float distance = length(toLight);
+        toLight /= max(distance, 1e-3);
+        float3 falloff = waterVolumeLightFalloff[i].xyz;
+        float reach = waterVolumeLightPos[i].w / max(falloff.x + falloff.y * distance + falloff.z * distance * distance, 1e-4);
+        float3 light = waterVolumeLightCol[i].rgb * reach;
+
+        float mirrored = saturate(dot(-eyeVec, reflect(-toLight, normal)));
+        glint += light * (pow(mirrored, 90) + 0.06 * pow(mirrored, 6));
+        glow += light * saturate(dot(toLight, face));
+    }
+}
+#endif
+
+#ifdef WATER_VOLUME_CAUSTICS
+// The light pattern of the ripples on what is under the surface, as the water of the cell has
+// it: a number to multiply the colour of the bed with. bed is the place under the water in
+// the world, level the height of the surface over it, depth how far the bed is from the eye.
+float volumeCaustics(float3 bed, float level, float depth)
+{
+    float under = bed.z - level;
+    float2 sunray = bed.xy - sunVec.xy * (under / min(sunVec.z, -0.05));
+    float sunlight = 1 - pow(1 - sunVis, 2);
+    float strength = 0.05 * waterVolumeCaustics * saturate(0.75 * sunlight + 0.35 * length(fogColFar));
+    float caust = strength * tex3D(sampWater3d, float3(sunray / 1104, 0.4 * time)).b;
+    caust *= saturate(125 / depth * min(fwidth(sunray.x), fwidth(sunray.y)));
+    return 1 + (caust - 0.3 * saturate(strength)) * saturate(exp(under / 400)) * saturate(under / -30);
+}
+#endif
 
 // A surface either reflects what is on screen or the sky only; that is a value of the look.
 // A distant surface reflects what is on screen out to waterVolumeReflectRange.
@@ -257,7 +330,10 @@ struct WaterShade
 // tint is the colour of the water of this surface: the emissive colour of its material.
 // facing is the normal of the mesh. A mesh without normals faces up.
 // look is the rest of what the mesh and its mod say about the surface.
-WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, WaterSurfaceLook look)
+// ripple is the normal of the ripples as on a level surface, z up, of length 1. A water
+// shader of a mod that has ripples of its own, from a normal map or along a flow map, gives
+// them here; shadeWaterVolume gives the standard ones.
+WaterShade shadeWaterVolumeRippled(in WaterVertOut IN, float3 facing, float3 tint, WaterSurfaceLook look, float3 ripple)
 {
     // A distant surface is left out nearer than the handoff depth, where the game draws the
     // surface itself. The depth is zero for a surface near the player, and for a distant mesh
@@ -280,8 +356,15 @@ WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, Wate
     float3 face = dot(facing, facing) > 0.25 ? normalize(facing) : float3(0, 0, 1);
     face = dot(face, EyeVec) > 0 ? -face : face;
 
+    // In the shadow of a thing the water has no glint of the sun, and its depth is darker by
+    // the share that the sun has in it.
+    float sun = 1;
+#ifdef WATER_VOLUME_SHADOWS
+    sun = volumeSunlight(IN.pos.xyz);
+    depthColor *= lerp(0.72, 1, sun);
+#endif
+
     // Calculate water normal: the ripples of a level surface, tilted to the surface
-    float3 ripple = surfaceRipples(IN.texcoords.xy, IN.texcoords.zw, dist, IN.pos.xy, look);
     float3 normal = tiltTo(face, ripple);
 
     // Refraction pixel distortion factor, wind strength increases distortion
@@ -293,6 +376,16 @@ WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, Wate
     if (look.noDepthTest) {
         depth = 4000;
     }
+
+#ifdef WATER_VOLUME_CAUSTICS
+    // Caustics on what is under a surface that faces up, where the sun reaches it. They are
+    // worked out here and not where the bed is read, because they need the change of a value
+    // from pixel to pixel, which a branch cannot have.
+    float viewForward = dot(EyeVec, float3(view[0][2], view[1][2], view[2][2]));
+    float causticRay = depth / viewForward;
+    float caustics = volumeCaustics(IN.pos.xyz + EyeVec * causticRay, IN.pos.z, dist + causticRay);
+    caustics = lerp(1, caustics, sun * saturate(4 * face.z - 3));
+#endif
 
     // Refraction
     float3 refracted = depthColor;
@@ -312,6 +405,9 @@ WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, Wate
         // The clarity of the look sets how fast the water takes what is under it: the colour
         // of the water takes the other colours out as much faster as the fade is shorter.
         float clarity = max(look.clarity, 1);
+#ifdef WATER_VOLUME_CAUSTICS
+        refracted *= caustics;
+#endif
         refracted *= waterTransmission(tint, depth * 800 / clarity) * look.tint;
         rayDepth = depth;
 
@@ -367,7 +463,15 @@ WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, Wate
     float vdotr = dot(-EyeVec, reflect(-sunPos, normal));
     vdotr = saturate(1.0025 * vdotr);
     float3 spec = sunColAdjusted * (pow(vdotr, 170) + 0.07 * pow(vdotr, 4));
-    result += spec * fog.a;
+    result += spec * fog.a * sun;
+
+#ifdef WATER_VOLUME_LIGHTS
+    // The lamps and fires of the game: their glint in the ripples, and a little of their
+    // light in the body of the water.
+    float3 glint, glow;
+    volumePointLights(IN.pos.xyz, EyeVec, normal, face, glint, glow);
+    result += (glint + 0.08 * glow * (dot(tint, 1) > 0 ? tint : float3(0.25, 0.5, 0.6))) * fog.a;
+#endif
 
     // Smooth transition at shore line
     result = lerp(result, refracted, shorefactor * fog.a);
@@ -381,7 +485,16 @@ WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, Wate
     shade.face = face;
     shade.rayDepth = rayDepth;
     shade.waterDepth = rayDepth * abs(dot(EyeVec, face));
+    shade.sun = sun;
     return shade;
+}
+
+// The standard shading, with the standard ripples.
+WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, WaterSurfaceLook look)
+{
+    float dist = length(IN.pos.xyz - eyePos.xyz);
+    float3 ripple = surfaceRipples(IN.texcoords.xy, IN.texcoords.zw, dist, IN.pos.xy, look);
+    return shadeWaterVolumeRippled(IN, facing, tint, look, ripple);
 }
 
 // The last steps of the shading, which belong to the look: glow and opacity.
