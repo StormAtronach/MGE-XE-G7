@@ -104,6 +104,10 @@ static const int volumeReflectionSteps = 24;
 // Halvings of the step the ray went behind something in, to find the place where it did.
 static const int volumeReflectionRefinements = 5;
 
+// All looks at the depth of the scene that one ray may take: its steps, and the halvings of
+// up to three places where it went behind something.
+static const int volumeReflectionSamples = 39;
+
 // How far along a ray it leaves the screen. The ray is given in clip space.
 float reflectionReach(float4 origin, float4 dir)
 {
@@ -116,16 +120,26 @@ float reflectionReach(float4 origin, float4 dir)
 
 // The ray at one distance along it: where it is on screen, and in z how far it is behind what
 // the depth frame has there. The depth frame holds view depth; the sky is cleared to a huge
-// value, so the ray is never behind it.
+// value, so the ray is never behind it. The depth is read as it is, one pixel, and not
+// smoothed: between a thing and what is behind it, a smoothed depth is that of a surface
+// that is not there, and the ray would meet it at one pixel and not at the next.
 float3 reflectionSample(float4 origin, float4 dir, float travelled)
 {
     float4 clip = origin + dir * travelled;
     float2 uv = 0.5 * (1 + rcpRes) + float2(0.5, -0.5) * clip.xy / clip.w;
-    return float3(uv, clip.w - tex2Dlod(sampDepth, float4(uv, 0, 0)).r);
+    return float3(uv, clip.w - tex2Dlod(sampDepthPoint, float4(uv, 0, 0)).r);
 }
 
-// Looks for the first thing on screen that the ray from origin along dir passes behind.
+// Looks for the first thing on screen that the ray from origin along dir meets.
 // Returns its colour from the frame behind the water, and in alpha how much to trust it.
+//
+// At each place along the ray there are three cases. The ray is in front of what is on screen
+// there: it is in the open. It is a little behind it: it met that surface in the last step.
+// It is far behind it: a thing nearer to the eye hides the ray, which says nothing about the
+// ray, so the march goes on to where the ray is in the open again. A ray that stopped at the
+// first thing it went behind would leave the water beside a post, an arch or the end of a
+// boat without the reflection of what is behind them, and the two answers would change from
+// pixel to pixel along the edge of the thing.
 float4 reflectScene(float3 origin, float3 dir)
 {
     float4 clipOrigin = mul(mul(float4(origin, 1), view), proj);
@@ -135,50 +149,82 @@ float4 reflectScene(float3 origin, float3 dir)
     float reach = 0.999 * reflectionReach(clipOrigin, clipDir);
 
     float stepLength = 12;
-    float before = 0;
-    float after = 0;
-    bool behind = false;
-
-    for(int i = 0; i < volumeReflectionSteps; i++)
-    {
-        after = min(before + stepLength, reach);
-        if(reflectionSample(clipOrigin, clipDir, after).z > 0)
-        {
-            behind = true;
-            break;
-        }
-        if(after >= reach)
-            break;
-
-        before = after;
-        stepLength *= 1.25;
-    }
+    // How far the march is
+    float marched = 0;
+    // The last place looked at was behind a thing that hides the ray
+    bool hidden = false;
+    // While a place where the ray went behind something is looked for: the two ends between
+    // which it is, the ray at the far end, how many halvings are left, and how far behind a
+    // surface the ray may be to have met it.
+    float open = 0;
+    float behind = 0;
+    float3 atBehind = 0;
+    int halvings = 0;
+    float limit = 0;
 
     float4 result = 0;
-    if(behind)
+    for(int i = 0; i < volumeReflectionSamples; i++)
     {
-        // The ray went behind something between before and after. Find where, so that the
-        // reflection does not jump from one step to the next.
-        for(int j = 0; j < volumeReflectionRefinements; j++)
+        if(halvings > 0)
         {
-            float middle = 0.5 * (before + after);
-            if(reflectionSample(clipOrigin, clipDir, middle).z > 0)
-                after = middle;
+            // Find the place, so that the reflection does not jump from one step to the next
+            float middle = 0.5 * (open + behind);
+            float3 atMiddle = reflectionSample(clipOrigin, clipDir, middle);
+            if(atMiddle.z > 0)
+            {
+                behind = middle;
+                atBehind = atMiddle;
+            }
             else
-                before = middle;
+            {
+                open = middle;
+            }
+            halvings--;
+            if(halvings == 0)
+            {
+                // The halvings leave a thirty-second of the step, so a surface that the ray
+                // met is no farther in front of it than that.
+                if(atBehind.z < limit)
+                {
+                    // Fade out towards the screen edge, where the ray would leave the frame
+                    float2 edge = min(atBehind.xy, 1 - atBehind.xy);
+                    result.rgb = tex2Dlod(sampRefract, float4(atBehind.xy, 0, 0)).rgb;
+                    result.a = saturate(12 * min(edge.x, edge.y));
+                    break;
+                }
+                // The place is the edge of a thing nearer to the eye: the ray went behind it
+                hidden = true;
+            }
         }
-
-        // Only a surface near the ray counts; otherwise the ray went behind something that
-        // is nearer to the eye. The halvings leave a thirty-second of the step, so a surface
-        // that the ray meets is no farther in front of it than that. A wider limit takes a
-        // thing in the foreground for a hit at some pixels and not at others.
-        float3 hit = reflectionSample(clipOrigin, clipDir, after);
-        if(hit.z < stepLength / 16 + 16)
+        else
         {
-            // Fade out towards the screen edge, where the ray would leave the frame
-            float2 edge = min(hit.xy, 1 - hit.xy);
-            result.rgb = tex2Dlod(sampRefract, float4(hit.xy, 0, 0)).rgb;
-            result.a = saturate(12 * min(edge.x, edge.y));
+            if(marched >= reach)
+                break;
+
+            float next = min(marched + stepLength, reach);
+            float3 atNext = reflectionSample(clipOrigin, clipDir, next);
+            if(atNext.z > 0)
+            {
+                // From the open to a little behind a surface: the ray met it in this step
+                if(!hidden && atNext.z < 2 * stepLength + 16)
+                {
+                    open = marched;
+                    behind = next;
+                    atBehind = atNext;
+                    halvings = volumeReflectionRefinements;
+                    limit = stepLength / 16 + 16;
+                }
+                else
+                {
+                    hidden = true;
+                }
+            }
+            else
+            {
+                hidden = false;
+            }
+            marched = next;
+            stepLength *= 1.25;
         }
     }
 

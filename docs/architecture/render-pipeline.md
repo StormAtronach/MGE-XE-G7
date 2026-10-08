@@ -175,7 +175,14 @@ shading reuses the water plane's ripples, fog and specular. It follows the norma
 taken from it, so a surface can face any way. A mesh without normals faces up. The planar
 reflection is replaced by the analytic sky colour plus an optional screen-space march. The
 march reflects only what is on screen: the reflection of a thing ends where the thing leaves
-the view. The
+the view. Along a ray the march knows three cases: the ray is in the open, it met a
+surface (it is a little behind what is on screen there), or a thing nearer to the eye hides
+it (it is far behind). A hidden ray goes on, to what it meets when it is in the open again;
+it does not stop at the thing that hides it, which would leave the water beside a post, an
+arch or the end of a boat without the reflection of what is behind them. The depth of the
+scene is read for the ray as it is (`sampDepthPoint`), not smoothed: between a thing and what
+is behind it a smoothed depth is that of a surface that is not there, and the reflection
+would sparkle along the edge of the thing. The
 emissive colour of the marked material is the colour of the water (`waterVolumeTint`, set for
 each held draw); black is the usual colour. A distant water subset has that colour in its
 vertex colour, written by the generator.
