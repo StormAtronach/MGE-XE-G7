@@ -418,6 +418,42 @@ sky_only_words = ["SkyOnly"]
 }
 
 #[test]
+fn mask_names_and_the_dry_space_key_map_to_overrides() {
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+mask_names = ["WaterMask", " Dry "]
+
+[tools.mge-xe.distantland.statics]
+'x\boat.nif' = { dry_space = false }
+'x\ship.nif' = { dry_space = true }
+'x\raft.nif' = { type = "far" }
+"#;
+    let overrides = parse_and_apply(text);
+
+    assert_eq!(overrides.water_names.mask, ["watermask", "dry"]);
+    assert_eq!(overrides.mesh_overrides["x\\boat.nif"].dry_space, Some(false));
+    assert_eq!(overrides.mesh_overrides["x\\ship.nif"].dry_space, Some(true));
+    assert_eq!(overrides.mesh_overrides["x\\raft.nif"].dry_space, None);
+
+    // An empty list, and a table without the key, name no dry space.
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+mask_names = []
+"#;
+    assert!(parse_and_apply(text).water_names.mask.is_empty());
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+"#;
+    assert!(parse_and_apply(text).water_names.mask.is_empty());
+}
+
+#[test]
 fn water_table_of_an_unknown_version_is_left_out() {
     let text = r#"
 [tools.mge-xe.distantland.water]

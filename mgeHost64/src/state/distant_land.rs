@@ -61,7 +61,7 @@ pub struct WorldSpace {
     pub far_statics: QuadTree,
     pub very_far_statics: QuadTree,
     pub grass_statics: QuadTree,
-    /// Subsets that are distant water, whatever the size of their static.
+    /// Subsets that are distant water or a dry space in water, whatever the size of their static.
     pub water_statics: QuadTree,
 }
 

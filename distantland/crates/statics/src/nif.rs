@@ -30,6 +30,9 @@ pub struct Geometry<'a> {
     pub shape: &'a NiTriShape,
     pub data: &'a NiTriShapeData,
     pub transform: Affine3A,
+    /// The shape is a dry space in water, or a part of one: it has a mask name, or it is
+    /// under an object that has one.
+    pub dry_space: bool,
     properties: Properties,
 }
 
@@ -101,6 +104,11 @@ impl<'a> Geometry<'a> {
 pub struct MeshWater<'a> {
     /// Name prefixes of the objects that are left out, with everything under them.
     pub body_names: &'a [String],
+    /// Name prefixes of the objects that mark a dry space.
+    pub mask_names: &'a [String],
+    /// Whether the shapes under a mask name are kept, as dry spaces. Without it they are left
+    /// out, with everything under them.
+    pub keeps_dry_spaces: bool,
     /// How the shapes that are left are drawn. `SubsetWater::None` for a mesh that keeps its
     /// own look.
     pub surface: SubsetWater,
@@ -132,13 +140,23 @@ fn has_word(text: &str, words: &[String]) -> bool {
 /// The objects are taken in the order of the mod that makes the water near the player: from
 /// the root, depth first, the children of a node in their order, and no farther than the first
 /// surface name. An object that nothing under the root refers to does not count.
-pub fn mesh_water<'a>(stream: &NiStream, names: &'a WaterNames, registered: Option<bool>) -> Option<MeshWater<'a>> {
+///
+/// A mesh that is not water has rules too when an object in it has a mask name: its dry spaces
+/// are kept apart from its other shapes. `registered_dry_space` is the mesh override for them:
+/// `Some(false)` leaves them out of the distant mesh.
+pub fn mesh_water<'a>(
+    stream: &NiStream,
+    names: &'a WaterNames,
+    registered: Option<bool>,
+    registered_dry_space: Option<bool>,
+) -> Option<MeshWater<'a>> {
     if registered == Some(false) {
         return None;
     }
 
     let mut tag: Option<String> = None;
     let mut has_body = false;
+    let mut has_mask = false;
     let root = stream.roots.first().copied().unwrap_or_default();
     let mut stack = vec![root.key];
     // A malformed file can have a cycle. An object is looked at once.
@@ -158,18 +176,22 @@ pub fn mesh_water<'a>(stream: &NiStream, names: &'a WaterNames, registered: Opti
             break;
         }
         has_body |= name_starts_with_any(&object.name, &names.body);
+        has_mask |= name_starts_with_any(&object.name, &names.mask);
         if let Ok(node) = <&NiNode>::try_from(this) {
             for child in node.children.iter().rev() {
                 stack.push(child.key);
             }
         }
     }
-    if registered != Some(true) && tag.is_none() && !has_body {
+    let is_water = registered == Some(true) || tag.is_some() || has_body;
+    if !is_water && !has_mask {
         return None;
     }
 
     let tag = tag.unwrap_or_default();
-    let surface = if has_word(&tag, &names.plain_words) {
+    // A mesh with a dry space and no water, a boat, keeps its own look: only the shape of
+    // the dry space is not drawn.
+    let surface = if !is_water || has_word(&tag, &names.plain_words) {
         SubsetWater::None
     } else if has_word(&tag, &names.sky_only_words) {
         SubsetWater::SkyOnly
@@ -178,6 +200,8 @@ pub fn mesh_water<'a>(stream: &NiStream, names: &'a WaterNames, registered: Opti
     };
     Some(MeshWater {
         body_names: &names.body,
+        mask_names: &names.mask,
+        keeps_dry_spaces: registered_dry_space != Some(false),
         surface,
     })
 }
@@ -294,7 +318,7 @@ pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
 ///
 /// In a water mesh the body of the water is left out: the game hides it when it runs. A shape
 /// that is drawn as water is kept without a texture and without UVs: the water pass reads
-/// neither.
+/// neither. So is the shape of a dry space, which no pass draws.
 pub(crate) fn visible_geometries<'a>(
     stream: &'a NiStream,
     water: Option<MeshWater<'a>>,
@@ -305,10 +329,10 @@ pub(crate) fn visible_geometries<'a>(
     // The engine only handles markers when the root has "mrk" string data.
     let has_markers = stream.root_has_string_data_starting_with("mrk");
 
-    let mut stack = vec![(root.key, Affine3A::IDENTITY, Properties::default())];
+    let mut stack = vec![(root.key, Affine3A::IDENTITY, Properties::default(), false)];
 
     std::iter::from_fn(move || {
-        while let Some((key, transform, properties)) = stack.pop() {
+        while let Some((key, transform, properties, mut dry_space)) = stack.pop() {
             let Some(this) = stream.objects.get(key) else {
                 continue;
             };
@@ -325,8 +349,16 @@ pub(crate) fn visible_geometries<'a>(
                 if object.app_culled() || (has_markers && is_editor_marker(object)) {
                     continue;
                 }
-                if water.is_some_and(|water| name_starts_with_any(&object.name, water.body_names)) {
-                    continue;
+                if let Some(water) = water {
+                    if name_starts_with_any(&object.name, water.body_names) {
+                        continue;
+                    }
+                    if name_starts_with_any(&object.name, water.mask_names) {
+                        if !water.keeps_dry_spaces {
+                            continue;
+                        }
+                        dry_space = true;
+                    }
                 }
                 resolved_properties(stream, object, properties)
             } else {
@@ -337,7 +369,7 @@ pub(crate) fn visible_geometries<'a>(
                 let transform = transform * node.transform();
                 for (child, &[min, max]) in node.children.iter().zip(&node.lod_levels) {
                     if LOD_DIST >= min && LOD_DIST < max {
-                        stack.push((child.key, transform, properties));
+                        stack.push((child.key, transform, properties, dry_space));
                         break;
                     }
                 }
@@ -347,7 +379,7 @@ pub(crate) fn visible_geometries<'a>(
             if let Ok(node) = <&NiSwitchNode>::try_from(this) {
                 let transform = transform * node.transform();
                 if let Some(child) = node.children.get(node.active_index) {
-                    stack.push((child.key, transform, properties));
+                    stack.push((child.key, transform, properties, dry_space));
                 }
                 continue;
             }
@@ -355,7 +387,7 @@ pub(crate) fn visible_geometries<'a>(
             if let Ok(node) = <&NiNode>::try_from(this) {
                 let transform = transform * node.transform();
                 for child in node.children.iter().rev() {
-                    stack.push((child.key, transform, properties));
+                    stack.push((child.key, transform, properties, dry_space));
                 }
                 continue;
             }
@@ -371,7 +403,8 @@ pub(crate) fn visible_geometries<'a>(
             if data.vertices.is_empty() || data.triangles.is_empty() {
                 continue;
             }
-            if data.uv_sets.is_empty() && !drawn_as_water {
+            let needs_no_texture = drawn_as_water || dry_space;
+            if data.uv_sets.is_empty() && !needs_no_texture {
                 continue;
             }
 
@@ -380,10 +413,11 @@ pub(crate) fn visible_geometries<'a>(
                 shape,
                 data,
                 transform,
+                dry_space,
                 properties,
             };
 
-            if !drawn_as_water && !geometry.base_texture_path(stream).is_some_and(is_valid_texture_format) {
+            if !needs_no_texture && !geometry.base_texture_path(stream).is_some_and(is_valid_texture_format) {
                 continue;
             }
 
@@ -449,6 +483,7 @@ mod tests {
         WaterNames {
             surface: vec!["watervolume".to_owned()],
             body: vec!["waterbody".to_owned()],
+            mask: vec!["watermask".to_owned()],
             plain_words: vec!["plain".to_owned()],
             sky_only_words: vec!["skyonly".to_owned()],
         }
@@ -458,6 +493,49 @@ mod tests {
         let mut shape = NiTriShape::default();
         shape.name = name.into();
         shape
+    }
+
+    #[test]
+    fn a_dry_space_gives_a_mesh_rules_and_does_not_make_it_water() {
+        let names = kit_names();
+
+        // A boat: a hull and the dry space inside it. The hull keeps its own look.
+        let boat = stream_with(&["Hull", "WaterMask carries"]);
+        let water = mesh_water(&boat, &names, None, None).expect("a mesh with a dry space has rules");
+        assert_eq!(water.surface, SubsetWater::None);
+        assert!(water.keeps_dry_spaces);
+
+        // The mesh override can leave the dry spaces out. The mesh still has rules: they are
+        // what leaves the shapes out.
+        let water = mesh_water(&boat, &names, None, Some(false)).expect("rules");
+        assert_eq!(water.surface, SubsetWater::None);
+        assert!(!water.keeps_dry_spaces);
+        assert!(mesh_water(&boat, &names, None, Some(true)).expect("rules").keeps_dry_spaces);
+
+        // Water with a dry space in it: the mesh is water.
+        let pond = stream_with(&["WaterVolume", "WaterMask"]);
+        let water = mesh_water(&pond, &names, None, None).expect("water mesh");
+        assert_eq!(water.surface, SubsetWater::ReflectsScene);
+        assert!(water.keeps_dry_spaces);
+
+        // Without the name in the table, a mesh with only that shape has no rules.
+        let none = WaterNames {
+            mask: Vec::new(),
+            ..kit_names()
+        };
+        assert!(mesh_water(&boat, &none, None, None).is_none());
+    }
+
+    fn stream_with(shapes: &[&str]) -> NiStream {
+        let mut stream = NiStream::new();
+        let mut root = NiNode::default();
+        for name in shapes {
+            let shape = stream.insert(named_shape(name));
+            root.children.push(shape.cast());
+        }
+        let root = stream.insert(root);
+        stream.roots.push(root.cast());
+        stream
     }
 
     #[test]
@@ -481,7 +559,7 @@ mod tests {
 
         // Depth first, the plain shape comes before the sky-only shape.
         let names = kit_names();
-        let water = mesh_water(&stream, &names, None).expect("water mesh");
+        let water = mesh_water(&stream, &names, None, None).expect("water mesh");
         assert_eq!(water.surface, SubsetWater::None);
 
         // With the children the other way round, the sky-only shape is first.
@@ -489,7 +567,7 @@ mod tests {
             panic!("root node");
         };
         root.children.reverse();
-        let water = mesh_water(&stream, &names, None).expect("water mesh");
+        let water = mesh_water(&stream, &names, None, None).expect("water mesh");
         assert_eq!(water.surface, SubsetWater::SkyOnly);
     }
 
@@ -506,7 +584,7 @@ mod tests {
             stream.roots.push(root.cast());
 
             // Nothing under the root is named as water.
-            assert!(mesh_water(&stream, &names, None).is_none());
+            assert!(mesh_water(&stream, &names, None, None).is_none());
 
             // The surface under the root gives the look, not the object that is first in the file.
             let sky_only = stream.insert(named_shape("WaterVolume skyonly"));
@@ -514,7 +592,7 @@ mod tests {
                 panic!("root node");
             };
             root.children.push(sky_only.cast());
-            let water = mesh_water(&stream, &names, None).expect("water mesh");
+            let water = mesh_water(&stream, &names, None, None).expect("water mesh");
             assert_eq!(water.surface, SubsetWater::SkyOnly);
         }
     }

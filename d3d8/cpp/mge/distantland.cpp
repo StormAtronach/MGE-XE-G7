@@ -285,6 +285,9 @@ void DistantLand::renderStage0() {
     // Release evicted merged statics before this frame's shadow/cull queries can copy them.
     evictResidencyAtStage0();
 
+    // The dry spaces of the last frame are not those of this one.
+    distantDrySpacesInView = false;
+
     // Update current cell and select distant static set
     selectDistantCell();
 
@@ -348,7 +351,7 @@ void DistantLand::renderStage0() {
                     cullDistantStatics(&mwView, &distProj);
                     renderDistantStatics();
                     // Water among the distant statics is drawn later, by flushWaterVolumes.
-                    distantWaterInView = mwBridge->IsExterior() && !visWaterShared.Empty();
+                    findDistantWaterInView();
 
                     vsr.endAlphaToCoverage(device);
                     effect->EndPass();
@@ -580,6 +583,9 @@ void DistantLand::renderStageBlend() {
         const bool cutDrySpaces = hasDrySpaces();
         if (cutDrySpaces) {
             countDrySpaces();
+            // The count drew with a world matrix of its own; the caustics read the level of
+            // the water from theirs.
+            effect->SetMatrix(ehWorld, &m);
         }
         effect->BeginPass(PASS_RENDERCAUSTICS);
         if (cutDrySpaces) {

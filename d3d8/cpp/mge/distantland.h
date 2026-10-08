@@ -430,6 +430,12 @@ public:
     // it. The effect must be begun, with no pass open.
     static void endDrySpaceCount();
     static void zeroDrySpaceBit();
+    // Draws the dry spaces of the distant statics for the count: see countDrySpaces.
+    static void countDistantDrySpaces(const std::function<void(const D3DXMATRIX&)>& setCountStates);
+    // The pass that the dry space count draws with, set up so that it moves no vertex and
+    // does no more work than it must. begin gives the wave height to put back at the end.
+    static float beginDrySpacePass();
+    static void endDrySpacePass(float waveHeight);
     // Sets the stencil test that lets a water surface through only outside the dry spaces.
     // countedBehind: the count was that of the faces behind the surface (the level count).
     static void testOutsideDrySpaces(bool countedBehind = false);
@@ -441,10 +447,16 @@ public:
     // The colour of the water of the cell: the emissive colour of the game's water material.
     // Black for the usual colour. It has nothing to do with the colours of water volumes.
     static float waterPlaneTint[3];
-    // The loaded distant statics have water among them. Without any, no frame asks for it.
+    // The loaded distant statics have water or dry spaces among them. Without any, no frame
+    // asks for them.
     static bool distantWaterLoaded;
     // Distant statics that are water are in view this frame, in visWaterShared.
     static bool distantWaterInView;
+    // Dry spaces of distant statics are in view this frame, in visWaterShared, and the game
+    // has not loaded their cells. renderStage0 sets it; it holds until the next frame.
+    static bool distantDrySpacesInView;
+    // Looks through visWaterShared after the cull and sets the two values above.
+    static void findDistantWaterInView();
 
     static void renderDepth();
     static void renderDepthAdditional();

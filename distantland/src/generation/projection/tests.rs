@@ -354,6 +354,46 @@ fn a_change_of_the_water_color_of_a_mesh_changes_its_override() {
 }
 
 #[test]
+fn a_change_of_the_dry_space_key_of_a_mesh_changes_its_override() {
+    let temp = tempdir().unwrap();
+    let metadata = temp.path().join("fixture-metadata.toml");
+    let write_metadata = |entry: &str| {
+        std::fs::write(
+            &metadata,
+            format!("[tools.mge-xe.distantland.statics]\n'x/boat.nif' = {{ {entry} }}\n"),
+        )
+        .unwrap();
+        let mut builder = OverridesBuilder::new();
+        apply_plugin_metadata_with_identity(&metadata, &mut builder);
+        builder.finish()
+    };
+    let usage = UsageInfo::default();
+    let settings = GenerationSettings::default();
+    let bytes = |entry: &str| {
+        let projection = Projections::capture(&usage, &settings, &write_metadata(entry))
+            .overrides
+            .meshes["x\\boat.nif"]
+            .clone();
+        let mut writer = CanonicalWriter::new();
+        projection.write_canonical(&mut writer);
+        writer.into_bytes()
+    };
+
+    let plain = bytes("ignore = false");
+    let kept = bytes("dry_space = true");
+    let left_out = bytes("dry_space = false");
+    assert_ne!(kept, left_out);
+    // An override without the key is written as before the key existed.
+    assert_eq!(plain.len() + 2, kept.len());
+    // The key is not taken for the water key, which is one byte alone.
+    assert_ne!(left_out, bytes("water = false"));
+    assert_ne!(
+        bytes("water = true, dry_space = false"),
+        bytes("water = false, dry_space = true")
+    );
+}
+
+#[test]
 fn a_change_of_the_look_line_of_a_mesh_changes_its_override() {
     let temp = tempdir().unwrap();
     let metadata = temp.path().join("fixture-metadata.toml");

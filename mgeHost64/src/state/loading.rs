@@ -734,7 +734,8 @@ fn init_distant_statics_qt(
         let end_index = stat.first_subset_index + stat.num_subsets;
         for subset_index in stat.first_subset_index..end_index {
             let subset = distant_subsets.get::<DistantSubset>(subset_index);
-            // Water has a tree of its own, so that a query for statics never returns it.
+            // Water has a tree of its own, so that a query for statics never returns it. A dry
+            // space in water is in that tree too: no ordinary pass draws it.
             let target_kind = if subset.water != 0 {
                 StaticTreeKind::Water
             } else {

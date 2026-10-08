@@ -286,7 +286,8 @@ impl DistantStatic {
         let registered_water = registered.and_then(|ovr| ovr.water);
         let registered_water_color = registered.and_then(|ovr| ovr.water_color);
         let registered_water_look = registered.and_then(|ovr| ovr.water_look.as_deref());
-        let water = mesh_water(&stream, &overrides.water_names, registered_water);
+        let registered_dry_space = registered.and_then(|ovr| ovr.dry_space);
+        let water = mesh_water(&stream, &overrides.water_names, registered_water, registered_dry_space);
         let shapes: Vec<_> = visible_geometries(&stream, water).collect();
         if shapes.is_empty() {
             return None;
@@ -339,6 +340,12 @@ impl DistantStatic {
             let data = geometry.data;
             let transform = geometry.transform;
             let mut subset = Subset::default();
+            // A dry space in a water mesh is not a surface of that water.
+            let subset_water = if geometry.dry_space {
+                crate::model::SubsetWater::DrySpace
+            } else {
+                water_surface
+            };
 
             // TODO: Verify how the engine handles slash prefixes - is `trim_matches` more appropriate?
             let texture_path = geometry
@@ -347,14 +354,17 @@ impl DistantStatic {
                 .trim_prefix("\\")
                 .trim_prefix("textures")
                 .trim_prefix("\\");
+            // A dry space is never drawn, so the texture of its shape is not looked for.
+            let texture_path = if geometry.dry_space { "" } else { texture_path };
 
             // The water pass reads no texture and no UVs, so a water subset is kept without them.
-            if texture_path.is_empty() && !water_surface.is_water() {
+            // So is a dry space.
+            if texture_path.is_empty() && !subset_water.is_kept_apart() {
                 continue;
             }
 
             let uv_set = data.uv_set(0);
-            if uv_set.is_none() && !water_surface.is_water() {
+            if uv_set.is_none() && !subset_water.is_kept_apart() {
                 let message = format!(
                     "{rel_path}: skipped malformed static subset with {} vertices and {} UV values",
                     data.vertices.len(),
@@ -381,7 +391,7 @@ impl DistantStatic {
             // material. Black is water of the usual colour. The alpha is 1, or the alpha of the
             // vertex colour of the mesh when the look line has `opacity=vertex` and the shape has
             // vertex colours.
-            let water_color = water_surface.is_water().then(|| {
+            let water_color = subset_water.is_water().then(|| {
                 registered_water_color
                     .map(Vec3::from)
                     .or_else(|| material.map(|material| material.emissive_color))
@@ -459,11 +469,14 @@ impl DistantStatic {
             // subset without a texture path.
             subset.texture = crate::SubsetTexture::Source(vfs.resolve_static_texture_sym_or_error(texture_path));
 
-            subset.has_alpha = geometry.has_alpha(&stream);
-            subset.has_uv_controller = geometry.has_uv_controller(&stream);
-            subset.water = water_surface;
-            subset.water_look = water_look.clone();
-            subset.emissive = material.map(average_emissive).unwrap_or(0.0);
+            // A dry space has only its shape: what its material says is of no use.
+            if !geometry.dry_space {
+                subset.has_alpha = geometry.has_alpha(&stream);
+                subset.has_uv_controller = geometry.has_uv_controller(&stream);
+                subset.water_look = water_look.clone();
+                subset.emissive = material.map(average_emissive).unwrap_or(0.0);
+            }
+            subset.water = subset_water;
 
             subsets.push(subset);
         }

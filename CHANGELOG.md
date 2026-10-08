@@ -28,6 +28,15 @@
   show its water through a mask: the water in a well. A mod can report closed shapes inside
   which there is no water, the hold of a boat under the water line (`MGE_WaterMasksSet`):
   water volumes, the water of the cell and the caustics are not drawn inside them.
+  Distant land carries these dry spaces too, for a boat that the game has not loaded: the
+  generator keeps a shape named `WaterMask` with its distant static. The `dry_space` key of a
+  mesh entry, or an empty `mask_names` list, switches that off. Distant land must be
+  generated again (`MGE_DL_VERSION` 21).
+  A water shader of a mod can give ripples of its own to the standard shading, from a normal
+  map or along a flow map (`shadeWaterVolumeRippled`). Three new settings, off by default,
+  put light on water volumes: the shadows of distant land, the glint of the lamps and fires
+  of the game, and caustics under the surface (`distant_land.water.volume_shadows`,
+  `volume_point_lights`, `volume_caustics`).
 - The water of a cell can have a colour: the emissive colour of the game's water material,
   which a mod can set from Lua.
 

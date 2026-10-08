@@ -43,11 +43,12 @@ public:
                 unsigned int vertex_size,
                 bool parallelRead = false);
 
-    // Distant water comes in a visible set of its own (VIS_WATER). This loop draws each mesh
-    // of it. Before a mesh is drawn, prepare sets the pass and the values of its look.
+    // Distant water comes in a visible set of its own (VIS_WATER), with the dry spaces in
+    // water. This loop draws the meshes of it that prepare takes. For a mesh that it takes,
+    // prepare sets the pass and the values of its look and gives true.
     void RenderWater(IDirect3DDevice9* device,
                      unsigned int vertex_size,
-                     const std::function<void(const RenderMesh&)>& prepare);
+                     const std::function<bool(const RenderMesh&)>& prepare);
 
     void RemoveAll() {
         visible_set.clear();

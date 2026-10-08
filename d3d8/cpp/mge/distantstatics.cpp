@@ -1191,10 +1191,20 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.hasAlpha = (subsetRecord.flags & 0x1u) != 0;
             subset.hasUVController = (subsetRecord.flags & 0x2u) != 0;
             subset.water = (subsetRecord.flags & 0x4u) == 0 ? 0 : ((subsetRecord.flags & 0x8u) == 0 ? 1 : 2);
+            // A dry space is not water. It goes with the water all the same: into the visible
+            // set of the water, which no ordinary pass draws.
+            if ((subsetRecord.flags & 0x10u) != 0) {
+                if (subset.water != 0) {
+                    LOG::logline("!! static_meshes subset %lu is both distant water and a dry space.", subsetTableIndex);
+                    LOG::flush();
+                    return false;
+                }
+                subset.water = WaterLooks::drySpace;
+            }
             distantWaterLoaded |= subset.water != 0;
             // A water subset with a look line carries the index of its look in place of the kind.
             bool waterShaderTexture = false;
-            if (subset.water != 0 && subsetRecord.look_length != 0) {
+            if ((subsetRecord.flags & 0x4u) != 0 && subsetRecord.look_length != 0) {
                 std::uint64_t lookEnd = 0;
                 const auto* lookText = StaticMeshesBin::TryAdd(subsetRecord.look_offset, static_cast<std::uint64_t>(subsetRecord.look_length) + 1u, lookEnd)
                         && subsetRecord.look_offset >= L.header.texture_blob_offset && lookEnd <= L.textureBlobEnd

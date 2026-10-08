@@ -1681,6 +1681,7 @@ fn kit_water_names() -> crate::overrides::WaterNames {
     crate::overrides::WaterNames {
         surface: vec!["watervolume".to_owned()],
         body: vec!["waterbody".to_owned()],
+        mask: Vec::new(),
         plain_words: vec!["plain".to_owned()],
         sky_only_words: vec!["skyonly".to_owned()],
     }
@@ -1749,6 +1750,180 @@ fn from_nif_takes_water_by_names_and_leaves_the_body_out() {
             .iter()
             .all(|subset| subset.water == SubsetWater::ReflectsScene)
     );
+}
+
+/// A mesh with a dry space: a textured shape with the name `first_name`, and a closed shape
+/// with the name `WaterMask` that has no texture and no UVs, as a modeller leaves it.
+fn build_test_dry_space_nif(first_name: &str) -> Vec<u8> {
+    let mut stream = NiStream::new();
+    let texture_link = stream.insert(NiSourceTexture {
+        source: TextureSource::External("uv_anim\\ghost.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture_link;
+    let texturing_property_link = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+
+    let mut root = NiNode::default();
+
+    let mut first_data = NiTriShapeData::default();
+    first_data.vertices = vec![Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), Vec3::new(0.0, 100.0, 0.0)];
+    first_data.normals = vec![Vec3::Z; 3];
+    first_data.uv_sets = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+    first_data.triangles = vec![[0, 1, 2]];
+    first_data.update_center_radius();
+    let mut first = NiTriShape::default();
+    first.name = first_name.into();
+    first.geometry_data = stream.insert(first_data).cast();
+    first.properties.push(texturing_property_link.cast());
+    root.children.push(stream.insert(first).cast());
+
+    // The dry space: four faces that close a space under the first shape.
+    let mut mask_data = NiTriShapeData::default();
+    mask_data.vertices = vec![
+        Vec3::new(10.0, 10.0, -10.0),
+        Vec3::new(60.0, 10.0, -10.0),
+        Vec3::new(10.0, 60.0, -10.0),
+        Vec3::new(10.0, 10.0, -60.0),
+    ];
+    mask_data.triangles = vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]];
+    mask_data.update_center_radius();
+    let mut mask = NiTriShape::default();
+    mask.name = "WaterMask".into();
+    mask.geometry_data = stream.insert(mask_data).cast();
+    root.children.push(stream.insert(mask).cast());
+
+    let root_link = stream.insert(root);
+    stream.roots.push(root_link.cast());
+    stream.save_bytes().expect("serialize test nif")
+}
+
+fn dry_space_names() -> crate::overrides::WaterNames {
+    crate::overrides::WaterNames {
+        mask: vec!["watermask".to_owned()],
+        ..kit_water_names()
+    }
+}
+
+fn dry_space_override(dry_space: bool) -> crate::overrides::StaticOverride {
+    crate::overrides::StaticOverride {
+        dry_space: Some(dry_space),
+        ..Default::default()
+    }
+}
+
+fn subset_of_kind(distant_static: &DistantStatic, water: SubsetWater) -> &Subset {
+    distant_static
+        .subsets
+        .iter()
+        .find(|subset| subset.water == water)
+        .expect("subset of the kind")
+}
+
+#[test]
+fn from_nif_keeps_a_dry_space_as_a_subset_that_is_not_drawn() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "boat.nif", &build_test_dry_space_nif("Hull"));
+    let vfs = make_test_vfs(root);
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = dry_space_names();
+
+    // The boat stays an ordinary static. Its hull is as it is without the rules, and the dry
+    // space is a subset of its own, whole, without a texture of the mesh.
+    let boat = DistantStatic::from_nif_with_identity("boat.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+        .distant_static
+        .expect("boat static");
+    assert_eq!(boat.static_type, StaticType::StaticAuto);
+    assert!(!boat.has_water());
+    assert!(boat.stays_alone());
+    assert!(boat.water_rules);
+    assert_eq!(boat.subsets.len(), 2);
+    let hull = subset_of_kind(&boat, SubsetWater::None);
+    assert!(!hull.keeps_source_texture());
+    assert_eq!(hull.triangles.len(), 1);
+    let dry = subset_of_kind(&boat, SubsetWater::DrySpace);
+    assert_eq!(dry.triangles.len(), 4);
+    assert!(dry.keeps_source_texture());
+    assert!(!dry.allows_simplification());
+    assert!(!dry.has_alpha && !dry.has_uv_controller && dry.water_look.is_none());
+    let sym = dry.texture.source_sym().expect("source texture");
+    assert_eq!(vfs.texture_key_for_sym(sym), Some(crate::vfs::STATIC_ERROR_TEXTURE_KEY));
+    assert_eq!(boat.bounding_box.min.z, -60.0);
+
+    // The static_meshes file takes the dry space, and gives it back.
+    let mut packed = crate::PackedDistantStatics::default();
+    packed.insert("boat.nif".to_owned(), boat.into_distant_static(&vfs, 1.0));
+    let bytes = crate::serialize_static_meshes(&packed).expect("serialize");
+    let read = crate::mge_xe::distant_statics::deserialize_static_meshes(&bytes).expect("deserialize");
+    let kinds: Vec<u8> = read[0].subsets.iter().map(|subset| subset.water).sorted().collect();
+    assert_eq!(kinds, [0, crate::mge_xe::distant_statics::SUBSET_WATER_DRY_SPACE]);
+}
+
+#[test]
+fn from_nif_leaves_a_dry_space_out_when_the_mesh_or_the_table_says_so() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "boat.nif", &build_test_dry_space_nif("Hull"));
+    let hull_alone = |boat: &DistantStatic| {
+        assert_eq!(boat.subsets.len(), 1);
+        assert_eq!(boat.subsets[0].water, SubsetWater::None);
+        assert!(!boat.stays_alone());
+        assert_eq!(boat.bounding_box.min.z, 0.0);
+    };
+
+    // The mesh entry says no: the shape of the dry space is left out.
+    let mut refused = StaticOverrides::default();
+    refused.water_names = dry_space_names();
+    refused
+        .mesh_overrides
+        .insert("boat.nif".to_owned(), dry_space_override(false));
+    let boat = water_test_static(root, "boat.nif", &refused);
+    hull_alone(&boat);
+    assert!(boat.water_rules);
+
+    // With `true` the mesh is as without the key.
+    refused.mesh_overrides.insert("boat.nif".to_owned(), dry_space_override(true));
+    assert!(water_test_static(root, "boat.nif", &refused).stays_alone());
+
+    // An empty list of names: no shape is a dry space, and the mesh has no water rules. The
+    // shape has no texture, so it is not a part of the ordinary static.
+    let mut no_names = StaticOverrides::default();
+    no_names.water_names = kit_water_names();
+    let boat = water_test_static(root, "boat.nif", &no_names);
+    hull_alone(&boat);
+    assert!(!boat.water_rules);
+}
+
+#[test]
+fn from_nif_keeps_the_surface_of_a_water_mesh_that_has_a_dry_space() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "pond.nif", &build_test_dry_space_nif("WaterVolume"));
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = dry_space_names();
+    let pond = water_test_static(root, "pond.nif", &by_names);
+    assert!(pond.has_water());
+    assert_eq!(pond.subsets.len(), 2);
+    let surface = subset_of_kind(&pond, SubsetWater::ReflectsScene);
+    assert_eq!(surface.triangles.len(), 1);
+    // The dry space is not a surface of the water, and has no colour of water.
+    let dry = subset_of_kind(&pond, SubsetWater::DrySpace);
+    assert_eq!(dry.triangles.len(), 4);
+    assert!(dry.vertices.iter().all(|vertex| vertex.color == Vec4::ONE));
+
+    // Without the dry spaces the water is as before.
+    by_names
+        .mesh_overrides
+        .insert("pond.nif".to_owned(), dry_space_override(false));
+    let pond = water_test_static(root, "pond.nif", &by_names);
+    assert_eq!(pond.subsets.len(), 1);
+    assert_eq!(pond.subsets[0].water, SubsetWater::ReflectsScene);
 }
 
 /// A water mesh whose surface shape has no texture and no UVs. Its body is textured.

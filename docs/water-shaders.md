@@ -41,7 +41,8 @@ water volume that names no shader, put a file of that name into `shaders\core-mo
 | `sampMesh1` | The second texture of the mesh (a decal, a detail or a dark map), the same way. Near the player only |
 | `surfaceLook(IN.color)` | The look of the surface: `drift`, `speed`, `scale`, `glow`, `opacity`, `clarity`, `tint`, `reflectsScene`, `distant`, `noDepthTest`, and the free values `p0` to `p3` |
 | `shadeWaterVolume(...)` | The standard shading up to the look |
-| `WaterShade` | Its result: `colour`, `eyeVec`, `dist`, `fog`, `ripple`, `face`, `rayDepth` (how far the view ray goes through the water) and `waterDepth` (how deep the water is under the point) |
+| `shadeWaterVolumeRippled(..., ripple)` | The same with ripples of your own: `ripple` is the normal of the ripples as on a level surface, z up, of length 1. For a normal map, or ripples that move along a flow map |
+| `WaterShade` | Its result: `colour`, `eyeVec`, `dist`, `fog`, `ripple`, `face`, `rayDepth` (how far the view ray goes through the water), `waterDepth` (how deep the water is under the point) and `sun` (how much of the sun reaches the point, 0 to 1; it is 1 unless the user has shadows on water volumes on) |
 | `finishWaterVolume(...)` | The last steps: glow and opacity |
 
 Everything else of `XE Common.fx`, `XE Mod Water.fx` and `XE Mod Water Volume.fx` can be
@@ -54,6 +55,14 @@ used too: `time`, `eyePos`, `sunColAdjusted`, `skyCol`, `fogApply`, `sampDepth`,
   name of its own, for example with the name of the shader in front. `WaterShaderPS` is the
   one name that every file has; MGE XE renames it for each file.
 - A shader has no pass, no vertex shader, no sampler and no render target of its own.
+- Call the standard shading one time. `shadeWaterVolume` and `shadeWaterVolumeRippled` are
+  most of a water shader, and each call is a copy of it in your pixel shader. With two calls,
+  say one for near and one for distant water, the shader can run out of registers when the
+  user turns the light options on (error X4505), and then MGE XE turns the water shaders of
+  all mods off. Work out what differs first, the ripple normal for example, and call once.
+- The user can turn on shadows, point lights and caustics for water volumes
+  (`distant_land.water.volume_*`). They are part of the standard shading, so a shader that
+  calls it has them. They make it longer by up to 150 instruction slots: leave room.
 - The file name, without `.fx`, is the name of the shader. It is not case sensitive and has
   at most 31 characters.
 

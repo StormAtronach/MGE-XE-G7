@@ -412,3 +412,81 @@ fn water_names_that_choose_another_shape_change_the_fingerprint_of_a_water_mesh(
     assert!(!ordinary.has_water());
     assert_eq!(fingerprint_ordinary, mesh_unit(Some("lake")).1);
 }
+
+#[test]
+fn the_dry_space_names_and_the_dry_space_key_change_the_fingerprint_of_a_mesh() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("meshes")).unwrap();
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    std::fs::write(root.join("meshes").join("pools.nif"), build_two_pool_nif()).unwrap();
+    std::fs::write(root.join("textures").join("pool.dds"), b"dds").unwrap();
+    let vfs = Vfs {
+        ini_path: root.join("Morrowind.ini"),
+        data_dirs: vec![root.to_path_buf()],
+        active_plugins: vec![],
+        archives: vec![],
+        maps: crate::vfs::directory_map::build_directory_map(&[root.to_path_buf()]).unwrap(),
+    };
+
+    let settings = GenerationSettings::default();
+    let usage = UsageInfo::default();
+    // The static of the mesh and its fingerprint, with this mask name in the water names and
+    // this dry space key in the mesh entry.
+    let mesh_unit = |mask_name: Option<&str>, dry_space: Option<bool>| {
+        let mut overrides = crate::StaticOverrides::default();
+        overrides.water_names.mask = mask_name.into_iter().map(str::to_owned).collect();
+        if dry_space.is_some() {
+            overrides.mesh_overrides.insert(
+                "pools.nif".to_owned(),
+                crate::StaticOverride {
+                    dry_space,
+                    ..Default::default()
+                },
+            );
+        }
+        let distant_static =
+            crate::DistantStatic::from_nif_with_identity("pools.nif", &vfs, 1.0, 0.0, false, 1.0, false, &overrides)
+                .distant_static
+                .expect("static of the mesh");
+        let mut distant_statics: DistantStatics = Default::default();
+        distant_statics.insert("pools.nif".to_owned(), distant_static.clone());
+
+        let source_info = HashMap::new();
+        let state = build_static_state(
+            &settings,
+            &Projections::capture(&usage, &settings, &overrides),
+            &ContentIdentityCollector::default(),
+            &usage,
+            &distant_statics,
+            &vfs,
+            &AtlasTextureSet::default(),
+            &source_info,
+            &SizingPlan::baseline(TextureAxisCaps::uniform(1024), &source_info),
+        );
+        assert_eq!(state.units.mesh.entries.len(), 1);
+        (distant_static, state.units.mesh.entries[0].1)
+    };
+
+    // Without a mask name the mesh is two ordinary shapes.
+    let (ordinary, fingerprint_ordinary) = mesh_unit(None, None);
+    assert_eq!(ordinary.subsets.len(), 2);
+    assert!(!ordinary.stays_alone());
+
+    // With the name one shape is a dry space, and the static stays out of the merges.
+    let (with_b, fingerprint_with_b) = mesh_unit(Some("poolb"), None);
+    assert_eq!(with_b.subsets.len(), 2);
+    assert!(with_b.stays_alone() && !with_b.has_water());
+    assert_ne!(fingerprint_ordinary, fingerprint_with_b);
+    assert_eq!(fingerprint_with_b, mesh_unit(Some("poolb"), None).1);
+
+    // Another name chooses another shape.
+    assert_ne!(fingerprint_with_b, mesh_unit(Some("poola"), None).1);
+
+    // The key of the mesh entry leaves the dry space out.
+    let (refused, fingerprint_refused) = mesh_unit(Some("poolb"), Some(false));
+    assert_eq!(refused.subsets.len(), 1);
+    assert!(!refused.stays_alone());
+    assert_ne!(fingerprint_refused, fingerprint_with_b);
+    assert_ne!(fingerprint_refused, fingerprint_ordinary);
+}

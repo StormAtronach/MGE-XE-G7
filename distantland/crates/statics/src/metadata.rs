@@ -180,6 +180,8 @@ struct WaterSection {
     surface_names: Vec<String>,
     /// Name prefixes of the objects that hold the body of the water.
     body_names: Vec<String>,
+    /// Name prefixes of the objects that mark a dry space in water. An empty list: none does.
+    mask_names: Vec<String>,
     /// Words in the surface name that keep the mesh's own look.
     plain_words: Vec<String>,
     /// Words in the surface name for water that reflects the sky only.
@@ -207,6 +209,7 @@ impl WaterSection {
         Some(WaterNames {
             surface: lowercased(&self.surface_names),
             body: lowercased(&self.body_names),
+            mask: lowercased(&self.mask_names),
             plain_words: lowercased(&self.plain_words),
             sky_only_words: lowercased(&self.sky_only_words),
         })
@@ -296,6 +299,9 @@ struct StaticEntry {
     /// The look line of a water mesh, with or without the `wv:` prefix. It replaces the look
     /// line in the mesh.
     wv: Option<String>,
+    /// Says whether the dry spaces of the mesh go into the distant land. `false` leaves their
+    /// shapes out.
+    dry_space: Option<bool>,
 }
 
 impl StaticEntry {
@@ -307,6 +313,7 @@ impl StaticEntry {
             water: self.water,
             water_color: self.water_color.map(|color| color.map(|part| part.clamp(0.0, 1.0))),
             water_look: self.wv.as_deref().and_then(|wv| registered_water_look(wv, mesh, source)),
+            dry_space: self.dry_space,
             ..StaticOverride::default()
         };
         if let Some(static_type) = self.static_type {

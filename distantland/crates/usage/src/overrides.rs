@@ -30,6 +30,9 @@ pub struct StaticOverride {
     /// ends. It replaces the look line in the mesh, and an empty text takes the look line away.
     /// `None` takes the look line of the mesh.
     pub water_look: Option<Arc<str>>,
+    /// Says whether the dry spaces of the mesh go into the distant land (see
+    /// [`WaterNames::mask`]). With `Some(false)` their shapes are left out. `None` keeps them.
+    pub dry_space: Option<bool>,
 }
 
 impl Default for StaticOverride {
@@ -43,6 +46,7 @@ impl Default for StaticOverride {
             water: None,
             water_color: None,
             water_look: None,
+            dry_space: None,
         }
     }
 }
@@ -59,6 +63,11 @@ pub struct WaterNames {
     /// Name prefixes of the objects that hold the body of the water. They are left out of the
     /// distant mesh, with everything under them.
     pub body: Vec<String>,
+    /// Name prefixes of the objects that mark a dry space in water, the inside of a boat.
+    /// The shapes under them are never drawn: the runtime draws no water inside them. They do
+    /// not make a mesh water: a boat with such a shape stays an ordinary distant static. With
+    /// an empty list no shape is a dry space.
+    pub mask: Vec<String>,
     /// Words in the surface name that keep the mesh's own look: the mesh is not drawn as water.
     pub plain_words: Vec<String>,
     /// Words in the surface name for water that reflects the sky only.

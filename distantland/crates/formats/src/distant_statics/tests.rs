@@ -366,7 +366,21 @@ fn flags_horizon_and_component_semantics_are_validated() {
     let (_, original) = fixture();
 
     let mut bytes = original.clone();
-    rewrite_subset(&mut bytes, 0, |record| record.flags |= 16);
+    rewrite_subset(&mut bytes, 0, |record| record.flags |= 32);
+    assert_invalid(&bytes);
+
+    // The dry space bit alone is a dry space. With a water bit it is not valid.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.flags = (record.flags & !0b1100) | 0b1_0000);
+    assert_eq!(
+        deserialize_static_meshes(&bytes).unwrap()[0].subsets[0].water,
+        SUBSET_WATER_DRY_SPACE
+    );
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.flags = (record.flags & !0b1100) | 0b1_0100);
+    assert_invalid(&bytes);
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.flags |= 0b1_1100);
     assert_invalid(&bytes);
 
     // The sky-only bit of distant water without the water bit.

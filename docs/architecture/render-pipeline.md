@@ -232,6 +232,27 @@ surface is not held: `renderWaterVolume` draws it at once, in its place among th
 its mesh, so that what the mesh draws after it covers it, as the wall of a well covers the
 rim of its water.
 
+### Light on water volumes
+
+Three options, each a setting that is off by default and a define of the main effect
+(`WATER_VOLUME_SHADOWS`, `WATER_VOLUME_LIGHTS`, `WATER_VOLUME_CAUSTICS`, set in `initShader`),
+so that the water shading has no code for one that is off. All three are in
+`shadeWaterVolumeRippled`, and so in every water shader that calls the standard shading.
+
+- Shadows: `flushWaterVolumes` binds the shadow atlas to the texture place of the planar
+  reflection, which the volume passes do not use, and sets the cascade matrices (or matrices
+  that map every place outside the atlas, in a cell without weather or with shadows off).
+  `volumeSunlight` gives the share of the sun at the surface point; it scales the glint of
+  the sun and darkens the depth colour a little. The result is in `WaterShade.sun`.
+- Point lights: when the game submits the surface, `renderWaterVolume` copies up to four of
+  the point lights that are on for that draw (`takePointLights`, from the proxy's
+  `LightState`, decoded as the fixed-function replacement decodes them), and the flush sets
+  them for the draw. The shading adds the mirror image of each light in the ripples, in the
+  hue of the light, with the game's falloff. Distant water has no lights.
+- Caustics: the formula of `XE Mod Caustics.fx`, applied to the frame behind the surface
+  where the bed is read, for surfaces that face up, scaled by the sun at the point. The
+  strength is that of the water of the cell, and zero in a cell without weather.
+
 ### Dry spaces
 
 A mod reports closed meshes inside which there is no water (`MGE_WaterMasksSet`, the
@@ -241,8 +262,29 @@ Whether a pixel of a water surface is inside is counted in one bit of the stenci
 a quad over the screen sets the bit to zero, every face of the dry spaces turns it over, and
 after the draw the bit is set to zero again (`countDrySpaces`, `endDrySpaceCount`).
 
-- Held water volume surfaces (`flushWaterVolumes`): the surfaces write their depth, and the
-  faces behind that depth are counted. An odd count is inside, wherever the eye is.
+The mod knows only the meshes that the game has loaded. For the others the distant land
+carries the dry spaces. The generator keeps each shape with a mask name as a subset of its
+distant static that is a dry space (`SubsetWater::DrySpace`, flag bit 4 of the subset record;
+see `distantland/docs/architecture/statics.md`). The loader gives such a subset the water
+byte `WaterLooks::drySpace`, so the host puts it in the tree of the distant water and no
+ordinary pass gets it. `cullDistantStatics` fills `visWaterShared` once a frame, in
+`renderStage0`, and `findDistantWaterInView` then says whether a dry space is in it
+(`distantDrySpacesInView`). `countDrySpaces` draws those subsets after the triangles of the
+mod (`countDistantDrySpaces`), into the same bit: with the pass of the distant water
+(`PASS_RENDERWATERVOLUME_DISTANT`), the vertices of a distant static, the matrix of each mesh
+and the projection of the distant land. The wave height, the handoff depth and the plain mix
+that `beginDrySpacePass` sets hold for that pass too.
+
+A boat near the player is in both places: the mod reports its dry space, and its distant
+static can still be in the tree. Two counts of the same faces leave the bit as it was. So a
+distant dry space is counted only when its reference lies outside the loaded cells, the cell
+of the player and the eight around it (`LoadedCells`, the same rule that sets
+`waterVolumeHandoff` for distant water). In an interior, under water, in a cached frame and
+without distant statics there are no distant dry spaces.
+
+- Held water volume surfaces and distant water (`flushWaterVolumes`): the surfaces write
+  their depth, and the faces behind that depth are counted. An odd count is inside, wherever
+  the eye is. Distant water takes part only when the flush draws it.
 - The water plane of the cell (`renderStageWater`): the faces on the far side of the level of
   the water are counted, with a clip plane and without the depth. An odd count is inside,
   wherever the eye is. With the eye in a dry space and within `kDrySpaceLevelMargin` of the

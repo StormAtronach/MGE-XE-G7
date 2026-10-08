@@ -197,6 +197,7 @@ pub struct PackedSubset {
     /// Non-zero when this subset uses an animated UV controller.
     pub has_uv_controller: u8,
     /// Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only.
+    /// [`SUBSET_WATER_DRY_SPACE`] = a dry space in water, which is never drawn.
     pub water: u8,
     /// Optional generated terrain-horizon culling footprint.
     pub horizon_footprint: HorizonFootprint,
@@ -249,6 +250,9 @@ pub const HEADER_SIZE: usize = 160;
 pub const STATIC_RECORD_SIZE: usize = 52;
 /// Byte size of one `SubsetRecord`.
 pub const SUBSET_RECORD_SIZE: usize = 168;
+/// The value of [`PackedSubset::water`] for a dry space: a closed shape that holds no water.
+pub const SUBSET_WATER_DRY_SPACE: u8 = 3;
+
 /// Maximum length in bytes of the look line of a water subset, without the trailing NUL.
 pub const WATER_LOOK_MAX_LENGTH: usize = 255;
 /// Byte size of one `ComponentRecord`.
@@ -365,7 +369,7 @@ pub struct SubsetRecord {
     /// Number of triangles.
     pub triangle_count: u32,
     /// Bitmask: bit 0 = has_alpha, bit 1 = has_uv_controller, bit 2 = distant water,
-    /// bit 3 = distant water that reflects the sky only.
+    /// bit 3 = distant water that reflects the sky only, bit 4 = a dry space in water.
     pub flags: u32,
     /// Length of the texture path in bytes (excluding the trailing NUL).
     pub texture_path_length: u32,
@@ -613,8 +617,12 @@ fn decode_subset(
     expected_palette: &mut u32,
     geometry_cursor: &mut usize,
 ) -> io::Result<PackedSubset> {
-    // Bit 3 says what distant water reflects, so it is valid only with bit 2.
-    if record.flags & !0b1111 != 0 || record.flags & 0b1100 == 0b1000 {
+    // Bit 3 says what distant water reflects, so it is valid only with bit 2. A dry space
+    // (bit 4) is not water.
+    if record.flags & !0b1_1111 != 0
+        || record.flags & 0b1100 == 0b1000
+        || (record.flags & 0b1_0000 != 0 && record.flags & 0b1100 != 0)
+    {
         return Err(invalid_data(format!(
             "static_meshes subset {subset_index} has unknown flags {:#x}",
             record.flags
@@ -739,10 +747,11 @@ fn decode_subset(
         palette,
         has_alpha: (record.flags & 1) as u8,
         has_uv_controller: ((record.flags >> 1) & 1) as u8,
-        water: match (record.flags >> 2) & 3 {
+        water: match (record.flags >> 2) & 7 {
             0 => 0,
             1 => 1,
-            _ => 2,
+            3 => 2,
+            _ => SUBSET_WATER_DRY_SPACE,
         },
         horizon_footprint: record.horizon_footprint,
         texture,

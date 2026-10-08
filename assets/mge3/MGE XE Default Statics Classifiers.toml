@@ -166,5 +166,6 @@ statics = {
 version = 1
 surface_names = ["WaterVolume"]
 body_names = ["WaterBody"]
+mask_names = ["WaterMask"]
 plain_words = ["plain"]
 sky_only_words = ["skyonly"]
