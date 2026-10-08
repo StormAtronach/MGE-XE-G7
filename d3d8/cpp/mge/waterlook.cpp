@@ -20,6 +20,7 @@ namespace {
         {},
         "",
         { 0.0f, 0.0f, 0.0f },
+        800.0f,
     };
 
     std::vector<WaterLook> looks;
@@ -69,6 +70,8 @@ WaterLook WaterLooks::parse(const char* text, size_t length) {
             readNumbers(value, &look.scale, 1);
         } else if (key == "glow") {
             readNumbers(value, &look.glow, 1);
+        } else if (key == "clarity") {
+            readNumbers(value, &look.clarity, 1);
         } else if (key == "opacity") {
             // The word "vertex": the generator wrote the opacity of the mesh's vertex into
             // the vertex of the distant subset.

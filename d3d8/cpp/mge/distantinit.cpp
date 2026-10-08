@@ -275,6 +275,7 @@ D3DXHANDLE DistantLand::ehNearViewRange;
 D3DXHANDLE DistantLand::ehWaterVolumeReflectRange;
 D3DXHANDLE DistantLand::ehWaterVolumeHandoff;
 D3DXHANDLE DistantLand::ehWaterVolumeSky;
+D3DXHANDLE DistantLand::ehWaterVolumeClarity;
 D3DXHANDLE DistantLand::ehWaterVolumeTint;
 D3DXHANDLE DistantLand::ehWaterPlaneTint;
 D3DXHANDLE DistantLand::ehWaterVolumeFlow;
@@ -995,6 +996,7 @@ bool DistantLand::initShader() {
     ehWaterVolumeReflectRange = effect->GetParameterByName(0, "waterVolumeReflectRange");
     ehWaterVolumeHandoff = effect->GetParameterByName(0, "waterVolumeHandoff");
     ehWaterVolumeSky = effect->GetParameterByName(0, "waterVolumeSky");
+    ehWaterVolumeClarity = effect->GetParameterByName(0, "waterVolumeClarity");
     ehWaterVolumeTint = effect->GetParameterByName(0, "waterVolumeTint");
     ehWaterPlaneTint = effect->GetParameterByName(0, "waterPlaneTint");
     ehWaterVolumeFlow = effect->GetParameterByName(0, "waterVolumeFlow");

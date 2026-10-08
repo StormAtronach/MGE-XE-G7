@@ -12,6 +12,7 @@
 // cpp\exports.def so ffi.load("d3d8") can resolve them.
 
 #include "configuration.h"
+#include "distantland.h"
 #include "mwbridge.h"
 #include "waterlook.h"
 
@@ -94,6 +95,20 @@ extern "C" {
     // owns the volumes.
     void MGE_WaterLookSet(unsigned int slot, const WaterLook* look) {
         WaterLooks::set(slot, look);
+    }
+
+    // Replaces the dry spaces: closed meshes inside which there is no water. `corners` is
+    // three points of three floats for each of `triangles` triangles, in the world. Called on
+    // the main thread by the mod that owns the volumes, when the set changes.
+    void MGE_WaterMasksSet(const float* corners, unsigned int triangles) {
+        DistantLand::setWaterMasks(corners, triangles);
+    }
+
+    // Says whether the camera is in a dry space. There it is not under water, however deep
+    // under the surface it is. Called on the main thread when that changes.
+    void MGE_WaterDrySet(int dry) {
+        MWBridge::get()->setCameraDry(dry != 0);
+        DistantLand::cameraInDrySpace = dry != 0;
     }
 
 }

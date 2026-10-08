@@ -485,6 +485,140 @@ struct PendingWaterVolume {
 };
 static std::vector<PendingWaterVolume> pendingWaterVolumes;
 
+// The dry spaces: three corners for each triangle of the closed meshes, in the world.
+static std::vector<D3DXVECTOR3> waterMaskCorners;
+bool DistantLand::cameraInDrySpace = false;
+
+void DistantLand::setWaterMasks(const float* corners, unsigned int triangles) {
+    waterMaskCorners.clear();
+    if (corners != nullptr) {
+        waterMaskCorners.reserve(3 * static_cast<size_t>(triangles));
+        for (unsigned int i = 0; i < 3 * triangles; ++i) {
+            waterMaskCorners.emplace_back(corners[3 * i], corners[3 * i + 1], corners[3 * i + 2]);
+        }
+    }
+}
+
+// The bit of the stencil buffer that says "inside a dry space" while the surfaces are drawn.
+// The count sets it to zero over the whole screen first, and again after the draw: the game
+// leaves the count of its shadow volumes in the buffer, any value, and reads it no more. The
+// other bits are not touched. Meshes of mods that draw through a mask of their own (a well, a
+// shield with a window into another place) write 500 by habit, 0xf4 in the eight bits of the
+// buffer, and test for it later in the frame: this bit is not one of theirs.
+static const DWORD kDrySpaceBit = 0x02;
+
+// Draws a quad over the whole screen that sets the dry space bit to zero. A pass that takes
+// vertices in the world must be open. The depth test and the stencil states are left changed.
+void DistantLand::zeroDrySpaceBit() {
+    D3DXMATRIX toClip = mwView * mwProj, fromClip;
+    D3DXMatrixInverse(&fromClip, nullptr, &toClip);
+    const D3DXVECTOR3 inClip[6] = {
+        { -1.1f, -1.1f, 0.5f }, { -1.1f, 1.1f, 0.5f }, { 1.1f, 1.1f, 0.5f },
+        { -1.1f, -1.1f, 0.5f }, { 1.1f, 1.1f, 0.5f }, { 1.1f, -1.1f, 0.5f },
+    };
+    D3DXVECTOR3 inWorld[6];
+    D3DXVec3TransformCoordArray(inWorld, sizeof(D3DXVECTOR3), inClip, sizeof(D3DXVECTOR3), &fromClip, 6);
+
+    DWORD clipPlanes = 0;
+    device->GetRenderState(D3DRS_CLIPPLANEENABLE, &clipPlanes);
+    device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+    device->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    device->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    device->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
+    device->SetRenderState(D3DRS_STENCILMASK, 0xffffffff);
+    device->SetRenderState(D3DRS_STENCILWRITEMASK, kDrySpaceBit);
+    device->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_ZERO);
+    device->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_ZERO);
+    device->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_ZERO);
+    device->SetFVF(D3DFVF_XYZ);
+    device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, inWorld, sizeof(D3DXVECTOR3));
+    device->SetRenderState(D3DRS_CLIPPLANEENABLE, clipPlanes);
+}
+
+void DistantLand::endDrySpaceCount() {
+    D3DXMATRIX identity;
+    D3DXMatrixIdentity(&identity);
+    effect->SetMatrix(ehWorld, &identity);
+    effect->SetFloat(ehWaterVolumeHandoff, 0.0f);
+    effect->BeginPass(PASS_RENDERWATERVOLUME);
+    zeroDrySpaceBit();
+    effect->EndPass();
+    device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0f);
+    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+}
+
+bool DistantLand::hasDrySpaces() {
+    return !waterMaskCorners.empty();
+}
+
+// A water surface is not drawn inside a dry space. Whether a point of a surface is inside one
+// is counted in a bit of the stencil buffer: the surface writes its depth first, then every
+// face of the dry spaces that lies in front of that depth turns the bit over. An odd number of
+// faces between the eye and the point means that the point is inside, when the eye is outside;
+// with the eye in a dry space it is the other way round. The bit is set to zero before the
+// count, and again after the draw (endDrySpaceCount).
+// For the water plane of the cell no depth is needed, and the faces behind the plane are
+// counted in place of those in front of it: a point of the plane is inside a closed mesh when
+// the ray through it goes on through an odd number of faces. Those are the faces on the far
+// side of the plane, which a clip plane picks. That count does not ask where the eye is, and
+// its faces are far from the eye: a face that the eye is about to pass, the top of the dry
+// space as the eye goes down into a boat, is cut by the near plane and would be missed.
+void DistantLand::countDrySpaces(const float* level) {
+    D3DXMATRIX identity;
+    D3DXMatrixIdentity(&identity);
+    effect->SetMatrix(ehWorld, &identity);
+    // The pass leaves out what is nearer than this depth, for distant water
+    effect->SetFloat(ehWaterVolumeHandoff, 0.0f);
+    effect->BeginPass(PASS_RENDERWATERVOLUME);
+    zeroDrySpaceBit();
+    device->SetRenderState(D3DRS_ZFUNC, level ? D3DCMP_ALWAYS : D3DCMP_LESS);
+    DWORD clipPlanes = 0;
+    device->GetRenderState(D3DRS_CLIPPLANEENABLE, &clipPlanes);
+    if (level) {
+        // The far side of the level plane, as a clip plane in clip space
+        const float side = eyePos.z >= *level ? -1.0f : 1.0f;
+        const D3DXPLANE inWorld(0.0f, 0.0f, side, -side * *level);
+        D3DXMATRIX toClip = mwView * mwProj, inverse, inverseTranspose;
+        D3DXMatrixInverse(&inverse, nullptr, &toClip);
+        D3DXMatrixTranspose(&inverseTranspose, &inverse);
+        D3DXPLANE inClip;
+        D3DXPlaneTransform(&inClip, &inWorld, &inverseTranspose);
+        device->SetClipPlane(1, inClip);
+        device->SetRenderState(D3DRS_CLIPPLANEENABLE, clipPlanes | D3DCLIPPLANE1);
+    }
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    device->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
+    device->SetRenderState(D3DRS_STENCILMASK, 0xffffffff);
+    device->SetRenderState(D3DRS_STENCILWRITEMASK, kDrySpaceBit);
+    device->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+    device->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+    device->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_INVERT);
+    device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, static_cast<UINT>(waterMaskCorners.size() / 3), waterMaskCorners.data(), sizeof(D3DXVECTOR3));
+    effect->EndPass();
+    if (level) {
+        device->SetRenderState(D3DRS_CLIPPLANEENABLE, clipPlanes);
+    }
+    device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0f);
+    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+}
+
+void DistantLand::testOutsideDrySpaces(bool countedBehind) {
+    device->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    device->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);
+    device->SetRenderState(D3DRS_STENCILREF, (cameraInDrySpace && !countedBehind) ? kDrySpaceBit : 0);
+    device->SetRenderState(D3DRS_STENCILMASK, kDrySpaceBit);
+    device->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+    device->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+    device->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+    device->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
+}
+
 // renderWaterVolume - Takes the surface mesh of a water volume, as the game submits it, to draw
 // it with the water shading instead of its own material. The draw happens in flushWaterVolumes,
 // so that every surface refracts and reflects the same frame, without the other surfaces in it.
@@ -627,14 +761,22 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         } else {
             effect->SetFloatArray(ehWaterVolumeSky, indoors, 4);
         }
+        effect->SetFloat(ehWaterVolumeClarity, std::max(0.0f, look.clarity));
     };
+
+    // A surface is not drawn inside a dry space: see countDrySpaces.
+    const bool cutDrySpaces = hasDrySpaces() && !underwater && !pendingWaterVolumes.empty();
 
     // Each surface is drawn with the pass of its look: the water shader of a mod, or the
     // standard one. From below all surfaces have the underwater pass.
-    {
+    const auto drawHeld = [&](bool depthOnly) {
         int passInUse = -1;
         for (const auto& pending : pendingWaterVolumes) {
             const RenderedState* rs = &pending.rs;
+            // A surface with a stencil test of its own is not cut.
+            if (depthOnly && pending.tests.stencil) {
+                continue;
+            }
             const WaterLook& look = WaterLooks::get(pending.lookSlot);
             int pass = PASS_RENDERUNDERWATER;
             if (!underwater) {
@@ -692,7 +834,10 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
                 device->SetRenderState(D3DRS_STENCILFAIL, tests.fail);
                 device->SetRenderState(D3DRS_STENCILZFAIL, tests.zFail);
                 device->SetRenderState(D3DRS_STENCILPASS, tests.pass);
+            } else if (cutDrySpaces && !depthOnly) {
+                testOutsideDrySpaces();
             }
+            device->SetRenderState(D3DRS_COLORWRITEENABLE, depthOnly ? 0 : 0x0f);
             device->SetStreamSource(0, rs->vb, rs->vbOffset, rs->vbStride);
             device->SetIndices(rs->ib);
             device->SetFVF(rs->fvf);
@@ -704,8 +849,19 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
         device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
         device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0f);
         effect->SetTexture(ehMeshTex0, NULL);
         effect->SetTexture(ehMeshTex1, NULL);
+    };
+    if (cutDrySpaces) {
+        drawHeld(true);
+        countDrySpaces();
+        drawHeld(false);
+        endDrySpaceCount();
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    } else {
+        drawHeld(false);
     }
 
     // The distant water comes after the surfaces near the player. The game draws a mesh that

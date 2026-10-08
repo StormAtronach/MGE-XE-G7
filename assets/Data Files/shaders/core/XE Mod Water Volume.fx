@@ -28,6 +28,9 @@ struct WaterSurfaceLook
     float glow;
     // 1 is water; lower shows what is behind the surface
     float opacity;
+    // Over how many units of water what is under the surface fades into the colour of deep
+    // water; 800 is the standard, and 0 shows nothing of what is under it
+    float clarity;
     // The vertex colour, or 1
     float3 tint;
     // The surface reflects what is on screen; otherwise the sky only
@@ -51,6 +54,7 @@ WaterSurfaceLook surfaceLook(float4 vertexColour)
     look.speed = waterVolumeFlow.z;
     look.scale = waterVolumeFlow.w;
     look.glow = waterVolumeMix.x;
+    look.clarity = waterVolumeClarity;
     float tintFromVertex = fmod(waterVolumeMix.z, 2);
     float opacityFromVertex = floor(waterVolumeMix.z / 2);
     look.opacity = waterVolumeMix.y * lerp(1, vertexColour.a, opacityFromVertex);
@@ -259,13 +263,16 @@ WaterShade shadeWaterVolume(in WaterVertOut IN, float3 facing, float3 tint, Wate
         // Get distorted depth
         depth = max(0, tex2Dproj(sampDepth, newscrpos).r - IN.screenpos.w);
         depth /= dot(EyeVec, float3(view[0][2], view[1][2], view[2][2]));
-        refracted *= waterTransmission(tint, depth) * look.tint;
+        // The clarity of the look sets how fast the water takes what is under it: the colour
+        // of the water takes the other colours out as much faster as the fade is shorter.
+        float clarity = max(look.clarity, 1);
+        refracted *= waterTransmission(tint, depth * 800 / clarity) * look.tint;
         rayDepth = depth;
 
         // Small scale shoreline animation
         depth += 300 * (0.95 - ripple.z);
 
-        float depthscale = saturate(exp(-depth / 800));
+        float depthscale = saturate(exp(-depth / clarity));
         shorefactor = pow(depthscale, 90);
 
         // Make transition between actual refraction image and depth color depending on water depth

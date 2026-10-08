@@ -208,7 +208,8 @@ the plane is more than twice the view distance below the camera. A mod that need
 flag on a dry interior puts the level that far down.
 
 A surface can have a look beyond its colour: the drift, speed and size of its ripples,
-glow, opacity, whether the vertex colour of the mesh tints it, and a colour that it reflects
+glow, opacity, clarity (over how many units of water what is under the surface fades
+into the colour of deep water), whether the vertex colour of the mesh tints it, and a colour that it reflects
 in place of the sky (`WaterLook` in `waterlook.h`). Without that colour a surface reflects
 the sky outdoors and the light of the room in an interior, as `clearReflection` takes it for
 the water of the cell.
@@ -222,7 +223,74 @@ surface without the depth test tells the shader so (`look.noDepthTest`): the dep
 scene is then that of the ground over the water, and the water is taken as deep. Such a
 surface is not held: `renderWaterVolume` draws it at once, in its place among the draws of
 its mesh, so that what the mesh draws after it covers it, as the wall of a well covers the
-rim of its water. A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
+rim of its water.
+
+### Dry spaces
+
+A mod reports closed meshes inside which there is no water (`MGE_WaterMasksSet`, the
+triangles in the world; with True Water a shape named `WaterMask`), and whether the camera
+is in one (`MGE_WaterDrySet`; `IsUnderwater` is then false). Water is not drawn inside them.
+Whether a pixel of a water surface is inside is counted in one bit of the stencil buffer:
+a quad over the screen sets the bit to zero, every face of the dry spaces turns it over, and
+after the draw the bit is set to zero again (`countDrySpaces`, `endDrySpaceCount`).
+
+- Held water volume surfaces (`flushWaterVolumes`) and the caustics (`renderStageBlend`): the
+  faces in front of the depth of the surface, or of the scene, are counted. An odd count is
+  inside when the eye is outside, and the other way round when the eye is in a dry space.
+- The water plane of the cell (`renderStageWater`): the faces on the far side of the level of
+  the water are counted, with a clip plane and without the depth. An odd count is inside,
+  wherever the eye is. With the eye in a dry space and within `kDrySpaceLevelMargin` of the
+  level, the plane is left out: it is edge-on, and its waves put it now over the eye and now
+  under it.
+
+Known limit: the count of the faces in front misses a face that the near plane cuts. For a
+few frames, as the eye passes a face of a dry space, a volume surface or the caustics can
+show inside it. The water plane of the cell does not have this.
+
+### Stencil bits
+
+The count sets its bit to zero itself and leaves the other bits alone, so it does not need
+a free bit; it needs one that no mesh tests later in the frame. What is in the buffer, found
+by test in the game on 2026-10-07 (each bit in turn used for a count that did not yet set it
+to zero, looking at the body of the player outdoors), and from meshes of mods:
+
+| Bits | Who sets them | How it is known |
+| --- | --- | --- |
+| `0x01`, `0x04`, `0x08`, `0x40` (together `0x4d`) | The game, on the pixels of the player's body outdoors | With each of these four the water was drawn over the body; with each of the other four it was not. The values themselves were not read back |
+| a count, 0 to 255 | The game's shadow scenes, which `MGEProxyDevice` knows by `stencilRef <= 1` | The game's code, see below |
+| `0xf4` (low byte of the reference 500) | Meshes of mods that draw through a mask: a shape writes 500, other shapes test for it, with all bits. The wells of "Water In Wells", the shield of "Darksun's Eclipse" | The meshes |
+| `0x02` | The dry space count (`kDrySpaceBit`) | Not a bit of 500, so the count does not change what those meshes test |
+
+What the game does with the stencil buffer, from its code (Morrowind.exe, addresses of the
+English 1.6.1820 build):
+
+- The only thing that writes it is the shadow manager (`init` at 0x434260, `render` at
+  0x4352A0, called from the main scene render at 0x41C400 after the world and before the
+  water). For each light that casts shadows it clears the stencil buffer, draws the shadow
+  volumes twice, the faces of one winding with "add one where the depth test fails" and the
+  faces of the other with "take one away where the depth test fails", and then draws a dark
+  quad over the screen where the value is not zero. Reference 0, mask all bits. The renderer
+  maps the two actions to the saturating ones (table in the render state at +0x178:
+  keep, zero, replace, add, take away, invert), so the value is a count from 0 to 255: in how
+  many shadow volumes the visible point lies.
+- The game then draws the shadow casters again, without a stencil test, which hides the dark
+  quad on them. So the body of an actor keeps the count of its own shadow volumes in the
+  buffer. That is the value on the body of the player.
+- Nothing reads the value after the dark quad. The buffer is cleared with the frame, before
+  each light, and before the first person scene.
+- The other stencil properties that the game makes (the water node, mirrored body parts, the
+  collision bounds view) are not enabled: they only set which side of a face is drawn.
+
+So no bit is free by rule: a count of 2 or 3 sets bit `0x02`. That the test found it clear
+on the body, with `0x40` set, is not explained; it holds for the scene of the test. For that
+reason the dry space count sets its bit to zero first. It does not clear the whole buffer:
+that would take the mask from a mesh of a mod that tests for it later in the frame.
+
+A mesh that writes a stencil reference with bit `0x02` set and tests for it after the water
+is drawn loses that bit where a dry space is in the scene. A surface with a stencil test of
+its own is not cut by dry spaces; while the faces of a dry space are counted in front of it,
+between the two zero passes, its test sees the bit, so such a surface behind a dry space is
+not drawn. A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
 marks a surface with its slot in the specular power of the material, `100000 + slot`; the two
 old markers stay valid. `SetMaterial` reads the slot, the held draw carries it, and
 `flushWaterVolumes` sets `waterVolumeFlow` and `waterVolumeMix` for each draw from the slot's

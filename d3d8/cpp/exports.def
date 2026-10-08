@@ -6,3 +6,5 @@ MGE_HorizonGetParam
 MGE_HorizonSetParam
 MGE_WaterVolumesSet
 MGE_WaterLookSet
+MGE_WaterMasksSet
+MGE_WaterDrySet

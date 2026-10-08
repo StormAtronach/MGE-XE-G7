@@ -28,6 +28,9 @@ shared float nearViewRange;
 shared float waterVolumeReflectRange;
 shared float waterVolumeHandoff;
 shared float4 waterVolumeSky;
+// Over how many units of water what is under a water volume surface fades into the colour of
+// deep water; 800 is the standard
+shared float waterVolumeClarity;
 shared float3 waterVolumeTint;
 shared float3 waterPlaneTint;
 // The look of the water volume surface that is drawn: x, y the drift of the ripples in the

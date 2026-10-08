@@ -15,7 +15,8 @@
   are marked as water by the names in them, which the default statics classifiers set, or
   through plugin metadata; see the mod metadata guide. Distant land must be generated again.
   A water volume can have a colour: the emissive colour of its material, and a look of its own:
-  flowing ripples, their speed and size, glow, opacity, and a tint from the vertex
+  flowing ripples, their speed and size, glow, opacity, clarity (how fast the water hides
+  what is under it), and a tint from the vertex
   colours of the mesh, which the mod that owns the volume reports through `MGE_WaterLookSet`.
   A mod can also ship a water shader of its own for its surfaces
   (`Data Files\shaders\water\<name>.fx`); see `docs/water-shaders.md`. The look and the
@@ -24,7 +25,9 @@
   texture of the mesh (a decal, a detail or a dark map). In an interior a water volume
   reflects the light of the room in place of the sky, and a look can give that colour itself.
   A water volume keeps the stencil test and the depth test of its mesh, so that a mesh can
-  show its water through a mask: the water in a well.
+  show its water through a mask: the water in a well. A mod can report closed shapes inside
+  which there is no water, the hold of a boat under the water line (`MGE_WaterMasksSet`):
+  water volumes, the water of the cell and the caustics are not drawn inside them.
 - The water of a cell can have a colour: the emissive colour of the game's water material,
   which a mod can set from Lua.
 
