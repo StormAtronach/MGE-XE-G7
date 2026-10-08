@@ -122,6 +122,7 @@ Each mesh path maps to a table containing one or more of the following propertie
 | `water` | boolean | `true` makes the mesh distant water even if nothing in it is named as water; every shape that is not under a body name is drawn as water. `false` keeps the mesh an ordinary static whatever its names say. Omit it to let the names decide (see below). |
 | `water_color` | array of three numbers | The colour of the water of a water mesh: red, green and blue, each from `0` to `1`. Omit it to take the colour from the mesh (see below). |
 | `wv` | string | The look line of a water mesh, for a mesh that cannot be edited: the text that the mesh would have after `wv:`, for example `"flow=0,-140 glow=0.3"`. It replaces the look line in the mesh. Omit it to take the look line from the mesh (see below). |
+| `dry_space` | boolean | `false` leaves the dry spaces of the mesh out of distant land: its shapes with a mask name (see `mask_names` below) are dropped, and far away the water is drawn inside the mesh. `true`, or no key, keeps them. |
 
 ### Distant Water (`[tools.mge-xe.distantland.water]`)
 
@@ -140,6 +141,7 @@ override-file list: the names apply only while that list is enabled and the file
 version = 1
 surface_names = ["WaterVolume"]
 body_names = ["WaterBody"]
+mask_names = ["WaterMask"]
 plain_words = ["plain"]
 sky_only_words = ["skyonly"]
 ```
@@ -149,10 +151,36 @@ sky_only_words = ["skyonly"]
 | `version` | integer | Version of the rules. The generator reads version `1`. A table with another version is left out with a warning; the rest of the file still applies. |
 | `surface_names` | array of strings | Name prefixes (case-insensitive) of the shapes or nodes that are the surface of the water. A mesh that has one is water. The first such name in the mesh also carries the words below. |
 | `body_names` | array of strings | Name prefixes of the shapes or nodes that hold the body of the water, which the game hides. Everything under such a node is left out of the distant mesh. A mesh that has one is water. |
+| `mask_names` | array of strings | Name prefixes of the shapes or nodes that mark a dry space in water, such as the inside of a boat, which the game hides. Distant land keeps every shape under such a node as a dry space: it is never drawn, and no water is drawn inside it (see below). The name does not make a mesh water: a boat with such a shape stays an ordinary distant static. Optional; an empty list, or no key, means that no shape is a dry space. |
 | `plain_words` | array of strings | Words in the surface name for a mesh that keeps its own look. The body is still left out, and the rest stays an ordinary distant static. |
 | `sky_only_words` | array of strings | Words in the surface name for water that reflects the sky only. |
 
 A word counts only when no letter stands directly before or after it.
+
+#### Dry spaces
+
+A dry space is a closed shape inside which there is no water: the inside of a boat whose floor
+lies under the water line. Near the player the mod that owns the mesh reports the shape to
+MGE XE. Far away the boat is a distant static, and the generator keeps the shape with it, so
+that the sea, distant water volumes and the caustics are not drawn inside the boat there
+either. The shape needs no texture and no UVs. It must be closed, and it is not simplified.
+
+A mesh with a dry space is not merged with the other statics of its cell, so it costs a few
+draw calls of its own. There are two ways to switch the dry spaces of distant land off:
+
+- For one mesh, the `dry_space` key of its mesh entry:
+
+  ```toml
+  [tools.mge-xe.distantland.statics]
+  'x\ex_boat.nif' = { dry_space = false }
+  ```
+
+- For all meshes, an empty list of names in the `water` table: `mask_names = []`. The table
+  is one value, so the file must repeat the other keys of the table.
+
+In both cases the shapes are left out of the distant mesh, and the mesh is an ordinary
+distant static again. Distant land must be generated again after either change; the generator
+then makes only the meshes that changed.
 
 The first surface name is the first one that the generator finds when it goes through the
 mesh from the root, depth first, with the children of a node in their order. An object that
@@ -269,7 +297,7 @@ When distant land is generated, overrides from different sources are merged in a
 
 ### Merging Behavior
 * **Scalar Overrides**: For mesh types, ignore flags, and cell/object filters, the **last writer wins**. If a plugin metadata file overrides a setting that was previously set by a legacy `.ovr` file or a prior plugin, the new value takes precedence.
-* **Mesh Entries**: The entry of a mesh is one value. A later entry for the same mesh replaces the whole earlier entry, so it must repeat the keys that it keeps, `water`, `water_color` and `wv` included.
+* **Mesh Entries**: The entry of a mesh is one value. A later entry for the same mesh replaces the whole earlier entry, so it must repeat the keys that it keeps, `water`, `water_color`, `wv` and `dry_space` included.
 * **Conflict Logs**: If a plugin metadata file overwrites a directive established by a different source file for the same key, a diagnostic warning is logged in the generation log.
 * **Dynamic Visibility**: Visibility groups are merged and deduplicated across all sources rather than overwritten. Multiple plugins or `.ovr` files can register scripts or ranges to the same group.
 * **Water Names**: The `water` table is one value. A later source replaces the whole table, and a warning is logged when it replaces a different table from another source.

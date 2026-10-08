@@ -108,6 +108,20 @@ Only `cells` and `terrain_cells` retain their collected data for downstream stat
   override, or the emissive colour of the material, with black for the usual colour. The alpha
   is 1, or the alpha of the vertex colour of the mesh when the look line of the subset has
   `opacity=vertex` and the shape has vertex colours.
+- Keeps the dry spaces of the mesh: every shape that has a mask name of the `water` table, or
+  lies under an object that has one, becomes a subset of the kind `SubsetWater::DrySpace`.
+  The runtime never draws it; it draws no water inside it. A mask name does not make a mesh
+  water: a boat keeps its type, and its other shapes are ordinary subsets in the atlas. In a
+  water mesh the dry space is not a surface of the water. A dry space subset is handled as a
+  water subset is where that keeps it whole and apart: it needs no texture and no UVs (it
+  gets the path of the embedded error texture, and the texture of its shape is not looked
+  for), it keeps out of the atlas, its static is not merged (`DistantStatic::stays_alone`),
+  so the buried-triangle trim of the merges does not reach it, it does not count in the
+  buried-in-terrain test of its reference (`is_buried`), and it is not simplified, because
+  the count of the runtime needs the shape closed. It has no alpha flag, no UV
+  controller, no look line and no colour of water. Two things switch it off: the `dry_space`
+  key of the mesh override with `false`, and a `water` table without mask names. The shapes
+  are then left out of the distant mesh.
 - Finds the look line of a mesh that is drawn as water (`mesh_water_look` in `nif.rs`): the
   text after the `wv:` prefix of the first string extra data that has the prefix, without white
   space at its ends. The walk is the walk of the water names, with the extra data of each
@@ -133,7 +147,9 @@ Only `cells` and `terrain_cells` retain their collected data for downstream stat
 
 The subset record of `static_meshes` (`SubsetRecord`, 168 bytes) stores the look line in three
 fields after `palette_count`. The fields before them keep their offsets. `MGE_DL_VERSION` 20
-is the first version with these fields.
+is the first version with these fields. Version 21 adds flag bit 4 of the record, a dry space
+in water. The bit stands alone: with it, the two water bits are zero and the subset has no
+look line. A runtime of version 20 refuses a record with the bit.
 
 | Offset | Field | Type | Meaning |
 | --- | --- | --- | --- |

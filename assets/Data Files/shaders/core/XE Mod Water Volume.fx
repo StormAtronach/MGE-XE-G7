@@ -97,9 +97,8 @@ float3 tiltTo(float3 up, float3 v)
     return v * up.z + cross(axis, v) + axis * (dot(axis, v) / max(1 + up.z, 1e-3));
 }
 
-// Steps of the reflection march. Each is 1.25 times as long as the one before, starting at
-// 12 units, so 24 steps reach about 10000 units.
-static const int volumeReflectionSteps = 24;
+// The reflection march: each step is 1.25 times as long as the one before, starting at 12
+// units.
 
 // Halvings of the step the ray went behind something in, to find the place where it did.
 static const int volumeReflectionRefinements = 5;
@@ -535,7 +534,7 @@ WaterVolumeVertOut WaterVolumeVS(in float4 pos : POSITION, in float3 normal : NO
     OUT.tint = waterVolumeTint;
     OUT.facing = mul(float4(normal, 0), world).xyz;
     OUT.color = color;
-    OUT.uv = float4(uv, waterVolumeMix.w >= 4 ? uv1 : uv);
+    OUT.uv = float4(uv, fmod(waterVolumeMix.w, 8) >= 4 ? uv1 : uv);
     return OUT;
 }
 

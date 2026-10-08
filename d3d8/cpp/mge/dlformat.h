@@ -45,7 +45,8 @@ struct DistantSubset {
     D3DXVECTOR3 aabbMin, aabbMax;       // corners of the axis-aligned bounding box
     ptr32<IDirect3DTexture9> tex;
     bool hasAlpha, hasUVController;
-    // Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only.
+    // Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only,
+    // 3 = a dry space in water, which is never drawn. From 4 on the runtime's index of a look.
     std::uint8_t water;
     ptr32<IDirect3DVertexBuffer9> vbuffer;
     ptr32<IDirect3DIndexBuffer9> ibuffer;
@@ -91,8 +92,9 @@ namespace StaticMeshesBin {
     static constexpr std::uint32_t VertexStride = 20;
     static constexpr std::uint32_t GrassVertexStride = 20;
     static constexpr std::uint32_t IndexElementSize = 2;
-    // Alpha, UV controller, distant water, distant water that reflects the sky only.
-    static constexpr std::uint32_t KnownFlagsMask = 0xF;
+    // Alpha, UV controller, distant water, distant water that reflects the sky only, a dry
+    // space in water.
+    static constexpr std::uint32_t KnownFlagsMask = 0x1F;
 
     // Maximum UV-bound palette entries in one subset. Interlock across three languages, all of
     // which must move together: this constant, `UV_BOUND_PALETTE_CAP` in

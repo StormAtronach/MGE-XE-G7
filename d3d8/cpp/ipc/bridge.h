@@ -34,7 +34,8 @@ constexpr DWORD VIS_STATIC = VIS_NEAR | VIS_FAR | VIS_VERY_FAR;
 #pragma pack(push, 4)
 struct RenderMesh {
     bool enabled, hasAlpha, animateUV;
-    // Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only.
+    // Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only,
+    // 3 = a dry space in water, which is never drawn. From 4 on the runtime's index of a look.
     std::uint8_t water;
 
     ptr32<IDirect3DTexture9> tex;

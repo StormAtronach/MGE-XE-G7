@@ -463,6 +463,53 @@ bool DistantLand::waterVolumeDrawn = false;
 float DistantLand::waterPlaneTint[3] = { 0.0f, 0.0f, 0.0f };
 bool DistantLand::distantWaterLoaded = false;
 bool DistantLand::distantWaterInView = false;
+bool DistantLand::distantDrySpacesInView = false;
+
+// The cells that the game has loaded: the cell of the player and the eight cells around it, as
+// a range of x and y in the world. In an interior the range is empty.
+struct LoadedCells {
+    float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
+
+    // Says whether the reference of a distant mesh lies in one of the cells.
+    bool hold(const D3DXMATRIX& transform) const {
+        const float x = transform._41, y = transform._42;
+        return x >= minX && y >= minY && x < maxX && y < maxY;
+    }
+};
+
+static LoadedCells loadedCells() {
+    LoadedCells cells;
+    int gridX, gridY;
+    if (MWBridge::get()->getExteriorGrid(gridX, gridY)) {
+        cells.minX = (gridX - 1) * DistantLand::kCellSize;
+        cells.minY = (gridY - 1) * DistantLand::kCellSize;
+        cells.maxX = (gridX + 2) * DistantLand::kCellSize;
+        cells.maxY = (gridY + 2) * DistantLand::kCellSize;
+    }
+    return cells;
+}
+
+// The visible set of the distant water holds water surfaces and dry spaces. A dry space of
+// a reference in a loaded cell does not count: the game has that mesh, and a mod reports its
+// dry spaces (setWaterMasks). Two counts of the same faces would leave the bit as it was,
+// and the water would be back in the boat.
+void DistantLand::findDistantWaterInView() {
+    distantWaterInView = false;
+    distantDrySpacesInView = false;
+    if (!MWBridge::get()->IsExterior()) {
+        return;
+    }
+    const LoadedCells loaded = loadedCells();
+    visWaterShared.Reset();
+    while (!visWaterShared.AtEnd()) {
+        const RenderMesh& mesh = visWaterShared.Next();
+        if (mesh.water != WaterLooks::drySpace) {
+            distantWaterInView = true;
+        } else if (!loaded.hold(mesh.transform)) {
+            distantDrySpacesInView = true;
+        }
+    }
+}
 
 // How many point lights a water volume surface takes. The water shading has rows for as many.
 static const int kWaterVolumeLights = 4;
@@ -593,21 +640,45 @@ void DistantLand::zeroDrySpaceBit() {
     device->SetRenderState(D3DRS_CLIPPLANEENABLE, clipPlanes);
 }
 
-void DistantLand::endDrySpaceCount() {
+// The count draws with the pass of the water volumes, for its vertex shader. That shader
+// moves vertices with the waves when dynamic ripples are on, and its pixel shader marches for
+// the reflection of the scene when the look says so: both are switched off here, and the
+// pass leaves out nothing by depth.
+float DistantLand::beginDrySpacePass() {
     D3DXMATRIX identity;
     D3DXMatrixIdentity(&identity);
     effect->SetMatrix(ehWorld, &identity);
     effect->SetFloat(ehWaterVolumeHandoff, 0.0f);
+    // The wave height is a value of the effect only when dynamic ripples are on.
+    float waveHeight = 0.0f;
+    if (Configuration.MGEFlags & DYNAMIC_RIPPLES) {
+        effect->GetFloat(ehWaveHeight, &waveHeight);
+        effect->SetFloat(ehWaveHeight, 0.0f);
+    }
+    static const float plain[4] = { 0.0f, 1.0f, 0.0f, 0.0f };
+    effect->SetFloatArray(ehWaterVolumeMix, plain, 4);
     effect->BeginPass(PASS_RENDERWATERVOLUME);
-    zeroDrySpaceBit();
+    return waveHeight;
+}
+
+void DistantLand::endDrySpacePass(float waveHeight) {
     effect->EndPass();
+    if (Configuration.MGEFlags & DYNAMIC_RIPPLES) {
+        effect->SetFloat(ehWaveHeight, waveHeight);
+    }
+}
+
+void DistantLand::endDrySpaceCount() {
+    const float waveHeight = beginDrySpacePass();
+    zeroDrySpaceBit();
+    endDrySpacePass(waveHeight);
     device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
     device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0f);
     device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
 }
 
 bool DistantLand::hasDrySpaces() {
-    return !waterMaskCorners.empty();
+    return !waterMaskCorners.empty() || distantDrySpacesInView;
 }
 
 // A water surface is not drawn inside a dry space. Whether a point of a surface is inside one
@@ -625,45 +696,83 @@ bool DistantLand::hasDrySpaces() {
 // A water volume surface has its faces counted the same way, behind the depth that it wrote
 // (behindDepth). Only the caustics count the faces in front: there the depth is that of the
 // scene, and the floor of a boat lies in a face of its dry space.
+// The dry spaces are those that a mod reports, near the player, and those of the distant
+// statics (countDistantDrySpaces). Both turn over the same bit.
 void DistantLand::countDrySpaces(const float* level, bool behindDepth) {
-    D3DXMATRIX identity;
-    D3DXMatrixIdentity(&identity);
-    effect->SetMatrix(ehWorld, &identity);
-    // The pass leaves out what is nearer than this depth, for distant water
-    effect->SetFloat(ehWaterVolumeHandoff, 0.0f);
-    effect->BeginPass(PASS_RENDERWATERVOLUME);
+    const float waveHeight = beginDrySpacePass();
     zeroDrySpaceBit();
-    device->SetRenderState(D3DRS_ZFUNC, level ? D3DCMP_ALWAYS : (behindDepth ? D3DCMP_GREATER : D3DCMP_LESS));
     DWORD clipPlanes = 0;
     device->GetRenderState(D3DRS_CLIPPLANEENABLE, &clipPlanes);
-    if (level) {
-        // The far side of the level plane, as a clip plane in clip space
-        const float side = eyePos.z >= *level ? -1.0f : 1.0f;
-        const D3DXPLANE inWorld(0.0f, 0.0f, side, -side * *level);
-        D3DXMATRIX toClip = mwView * mwProj, inverse, inverseTranspose;
-        D3DXMatrixInverse(&inverse, nullptr, &toClip);
-        D3DXMatrixTranspose(&inverseTranspose, &inverse);
-        D3DXPLANE inClip;
-        D3DXPlaneTransform(&inClip, &inWorld, &inverseTranspose);
-        device->SetClipPlane(1, inClip);
-        device->SetRenderState(D3DRS_CLIPPLANEENABLE, clipPlanes | D3DCLIPPLANE1);
+    // The states of the count. They are set after the states of a pass. The clip plane is in
+    // the clip space of the projection that the pass draws with.
+    const auto setCountStates = [&](const D3DXMATRIX& proj) {
+        device->SetRenderState(D3DRS_ZFUNC, level ? D3DCMP_ALWAYS : (behindDepth ? D3DCMP_GREATER : D3DCMP_LESS));
+        if (level) {
+            // The far side of the level plane, as a clip plane in clip space
+            const float side = eyePos.z >= *level ? -1.0f : 1.0f;
+            const D3DXPLANE inWorld(0.0f, 0.0f, side, -side * *level);
+            D3DXMATRIX toClip = mwView * proj, inverse, inverseTranspose;
+            D3DXMatrixInverse(&inverse, nullptr, &toClip);
+            D3DXMatrixTranspose(&inverseTranspose, &inverse);
+            D3DXPLANE inClip;
+            D3DXPlaneTransform(&inClip, &inWorld, &inverseTranspose);
+            device->SetClipPlane(1, inClip);
+            device->SetRenderState(D3DRS_CLIPPLANEENABLE, clipPlanes | D3DCLIPPLANE1);
+        }
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        device->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+        device->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
+        device->SetRenderState(D3DRS_STENCILMASK, 0xffffffff);
+        device->SetRenderState(D3DRS_STENCILWRITEMASK, kDrySpaceBit);
+        device->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+        device->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+        device->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_INVERT);
+    };
+    setCountStates(mwProj);
+    if (!waterMaskCorners.empty()) {
+        device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, static_cast<UINT>(waterMaskCorners.size() / 3), waterMaskCorners.data(), sizeof(D3DXVECTOR3));
     }
-    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    device->SetRenderState(D3DRS_STENCILENABLE, TRUE);
-    device->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
-    device->SetRenderState(D3DRS_STENCILMASK, 0xffffffff);
-    device->SetRenderState(D3DRS_STENCILWRITEMASK, kDrySpaceBit);
-    device->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
-    device->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
-    device->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_INVERT);
-    device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, static_cast<UINT>(waterMaskCorners.size() / 3), waterMaskCorners.data(), sizeof(D3DXVECTOR3));
-    effect->EndPass();
+    if (distantDrySpacesInView) {
+        effect->EndPass();
+        countDistantDrySpaces(setCountStates);
+    }
+    endDrySpacePass(waveHeight);
     if (level) {
         device->SetRenderState(D3DRS_CLIPPLANEENABLE, clipPlanes);
     }
     device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
     device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0f);
     device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+}
+
+// The dry spaces of the distant statics: the inside of a boat in a cell that the game has
+// not loaded. The generator keeps the shape of a dry space as a subset that no pass draws,
+// and the host gives it in the visible set of the distant water. Its faces turn over the
+// same bit as the faces that a mod reports. They are drawn as the distant water is: with the
+// vertices of a distant static, the matrix of each mesh and the depth of the distant land.
+// The values that beginDrySpacePass set hold for this pass too.
+// The dry space of a reference in a loaded cell is left out: see findDistantWaterInView.
+// No pass must be open. The pass of the distant water is left open, for endDrySpacePass.
+void DistantLand::countDistantDrySpaces(const std::function<void(const D3DXMATRIX&)>& setCountStates) {
+    D3DXMATRIX distProj = mwProj;
+    editProjectionZ(&distProj, kDistantNearPlane - 1e-2, Configuration.DL.DrawDist * kCellSize);
+    effect->SetMatrix(ehProj, &distProj);
+    effect->BeginPass(PASS_RENDERWATERVOLUME_DISTANT);
+    setCountStates(distProj);
+    device->SetVertexDeclaration(StaticDecl);
+    const LoadedCells loaded = loadedCells();
+    visWaterShared.RenderWater(device, SIZEOFSTATICVERT, [&](const RenderMesh& mesh) {
+        if (mesh.water != WaterLooks::drySpace || loaded.hold(mesh.transform)) {
+            return false;
+        }
+        effect->SetMatrix(ehWorld, &mesh.transform);
+        effect->CommitChanges();
+        return true;
+    });
+    // For the passes that come after this one
+    effect->SetMatrix(ehProj, &mwProj);
 }
 
 void DistantLand::testOutsideDrySpaces(bool countedBehind) {
@@ -851,14 +960,8 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
     if (Configuration.WaterVolume.Caustics) {
         effect->SetFloat(ehWaterVolumeCaustics, outdoors ? float(Configuration.DL.WaterCaustics) : 0.0f);
     }
-    if (Configuration.WaterVolume.PointLights) {
-        // Distant water has no lights of the game: the rows stay empty for it.
-        static const PendingWaterVolume::Lights none = {};
-        effect->SetFloatArray(ehWaterVolumeLightPos, &none.place[0][0], 4 * kWaterVolumeLights);
-    }
-
     // A surface is not drawn inside a dry space: see countDrySpaces.
-    const bool cutDrySpaces = hasDrySpaces() && !underwater && !pendingWaterVolumes.empty();
+    const bool cutDrySpaces = hasDrySpaces() && !underwater && (!pendingWaterVolumes.empty() || drawDistant);
 
     // Each surface is drawn with the pass of its look: the water shader of a mod, or the
     // standard one. From below all surfaces have the underwater pass.
@@ -882,7 +985,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             effect->SetFloatArray(ehWaterVolumeTint, pending.tint, 3);
             // The look of the surface. The vertex colour counts only when the look asks for it
             // and the mesh has one: 1 for the tint, 2 for the opacity.
-            const float flow[4] = { look.flow[0], look.flow[1], look.speed, look.scale };
+            const float flow[4] = { look.flow[0], look.flow[1], look.speed, std::max(look.scale, 1e-3f) };
             float vertexUse = 0.0f;
             if ((rs->fvf & D3DFVF_DIFFUSE) != 0) {
                 vertexUse += (look.flags & WATER_LOOK_TINT_FROM_VERTEX) != 0 ? 1.0f : 0.0f;
@@ -927,7 +1030,8 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             if (tests.stencil) {
                 device->SetRenderState(D3DRS_STENCILFUNC, tests.func);
                 device->SetRenderState(D3DRS_STENCILREF, tests.ref);
-                device->SetRenderState(D3DRS_STENCILMASK, tests.mask);
+                // The bit of the dry space count is not a part of the test of the mesh.
+                device->SetRenderState(D3DRS_STENCILMASK, tests.mask & ~kDrySpaceBit);
                 device->SetRenderState(D3DRS_STENCILWRITEMASK, tests.writeMask);
                 device->SetRenderState(D3DRS_STENCILFAIL, tests.fail);
                 device->SetRenderState(D3DRS_STENCILZFAIL, tests.zFail);
@@ -951,40 +1055,32 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
         effect->SetTexture(ehMeshTex0, NULL);
         effect->SetTexture(ehMeshTex1, NULL);
     };
-    if (cutDrySpaces) {
-        drawHeld(true);
-        countDrySpaces(nullptr, true);
-        drawHeld(false);
-        endDrySpaceCount();
-        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-        device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
-    } else {
-        drawHeld(false);
-    }
 
     // The distant water comes after the surfaces near the player. The game draws a mesh that
     // reaches past its view distance in full, and the distant mesh lies a little behind it in
     // depth, so the depth test leaves the distant mesh out there and it is not shaded twice.
-    if (drawDistant) {
+    const auto drawDistantWater = [&](bool depthOnly) {
         // Depth as the distant land has it, so that the land hides the water behind it.
         D3DXMATRIX distProj = mwProj;
         editProjectionZ(&distProj, kDistantNearPlane - 1e-2, Configuration.DL.DrawDist * kCellSize);
         effect->SetMatrix(ehProj, &distProj);
         device->SetVertexDeclaration(StaticDecl);
         // The game has the cell of the player and the eight cells around it.
-        float loadedCells[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-        int gridX, gridY;
-        if (mwBridge->getExteriorGrid(gridX, gridY)) {
-            loadedCells[0] = (gridX - 1) * kCellSize;
-            loadedCells[1] = (gridY - 1) * kCellSize;
-            loadedCells[2] = (gridX + 2) * kCellSize;
-            loadedCells[3] = (gridY + 2) * kCellSize;
-        }
+        const LoadedCells loaded = loadedCells();
         // Each mesh is drawn with the pass and the values of its look. The pass leaves a mesh
         // out nearer than the handoff depth, where the game draws the mesh itself. The game
         // does that only for a reference in a loaded cell, so any other mesh gets zero.
+        if (Configuration.WaterVolume.PointLights) {
+            // Distant water has no lights of the game: the rows of the last near surface go.
+            static const PendingWaterVolume::Lights none = {};
+            effect->SetFloatArray(ehWaterVolumeLightPos, &none.place[0][0], 4 * kWaterVolumeLights);
+        }
         int distantPassInUse = -1;
         visWaterShared.RenderWater(device, SIZEOFSTATICVERT, [&](const RenderMesh& mesh) {
+            // A dry space is in the set too. It is no water: only the count draws it.
+            if (mesh.water == WaterLooks::drySpace) {
+                return false;
+            }
             const WaterLook& look = WaterLooks::distant(mesh.water);
             const bool reflectsScene = mesh.water >= WaterLooks::firstDistantLook
                 ? (look.flags & WATER_LOOK_REFLECTS_SCENE) != 0
@@ -992,14 +1088,12 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             int pass = waterShaderPass(look.shader);
             pass = pass < 0 ? PASS_RENDERWATERVOLUME_DISTANT : pass + 1;
 
-            const float x = mesh.transform._41, y = mesh.transform._42;
-            const bool loaded = x >= loadedCells[0] && y >= loadedCells[1] && x < loadedCells[2] && y < loadedCells[3];
-            const float flow[4] = { look.flow[0], look.flow[1], look.speed, look.scale };
+            const float flow[4] = { look.flow[0], look.flow[1], look.speed, std::max(look.scale, 1e-3f) };
             // The vertex colour of a distant subset is the colour of the water. Its alpha is
             // the opacity of the mesh's vertex when the look asks for it.
             const float vertexUse = (look.flags & WATER_LOOK_OPACITY_FROM_VERTEX) != 0 ? 2.0f : 0.0f;
             const float mix[4] = { look.glow, look.opacity, vertexUse, (reflectsScene ? 1.0f : 0.0f) + 2.0f };
-            effect->SetFloat(ehWaterVolumeHandoff, loaded ? nearViewRange : 0.0f);
+            effect->SetFloat(ehWaterVolumeHandoff, loaded.hold(mesh.transform) ? nearViewRange : 0.0f);
             effect->SetMatrix(ehWorld, &mesh.transform);
             effect->SetFloatArray(ehWaterVolumeFlow, flow, 4);
             effect->SetFloatArray(ehWaterVolumeMix, mix, 4);
@@ -1017,11 +1111,41 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             } else {
                 effect->CommitChanges();
             }
+            // The cut by the dry spaces, after the states of the pass
+            if (cutDrySpaces && !depthOnly) {
+                testOutsideDrySpaces(true);
+            }
+            device->SetRenderState(D3DRS_COLORWRITEENABLE, depthOnly ? 0 : 0x0f);
+            return true;
         });
         if (distantPassInUse >= 0) {
             effect->EndPass();
         }
+        device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0f);
         effect->SetMatrix(ehProj, &mwProj);
+    };
+
+    if (cutDrySpaces) {
+        // All the surfaces write their depth, the faces of the dry spaces behind it are
+        // counted, and then the surfaces are drawn where the count says outside.
+        drawHeld(true);
+        if (drawDistant) {
+            drawDistantWater(true);
+        }
+        countDrySpaces(nullptr, true);
+        drawHeld(false);
+        if (drawDistant) {
+            drawDistantWater(false);
+        }
+        endDrySpaceCount();
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    } else {
+        drawHeld(false);
+        if (drawDistant) {
+            drawDistantWater(false);
+        }
     }
 
     if (ripples) {

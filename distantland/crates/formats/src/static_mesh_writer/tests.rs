@@ -449,19 +449,46 @@ fn v4_subset_flags() {
 
 #[test]
 fn subset_water_flags() {
-    // The two water bits; the test subset has other flags of its own.
+    // The two water bits and the dry space bit; the test subset has other flags of its own.
     let water_bits_of = |water: u8| {
         let mut subset = make_test_subset("f.dds", 1, 1);
         subset.water = water;
         let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![subset])].into_iter().collect();
         let bytes = serialize_static_meshes(&distant_statics).unwrap();
         let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
-        subset_record(&bytes, header, 0).flags & 0b1100
+        subset_record(&bytes, header, 0).flags & 0b1_1100
     };
 
     assert_eq!(water_bits_of(0), 0);
     assert_eq!(water_bits_of(1), 0b0100); // bit 2 (distant water)
     assert_eq!(water_bits_of(2), 0b1100); // bit 2 + bit 3 (reflects the sky only)
+    assert_eq!(water_bits_of(3), 0b1_0000); // bit 4 alone (a dry space is not water)
+}
+
+#[test]
+fn a_dry_space_subset_reads_back_and_takes_no_look() {
+    let mut dry = make_test_subset("f.dds", 1, 1);
+    dry.water = SUBSET_WATER_DRY_SPACE;
+    let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![dry.clone(), water_subset("a.dds", "")])]
+        .into_iter()
+        .collect();
+    let bytes = serialize_static_meshes(&distant_statics).unwrap();
+    let read = crate::distant_statics::deserialize_static_meshes(&bytes).unwrap();
+    assert_eq!(read[0].subsets[0].water, SUBSET_WATER_DRY_SPACE);
+    assert_eq!(read[0].subsets[1].water, 1);
+
+    let serialize = |subset: PackedSubset| {
+        let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![subset])].into_iter().collect();
+        serialize_static_meshes(&distant_statics)
+    };
+    // A dry space is not water, so it has no look.
+    let mut with_look = dry.clone();
+    with_look.water_look = "flow=0,1".into();
+    assert!(serialize(with_look).is_err());
+    // A value past the dry space is not known.
+    let mut unknown = dry;
+    unknown.water = SUBSET_WATER_DRY_SPACE + 1;
+    assert!(serialize(unknown).is_err());
 }
 
 fn water_subset(texture: &str, look: &str) -> PackedSubset {

@@ -127,6 +127,7 @@ fn later_water_names_replace_the_table_and_warn_when_they_differ() {
     let names = |surface: &str| WaterNames {
         surface: vec![surface.to_owned()],
         body: vec!["waterbody".to_owned()],
+        mask: Vec::new(),
         ..WaterNames::default()
     };
     let warnings = Arc::new(Mutex::new(Vec::new()));

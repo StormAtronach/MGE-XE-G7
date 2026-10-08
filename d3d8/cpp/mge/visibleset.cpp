@@ -147,13 +147,13 @@ void VisibleSet::Render(IDirect3DDevice9* device,
 
 void VisibleSet::RenderWater(IDirect3DDevice9* device,
                              unsigned int vertex_size,
-                             const std::function<void(const RenderMesh&)>& prepare) {
+                             const std::function<bool(const RenderMesh&)>& prepare) {
     IDirect3DVertexBuffer9* last_buffer = nullptr;
 
     visible_set.restart();
     while (!visible_set.at_end()) {
         const RenderMesh& mesh = visible_set.next();
-        if (mesh.faces <= 0 || mesh.water == 0) {
+        if (mesh.faces <= 0 || mesh.water == 0 || !prepare(mesh)) {
             continue;
         }
         if (last_buffer != mesh.vBuffer) {
@@ -162,7 +162,6 @@ void VisibleSet::RenderWater(IDirect3DDevice9* device,
             last_buffer = mesh.vBuffer;
         }
 
-        prepare(mesh);
         device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, mesh.verts, 0, mesh.faces);
     }
 }

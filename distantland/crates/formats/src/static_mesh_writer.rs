@@ -7,7 +7,8 @@ use crate::PackedDistantStatics;
 use crate::distant_statics::{
     COMPONENT_RECORD_SIZE, ComponentRecord, GRASS_VERTEX_STRIDE, HEADER_SIZE, INDEX_ELEMENT_SIZE, PALETTE_RECORD_SIZE,
     STATIC_MESHES_MAGIC, STATIC_MESHES_VERSION, STATIC_RECORD_SIZE, STATIC_VERTEX_STRIDE, SUBSET_RECORD_SIZE,
-    StaticMeshesFileHeader, StaticRecord, StaticType, SubsetRecord, UV_BOUND_PALETTE_CAP, WATER_LOOK_MAX_LENGTH,
+    SUBSET_WATER_DRY_SPACE, StaticMeshesFileHeader, StaticRecord, StaticType, SubsetRecord, UV_BOUND_PALETTE_CAP,
+    WATER_LOOK_MAX_LENGTH,
 };
 
 /// Returns the geometry vertex stride for a static's classification.
@@ -138,9 +139,12 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
                 texture_path_order.push(texture_path);
             }
 
+            if subset.water > SUBSET_WATER_DRY_SPACE {
+                bail!("subset has unknown water value {}", subset.water);
+            }
             let water_look = subset.water_look.as_ref();
             if !water_look.is_empty() {
-                if subset.water == 0 {
+                if subset.water == 0 || subset.water == SUBSET_WATER_DRY_SPACE {
                     bail!("subset has a look but is not distant water");
                 }
                 if water_look.len() > WATER_LOOK_MAX_LENGTH {
@@ -393,8 +397,9 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
                 triangle_count,
                 flags: u32::from(subset.has_alpha != 0)
                     | (u32::from(subset.has_uv_controller != 0) << 1)
-                    | (u32::from(subset.water != 0) << 2)
-                    | (u32::from(subset.water == 2) << 3),
+                    | (u32::from(subset.water == 1 || subset.water == 2) << 2)
+                    | (u32::from(subset.water == 2) << 3)
+                    | (u32::from(subset.water == SUBSET_WATER_DRY_SPACE) << 4),
                 texture_path_length,
                 horizon_footprint: subset.horizon_footprint,
                 first_component_index: first_component,

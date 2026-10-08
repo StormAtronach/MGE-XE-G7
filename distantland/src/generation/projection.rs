@@ -405,6 +405,8 @@ pub(crate) struct MeshOverrideProjection {
     pub(crate) water_color: Option<[u32; 3]>,
     /// The look line of a water mesh that replaces the look line in the mesh.
     pub(crate) water_look: Option<Arc<str>>,
+    /// Says whether the dry spaces of the mesh go into the distant land.
+    pub(crate) dry_space: Option<bool>,
 }
 
 impl From<&StaticOverride> for MeshOverrideProjection {
@@ -418,6 +420,7 @@ impl From<&StaticOverride> for MeshOverrideProjection {
             water: value.water,
             water_color: value.water_color.map(|color| color.map(f32::to_bits)),
             water_look: value.water_look.clone(),
+            dry_space: value.dry_space,
         }
     }
 }
@@ -436,9 +439,9 @@ impl CanonicalWrite for MeshOverrideProjection {
         }
         writer.write_bool(self.no_script);
         // The water fields are written only when set, so that an override without them keeps
-        // the fingerprint it had before they existed. They are the last fields, and the colour
-        // and the look line each start with a tag of their own that is not a boolean, so the
-        // encoding stays unambiguous.
+        // the fingerprint it had before they existed. They are the last fields, and the colour,
+        // the look line and the dry space key each start with a tag of their own that is not a
+        // boolean, so the encoding stays unambiguous.
         if let Some(water) = self.water {
             writer.write_bool(water);
         }
@@ -451,6 +454,10 @@ impl CanonicalWrite for MeshOverrideProjection {
         if let Some(look) = &self.water_look {
             writer.write_u8(3);
             writer.write_str(look);
+        }
+        if let Some(dry_space) = self.dry_space {
+            writer.write_u8(4);
+            writer.write_bool(dry_space);
         }
     }
 }

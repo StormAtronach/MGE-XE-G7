@@ -330,6 +330,9 @@ void MWBridge::SetWthrString(int wthr, int offset, char str[]) {
 //-----------------------------------------------------------------------------
 
 void MWBridge::setWaterVolumes(const WaterVolume* volumes, unsigned int count) {
+    if (volumes == nullptr) {
+        count = 0;
+    }
     m_waterVolumes.assign(volumes, volumes + count);
     if (m_waterVolumes.empty()) {
         m_inWaterVolume = false;

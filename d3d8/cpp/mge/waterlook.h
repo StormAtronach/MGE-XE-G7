@@ -75,8 +75,11 @@ namespace WaterLooks {
     // The looks of distant water. The generator copies the look line of a water mesh into the
     // distant land, and the loader gives each different look an index, which a distant subset
     // carries in its water byte: firstDistantLook plus the index. The values under it are a
-    // subset without a look: 1 reflects the scene, 2 the sky only.
-    constexpr unsigned int firstDistantLook = 3;
+    // subset without a look: 1 reflects the scene, 2 the sky only. drySpace is no water at
+    // all: a closed shape inside which no water is drawn (DistantLand::countDrySpaces). It
+    // comes in the same visible set as the water, and no pass draws it.
+    constexpr unsigned int drySpace = 3;
+    constexpr unsigned int firstDistantLook = 4;
     void clearDistant();
     // The water byte for a look; kind (1 or 2) when the table is full.
     std::uint8_t addDistant(const WaterLook& look, std::uint8_t kind);

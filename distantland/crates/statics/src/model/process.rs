@@ -162,9 +162,10 @@ fn optimize_static(
 
 impl Subset {
     /// Alpha-tested cards skip triangle-count-reducing simplification because their silhouette is
-    /// encoded in texture alpha.
+    /// encoded in texture alpha. A dry space skips it too: the runtime counts its faces, and
+    /// the count needs the shape closed.
     pub(crate) fn allows_simplification(&self) -> bool {
-        !self.has_alpha
+        !self.has_alpha && self.water != super::SubsetWater::DrySpace
     }
 
     /// Simplifies with reusable workspace buffers. UV weight is computed from average triangle
