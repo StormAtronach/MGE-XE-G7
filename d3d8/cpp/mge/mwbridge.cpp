@@ -370,6 +370,9 @@ bool MWBridge::CellHasWater() {
 
 bool MWBridge::IsUnderwater(float eyeZ) {
     assert(m_loaded);
+    if (m_cameraDry) {
+        return false;
+    }
     return (CellHasWater() && (eyeZ < WaterLevel() - 1.0f));
 }
 

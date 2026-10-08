@@ -282,7 +282,7 @@ public:
     static D3DXHANDLE ehFogNearStart, ehFogNearRange;
     static D3DXHANDLE ehNearViewRange;
     static D3DXHANDLE ehWaterVolumeReflectRange;
-    static D3DXHANDLE ehWaterVolumeHandoff, ehWaterVolumeSky;
+    static D3DXHANDLE ehWaterVolumeHandoff, ehWaterVolumeSky, ehWaterVolumeClarity;
     static D3DXHANDLE ehWaterVolumeTint;
     static D3DXHANDLE ehWaterPlaneTint;
     static D3DXHANDLE ehWaterVolumeFlow;
@@ -417,6 +417,24 @@ public:
     static int waterShaderPass(const char* name);
     static void flushWaterVolumes(bool withDistant);
     static void discardWaterVolumes();
+    // The dry spaces that a mod reports: water volumes are not drawn inside them.
+    static void setWaterMasks(const float* corners, unsigned int triangles);
+    static bool hasDrySpaces();
+    // Turns the dry space bit of the stencil buffer over for every face of the dry spaces in
+    // front of the depth that is there; with a level, for every face on the far side of the
+    // level plane at that height, whatever the depth is. The effect must be begun,
+    // with no pass open.
+    static void countDrySpaces(const float* level = nullptr);
+    // Sets the dry space bit back to zero over the whole screen, after the draw that tested
+    // it. The effect must be begun, with no pass open.
+    static void endDrySpaceCount();
+    static void zeroDrySpaceBit();
+    // Sets the stencil test that lets a water surface through only outside the dry spaces.
+    // countedBehind: the count was that of the faces behind the surface (the level count).
+    static void testOutsideDrySpaces(bool countedBehind = false);
+    static bool cameraInDrySpace;
+    // How near the level of the water an eye in a dry space must be for the water plane to be left out
+    static constexpr float kDrySpaceLevelMargin = 40.0f;
     // A surface mesh of a water volume was taken this frame.
     static bool waterVolumeDrawn;
     // The colour of the water of the cell: the emissive colour of the game's water material.

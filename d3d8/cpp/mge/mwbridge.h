@@ -98,6 +98,8 @@ public:
     // and WaterLevel() describe that volume instead of the cell's water.
     void selectWaterVolume(float x, float y, float z);
     bool InWaterVolume() const { return m_inWaterVolume; }
+    // The camera is in a dry space, which a mod reports: it is not under water there.
+    void setCameraDry(bool dry) { m_cameraDry = dry; }
 
     const char* getInteriorName();
     const BYTE* getInteriorAmb();
@@ -174,6 +176,7 @@ protected:
 
     std::vector<WaterVolume> m_waterVolumes;
     bool m_inWaterVolume = false;
+    bool m_cameraDry = false;
     float m_waterVolumeSurface = 0.0f;
 
     // Cached shadow-camera frustum. Resolved lazily because the shadow manager

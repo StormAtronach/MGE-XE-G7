@@ -32,6 +32,9 @@ struct WaterLook {
     // What the surface reflects in place of the sky, red, green and blue from 0 to 1. It
     // counts with WATER_LOOK_HAS_SKY.
     float sky[3];
+    // Over how many units of water what is under the surface fades into the colour of deep
+    // water; 800 is the standard. Small is murky, and 0 shows nothing of what is under it.
+    float clarity;
 };
 
 enum WaterLookFlags : std::uint32_t {

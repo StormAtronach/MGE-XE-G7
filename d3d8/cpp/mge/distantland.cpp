@@ -575,9 +575,21 @@ void DistantLand::renderStageBlend() {
         effect->SetFloat(ehAlphaRef, Configuration.DL.WaterCaustics);
         effect->CommitChanges();
 
+        // No caustics in a dry space: the floor of a boat that lies under the level of the
+        // sea. The dry spaces are counted against the depth of the scene.
+        const bool cutDrySpaces = hasDrySpaces();
+        if (cutDrySpaces) {
+            countDrySpaces();
+        }
         effect->BeginPass(PASS_RENDERCAUSTICS);
+        if (cutDrySpaces) {
+            testOutsideDrySpaces();
+        }
         PostShaders::applyBlend();
         effect->EndPass();
+        if (cutDrySpaces) {
+            endDrySpaceCount();
+        }
     }
 
     // Blend MW/MGE
@@ -639,9 +651,26 @@ void DistantLand::renderStageWater() {
 
         // Switch to appropriate shader and render
         effect->SetFloatArray(ehWaterPlaneTint, waterPlaneTint, 3);
-        effect->BeginPass(u ? PASS_RENDERUNDERWATER : PASS_RENDERWATER);
-        renderWaterPlane();
-        effect->EndPass();
+        const float level = mwBridge->WaterLevel();
+        if (!u && cameraInDrySpace && fabs(eyePos.z - level) < kDrySpaceLevelMargin) {
+            // The eye is in a dry space and at the level of the water. The waves put the
+            // plane now over the eye and now under it, and the side of the plane that the
+            // count is made for is not sure. The plane is edge-on and is left out.
+        } else if (!u && hasDrySpaces()) {
+            // The plane is not drawn inside a dry space, the hold of a boat: see
+            // countDrySpaces. The dry spaces are counted against the level of the plane, and
+            // the plane is drawn where the count says outside.
+            countDrySpaces(&level);
+            effect->BeginPass(PASS_RENDERWATER);
+            testOutsideDrySpaces(true);
+            renderWaterPlane();
+            effect->EndPass();
+            endDrySpaceCount();
+        } else {
+            effect->BeginPass(u ? PASS_RENDERUNDERWATER : PASS_RENDERWATER);
+            renderWaterPlane();
+            effect->EndPass();
+        }
 
         effect->End();
         stateSaved->Apply();
