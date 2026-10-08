@@ -519,9 +519,20 @@ static void takePointLights(const LightState* state, PendingWaterVolume::Lights&
         out.place[count][1] = light.position.y;
         out.place[count][2] = light.position.z;
         out.place[count][3] = 1.0f;
-        out.colour[count][0] = decoded.diffuse.r;
-        out.colour[count][1] = decoded.diffuse.g;
-        out.colour[count][2] = decoded.diffuse.b;
+        // The glint is the mirror image of the light, so it has the hue of the light itself.
+        // The decoding gives some lights a grey colour, for the way that the game lights a
+        // mesh with them; from it comes how bright the glint is.
+        const float brightness = std::max(decoded.diffuse.r, std::max(decoded.diffuse.g, decoded.diffuse.b));
+        const float strongest = std::max(light.diffuse.r, std::max(light.diffuse.g, light.diffuse.b));
+        if (strongest > 1e-4f) {
+            out.colour[count][0] = brightness * light.diffuse.r / strongest;
+            out.colour[count][1] = brightness * light.diffuse.g / strongest;
+            out.colour[count][2] = brightness * light.diffuse.b / strongest;
+        } else {
+            out.colour[count][0] = decoded.diffuse.r;
+            out.colour[count][1] = decoded.diffuse.g;
+            out.colour[count][2] = decoded.diffuse.b;
+        }
         out.falloff[count][0] = decoded.attenuation.x;
         out.falloff[count][1] = decoded.attenuation.y;
         out.falloff[count][2] = decoded.attenuation.z;
