@@ -36,6 +36,21 @@
 #define MGE_RENDER_LINK_CAP_WORLD_SPACE 0x00000010u
 // The host tells if the scene is in camera space: MgeRenderLinkHostV1::cameraSpace.
 #define MGE_RENDER_LINK_CAP_CAMERA_SPACE 0x00000020u
+// The host takes state commands: MgeRenderLinkHostV1::command.
+#define MGE_RENDER_LINK_CAP_COMMANDS 0x00000040u
+
+// The commands. A command is device state that is not a part of the state packet of a
+// draw. The host takes it at once, in the order of the client. The values are those of D3D8.
+// The client sends a command in place of the D3D8 call when the host has the device kind:
+// MGE_LINK_FACT_DEVICE_RENDER_STATES for a render state, MGE_LINK_FACT_DEVICE_STAGE_STATES
+// for a stage state, MGE_LINK_FACT_DEVICE_TRANSFORMS for a transform.
+// A render state: a is the state, b the value.
+#define MGE_LINK_COMMAND_RENDER_STATE 1u
+// A texture stage state: a is the stage, b the state, c the value.
+#define MGE_LINK_COMMAND_STAGE_STATE 2u
+// The view or the projection transform: a is the D3D8 transform state, b the address of 16
+// floats.
+#define MGE_LINK_COMMAND_TRANSFORM 3u
 
 // Scene kinds. A scene is the time between BeginPaint and EndPaint of the renderer.
 #define MGE_LINK_SCENE_OTHER 0u
@@ -416,6 +431,9 @@ typedef struct MgeRenderLinkHostV1 {
     // that the host uses to `origin`. Returns 0 for a scene in world space.
     // Only a host with MGE_RENDER_LINK_CAP_CAMERA_SPACE has this member.
     uint32_t (__cdecl* cameraSpace)(double origin[3]);
+    // MGE_LINK_COMMAND_*
+    // Only a host with MGE_RENDER_LINK_CAP_COMMANDS has this member.
+    void (__cdecl* command)(uint32_t command, uint32_t a, uint32_t b, uint32_t c);
 } MgeRenderLinkHostV1;
 
 #ifdef __cplusplus
@@ -428,7 +446,7 @@ static_assert(sizeof(MgeLinkDrawStateV1) == 1728, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 528, "MgeLinkCountersV1 size");
 static_assert(sizeof(MgeLinkTextureV1) == 52, "MgeLinkTextureV1 size");
-static_assert(sizeof(MgeRenderLinkHostV1) == 56, "MgeRenderLinkHostV1 size");
+static_assert(sizeof(MgeRenderLinkHostV1) == 60, "MgeRenderLinkHostV1 size");
 
 extern "C" {
 #endif

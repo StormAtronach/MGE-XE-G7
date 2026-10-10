@@ -514,6 +514,28 @@ namespace {
         return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(device->factoryProxyTexture(real)));
     }
 
+    // Device state of the client that is not in a state packet. It goes through the D3D8
+    // handlers of the proxy, as the D3D8 call of the game did.
+    void __cdecl command(uint32_t command, uint32_t a, uint32_t b, uint32_t c) {
+        auto device = static_cast<MGEProxyDevice*>(linkDevice.load());
+        if (!device) {
+            return;
+        }
+        switch (command) {
+        case MGE_LINK_COMMAND_RENDER_STATE:
+            device->MGEProxyDevice::SetRenderState(static_cast<D3DRENDERSTATETYPE>(a), b);
+            break;
+        case MGE_LINK_COMMAND_STAGE_STATE:
+            device->MGEProxyDevice::SetTextureStageState(a, static_cast<D3DTEXTURESTAGESTATETYPE>(b), c);
+            break;
+        case MGE_LINK_COMMAND_TRANSFORM:
+            if (b && (a == D3DTS_VIEW || a == D3DTS_PROJECTION)) {
+                device->MGEProxyDevice::SetTransform(static_cast<D3DTRANSFORMSTATETYPE>(a), reinterpret_cast<const D3DMATRIX*>(static_cast<uintptr_t>(b)));
+            }
+            break;
+        }
+    }
+
     uint32_t __cdecl cameraSpace(double origin[3]) {
         return origin && CameraRelative::activeOrigin(origin) ? 1u : 0u;
     }
@@ -526,7 +548,8 @@ namespace {
         sizeof(MgeRenderLinkHostV1),
         MGE_RENDER_LINK_VERSION,
         MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS | MGE_RENDER_LINK_CAP_DRAW_STATE
-            | MGE_RENDER_LINK_CAP_TEXTURES | MGE_RENDER_LINK_CAP_WORLD_SPACE | MGE_RENDER_LINK_CAP_CAMERA_SPACE,
+            | MGE_RENDER_LINK_CAP_TEXTURES | MGE_RENDER_LINK_CAP_WORLD_SPACE | MGE_RENDER_LINK_CAP_CAMERA_SPACE
+            | MGE_RENDER_LINK_CAP_COMMANDS,
         0,
         sceneBegin,
         sceneEnd,
@@ -538,6 +561,7 @@ namespace {
         textureCreate,
         worldSpace,
         cameraSpace,
+        command,
     };
 }
 
