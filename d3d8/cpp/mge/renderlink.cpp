@@ -548,6 +548,52 @@ namespace {
         }
     }
 
+    // The kinds MGE_LINK_KIND_* that the client gave to the host.
+    uint32_t usedKinds = 0;
+
+    uint32_t __cdecl useKinds(uint32_t kindMask) {
+        usedKinds = kindMask & (MGE_LINK_KIND_FRAME | MGE_LINK_KIND_BUFFERS);
+        LOG::logline("-- Render link: device kinds of the host: mask 0x%x", usedKinds);
+        return usedKinds;
+    }
+
+    // A frame or scene call of the client. It goes through the D3D8 handler of the proxy,
+    // as the D3D8 call of the game did.
+    uint32_t __cdecl call(uint32_t call, const uint32_t* args) {
+        auto device = static_cast<MGEProxyDevice*>(linkDevice.load());
+        if (!device) {
+            return static_cast<uint32_t>(D3DERR_INVALIDCALL);
+        }
+        const auto pointer = [](uint32_t value) { return reinterpret_cast<void*>(static_cast<uintptr_t>(value)); };
+        switch (call) {
+        case MGE_LINK_CALL_TEST_DEVICE:
+            return device->ProxyDevice::TestCooperativeLevel();
+        case MGE_LINK_CALL_BEGIN_SCENE:
+            return device->MGEProxyDevice::BeginScene();
+        case MGE_LINK_CALL_END_SCENE:
+            return device->MGEProxyDevice::EndScene();
+        case MGE_LINK_CALL_CLEAR: {
+            float depth;
+            std::memcpy(&depth, &args[4], sizeof(depth));
+            return device->MGEProxyDevice::Clear(args[0], static_cast<const D3DRECT*>(pointer(args[1])), args[2], args[3], depth, args[5]);
+        }
+        case MGE_LINK_CALL_VIEWPORT:
+            return device->ProxyDevice::SetViewport(static_cast<const D3DVIEWPORT8*>(pointer(args[0])));
+        case MGE_LINK_CALL_PRESENT:
+            return device->MGEProxyDevice::Present(static_cast<const RECT*>(pointer(args[0])), static_cast<const RECT*>(pointer(args[1])),
+                static_cast<HWND>(pointer(args[2])), static_cast<const RGNDATA*>(pointer(args[3])));
+        case MGE_LINK_CALL_CREATE_VERTEX_BUFFER:
+            return device->ProxyDevice::CreateVertexBuffer(args[0], args[1], args[2], static_cast<D3DPOOL>(args[3]),
+                static_cast<IDirect3DVertexBuffer8**>(pointer(args[4])));
+        case MGE_LINK_CALL_CREATE_INDEX_BUFFER:
+            return device->ProxyDevice::CreateIndexBuffer(args[0], args[1], static_cast<D3DFORMAT>(args[2]), static_cast<D3DPOOL>(args[3]),
+                static_cast<IDirect3DIndexBuffer8**>(pointer(args[4])));
+        case MGE_LINK_CALL_RENDER_TARGET:
+            return device->MGEProxyDevice::SetRenderTarget(static_cast<IDirect3DSurface8*>(pointer(args[0])), static_cast<IDirect3DSurface8*>(pointer(args[1])));
+        }
+        return static_cast<uint32_t>(D3DERR_INVALIDCALL);
+    }
+
     uint32_t __cdecl cameraSpace(double origin[3]) {
         return origin && CameraRelative::activeOrigin(origin) ? 1u : 0u;
     }
@@ -561,7 +607,7 @@ namespace {
         MGE_RENDER_LINK_VERSION,
         MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS | MGE_RENDER_LINK_CAP_DRAW_STATE
             | MGE_RENDER_LINK_CAP_TEXTURES | MGE_RENDER_LINK_CAP_WORLD_SPACE | MGE_RENDER_LINK_CAP_CAMERA_SPACE
-            | MGE_RENDER_LINK_CAP_COMMANDS,
+            | MGE_RENDER_LINK_CAP_COMMANDS | MGE_RENDER_LINK_CAP_CALLS,
         0,
         sceneBegin,
         sceneEnd,
@@ -574,6 +620,8 @@ namespace {
         worldSpace,
         cameraSpace,
         command,
+        call,
+        useKinds,
     };
 }
 

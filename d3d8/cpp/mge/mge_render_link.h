@@ -39,6 +39,38 @@
 // The host takes state commands: MgeRenderLinkHostV1::command.
 #define MGE_RENDER_LINK_CAP_COMMANDS 0x00000040u
 
+// The host takes calls that give a result, and has more device kinds:
+// MgeRenderLinkHostV1::call and MgeRenderLinkHostV1::useKinds.
+#define MGE_RENDER_LINK_CAP_CALLS 0x00000080u
+
+// More device kinds, for useKinds. They are as the device kinds of the fact mask: the host
+// does the work and the client makes no D3D8 call.
+// The calls of a frame and of a scene: MGE_LINK_CALL_*.
+#define MGE_LINK_KIND_FRAME 0x00000001u
+// The creation of vertex buffers and index buffers.
+#define MGE_LINK_KIND_BUFFERS 0x00000002u
+
+// The calls. `args` is an array of words. The result is the HRESULT of D3D8.
+// The device is lost or not: no arguments. The result is the answer of the device.
+#define MGE_LINK_CALL_TEST_DEVICE 1u
+// No arguments.
+#define MGE_LINK_CALL_BEGIN_SCENE 2u
+#define MGE_LINK_CALL_END_SCENE 3u
+// Clears the target: number of rectangles, address of the rectangles, flags, colour, depth
+// (the bits of a float), stencil.
+#define MGE_LINK_CALL_CLEAR 4u
+// The address of a D3DVIEWPORT8.
+#define MGE_LINK_CALL_VIEWPORT 5u
+// Shows the frame: source rectangle, target rectangle, window, dirty region.
+#define MGE_LINK_CALL_PRESENT 6u
+// The render target and the depth buffer, as the D3D8 surface pointers of the game.
+#define MGE_LINK_CALL_RENDER_TARGET 7u
+// Makes a vertex buffer: length in bytes, usage, vertex format, pool, address for the
+// handle. In this version the handle is a D3D8 buffer pointer with one reference.
+#define MGE_LINK_CALL_CREATE_VERTEX_BUFFER 8u
+// Makes an index buffer: length in bytes, usage, index format, pool, address for the handle.
+#define MGE_LINK_CALL_CREATE_INDEX_BUFFER 9u
+
 // The commands. A command is device state that is not a part of the state packet of a
 // draw. The host takes it at once, in the order of the client. The values are those of D3D8.
 // The client sends a command in place of the D3D8 call when the host has the device kind:
@@ -442,6 +474,11 @@ typedef struct MgeRenderLinkHostV1 {
     // MGE_LINK_COMMAND_*
     // Only a host with MGE_RENDER_LINK_CAP_COMMANDS has this member.
     void (__cdecl* command)(uint32_t command, uint32_t a, uint32_t b, uint32_t c);
+    // MGE_LINK_CALL_*. Returns the HRESULT.
+    // Only a host with MGE_RENDER_LINK_CAP_CALLS has this member and the next one.
+    uint32_t (__cdecl* call)(uint32_t call, const uint32_t* args);
+    // Tells the host which of the kinds MGE_LINK_KIND_* it has. Returns the mask that it uses.
+    uint32_t (__cdecl* useKinds)(uint32_t kindMask);
 } MgeRenderLinkHostV1;
 
 #ifdef __cplusplus
@@ -454,7 +491,7 @@ static_assert(sizeof(MgeLinkDrawStateV1) == 1728, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 528, "MgeLinkCountersV1 size");
 static_assert(sizeof(MgeLinkTextureV1) == 52, "MgeLinkTextureV1 size");
-static_assert(sizeof(MgeRenderLinkHostV1) == 60, "MgeRenderLinkHostV1 size");
+static_assert(sizeof(MgeRenderLinkHostV1) == 68, "MgeRenderLinkHostV1 size");
 
 extern "C" {
 #endif
