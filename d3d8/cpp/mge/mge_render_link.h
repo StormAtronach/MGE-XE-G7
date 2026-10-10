@@ -28,6 +28,8 @@
 #define MGE_RENDER_LINK_CAP_COMPARE 0x00000001u
 // The host can use the facts of the packets as its source.
 #define MGE_RENDER_LINK_CAP_USE_FACTS 0x00000002u
+// The host takes a state packet for each D3D8 draw call (`drawState`).
+#define MGE_RENDER_LINK_CAP_DRAW_STATE 0x00000004u
 
 // Scene kinds. A scene is the time between BeginPaint and EndPaint of the renderer.
 #define MGE_LINK_SCENE_OTHER 0u
@@ -80,6 +82,10 @@
 // A ripple shape of the game. The ripple node is below the water plane node.
 #define MGE_LINK_CLASS_WATER_RIPPLE 17u
 
+// Flags of a state packet.
+// The draw is a partition of a skinned mesh. `world` is not valid.
+#define MGE_LINK_STATE_SKINNED 0x00000001u
+
 // Flags of a draw.
 // The draw comes from the sorted queue of the accumulator.
 #define MGE_LINK_DRAW_FROM_SORTED_QUEUE 0x00000001u
@@ -112,6 +118,13 @@
 // A view transform that is not the first one of its scene is a UI view. The packet side is
 // the kind of the scene. The host compares this fact and does not use it.
 #define MGE_LINK_FACT_LATER_VIEW 8u
+// The groups of the state packet. For these, "both yes" is the number of D3D8 draws where
+// the group of the packet was equal to the state that the host has from the D3D8 calls,
+// "host only" the number where it was different, and "both no" the number of draws without
+// a state packet.
+#define MGE_LINK_FACT_STATE_DRAW 9u
+#define MGE_LINK_FACT_STATE_BUFFERS 10u
+#define MGE_LINK_FACT_STATE_TRANSFORM 11u
 #define MGE_LINK_FACT_COUNT 16u
 
 typedef struct MgeLinkSceneV1 {
@@ -163,6 +176,29 @@ typedef struct MgeLinkDrawV1 {
 } MgeLinkDrawV1;
 
 // The comparisons of one fact. The fact is a yes or no answer for a draw or a scene.
+// The state of one D3D8 draw call. The client sends it before the call. A handle is the
+// value that identifies the resource for the host. In this version it is the D3D8 interface
+// pointer that the game holds.
+typedef struct MgeLinkDrawStateV1 {
+    uint32_t structSize;
+    // MGE_LINK_STATE_*
+    uint32_t flags;
+    // The arguments of the draw call.
+    uint32_t primitiveType;
+    uint32_t baseVertexIndex;
+    uint32_t minIndex;
+    uint32_t vertexCount;
+    uint32_t startIndex;
+    uint32_t primitiveCount;
+    // The buffers.
+    uint32_t vertexBuffer;
+    uint32_t vertexStride;
+    uint32_t vertexFormat;
+    uint32_t indexBuffer;
+    // The world matrix, as the renderer of the game has it.
+    float world[16];
+} MgeLinkDrawStateV1;
+
 typedef struct MgeLinkFactCountV1 {
     // The packet and the inference of the host said yes.
     uint32_t bothYes;
@@ -206,6 +242,9 @@ typedef struct MgeRenderLinkHostV1 {
     // a host does not use a fact that it cannot take from a packet.
     // Only a host with MGE_RENDER_LINK_CAP_USE_FACTS has this member.
     uint32_t (__cdecl* useFacts)(uint32_t factMask);
+    // The D3D8 draw call that follows has this state.
+    // Only a host with MGE_RENDER_LINK_CAP_DRAW_STATE has this member.
+    void (__cdecl* drawState)(const MgeLinkDrawStateV1* state);
 } MgeRenderLinkHostV1;
 
 #ifdef __cplusplus
@@ -213,9 +252,10 @@ static_assert(sizeof(void*) == 4, "the render link is for 32-bit code");
 static_assert(sizeof(MgeLinkSceneV1) == 24, "MgeLinkSceneV1 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
+static_assert(sizeof(MgeLinkDrawStateV1) == 112, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 272, "MgeLinkCountersV1 size");
-static_assert(sizeof(MgeRenderLinkHostV1) == 40, "MgeRenderLinkHostV1 size");
+static_assert(sizeof(MgeRenderLinkHostV1) == 44, "MgeRenderLinkHostV1 size");
 
 extern "C" {
 #endif

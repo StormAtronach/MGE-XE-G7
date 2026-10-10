@@ -3,6 +3,8 @@
 
 #include "renderlink.h"
 
+#include "camerarelative.h"
+#include "ffeshader.h"
 #include "mwbridge.h"
 #include "support/log.h"
 
@@ -26,6 +28,9 @@ namespace {
     MgeLinkLightV1 currentLights[kMaxLights];
     // The number of D3D8 draws that the proxy saw for the current packet.
     uint32_t d3dDraws = 0;
+    // The state packet of the D3D8 draw call that comes next.
+    MgeLinkDrawStateV1 currentState = {};
+    bool stateValid = false;
     // The facts that the client told the host to take from the packets. Bit n is fact n.
     uint32_t usedFacts = 0;
     // The facts that the proxy can take from a packet.
@@ -119,7 +124,16 @@ namespace {
         ++counters.scenes;
     }
 
+    void __cdecl drawState(const MgeLinkDrawStateV1* state) {
+        if (!state || state->structSize < sizeof(uint32_t) * 2) {
+            return;
+        }
+        copyPacket(currentState, state);
+        stateValid = true;
+    }
+
     void __cdecl sceneEnd() {
+        stateValid = false;
         sceneViewPending = false;
         sceneOpen = false;
         drawValid = false;
@@ -185,7 +199,7 @@ namespace {
     const MgeRenderLinkHostV1 host = {
         sizeof(MgeRenderLinkHostV1),
         MGE_RENDER_LINK_VERSION,
-        MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS,
+        MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS | MGE_RENDER_LINK_CAP_DRAW_STATE,
         0,
         sceneBegin,
         sceneEnd,
@@ -193,6 +207,7 @@ namespace {
         draw,
         readCounters,
         useFacts,
+        drawState,
     };
 }
 
@@ -293,6 +308,48 @@ namespace RenderLink {
             return;
         }
         ++d3dDraws;
+    }
+
+    void observeDrawState(const RenderedState& rs) {
+        if (!connected) {
+            return;
+        }
+        if (!stateValid) {
+            // Both no: the draw has no state packet.
+            count(MGE_LINK_FACT_STATE_DRAW, false, false);
+            return;
+        }
+        const MgeLinkDrawStateV1& s = currentState;
+        // The packet is for one D3D8 draw call.
+        stateValid = false;
+
+        const bool drawEqual = s.primitiveType == static_cast<uint32_t>(rs.primType) && s.baseVertexIndex == rs.baseIndex
+            && s.minIndex == rs.minIndex && s.vertexCount == rs.vertCount && s.startIndex == rs.startIndex
+            && s.primitiveCount == rs.primCount;
+        count(MGE_LINK_FACT_STATE_DRAW, true, drawEqual);
+
+        const bool buffersEqual = s.vertexBuffer == static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rs.vb))
+            && s.vertexStride == rs.vbStride && s.vertexFormat == rs.fvf
+            && s.indexBuffer == static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rs.ib));
+        count(MGE_LINK_FACT_STATE_BUFFERS, true, buffersEqual);
+
+        if (!(s.flags & MGE_LINK_STATE_SKINNED)) {
+            // The game sends its world matrix. With camera-relative rendering the matrix of a
+            // node has a translation relative to the camera, and the proxy keeps the absolute
+            // matrix that it makes from it.
+            bool worldEqual = std::memcmp(s.world, &rs.worldTransforms[0], sizeof(s.world)) == 0;
+            if (!worldEqual && CameraRelative::active()) {
+                D3DXMATRIX absolute;
+                CameraRelative::absoluteFromRelative(reinterpret_cast<const D3DMATRIX*>(s.world), &absolute);
+                worldEqual = std::memcmp(&absolute, &rs.worldTransforms[0], sizeof(absolute)) == 0;
+            }
+            if (!worldEqual && loggedDifferences[MGE_LINK_FACT_STATE_TRANSFORM] < kLoggedDifferences) {
+                const float* m = &rs.worldTransforms[0]._11;
+                LOG::logline("-- Render link: world matrix: packet row 4 %g %g %g, proxy row 4 %g %g %g; row 1 %g %g %g against %g %g %g",
+                    s.world[12], s.world[13], s.world[14], m[12], m[13], m[14], s.world[0], s.world[1], s.world[2], m[0], m[1], m[2]);
+            }
+            count(MGE_LINK_FACT_STATE_TRANSFORM, true, worldEqual);
+        }
     }
 
     void noteLightRadius(const void* light, int recordRadius, int attachRadius) {

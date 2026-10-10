@@ -3,6 +3,7 @@
 #include "mge_render_link.h"
 
 struct LightState;
+struct RenderedState;
 
 // The host side of the render link. A client (the nirender plugin) reports the scene and
 // the object of the D3D8 calls that follow, through MGE_RenderLinkConnect.
@@ -61,6 +62,10 @@ namespace RenderLink {
 
     // A DrawIndexedPrimitive of the world that the proxy inspects.
     void observeWorldDraw();
+
+    // The same draw, after the proxy put the arguments of the call into `rs`. Compares the
+    // state packet of the client with the state that the proxy has from the D3D8 calls.
+    void observeDrawState(const RenderedState& rs);
 
     // The game attaches a point light. `recordRadius` is the radius that the game has for
     // the light. `attachRadius` is the radius that the shim of the light fade gives back,
