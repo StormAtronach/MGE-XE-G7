@@ -51,6 +51,14 @@
 // The view or the projection transform: a is the D3D8 transform state, b the address of 16
 // floats.
 #define MGE_LINK_COMMAND_TRANSFORM 3u
+// A draw with the index buffer: a is the address of 5 words: primitive type, least index,
+// number of vertices, first index, number of primitives. The host draws with the state
+// that it has. The client sends it in place of the D3D8 call when the host has
+// MGE_LINK_FACT_DEVICE_BUFFERS.
+#define MGE_LINK_COMMAND_DRAW_INDEXED 4u
+// A draw without an index buffer: a is the address of 3 words: primitive type, first
+// vertex, number of primitives.
+#define MGE_LINK_COMMAND_DRAW 5u
 
 // Scene kinds. A scene is the time between BeginPaint and EndPaint of the renderer.
 #define MGE_LINK_SCENE_OTHER 0u
@@ -192,7 +200,7 @@
 #define MGE_LINK_FACT_DEVICE_STAGE_STATES 26u
 // The textures of the stages.
 #define MGE_LINK_FACT_DEVICE_TEXTURES 27u
-// The vertex buffer, the index buffer and the vertex format.
+// The vertex buffer, the index buffer and the vertex format, and the draw call.
 #define MGE_LINK_FACT_DEVICE_BUFFERS 28u
 // The world matrices, and the texture transforms of the stages that use one.
 #define MGE_LINK_FACT_DEVICE_TRANSFORMS 29u

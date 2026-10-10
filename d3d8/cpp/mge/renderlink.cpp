@@ -528,6 +528,18 @@ namespace {
         case MGE_LINK_COMMAND_STAGE_STATE:
             device->MGEProxyDevice::SetTextureStageState(a, static_cast<D3DTEXTURESTAGESTATETYPE>(b), c);
             break;
+        case MGE_LINK_COMMAND_DRAW_INDEXED:
+            if (a) {
+                const auto w = reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(a));
+                device->MGEProxyDevice::DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(w[0]), w[1], w[2], w[3], w[4]);
+            }
+            break;
+        case MGE_LINK_COMMAND_DRAW:
+            if (a) {
+                const auto w = reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(a));
+                device->ProxyDevice::DrawPrimitive(static_cast<D3DPRIMITIVETYPE>(w[0]), w[1], w[2]);
+            }
+            break;
         case MGE_LINK_COMMAND_TRANSFORM:
             if (b && (a == D3DTS_VIEW || a == D3DTS_PROJECTION)) {
                 device->MGEProxyDevice::SetTransform(static_cast<D3DTRANSFORMSTATETYPE>(a), reinterpret_cast<const D3DMATRIX*>(static_cast<uintptr_t>(b)));
