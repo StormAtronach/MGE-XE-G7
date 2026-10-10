@@ -31,6 +31,9 @@ namespace {
     // The state packet of the D3D8 draw call that comes next.
     MgeLinkDrawStateV1 currentState = {};
     bool stateValid = false;
+    // The state packet of the D3D8 draw that the proxy inspects now. observeDrawState sets
+    // it, applyDrawState reads it.
+    bool stateForThisDraw = false;
     const uint32_t kMaxStateLights = 64;
     MgeLinkStateLightV1 stateLights[kMaxStateLights];
     // The facts that the client told the host to take from the packets. Bit n is fact n.
@@ -38,7 +41,7 @@ namespace {
     // The facts that the proxy can take from a packet.
     const uint32_t kUsableFacts = (1u << MGE_LINK_FACT_UI_SCENE) | (1u << MGE_LINK_FACT_WATER_PLANE)
         | (1u << MGE_LINK_FACT_SUN_LIGHT) | (1u << MGE_LINK_FACT_SKY_DRAW) | (1u << MGE_LINK_FACT_LAND_SPLAT)
-        | (1u << MGE_LINK_FACT_SCENE_KIND) | (1u << MGE_LINK_FACT_MOON_SHADOW);
+        | (1u << MGE_LINK_FACT_SCENE_KIND) | (1u << MGE_LINK_FACT_MOON_SHADOW) | (1u << MGE_LINK_FACT_STATE_DRAW);
     // The radius of a light is not in this list. The light fade needs the radius that agrees
     // with the attenuation of the light. A light of a mod can have an attenuation that does
     // not come from the radius that the game has for it. The comparison stays.
@@ -322,6 +325,7 @@ namespace RenderLink {
     }
 
     void observeDrawState(const RenderedState& rs, const FragmentState& frs, const LightState& lights) {
+        stateForThisDraw = false;
         if (!connected) {
             return;
         }
@@ -333,6 +337,7 @@ namespace RenderLink {
         const MgeLinkDrawStateV1& s = currentState;
         // The packet is for one D3D8 draw call.
         stateValid = false;
+        stateForThisDraw = s.structSize >= sizeof(MgeLinkDrawStateV1);
 
         const bool drawEqual = s.primitiveType == static_cast<uint32_t>(rs.primType) && s.baseVertexIndex == rs.baseIndex
             && s.minIndex == rs.minIndex && s.vertexCount == rs.vertCount && s.startIndex == rs.startIndex
@@ -454,6 +459,15 @@ namespace RenderLink {
         bool lightsEqual = s.lightCount == lights.active.size();
         uint32_t badLight = 0;
         const char* why = "count";
+        // The list of the game has the newest light first. The list of the proxy has the
+        // oldest first, and the order has an effect on its shading.
+        for (uint32_t i = 0; i != s.lightCount && lightsEqual; ++i) {
+            if (lights.active[i] != stateLights[s.lightCount - 1 - i].deviceIndex) {
+                lightsEqual = false;
+                why = "order";
+                badLight = lights.active[i];
+            }
+        }
         for (uint32_t i = 0; i != s.lightCount && lightsEqual; ++i) {
             const MgeLinkStateLightV1& l = stateLights[i];
             const D3DLIGHT8* d3d = reinterpret_cast<const D3DLIGHT8*>(l.d3dLight);
@@ -494,6 +508,90 @@ namespace RenderLink {
                 why, s.lightCount, static_cast<uint32_t>(lights.active.size()), badLight);
         }
         count(MGE_LINK_FACT_STATE_LIGHTS, true, lightsEqual);
+    }
+
+    bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights) {
+        if (!stateForThisDraw || !uses(MGE_LINK_FACT_STATE_DRAW)) {
+            return false;
+        }
+        const MgeLinkDrawStateV1& s = currentState;
+        const auto byte = [](uint32_t value) { return static_cast<BYTE>(value); };
+
+        rs.primType = static_cast<D3DPRIMITIVETYPE>(s.primitiveType);
+        rs.baseIndex = s.baseVertexIndex;
+        rs.minIndex = s.minIndex;
+        rs.vertCount = s.vertexCount;
+        rs.startIndex = s.startIndex;
+        rs.primCount = s.primitiveCount;
+        rs.vb = reinterpret_cast<IDirect3DVertexBuffer9*>(static_cast<uintptr_t>(s.vertexBuffer));
+        rs.vbStride = s.vertexStride;
+        rs.fvf = s.vertexFormat;
+        rs.ib = reinterpret_cast<IDirect3DIndexBuffer9*>(static_cast<uintptr_t>(s.indexBuffer));
+
+        rs.zWrite = s.depthWrite;
+        rs.cullMode = s.cullMode;
+        rs.vertexBlendState = s.vertexBlend;
+        rs.blendEnable = byte(s.blendEnable);
+        rs.srcBlend = byte(s.sourceBlend);
+        rs.destBlend = byte(s.destinationBlend);
+        rs.alphaTest = byte(s.alphaTestEnable);
+        rs.alphaFunc = byte(s.alphaFunction);
+        rs.alphaRef = byte(s.alphaReference);
+        rs.useLighting = byte(s.lighting);
+        rs.useFog = byte(s.fogEnable);
+        rs.matSrcDiffuse = byte(s.diffuseMaterialSource);
+        rs.matSrcEmissive = byte(s.emissiveMaterialSource);
+
+        // The material, as captureMaterial of the proxy keeps it: the power goes into the
+        // alpha of the emissive colour.
+        std::memcpy(&rs.diffuseMaterial, s.material, sizeof(D3DCOLORVALUE));
+        std::memcpy(&frs.material.diffuse, s.material, sizeof(D3DCOLORVALUE));
+        std::memcpy(&frs.material.ambient, s.material + 4, sizeof(D3DCOLORVALUE));
+        std::memcpy(&frs.material.emissive, s.material + 12, sizeof(D3DCOLORVALUE));
+        frs.material.emissive.a = s.material[16];
+
+        for (uint32_t i = 0; i != MGE_LINK_STATE_STAGES; ++i) {
+            const uint32_t* p = s.stages[i];
+            auto& g = frs.stage[i];
+            g.colorOp = byte(p[0]);
+            g.colorArg1 = byte(p[1]);
+            g.colorArg2 = byte(p[2]);
+            g.alphaOp = byte(p[3]);
+            g.alphaArg1 = byte(p[4]);
+            g.alphaArg2 = byte(p[5]);
+            g.colorArg0 = byte(p[6]);
+            g.alphaArg0 = byte(p[7]);
+            g.resultArg = byte(p[8]);
+            g.texcoordIndex = p[9];
+            g.texTransformFlags = p[10];
+            std::memcpy(g.bumpEnvMat, &p[11], 4 * sizeof(float));
+            std::memcpy(&g.bumpLumiScale, &p[15], sizeof(float));
+            std::memcpy(&g.bumpLumiBias, &p[16], sizeof(float));
+        }
+
+        // The lights that are on, oldest first as the proxy keeps them. The radius of a
+        // light and its place in view space stay as the proxy has them.
+        lights.active.clear();
+        for (uint32_t i = s.lightCount; i-- != 0;) {
+            const MgeLinkStateLightV1& l = stateLights[i];
+            const D3DLIGHT8* d3d = reinterpret_cast<const D3DLIGHT8*>(l.d3dLight);
+            lights.active.push_back(l.deviceIndex);
+            auto& g = lights.lights[l.deviceIndex];
+            g.type = d3d->Type;
+            g.diffuse = d3d->Diffuse;
+            if (d3d->Type == D3DLIGHT_POINT) {
+                g.position = d3d->Position;
+                g.falloff.x = d3d->Attenuation0;
+                g.falloff.y = d3d->Attenuation1;
+                g.falloff.z = d3d->Attenuation2;
+            } else {
+                D3DXVec3Normalize(reinterpret_cast<D3DXVECTOR3*>(&g.position), reinterpret_cast<const D3DXVECTOR3*>(&d3d->Direction));
+                g.ambient.x = d3d->Ambient.r;
+                g.ambient.y = d3d->Ambient.g;
+                g.ambient.z = d3d->Ambient.b;
+            }
+        }
+        return true;
     }
 
     void noteLightRadius(const void* light, int recordRadius, int attachRadius) {

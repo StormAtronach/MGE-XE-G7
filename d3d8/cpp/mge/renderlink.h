@@ -68,6 +68,13 @@ namespace RenderLink {
     // state packet of the client with the state that the proxy has from the D3D8 calls.
     void observeDrawState(const RenderedState& rs, const FragmentState& frs, const LightState& lights);
 
+    // Call after observeDrawState. When the client asked for it (the fact
+    // MGE_LINK_FACT_STATE_DRAW in useFacts) and the draw has a state packet, this puts the
+    // state of the packet into the three structs. Returns true when it did.
+    // Not from the packet yet: the world matrix, the bones, the textures and the ambient
+    // colour. They stay as the D3D8 calls gave them.
+    bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights);
+
     // The game attaches a point light. `recordRadius` is the radius that the game has for
     // the light. `attachRadius` is the radius that the shim of the light fade gives back,
     // and that the game then keeps in the light object.
