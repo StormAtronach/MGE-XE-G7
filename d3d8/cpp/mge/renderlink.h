@@ -4,6 +4,7 @@
 
 struct LightState;
 struct RenderedState;
+struct FragmentState;
 
 // The host side of the render link. A client (the nirender plugin) reports the scene and
 // the object of the D3D8 calls that follow, through MGE_RenderLinkConnect.
@@ -65,7 +66,7 @@ namespace RenderLink {
 
     // The same draw, after the proxy put the arguments of the call into `rs`. Compares the
     // state packet of the client with the state that the proxy has from the D3D8 calls.
-    void observeDrawState(const RenderedState& rs);
+    void observeDrawState(const RenderedState& rs, const FragmentState& frs, const LightState& lights);
 
     // The game attaches a point light. `recordRadius` is the radius that the game has for
     // the light. `attachRadius` is the radius that the shim of the light fade gives back,

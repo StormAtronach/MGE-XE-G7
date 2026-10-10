@@ -31,6 +31,8 @@ namespace {
     // The state packet of the D3D8 draw call that comes next.
     MgeLinkDrawStateV1 currentState = {};
     bool stateValid = false;
+    const uint32_t kMaxStateLights = 64;
+    MgeLinkStateLightV1 stateLights[kMaxStateLights];
     // The facts that the client told the host to take from the packets. Bit n is fact n.
     uint32_t usedFacts = 0;
     // The facts that the proxy can take from a packet.
@@ -129,6 +131,15 @@ namespace {
             return;
         }
         copyPacket(currentState, state);
+        // The light array belongs to the client. Keep a copy.
+        if (state->structSize < sizeof(MgeLinkDrawStateV1) || !currentState.lights) {
+            currentState.lightCount = 0;
+        }
+        if (currentState.lightCount > kMaxStateLights) {
+            currentState.lightCount = kMaxStateLights;
+        }
+        std::memcpy(stateLights, currentState.lights, currentState.lightCount * sizeof(MgeLinkStateLightV1));
+        currentState.lights = stateLights;
         stateValid = true;
     }
 
@@ -310,7 +321,7 @@ namespace RenderLink {
         ++d3dDraws;
     }
 
-    void observeDrawState(const RenderedState& rs) {
+    void observeDrawState(const RenderedState& rs, const FragmentState& frs, const LightState& lights) {
         if (!connected) {
             return;
         }
@@ -350,6 +361,139 @@ namespace RenderLink {
             }
             count(MGE_LINK_FACT_STATE_TRANSFORM, true, worldEqual);
         }
+        if (s.structSize < sizeof(MgeLinkDrawStateV1)) {
+            // A client of the first version: no render states and no material.
+            return;
+        }
+
+        // The proxy keeps these states as bytes.
+        const auto byte = [](uint32_t value) { return static_cast<BYTE>(value); };
+        const bool blendEqual = byte(s.blendEnable) == rs.blendEnable && byte(s.sourceBlend) == rs.srcBlend
+            && byte(s.destinationBlend) == rs.destBlend && byte(s.alphaTestEnable) == rs.alphaTest
+            && byte(s.alphaFunction) == rs.alphaFunc && byte(s.alphaReference) == rs.alphaRef;
+        if (!blendEqual && loggedDifferences[MGE_LINK_FACT_STATE_BLEND] < kLoggedDifferences) {
+            LOG::logline("-- Render link: blend: packet %u %u %u test %u %u %u, proxy %u %u %u test %u %u %u",
+                s.blendEnable, s.sourceBlend, s.destinationBlend, s.alphaTestEnable, s.alphaFunction, s.alphaReference,
+                rs.blendEnable, rs.srcBlend, rs.destBlend, rs.alphaTest, rs.alphaFunc, rs.alphaRef);
+        }
+        count(MGE_LINK_FACT_STATE_BLEND, true, blendEqual);
+
+        const bool depthEqual = s.depthWrite == rs.zWrite && s.cullMode == rs.cullMode && byte(s.fogEnable) == rs.useFog;
+        if (!depthEqual && loggedDifferences[MGE_LINK_FACT_STATE_DEPTH] < kLoggedDifferences) {
+            LOG::logline("-- Render link: depth: packet write %u cull %u fog %u, proxy write %u cull %u fog %u",
+                s.depthWrite, s.cullMode, s.fogEnable, rs.zWrite, rs.cullMode, rs.useFog);
+        }
+        count(MGE_LINK_FACT_STATE_DEPTH, true, depthEqual);
+
+        const bool lightingEqual = byte(s.lighting) == rs.useLighting && byte(s.diffuseMaterialSource) == rs.matSrcDiffuse
+            && byte(s.emissiveMaterialSource) == rs.matSrcEmissive && s.vertexBlend == rs.vertexBlendState;
+        if (!lightingEqual && loggedDifferences[MGE_LINK_FACT_STATE_LIGHTING] < kLoggedDifferences) {
+            LOG::logline("-- Render link: lighting: packet on %u diffuse %u emissive %u blend %u, proxy on %u diffuse %u emissive %u blend %u",
+                s.lighting, s.diffuseMaterialSource, s.emissiveMaterialSource, s.vertexBlend,
+                rs.useLighting, rs.matSrcDiffuse, rs.matSrcEmissive, rs.vertexBlendState);
+        }
+        count(MGE_LINK_FACT_STATE_LIGHTING, true, lightingEqual);
+
+        // The proxy keeps the diffuse, ambient and emissive colours, and the power in the
+        // alpha of the emissive colour.
+        const float* diffuse = s.material;
+        const float* ambient = s.material + 4;
+        const float* emissive = s.material + 12;
+        const float power = s.material[16];
+        const auto& m = frs.material;
+        const bool materialEqual = std::memcmp(diffuse, &m.diffuse, 4 * sizeof(float)) == 0
+            && std::memcmp(ambient, &m.ambient, 3 * sizeof(float)) == 0
+            && std::memcmp(emissive, &m.emissive, 3 * sizeof(float)) == 0 && power == m.emissive.a;
+        if (!materialEqual && loggedDifferences[MGE_LINK_FACT_STATE_MATERIAL] < kLoggedDifferences) {
+            LOG::logline("-- Render link: material: packet diffuse %g %g %g %g power %g, proxy diffuse %g %g %g %g power %g",
+                diffuse[0], diffuse[1], diffuse[2], diffuse[3], power, m.diffuse.r, m.diffuse.g, m.diffuse.b, m.diffuse.a, m.emissive.a);
+        }
+        count(MGE_LINK_FACT_STATE_MATERIAL, true, materialEqual);
+
+        // The stages, to the first one that is off. The proxy reads no stage after that one.
+        bool stagesEqual = true;
+        uint32_t badStage = 0, badState = 0;
+        for (uint32_t i = 0; i != MGE_LINK_STATE_STAGES && stagesEqual; ++i) {
+            const uint32_t* p = s.stages[i];
+            const auto& g = frs.stage[i];
+            const uint32_t proxy[MGE_LINK_STATE_STAGE_STATES] = {
+                g.colorOp, g.colorArg1, g.colorArg2, g.alphaOp, g.alphaArg1, g.alphaArg2, g.colorArg0, g.alphaArg0, g.resultArg,
+                g.texcoordIndex, g.texTransformFlags, 0, 0, 0, 0, 0, 0,
+            };
+            // The proxy keeps the operations and arguments as bytes.
+            for (uint32_t k = 0; k != 11 && stagesEqual; ++k) {
+                const uint32_t packet = k < 9 ? static_cast<BYTE>(p[k]) : p[k];
+                if (packet != proxy[k]) {
+                    stagesEqual = false;
+                    badStage = i;
+                    badState = k;
+                }
+            }
+            // The bump values are floats. The proxy reads them only for a bump stage.
+            const bool bumpStage = g.colorOp == D3DTOP_BUMPENVMAP || g.colorOp == D3DTOP_BUMPENVMAPLUMINANCE;
+            if (stagesEqual && bumpStage && (std::memcmp(&p[11], g.bumpEnvMat, 4 * sizeof(float)) != 0
+                    || std::memcmp(&p[15], &g.bumpLumiScale, sizeof(float)) != 0
+                    || std::memcmp(&p[16], &g.bumpLumiBias, sizeof(float)) != 0)) {
+                stagesEqual = false;
+                badStage = i;
+                badState = 11;
+            }
+            if (g.colorOp == D3DTOP_DISABLE) {
+                break;
+            }
+        }
+        if (!stagesEqual && loggedDifferences[MGE_LINK_FACT_STATE_STAGES] < kLoggedDifferences) {
+            const auto& g = frs.stage[badStage];
+            LOG::logline("-- Render link: stage %u state %u: packet %u; proxy op %u args %u %u alpha %u %u %u coord %u flags %u",
+                badStage, badState, s.stages[badStage][badState], g.colorOp, g.colorArg1, g.colorArg2, g.alphaOp, g.alphaArg1,
+                g.alphaArg2, g.texcoordIndex, g.texTransformFlags);
+        }
+        count(MGE_LINK_FACT_STATE_STAGES, true, stagesEqual);
+
+        // The lights: the same set, and for each light the values that the proxy keeps.
+        bool lightsEqual = s.lightCount == lights.active.size();
+        uint32_t badLight = 0;
+        const char* why = "count";
+        for (uint32_t i = 0; i != s.lightCount && lightsEqual; ++i) {
+            const MgeLinkStateLightV1& l = stateLights[i];
+            const D3DLIGHT8* d3d = reinterpret_cast<const D3DLIGHT8*>(l.d3dLight);
+            badLight = l.deviceIndex;
+            bool on = false;
+            for (DWORD id : lights.active) {
+                on = on || id == l.deviceIndex;
+            }
+            const auto found = lights.lights.find(l.deviceIndex);
+            if (!on || found == lights.lights.end()) {
+                lightsEqual = false;
+                why = "not on in the proxy";
+                break;
+            }
+            const auto& g = found->second;
+            if (g.type != d3d->Type || std::memcmp(&g.diffuse, &d3d->Diffuse, sizeof(D3DCOLORVALUE)) != 0) {
+                lightsEqual = false;
+                why = "type or diffuse";
+            } else if (d3d->Type == D3DLIGHT_POINT) {
+                if (std::memcmp(&g.position, &d3d->Position, sizeof(D3DVECTOR)) != 0 || g.falloff.x != d3d->Attenuation0
+                        || g.falloff.y != d3d->Attenuation1 || g.falloff.z != d3d->Attenuation2) {
+                    lightsEqual = false;
+                    why = "position or attenuation";
+                }
+            } else {
+                // The proxy keeps the direction with length 1.
+                D3DXVECTOR3 direction;
+                D3DXVec3Normalize(&direction, reinterpret_cast<const D3DXVECTOR3*>(&d3d->Direction));
+                if (std::memcmp(&g.position, &direction, sizeof(D3DVECTOR)) != 0 || g.ambient.x != d3d->Ambient.r
+                        || g.ambient.y != d3d->Ambient.g || g.ambient.z != d3d->Ambient.b) {
+                    lightsEqual = false;
+                    why = "direction or ambient";
+                }
+            }
+        }
+        if (!lightsEqual && loggedDifferences[MGE_LINK_FACT_STATE_LIGHTS] < kLoggedDifferences) {
+            LOG::logline("-- Render link: lights: %s; packet has %u lights, proxy %u; light %u",
+                why, s.lightCount, static_cast<uint32_t>(lights.active.size()), badLight);
+        }
+        count(MGE_LINK_FACT_STATE_LIGHTS, true, lightsEqual);
     }
 
     void noteLightRadius(const void* light, int recordRadius, int attachRadius) {

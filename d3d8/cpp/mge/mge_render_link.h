@@ -125,7 +125,20 @@
 #define MGE_LINK_FACT_STATE_DRAW 9u
 #define MGE_LINK_FACT_STATE_BUFFERS 10u
 #define MGE_LINK_FACT_STATE_TRANSFORM 11u
-#define MGE_LINK_FACT_COUNT 16u
+#define MGE_LINK_FACT_STATE_BLEND 12u
+#define MGE_LINK_FACT_STATE_DEPTH 13u
+#define MGE_LINK_FACT_STATE_LIGHTING 14u
+#define MGE_LINK_FACT_STATE_MATERIAL 15u
+#define MGE_LINK_FACT_STATE_STAGES 16u
+#define MGE_LINK_FACT_STATE_LIGHTS 17u
+
+// The texture stages of a state packet, and the states of each stage. The order of the
+// states is: COLOROP, COLORARG1, COLORARG2, ALPHAOP, ALPHAARG1, ALPHAARG2, COLORARG0,
+// ALPHAARG0, RESULTARG, TEXCOORDINDEX, TEXTURETRANSFORMFLAGS, BUMPENVMAT00, BUMPENVMAT01,
+// BUMPENVMAT10, BUMPENVMAT11, BUMPENVLSCALE, BUMPENVLOFFSET.
+#define MGE_LINK_STATE_STAGES 8u
+#define MGE_LINK_STATE_STAGE_STATES 17u
+#define MGE_LINK_FACT_COUNT 32u
 
 typedef struct MgeLinkSceneV1 {
     uint32_t structSize;
@@ -179,6 +192,14 @@ typedef struct MgeLinkDrawV1 {
 // The state of one D3D8 draw call. The client sends it before the call. A handle is the
 // value that identifies the resource for the host. In this version it is the D3D8 interface
 // pointer that the game holds.
+// A light that is on for a draw.
+typedef struct MgeLinkStateLightV1 {
+    // The index of the light on the device.
+    uint32_t deviceIndex;
+    // The D3DLIGHT8 of the light, as 26 words.
+    uint32_t d3dLight[26];
+} MgeLinkStateLightV1;
+
 typedef struct MgeLinkDrawStateV1 {
     uint32_t structSize;
     // MGE_LINK_STATE_*
@@ -197,6 +218,29 @@ typedef struct MgeLinkDrawStateV1 {
     uint32_t indexBuffer;
     // The world matrix, as the renderer of the game has it.
     float world[16];
+    // Render states, with the values of D3D8.
+    uint32_t depthWrite;
+    uint32_t cullMode;
+    uint32_t vertexBlend;
+    uint32_t blendEnable;
+    uint32_t sourceBlend;
+    uint32_t destinationBlend;
+    uint32_t alphaTestEnable;
+    uint32_t alphaFunction;
+    uint32_t alphaReference;
+    uint32_t lighting;
+    uint32_t fogEnable;
+    uint32_t diffuseMaterialSource;
+    uint32_t emissiveMaterialSource;
+    uint32_t ambient;
+    // The material, in the order of D3DMATERIAL8: diffuse, ambient, specular and emissive
+    // (4 floats each), then the power.
+    float material[17];
+    // The lights that are on.
+    uint32_t lightCount;
+    const MgeLinkStateLightV1* lights;
+    // The texture stage states, with the values of D3D8. See MGE_LINK_STATE_STAGES.
+    uint32_t stages[MGE_LINK_STATE_STAGES][MGE_LINK_STATE_STAGE_STATES];
 } MgeLinkDrawStateV1;
 
 typedef struct MgeLinkFactCountV1 {
@@ -252,9 +296,10 @@ static_assert(sizeof(void*) == 4, "the render link is for 32-bit code");
 static_assert(sizeof(MgeLinkSceneV1) == 24, "MgeLinkSceneV1 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
-static_assert(sizeof(MgeLinkDrawStateV1) == 112, "MgeLinkDrawStateV1 size");
+static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
+static_assert(sizeof(MgeLinkDrawStateV1) == 788, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
-static_assert(sizeof(MgeLinkCountersV1) == 272, "MgeLinkCountersV1 size");
+static_assert(sizeof(MgeLinkCountersV1) == 528, "MgeLinkCountersV1 size");
 static_assert(sizeof(MgeRenderLinkHostV1) == 44, "MgeRenderLinkHostV1 size");
 
 extern "C" {
