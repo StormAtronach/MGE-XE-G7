@@ -92,6 +92,10 @@
 // The draw is a partition of a skinned mesh. `world` is the matrix of the first bone and
 // `blendWorlds` has the matrices of the other bones.
 #define MGE_LINK_STATE_SKINNED 0x00000001u
+// The draw is a later pass: the object drew the same geometry before, in the same render
+// call, with other textures or another blend. A later partition of a skinned mesh and a
+// later strip of a shape are not later passes: they are other geometry.
+#define MGE_LINK_STATE_LATER_PASS 0x00000002u
 
 // Flags of a scene packet.
 // `cameraOrigin` is valid: the camera is the world camera or the first-person camera.
@@ -129,6 +133,8 @@
 #define MGE_LINK_FACT_UI_SCENE 4u
 #define MGE_LINK_FACT_SCENE_KIND 5u
 #define MGE_LINK_FACT_SKY_DRAW 6u
+// With a state packet, the packet side is: the draw is a later pass
+// (MGE_LINK_STATE_LATER_PASS), for an object of each class.
 #define MGE_LINK_FACT_LAND_SPLAT 7u
 // A view transform that is not the first one of its scene is a UI view. The packet side is
 // the kind of the scene. The host compares this fact and does not use it.

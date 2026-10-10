@@ -47,7 +47,8 @@ namespace RenderLink {
     // The current draw is a part of the sky.
     bool drawIsSky();
 
-    // The current draw is a second or later D3D8 draw of a landscape object.
+    // The current draw is a later pass of geometry that the object drew before. Without a
+    // state packet: a second or later D3D8 draw of a landscape object.
     bool drawIsLandSplat();
 
     // The current draw is a shape of a moon: its face, or the shape that hides the dark part.

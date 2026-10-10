@@ -632,6 +632,12 @@ namespace RenderLink {
     }
 
     bool drawIsLandSplat() {
+        // The proxy uses this to keep a later pass of the same geometry out of the draws
+        // that it draws again for depth and shadow. With a state packet the client tells
+        // it for each kind of object.
+        if (stateForThisDraw) {
+            return (currentState.flags & MGE_LINK_STATE_LATER_PASS) != 0;
+        }
         // observeWorldDraw counted the current D3D8 draw already.
         return drawClass() == MGE_LINK_CLASS_LANDSCAPE && d3dDraws > 1;
     }
