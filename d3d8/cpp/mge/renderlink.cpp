@@ -931,6 +931,16 @@ namespace RenderLink {
                 }
                 if (!bonesEqual && loggedDifferences[MGE_LINK_FACT_STATE_BONES] < kLoggedDifferences) {
                     const float* g = &rs.worldTransforms[i]._11;
+                    D3DXMATRIX converted;
+                    CameraRelative::absoluteFromRelative(reinterpret_cast<const D3DMATRIX*>(m), &converted);
+                    uint32_t firstBad = 16;
+                    for (uint32_t k = 0; k != 16 && firstBad == 16; ++k) {
+                        if (std::memcmp(&(&converted._11)[k], &g[k], 4) != 0) { firstBad = k; }
+                    }
+                    double o[3] = {};
+                    CameraRelative::activeOrigin(o);
+                    LOG::logline("-- Render link: bone detail: scene %u draw %u, first different element %u: converted %.9g proxy %.9g; origin %.3f %.3f %.3f; active %u",
+                        counters.scenes, counters.draws, firstBad, firstBad < 16 ? (&converted._11)[firstBad] : 0.0f, firstBad < 16 ? g[firstBad] : 0.0f, o[0], o[1], o[2], CameraRelative::active() ? 1u : 0u);
                     LOG::logline("-- Render link: bone %u of %u (vertex blend %u, relative mask %u): packet row 1 %g %g %g row 4 %g %g %g, proxy row 1 %g %g %g row 4 %g %g %g",
                         i, worldCount(s), s.vertexBlend, s.worldRelativeMask, m[0], m[1], m[2], m[12], m[13], m[14], g[0], g[1], g[2], g[12], g[13], g[14]);
                 }
