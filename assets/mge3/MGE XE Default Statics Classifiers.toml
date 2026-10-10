@@ -121,6 +121,10 @@ dynamic_visibility = [
     { kind = "journal", script = "skaalaradoorScript", journal = "BM_Ceremony1", ranges = [[0, 10]] },
     { kind = "journal", script = "stahldoorScript", journal = "BM_Water", ranges = [[0, 10]] },
     { kind = "journal", script = "stoneUlfgarScript", journal = "BM_BrodirGrove", ranges = [[90, 1000]] },
+
+    # Bloodmoon Mortrag Glacier
+    { kind = "unique_object", object = "bm_ex_iceberg" },
+    { kind = "unique_object", object = "bm_ex_iceberg_collapsed" },
 ]
 
 statics = {
