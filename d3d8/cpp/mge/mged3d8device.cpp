@@ -567,6 +567,7 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 }
 
 HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
+    RenderLink::noteMaterial(a);
     captureMaterial(a);
     waterMarkSeen = (a->Power == 99999.0f);
     isWaterMaterial = RenderLink::resolve(MGE_LINK_FACT_WATER_PLANE, waterMarkSeen, RenderLink::drawIsWaterPlane());

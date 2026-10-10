@@ -185,6 +185,9 @@ namespace {
     DeviceValue deviceStageStates[MGE_LINK_STATE_STAGES][32];
     DeviceValue deviceTextures[MGE_LINK_STATE_STAGES];
     DeviceValue deviceVertexBuffer, deviceStride, deviceFormat, deviceIndexBuffer, deviceBaseIndex;
+    // The material, as the game sent it.
+    D3DMATERIAL8 deviceMaterial = {};
+    bool deviceMaterialKnown = false;
     // The world matrices 0 to 3 with their space, and the texture transforms, as the game
     // sent them.
     struct DeviceMatrix {
@@ -299,6 +302,11 @@ namespace {
                     device->MGEProxyDevice::SetRenderState(static_cast<D3DRENDERSTATETYPE>(item.state), item.value);
                 }
             }
+        }
+        // The material is a part of the render state kind.
+        if (usesFact(MGE_LINK_FACT_DEVICE_RENDER_STATES)
+                && (!deviceMaterialKnown || std::memcmp(&deviceMaterial, s.material, sizeof(D3DMATERIAL8)) != 0)) {
+            device->MGEProxyDevice::SetMaterial(reinterpret_cast<const D3DMATERIAL8*>(s.material));
         }
         // The stages, to the first one that is off. The client does not have the others.
         for (uint32_t stage = 0; stage != MGE_LINK_STATE_STAGES; ++stage) {
@@ -564,6 +572,11 @@ namespace RenderLink {
 
     void noteVertexFormat(uint32_t format) {
         deviceFormat.set(format);
+    }
+
+    void noteMaterial(const void* material) {
+        deviceMaterial = *static_cast<const D3DMATERIAL8*>(material);
+        deviceMaterialKnown = true;
     }
 
     void noteTransform(uint32_t state, const void* matrix, bool worldIsRelative) {
@@ -915,6 +928,11 @@ namespace RenderLink {
                     D3DXMATRIX absolute;
                     CameraRelative::absoluteFromRelative(reinterpret_cast<const D3DMATRIX*>(m), &absolute);
                     bonesEqual = std::memcmp(&absolute, &rs.worldTransforms[i], sizeof(absolute)) == 0;
+                }
+                if (!bonesEqual && loggedDifferences[MGE_LINK_FACT_STATE_BONES] < kLoggedDifferences) {
+                    const float* g = &rs.worldTransforms[i]._11;
+                    LOG::logline("-- Render link: bone %u of %u (vertex blend %u, relative mask %u): packet row 1 %g %g %g row 4 %g %g %g, proxy row 1 %g %g %g row 4 %g %g %g",
+                        i, worldCount(s), s.vertexBlend, s.worldRelativeMask, m[0], m[1], m[2], m[12], m[13], m[14], g[0], g[1], g[2], g[12], g[13], g[14]);
                 }
             }
             count(MGE_LINK_FACT_STATE_BONES, true, bonesEqual);

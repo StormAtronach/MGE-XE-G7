@@ -165,7 +165,7 @@
 // The device kinds. When the client asks for one in useFacts, the host puts that part of
 // each state packet on the device when the packet comes, and the client does not make the
 // D3D8 calls for it. The host does not count comparisons for these.
-// The render states of the packet.
+// The render states of the packet, and the material.
 #define MGE_LINK_FACT_DEVICE_RENDER_STATES 25u
 // The texture stage states and the sampler states of the packet.
 #define MGE_LINK_FACT_DEVICE_STAGE_STATES 26u

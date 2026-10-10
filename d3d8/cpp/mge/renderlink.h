@@ -25,6 +25,8 @@ namespace RenderLink {
     void noteStreamSource(const void* buffer, uint32_t stride);
     void noteIndices(const void* buffer, uint32_t baseVertexIndex);
     void noteVertexFormat(uint32_t format);
+    // `material` is a D3DMATERIAL8.
+    void noteMaterial(const void* material);
     // `worldIsRelative`: for a world matrix, the matrix is relative to the camera.
     void noteTransform(uint32_t state, const void* matrix, bool worldIsRelative);
     void noteLight(uint32_t index, const void* light);
