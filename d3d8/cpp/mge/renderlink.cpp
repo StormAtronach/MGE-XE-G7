@@ -6,6 +6,7 @@
 #include "camerarelative.h"
 #include "ffeshader.h"
 #include "mwbridge.h"
+#include "mged3d8device.h"
 #include "bc7format.h"
 #include "proxydx/d3d8device.h"
 #include "proxydx/d3d8texture.h"
@@ -45,7 +46,9 @@ namespace {
     // The facts that the proxy can take from a packet.
     const uint32_t kUsableFacts = (1u << MGE_LINK_FACT_UI_SCENE) | (1u << MGE_LINK_FACT_WATER_PLANE)
         | (1u << MGE_LINK_FACT_SUN_LIGHT) | (1u << MGE_LINK_FACT_SKY_DRAW) | (1u << MGE_LINK_FACT_LAND_SPLAT)
-        | (1u << MGE_LINK_FACT_SCENE_KIND) | (1u << MGE_LINK_FACT_MOON_SHADOW) | (1u << MGE_LINK_FACT_STATE_DRAW);
+        | (1u << MGE_LINK_FACT_SCENE_KIND) | (1u << MGE_LINK_FACT_MOON_SHADOW) | (1u << MGE_LINK_FACT_STATE_DRAW)
+        | (1u << MGE_LINK_FACT_DEVICE_RENDER_STATES) | (1u << MGE_LINK_FACT_DEVICE_STAGE_STATES)
+        | (1u << MGE_LINK_FACT_DEVICE_TEXTURES) | (1u << MGE_LINK_FACT_DEVICE_BUFFERS);
     // The radius of a light is not in this list. The light fade needs the radius that agrees
     // with the attenuation of the light. A light of a mod can have an attenuation that does
     // not come from the radius that the game has for it. The comparison stays.
@@ -159,6 +162,108 @@ namespace {
         ++counters.scenes;
     }
 
+    // The state of the device, as the D3D8 handlers of the proxy got it. A value is not
+    // known before its first call.
+    struct DeviceValue {
+        uint32_t value;
+        bool known;
+
+        bool is(uint32_t other) const {
+            return known && value == other;
+        }
+        void set(uint32_t next) {
+            value = next;
+            known = true;
+        }
+    };
+    DeviceValue deviceRenderStates[256];
+    DeviceValue deviceStageStates[MGE_LINK_STATE_STAGES][32];
+    DeviceValue deviceTextures[MGE_LINK_STATE_STAGES];
+    DeviceValue deviceVertexBuffer, deviceStride, deviceFormat, deviceIndexBuffer, deviceBaseIndex;
+
+    // The render states of a state packet: the D3D8 state and the value.
+    struct PacketRenderState {
+        uint32_t state;
+        uint32_t value;
+    };
+    const uint32_t kPacketRenderStates = 24;
+    void renderStatesOfPacket(const MgeLinkDrawStateV1& s, PacketRenderState out[kPacketRenderStates]) {
+        const PacketRenderState list[kPacketRenderStates] = {
+            { D3DRS_ZENABLE, s.depthEnable }, { D3DRS_ZWRITEENABLE, s.depthWrite }, { D3DRS_ALPHATESTENABLE, s.alphaTestEnable },
+            { D3DRS_SRCBLEND, s.sourceBlend }, { D3DRS_DESTBLEND, s.destinationBlend }, { D3DRS_CULLMODE, s.cullMode },
+            { D3DRS_ZFUNC, s.depthFunction }, { D3DRS_ALPHAREF, s.alphaReference }, { D3DRS_ALPHAFUNC, s.alphaFunction },
+            { D3DRS_ALPHABLENDENABLE, s.blendEnable }, { D3DRS_FOGENABLE, s.fogEnable },
+            { D3DRS_STENCILENABLE, s.stencil[0] }, { D3DRS_STENCILFAIL, s.stencil[1] }, { D3DRS_STENCILZFAIL, s.stencil[2] },
+            { D3DRS_STENCILPASS, s.stencil[3] }, { D3DRS_STENCILFUNC, s.stencil[4] }, { D3DRS_STENCILREF, s.stencil[5] },
+            { D3DRS_STENCILMASK, s.stencil[6] }, { D3DRS_STENCILWRITEMASK, s.stencil[7] },
+            { D3DRS_LIGHTING, s.lighting }, { D3DRS_AMBIENT, s.ambient }, { D3DRS_DIFFUSEMATERIALSOURCE, s.diffuseMaterialSource },
+            { D3DRS_EMISSIVEMATERIALSOURCE, s.emissiveMaterialSource }, { D3DRS_VERTEXBLEND, s.vertexBlend },
+        };
+        std::memcpy(out, list, sizeof(list));
+    }
+
+    // The D3D8 numbers of the stage states and of the sampler states of a state packet.
+    const uint32_t kStageStates[MGE_LINK_STATE_STAGE_STATES] = { 1, 2, 3, 4, 5, 6, 26, 27, 28, 11, 24, 7, 8, 9, 10, 22, 23 };
+    const uint32_t kSamplerStates[MGE_LINK_STATE_SAMPLER_STATES] = { 13, 14, 16, 17, 18 };
+    const uint32_t kColorOp = 0;
+
+    bool usesFact(uint32_t fact) {
+        return (usedFacts >> fact) & 1u;
+    }
+
+    // Puts the parts of a state packet that the client asked for on the device, through the
+    // D3D8 handlers of the proxy. A value that the device has is not sent again.
+    void applyToDevice(const MgeLinkDrawStateV1& s) {
+        auto device = static_cast<MGEProxyDevice*>(linkDevice.load());
+        const uint32_t kinds = (1u << MGE_LINK_FACT_DEVICE_RENDER_STATES) | (1u << MGE_LINK_FACT_DEVICE_STAGE_STATES)
+            | (1u << MGE_LINK_FACT_DEVICE_TEXTURES) | (1u << MGE_LINK_FACT_DEVICE_BUFFERS);
+        if (!device || !(usedFacts & kinds) || s.structSize < sizeof(MgeLinkDrawStateV1)) {
+            return;
+        }
+        if (usesFact(MGE_LINK_FACT_DEVICE_RENDER_STATES)) {
+            PacketRenderState list[kPacketRenderStates];
+            renderStatesOfPacket(s, list);
+            for (const auto& item : list) {
+                if (item.value != MGE_LINK_STATE_UNKNOWN && !deviceRenderStates[item.state].is(item.value)) {
+                    device->MGEProxyDevice::SetRenderState(static_cast<D3DRENDERSTATETYPE>(item.state), item.value);
+                }
+            }
+        }
+        // The stages, to the first one that is off. The client does not have the others.
+        for (uint32_t stage = 0; stage != MGE_LINK_STATE_STAGES; ++stage) {
+            if (usesFact(MGE_LINK_FACT_DEVICE_STAGE_STATES)) {
+                const auto send = [&](uint32_t state, uint32_t value) {
+                    if (value != MGE_LINK_STATE_UNKNOWN && !deviceStageStates[stage][state].is(value)) {
+                        device->MGEProxyDevice::SetTextureStageState(stage, static_cast<D3DTEXTURESTAGESTATETYPE>(state), value);
+                    }
+                };
+                for (uint32_t k = 0; k != MGE_LINK_STATE_STAGE_STATES; ++k) {
+                    send(kStageStates[k], s.stages[stage][k]);
+                }
+                for (uint32_t k = 0; k != MGE_LINK_STATE_SAMPLER_STATES; ++k) {
+                    send(kSamplerStates[k], s.samplers[stage][k]);
+                }
+            }
+            if (usesFact(MGE_LINK_FACT_DEVICE_TEXTURES) && !deviceTextures[stage].is(s.textures[stage])) {
+                device->MGEProxyDevice::SetTexture(stage, reinterpret_cast<IDirect3DBaseTexture8*>(static_cast<uintptr_t>(s.textures[stage])));
+            }
+            if (s.stages[stage][kColorOp] == D3DTOP_DISABLE) {
+                break;
+            }
+        }
+        if (usesFact(MGE_LINK_FACT_DEVICE_BUFFERS)) {
+            if (!deviceVertexBuffer.is(s.vertexBuffer) || !deviceStride.is(s.vertexStride)) {
+                device->MGEProxyDevice::SetStreamSource(0, reinterpret_cast<IDirect3DVertexBuffer8*>(static_cast<uintptr_t>(s.vertexBuffer)), s.vertexStride);
+            }
+            if (!deviceFormat.is(s.vertexFormat)) {
+                device->MGEProxyDevice::SetVertexShader(s.vertexFormat);
+            }
+            if (!deviceIndexBuffer.is(s.indexBuffer) || !deviceBaseIndex.is(s.baseVertexIndex)) {
+                device->MGEProxyDevice::SetIndices(reinterpret_cast<IDirect3DIndexBuffer8*>(static_cast<uintptr_t>(s.indexBuffer)), s.baseVertexIndex);
+            }
+        }
+    }
+
     void __cdecl drawState(const MgeLinkDrawStateV1* state) {
         if (!state || state->structSize < sizeof(uint32_t) * 2) {
             return;
@@ -174,6 +279,7 @@ namespace {
         std::memcpy(stateLights, currentState.lights, currentState.lightCount * sizeof(MgeLinkStateLightV1));
         currentState.lights = stateLights;
         stateValid = true;
+        applyToDevice(currentState);
     }
 
     void __cdecl sceneEnd() {
@@ -331,6 +437,38 @@ namespace {
 }
 
 namespace RenderLink {
+    void noteRenderState(uint32_t state, uint32_t value) {
+        if (state < 256) {
+            deviceRenderStates[state].set(value);
+        }
+    }
+
+    void noteStageState(uint32_t stage, uint32_t state, uint32_t value) {
+        if (stage < MGE_LINK_STATE_STAGES && state < 32) {
+            deviceStageStates[stage][state].set(value);
+        }
+    }
+
+    void noteTexture(uint32_t stage, const void* texture) {
+        if (stage < MGE_LINK_STATE_STAGES) {
+            deviceTextures[stage].set(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(texture)));
+        }
+    }
+
+    void noteStreamSource(const void* buffer, uint32_t stride) {
+        deviceVertexBuffer.set(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(buffer)));
+        deviceStride.set(stride);
+    }
+
+    void noteIndices(const void* buffer, uint32_t baseVertexIndex) {
+        deviceIndexBuffer.set(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(buffer)));
+        deviceBaseIndex.set(baseVertexIndex);
+    }
+
+    void noteVertexFormat(uint32_t format) {
+        deviceFormat.set(format);
+    }
+
     void setDevice(ProxyDevice* device) {
         linkDevice = device;
     }
@@ -670,6 +808,37 @@ namespace RenderLink {
                 s.ambient, lights.ambientWhite ? 1u : 0u, lights.globalAmbient.r, lights.globalAmbient.g, lights.globalAmbient.b);
         }
         count(MGE_LINK_FACT_STATE_AMBIENT, true, ambientEqual);
+
+        // The depth and stencil states, and the sampler states of the stages that are on.
+        // A value that the device or the game does not know is not compared.
+        const auto same = [](const DeviceValue& device, uint32_t packet) {
+            return !device.known || packet == MGE_LINK_STATE_UNKNOWN || device.value == packet;
+        };
+        bool depthStencilEqual = same(deviceRenderStates[D3DRS_ZENABLE], s.depthEnable) && same(deviceRenderStates[D3DRS_ZFUNC], s.depthFunction);
+        for (uint32_t i = 0; i != 8; ++i) {
+            depthStencilEqual = depthStencilEqual && same(deviceRenderStates[D3DRS_STENCILENABLE + i], s.stencil[i]);
+        }
+        if (!depthStencilEqual && loggedDifferences[MGE_LINK_FACT_STATE_DEPTH_STENCIL] < kLoggedDifferences) {
+            LOG::logline("-- Render link: depth and stencil: packet enable %u function %u stencil %u, device %u %u %u",
+                s.depthEnable, s.depthFunction, s.stencil[0], deviceRenderStates[D3DRS_ZENABLE].value,
+                deviceRenderStates[D3DRS_ZFUNC].value, deviceRenderStates[D3DRS_STENCILENABLE].value);
+        }
+        count(MGE_LINK_FACT_STATE_DEPTH_STENCIL, true, depthStencilEqual);
+
+        bool samplersEqual = true;
+        for (uint32_t stage = 0; stage != MGE_LINK_STATE_STAGES && samplersEqual; ++stage) {
+            for (uint32_t k = 0; k != MGE_LINK_STATE_SAMPLER_STATES && samplersEqual; ++k) {
+                samplersEqual = same(deviceStageStates[stage][kSamplerStates[k]], s.samplers[stage][k]);
+                if (!samplersEqual && loggedDifferences[MGE_LINK_FACT_STATE_SAMPLERS] < kLoggedDifferences) {
+                    LOG::logline("-- Render link: sampler state %u of stage %u: packet %u, device %u",
+                        kSamplerStates[k], stage, s.samplers[stage][k], deviceStageStates[stage][kSamplerStates[k]].value);
+                }
+            }
+            if (frs.stage[stage].colorOp == D3DTOP_DISABLE) {
+                break;
+            }
+        }
+        count(MGE_LINK_FACT_STATE_SAMPLERS, true, samplersEqual);
     }
 
     bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights, bool worldIsRelative) {

@@ -18,6 +18,14 @@ namespace RenderLink {
     // The device that makes the textures of the link. Null when the device goes away.
     void setDevice(ProxyDevice* device);
 
+    // The D3D8 handlers of the proxy call these, so the link knows the state of the device.
+    void noteRenderState(uint32_t state, uint32_t value);
+    void noteStageState(uint32_t stage, uint32_t state, uint32_t value);
+    void noteTexture(uint32_t stage, const void* texture);
+    void noteStreamSource(const void* buffer, uint32_t stride);
+    void noteIndices(const void* buffer, uint32_t baseVertexIndex);
+    void noteVertexFormat(uint32_t format);
+
     // True after a client connected.
     bool isConnected();
 

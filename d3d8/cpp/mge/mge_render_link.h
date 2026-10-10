@@ -150,6 +150,21 @@
 // The textures that the host made from pixel data of the client. "Both yes" is the number
 // that it made, "host only" the number that failed.
 #define MGE_LINK_FACT_TEXTURE_CREATE 22u
+// Two more groups of the state packet: the depth and stencil states, and the sampler states
+// of the stages that are on.
+#define MGE_LINK_FACT_STATE_DEPTH_STENCIL 23u
+#define MGE_LINK_FACT_STATE_SAMPLERS 24u
+// The device kinds. When the client asks for one in useFacts, the host puts that part of
+// each state packet on the device when the packet comes, and the client does not make the
+// D3D8 calls for it. The host does not count comparisons for these.
+// The render states of the packet.
+#define MGE_LINK_FACT_DEVICE_RENDER_STATES 25u
+// The texture stage states and the sampler states of the packet.
+#define MGE_LINK_FACT_DEVICE_STAGE_STATES 26u
+// The textures of the stages.
+#define MGE_LINK_FACT_DEVICE_TEXTURES 27u
+// The vertex buffer, the index buffer and the vertex format.
+#define MGE_LINK_FACT_DEVICE_BUFFERS 28u
 
 // The texture stages of a state packet, and the states of each stage. The order of the
 // states is: COLOROP, COLORARG1, COLORARG2, ALPHAOP, ALPHAARG1, ALPHAARG2, COLORARG0,
@@ -157,6 +172,11 @@
 // BUMPENVMAT10, BUMPENVMAT11, BUMPENVLSCALE, BUMPENVLOFFSET.
 #define MGE_LINK_STATE_STAGES 8u
 #define MGE_LINK_STATE_STAGE_STATES 17u
+// The sampler states of a stage in a state packet. The order is: ADDRESSU, ADDRESSV,
+// MAGFILTER, MINFILTER, MIPFILTER.
+#define MGE_LINK_STATE_SAMPLER_STATES 5u
+// The value of a state that the game did not set.
+#define MGE_LINK_STATE_UNKNOWN 0x7FFFFFFFu
 #define MGE_LINK_FACT_COUNT 32u
 
 typedef struct MgeLinkSceneV1 {
@@ -268,6 +288,14 @@ typedef struct MgeLinkDrawStateV1 {
     // The texture transform of each stage. It is valid only for a stage whose
     // TEXTURETRANSFORMFLAGS state is not 0.
     float textureTransforms[MGE_LINK_STATE_STAGES][16];
+    // More render states, with the values of D3D8. The stencil states are in the order:
+    // STENCILENABLE, STENCILFAIL, STENCILZFAIL, STENCILPASS, STENCILFUNC, STENCILREF,
+    // STENCILMASK, STENCILWRITEMASK.
+    uint32_t depthEnable;
+    uint32_t depthFunction;
+    uint32_t stencil[8];
+    // The sampler states of each stage. See MGE_LINK_STATE_SAMPLER_STATES.
+    uint32_t samplers[MGE_LINK_STATE_STAGES][MGE_LINK_STATE_SAMPLER_STATES];
 } MgeLinkDrawStateV1;
 
 // A texture to make. The pixel data belongs to the client and is valid only during the call.
@@ -356,7 +384,7 @@ static_assert(sizeof(MgeLinkSceneV1) == 24, "MgeLinkSceneV1 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
-static_assert(sizeof(MgeLinkDrawStateV1) == 1524, "MgeLinkDrawStateV1 size");
+static_assert(sizeof(MgeLinkDrawStateV1) == 1724, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 528, "MgeLinkCountersV1 size");
 static_assert(sizeof(MgeLinkTextureV1) == 52, "MgeLinkTextureV1 size");

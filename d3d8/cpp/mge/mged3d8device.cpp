@@ -669,6 +669,7 @@ void MGEProxyDevice::refreshActiveLights() {
 }
 
 HRESULT _stdcall MGEProxyDevice::SetRenderState(D3DRENDERSTATETYPE a, DWORD b) {
+    RenderLink::noteRenderState(a, b);
     captureRenderState(a, b);
 
     if (a == D3DRS_FOGVERTEXMODE || a == D3DRS_FOGTABLEMODE) {
@@ -704,6 +705,7 @@ HRESULT _stdcall MGEProxyDevice::SetRenderState(D3DRENDERSTATETYPE a, DWORD b) {
 }
 
 HRESULT _stdcall MGEProxyDevice::SetTextureStageState(DWORD a, D3DTEXTURESTAGESTATETYPE b, DWORD c) {
+    RenderLink::noteStageState(a, b, c);
     captureFragmentRenderState(a, b, c);
 
     // Sampler overrides to ensure trilinear/anisotropic filtering works
@@ -847,6 +849,7 @@ bool detectMenu(const D3DMATRIX* m) {
 // State recording
 
 HRESULT _stdcall MGEProxyDevice::SetTexture(DWORD a, IDirect3DBaseTexture8* b) {
+    RenderLink::noteTexture(a, b);
     if (a < 8) {
         IDirect3DTexture9* tex = b ? static_cast<ProxyTexture*>(b)->realTexture : NULL;
         frs.stage[a].texture = tex;
@@ -858,12 +861,14 @@ HRESULT _stdcall MGEProxyDevice::SetTexture(DWORD a, IDirect3DBaseTexture8* b) {
 }
 
 HRESULT _stdcall MGEProxyDevice::SetVertexShader(DWORD a) {
+    RenderLink::noteVertexFormat(a);
     rs.fvf = a;
     return ProxyDevice::SetVertexShader(a);
 }
 
 HRESULT _stdcall MGEProxyDevice::SetStreamSource(UINT a, IDirect3DVertexBuffer8* b, UINT c) {
     if (a == 0) {
+        RenderLink::noteStreamSource(b, c);
         rs.vb = (IDirect3DVertexBuffer9*)b;
         rs.vbOffset = 0;
         rs.vbStride = c;
@@ -872,6 +877,7 @@ HRESULT _stdcall MGEProxyDevice::SetStreamSource(UINT a, IDirect3DVertexBuffer8*
 }
 
 HRESULT _stdcall MGEProxyDevice::SetIndices(IDirect3DIndexBuffer8* a, UINT b) {
+    RenderLink::noteIndices(a, b);
     rs.ib = (IDirect3DIndexBuffer9*)a;
     return ProxyDevice::SetIndices(a, b);
 }
