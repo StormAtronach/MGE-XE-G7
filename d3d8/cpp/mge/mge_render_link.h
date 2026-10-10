@@ -52,6 +52,9 @@
 // The work on a resource through its handle: the reference count, the lock of a buffer,
 // the levels and the pixels of a texture.
 #define MGE_LINK_KIND_OBJECTS 0x00000004u
+// The creation of textures that are render targets, of depth buffers and of surfaces in
+// memory, the questions for the current target and depth buffer, and the copy of pixels.
+#define MGE_LINK_KIND_TARGETS 0x00000008u
 
 // The calls. `args` is an array of words. The result is the HRESULT of D3D8.
 // The device is lost or not: no arguments. The result is the answer of the device.
@@ -92,6 +95,23 @@
 // A surface: address of the D3DLOCKED_RECT, address of the rectangle, flags.
 #define MGE_LINK_CALL_SURFACE_LOCK 18u
 #define MGE_LINK_CALL_SURFACE_UNLOCK 19u
+// The calls of the target kind. Each has the arguments of the D3D8 method of the same name,
+// without the device.
+// Width, height, levels, usage, format, pool, address for the handle.
+#define MGE_LINK_CALL_CREATE_TEXTURE 20u
+// Width, height, format, multisample type, address for the handle.
+#define MGE_LINK_CALL_CREATE_DEPTH_BUFFER 21u
+// Width, height, format, address for the handle: a surface in memory, for a pixel read.
+#define MGE_LINK_CALL_CREATE_IMAGE_SURFACE 22u
+// Source surface, address of the rectangles, their number, target surface, address of the
+// points.
+#define MGE_LINK_CALL_COPY_PIXELS 23u
+// Address for the handle of the current render target, with one more reference.
+#define MGE_LINK_CALL_GET_RENDER_TARGET 24u
+// Address for the handle of the current depth buffer, with one more reference.
+#define MGE_LINK_CALL_GET_DEPTH_BUFFER 25u
+// The number of bytes of managed resources to drop.
+#define MGE_LINK_CALL_DISCARD_BYTES 26u
 
 // The commands. A command is device state that is not a part of the state packet of a
 // draw. The host takes it at once, in the order of the client. The values are those of D3D8.

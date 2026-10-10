@@ -552,7 +552,7 @@ namespace {
     uint32_t usedKinds = 0;
 
     uint32_t __cdecl useKinds(uint32_t kindMask) {
-        usedKinds = kindMask & (MGE_LINK_KIND_FRAME | MGE_LINK_KIND_BUFFERS | MGE_LINK_KIND_OBJECTS);
+        usedKinds = kindMask & (MGE_LINK_KIND_FRAME | MGE_LINK_KIND_BUFFERS | MGE_LINK_KIND_OBJECTS | MGE_LINK_KIND_TARGETS);
         LOG::logline("-- Render link: device kinds of the host: mask 0x%x", usedKinds);
         return usedKinds;
     }
@@ -615,6 +615,24 @@ namespace {
         case MGE_LINK_CALL_CREATE_INDEX_BUFFER:
             return device->ProxyDevice::CreateIndexBuffer(args[0], args[1], static_cast<D3DFORMAT>(args[2]), static_cast<D3DPOOL>(args[3]),
                 static_cast<IDirect3DIndexBuffer8**>(pointer(args[4])));
+        case MGE_LINK_CALL_CREATE_TEXTURE:
+            return device->ProxyDevice::CreateTexture(args[0], args[1], args[2], args[3], static_cast<D3DFORMAT>(args[4]),
+                static_cast<D3DPOOL>(args[5]), static_cast<IDirect3DTexture8**>(pointer(args[6])));
+        case MGE_LINK_CALL_CREATE_DEPTH_BUFFER:
+            return device->ProxyDevice::CreateDepthStencilSurface(args[0], args[1], static_cast<D3DFORMAT>(args[2]),
+                static_cast<D3DMULTISAMPLE_TYPE>(args[3]), static_cast<IDirect3DSurface8**>(pointer(args[4])));
+        case MGE_LINK_CALL_CREATE_IMAGE_SURFACE:
+            return device->ProxyDevice::CreateImageSurface(args[0], args[1], static_cast<D3DFORMAT>(args[2]),
+                static_cast<IDirect3DSurface8**>(pointer(args[3])));
+        case MGE_LINK_CALL_COPY_PIXELS:
+            return device->ProxyDevice::CopyRects(static_cast<IDirect3DSurface8*>(pointer(args[0])), static_cast<const RECT*>(pointer(args[1])),
+                args[2], static_cast<IDirect3DSurface8*>(pointer(args[3])), static_cast<const POINT*>(pointer(args[4])));
+        case MGE_LINK_CALL_GET_RENDER_TARGET:
+            return device->ProxyDevice::GetRenderTarget(static_cast<IDirect3DSurface8**>(pointer(args[0])));
+        case MGE_LINK_CALL_GET_DEPTH_BUFFER:
+            return device->ProxyDevice::GetDepthStencilSurface(static_cast<IDirect3DSurface8**>(pointer(args[0])));
+        case MGE_LINK_CALL_DISCARD_BYTES:
+            return device->ProxyDevice::ResourceManagerDiscardBytes(args[0]);
         case MGE_LINK_CALL_RENDER_TARGET:
             return device->MGEProxyDevice::SetRenderTarget(static_cast<IDirect3DSurface8*>(pointer(args[0])), static_cast<IDirect3DSurface8*>(pointer(args[1])));
         }
