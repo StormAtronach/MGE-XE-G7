@@ -1352,11 +1352,9 @@ bool DistantLand::inspectIndexedPrimitive(int sceneCount, const RenderedState* r
         recordMW.empty() && rs->blendEnable && sceneCount == 0 && mwBridge->IntLikeExterior(true), RenderLink::drawIsSky());
     if (isSkyDraw) {
         recordSky.emplace_back(*rs);
-        RenderLink::compare(MGE_LINK_FACT_MOON_SHADOW, frs->material.emissive.a == kMoonTag,
-            RenderLink::drawClass() == MGE_LINK_CLASS_SKY_MOON_SHADOW);
 
         // Check for moon geometry, and mark those records by setting lighting off
-        if (frs->material.emissive.a == kMoonTag) {
+        if (RenderLink::resolve(MGE_LINK_FACT_MOON_SHADOW, frs->material.emissive.a == kMoonTag, RenderLink::drawIsMoon())) {
             recordSky.back().useLighting = false;
         }
 

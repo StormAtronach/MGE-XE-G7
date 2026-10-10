@@ -21,8 +21,11 @@ client can tell the host to take a fact from the packets (`useFacts` with a mask
 default is the inference. Without a client, each function of `RenderLink` returns at once
 and `resolve` returns the inference.
 
-Facts that the host can take from a packet: UI scene, water plane, sun light, sky draw,
-land splat.
+Facts that the host can take from a packet: UI scene, scene kind, water plane, sun light,
+sky draw, land splat, moon shape.
+
+When the water plane comes from the packets, the host takes its mark (shininess 99999) out
+of the material of the water, and puts it back when the inference is in use again.
 
 ## Files
 
@@ -66,7 +69,7 @@ returns. An address of a game object is valid until the scene ends.
 | Sun light | light index 6 | the directional light of the draw | same |
 | Light radius | solved from the attenuation | radius in the light object | same |
 | Sky draw | blended, scene 0, nothing recorded yet | class is a sky class | `DistantLand::inspectIndexedPrimitive` |
-| Moon shadow | material mark 88888 | class is moon shadow | same |
+| Moon shape | material mark 88888 | class is moon or moon shadow | same |
 | Land splat | same vertex buffer again, blended | class landscape, and not the first D3D8 draw of the packet | same |
 
 Each fact has four counters: both yes, both no, only MGE XE, only the packet. The first 12
@@ -101,22 +104,46 @@ answer to use. `RenderLink::resolveMainView` does the same for the view transfor
 scene. Only the first view of a scene comes from the packet. A later view in a scene (a
 screen polygon, the sun glare) still goes through `detectMenu`.
 
-The marks in the materials stay. The water mark also carries the tint of the water plane,
-and the moon mark has no test yet.
+The water mark is not necessary with the water plane fact: `SetMaterial` and the draw take
+the answer of the packet, and the tint of the water plane comes from the material of that
+draw. With the fact in use, the material of the water has its own shininess again (4 in the
+test), the inference finds no water, and the picture is equal.
+
+The moon mark is in the material of the two shapes of a moon: the face, and the shape that
+hides the dark part. So the fact is "a shape of a moon". The proxy tells the two apart by
+the blend mode at the replay, as before. The mark stays in the material for now.
+
+The scene count of the proxy comes from the scene kind: the world scene is 0, and each
+other world view scene is 1 or more.
+
+The radius of a light is compared and not used. The game keeps a radius in the light object
+(the argument of its attach test), and `lightAttachRadius` tells the host the radius before
+the light fade raised it. For the lights of light records this radius is equal to the one
+that the proxy solves from the attenuation. A light of a mod can be different: the campfire
+of Ashfall has an attenuation for a radius of 150 and an attach radius of 512. The fade
+needs the radius that agrees with the attenuation, so the inference is the correct source.
 
 Test of 2026-10-10 (`tools/run_link.py --facts all`): with the game in menu mode, three
 pictures of the frame: facts off, facts on, facts off.
 
 | Place | Result |
 | --- | --- |
-| Vivec, Balmora | the picture with the facts is equal, byte for byte, to a picture without |
+| Balmora, Seyda Neen, Ald-ruhn | the picture with the facts is equal, byte for byte, to a picture without. The water mark was out of the material for the picture with the facts |
 | Balmora, Guild of Mages | equal |
-| Ald-ruhn | no result: the scene moves in menu mode, so the two pictures without the facts differ too |
+| Vivec | equal in one run, no result in the others: the scene moves in menu mode |
+
+A mod can add things that move in menu mode. The frost breath of Ashfall did, and it is off
+in the test install.
+
+The game draws a moon only when it is in the view, above the horizon, and not hidden by the
+weather. `tools/run_link.py --moon masser` goes through the hours of the night until the
+game shows the moon, sets clear weather, and keeps the camera on the moon. In that run the
+moon fact was equal on each draw (two moon shapes in a frame).
 
 With the facts in use the game ran in each place, and the counters stayed equal.
 
 ## What comes next
 
-- The scene kind in place of the scene count, the moon shadow, and the radius of a light
-  from the `lightAttachRadius` shim with the light pointer of the packet.
-- Then the removal of an inference and of its mark, one at a time.
+- The moon mark can come out of the material in the same way as the water mark.
+- The removal of an inference from the source, one at a time, when a client is a
+  condition of the build.

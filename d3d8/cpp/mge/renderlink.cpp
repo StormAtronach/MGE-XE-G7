@@ -3,8 +3,10 @@
 
 #include "renderlink.h"
 
-#include "ffeshader.h"
+#include "mwbridge.h"
 #include "support/log.h"
+
+#include <unordered_map>
 
 #include <cmath>
 #include <cstring>
@@ -28,7 +30,26 @@ namespace {
     uint32_t usedFacts = 0;
     // The facts that the proxy can take from a packet.
     const uint32_t kUsableFacts = (1u << MGE_LINK_FACT_UI_SCENE) | (1u << MGE_LINK_FACT_WATER_PLANE)
-        | (1u << MGE_LINK_FACT_SUN_LIGHT) | (1u << MGE_LINK_FACT_SKY_DRAW) | (1u << MGE_LINK_FACT_LAND_SPLAT);
+        | (1u << MGE_LINK_FACT_SUN_LIGHT) | (1u << MGE_LINK_FACT_SKY_DRAW) | (1u << MGE_LINK_FACT_LAND_SPLAT)
+        | (1u << MGE_LINK_FACT_SCENE_KIND) | (1u << MGE_LINK_FACT_MOON_SHADOW);
+    // The radius of a light is not in this list. The light fade needs the radius that agrees
+    // with the attenuation of the light. A light of a mod can have an attenuation that does
+    // not come from the radius that the game has for it. The comparison stays.
+
+    // The radius of the light record and the attach radius of each point light that went
+    // through the shim of the light fade. The key is the address of the NiPointLight.
+    struct LightRadius {
+        int record;
+        int attach;
+    };
+    std::unordered_map<uint32_t, LightRadius> lightRadii;
+    const size_t kMaxLightRadii = 8192;
+    // The mark that the proxy puts in the material of the water plane, and the value that
+    // was there before.
+    const float kWaterMark = 99999.0f;
+    float waterShininess = 0.0f;
+    bool waterMarked = false;
+    bool waterMarkRemoved = false;
     // The scene packet came and the view transform of the scene did not come yet.
     bool sceneViewPending = false;
 
@@ -138,6 +159,15 @@ namespace {
     uint32_t __cdecl useFacts(uint32_t factMask) {
         usedFacts = factMask & kUsableFacts;
         LOG::logline("-- Render link: facts taken from the packets: mask 0x%x", usedFacts);
+
+        // The water plane comes from the packets: take the mark out of the material of the
+        // water. Put it back when the inference is in use again.
+        auto mwBridge = MWBridge::get();
+        if (waterMarked && mwBridge->IsLoaded() && uses(MGE_LINK_FACT_WATER_PLANE) != waterMarkRemoved) {
+            mwBridge->markWaterNode(waterMarkRemoved ? kWaterMark : waterShininess);
+            waterMarkRemoved = !waterMarkRemoved;
+            LOG::logline("-- Render link: water mark %s", waterMarkRemoved ? "removed" : "put back");
+        }
         return usedFacts;
     }
 
@@ -182,6 +212,11 @@ namespace RenderLink {
         return drawClass() == MGE_LINK_CLASS_LANDSCAPE && d3dDraws > 1;
     }
 
+    bool drawIsMoon() {
+        const uint32_t c = drawClass();
+        return c == MGE_LINK_CLASS_SKY_MOON || c == MGE_LINK_CLASS_SKY_MOON_SHADOW;
+    }
+
     bool drawIsWaterPlane() {
         return drawClass() == MGE_LINK_CLASS_WATER_PLANE;
     }
@@ -221,13 +256,19 @@ namespace RenderLink {
         return uses(MGE_LINK_FACT_UI_SCENE) ? packetMainView : inferredMainView;
     }
 
-    void observeBeginScene(bool mainView, int sceneIndex) {
-        if (sceneOpen && mainView) {
-            count(MGE_LINK_FACT_SCENE_KIND, sceneIndex == 0, currentScene.kind == MGE_LINK_SCENE_WORLD);
+    int resolveSceneCount(int inferred) {
+        if (!sceneOpen) {
+            return inferred;
         }
+        const bool worldScene = currentScene.kind == MGE_LINK_SCENE_WORLD;
+        count(MGE_LINK_FACT_SCENE_KIND, inferred == 0, worldScene);
+        if (!uses(MGE_LINK_FACT_SCENE_KIND)) {
+            return inferred;
+        }
+        return worldScene ? 0 : (inferred < 1 ? 1 : inferred);
     }
 
-    void observeWorldDraw(const LightState& lights) {
+    void observeWorldDraw() {
         if (!connected) {
             return;
         }
@@ -236,29 +277,68 @@ namespace RenderLink {
             return;
         }
         ++d3dDraws;
-        if (d3dDraws != 1) {
-            // The lights of a packet are the same for each of its D3D8 draws.
+    }
+
+    void noteLightRadius(const void* light, int recordRadius, int attachRadius) {
+        if (lightRadii.size() >= kMaxLightRadii) {
+            lightRadii.clear();
+        }
+        const uint32_t key = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(light));
+        const auto found = lightRadii.find(key);
+        // Some callers of the game pass the radius that is in the light object, which is the
+        // attach radius of an earlier call. That value is not the radius of the record.
+        if (found != lightRadii.end() && found->second.attach == recordRadius && attachRadius == recordRadius) {
             return;
         }
+        lightRadii[key] = { recordRadius, attachRadius };
+    }
+
+    float resolveLightRadius(uint32_t deviceIndex, float inferred) {
+        if (!drawValid) {
+            return inferred;
+        }
+        const MgeLinkLightV1* light = nullptr;
         for (uint32_t i = 0; i != currentDraw.lightCount; ++i) {
-            const MgeLinkLightV1& light = currentLights[i];
-            if (light.type == MGE_LINK_LIGHT_POINT) {
-                const auto found = lights.lights.find(light.deviceIndex);
-                const float inferred = found != lights.lights.end() ? found->second.radius : 0.0f;
-                // Yes means a radius that is not 0. When the two radii are different, the
-                // larger one gets the count.
-                if (std::fabs(inferred - light.radius) <= kRadiusTolerance) {
-                    count(MGE_LINK_FACT_LIGHT_RADIUS, inferred != 0.0f, inferred != 0.0f);
-                } else {
-                    if (loggedDifferences[MGE_LINK_FACT_LIGHT_RADIUS] < kLoggedDifferences) {
-                        const auto& l = found != lights.lights.end() ? found->second : LightState::Light{};
-                        LOG::logline("-- Render link: light %u radius: MGE XE %g, packet %g; attenuation %g %g %g",
-                            light.deviceIndex, inferred, light.radius, l.falloff.x, l.falloff.y, l.falloff.z);
-                    }
-                    count(MGE_LINK_FACT_LIGHT_RADIUS, inferred > light.radius, inferred <= light.radius);
-                }
+            if (currentLights[i].deviceIndex == deviceIndex && currentLights[i].type == MGE_LINK_LIGHT_POINT) {
+                light = &currentLights[i];
             }
         }
+        // The packet has the radius that the game keeps in the light object. A light that the
+        // game never tested against an object has 0 there.
+        if (!light || light->radius <= 0.0f) {
+            return inferred;
+        }
+        // The shim of the light fade raised that radius. The table has the radius of the
+        // record, when the entry is of this light and not of an old light at the same address.
+        float direct = light->radius;
+        const auto found = lightRadii.find(light->light);
+        if (found != lightRadii.end() && static_cast<float>(found->second.attach) == light->radius) {
+            direct = static_cast<float>(found->second.record);
+        }
+
+        // Yes means a radius that is not 0. When the two radii are different, the larger one
+        // gets the count.
+        if (std::fabs(inferred - direct) <= kRadiusTolerance) {
+            count(MGE_LINK_FACT_LIGHT_RADIUS, true, true);
+        } else {
+            if (loggedDifferences[MGE_LINK_FACT_LIGHT_RADIUS] < kLoggedDifferences) {
+                // The name of a NiObjectNET is a C string pointer at offset 8.
+                const char* name = *reinterpret_cast<const char* const*>(light->light + 8);
+                LOG::logline("-- Render link: light %u '%s' radius: MGE XE %g, game %g (in the light object %g)",
+                    deviceIndex, name ? name : "", inferred, direct, light->radius);
+            }
+            count(MGE_LINK_FACT_LIGHT_RADIUS, inferred > direct, inferred <= direct);
+        }
+        return uses(MGE_LINK_FACT_LIGHT_RADIUS) ? direct : inferred;
+    }
+
+    bool usesWaterPlaneFact() {
+        return uses(MGE_LINK_FACT_WATER_PLANE);
+    }
+
+    void noteWaterMark(float original) {
+        waterShininess = original;
+        waterMarked = true;
     }
 }
 

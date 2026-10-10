@@ -102,6 +102,7 @@
 // Facts that the host can compare. They are the indexes of `MgeLinkCountersV1::facts`.
 #define MGE_LINK_FACT_LIGHT_RADIUS 0u
 #define MGE_LINK_FACT_SUN_LIGHT 1u
+// The draw is a shape of a moon: its face or the shape that hides the dark part.
 #define MGE_LINK_FACT_MOON_SHADOW 2u
 #define MGE_LINK_FACT_WATER_PLANE 3u
 #define MGE_LINK_FACT_UI_SCENE 4u

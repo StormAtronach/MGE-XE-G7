@@ -30,6 +30,10 @@ namespace RenderLink {
     // The current draw is a second or later D3D8 draw of a landscape object.
     bool drawIsLandSplat();
 
+    // The current draw is a shape of a moon: its face, or the shape that hides the dark part.
+    // The moon mark of the proxy is in the material of the two.
+    bool drawIsMoon();
+
     // The current draw is the water plane of the game.
     bool drawIsWaterPlane();
 
@@ -50,10 +54,28 @@ namespace RenderLink {
     // a fact of the scene.
     bool resolveMainView(bool inferredMainView);
 
-    // BeginScene on the back buffer. `sceneIndex` is the scene count of the proxy for this
-    // scene, when `mainView` is true.
-    void observeBeginScene(bool mainView, int sceneIndex);
+    // BeginScene of a world view on the back buffer. `inferred` is the scene count of the
+    // proxy for this scene: 0 for the first world scene of the frame. Returns the count to
+    // use. From the packet, the world scene is 0 and each other scene is 1 or more.
+    int resolveSceneCount(int inferred);
 
     // A DrawIndexedPrimitive of the world that the proxy inspects.
-    void observeWorldDraw(const LightState& lights);
+    void observeWorldDraw();
+
+    // The game attaches a point light. `recordRadius` is the radius that the game has for
+    // the light. `attachRadius` is the radius that the shim of the light fade gives back,
+    // and that the game then keeps in the light object.
+    void noteLightRadius(const void* light, int recordRadius, int attachRadius);
+
+    // SetLight of a point light. `inferred` is the radius that the proxy solved from the
+    // attenuation. Returns the radius to use.
+    float resolveLightRadius(uint32_t deviceIndex, float inferred);
+
+    // True when the proxy takes the water plane from the packets. Then the mark in the
+    // material of the water is not necessary.
+    bool usesWaterPlaneFact();
+
+    // The proxy put its mark in the material of the water. `original` is the value that was
+    // there. The host puts it back while the water plane comes from the packets.
+    void noteWaterMark(float original);
 }

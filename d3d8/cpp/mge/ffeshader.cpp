@@ -1,5 +1,6 @@
 
 #include "ffeshader.h"
+#include "renderlink.h"
 #include "camerarelative.h"
 #include "configuration.h"
 #include "mwbridge.h"
@@ -426,8 +427,9 @@ int __cdecl FixedFunctionShader::lightAttachRadius(const NI::PointLight* light, 
         return radius;
     }
 
-    const int attach = static_cast<int>(std::ceil(cutoff)) + kLightAttachMargin;
-    return std::max(radius, attach);
+    const int attach = std::max(radius, static_cast<int>(std::ceil(cutoff)) + kLightAttachMargin);
+    RenderLink::noteLightRadius(light, radius, attach);
+    return attach;
 }
 
 void FixedFunctionShader::updateLighting(float sunMult, float ambMult) {

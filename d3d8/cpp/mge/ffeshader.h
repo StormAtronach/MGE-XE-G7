@@ -71,7 +71,8 @@ struct LightState {
             D3DVECTOR falloff;  // constant, linear, quadratic
             D3DVECTOR ambient;  // for directional lights
         };
-        float radius;           // recovered TES3 radius, 0 if unknown
+        float radius;           // TES3 radius, 0 if unknown
+        float inferredRadius;   // the radius recovered from the attenuation
     };
 
     D3DCOLORVALUE globalAmbient;

@@ -130,7 +130,7 @@ public:
     void HaggleLess(DWORD num);
 
     void toggleRipples(BOOL enabled);
-    void markWaterNode(float k);
+    float markWaterNode(float k);
     void markMoonNodes(float k);
     bool isIntroDone();
     bool isLoadingBar();

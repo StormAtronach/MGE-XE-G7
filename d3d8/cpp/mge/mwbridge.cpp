@@ -948,7 +948,8 @@ void MWBridge::toggleRipples(BOOL enabled) {
 
 // markWaterNode
 // Edits the water material to set (normally unused) specular power to a recognizable value
-void MWBridge::markWaterNode(float k) {
+// Returns the value that was there
+float MWBridge::markWaterNode(float k) {
     // Get water node
     NI::Node* waterPlane = dataHandler()->waterController->waterPlane;
 
@@ -966,9 +967,14 @@ void MWBridge::markWaterNode(float k) {
     }
 
     // Write to specular power member
+    float previous = 0.0f;
     if (material) {
+        previous = material->shininess;
         material->shininess = k;
+        // The renderer keeps a copy of the material until the revision changes
+        ++material->revisionID;
     }
+    return previous;
 }
 
 //-----------------------------------------------------------------------------

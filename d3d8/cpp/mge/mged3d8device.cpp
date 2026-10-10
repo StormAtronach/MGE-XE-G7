@@ -26,6 +26,8 @@ static bool isMainView, isStencilScene, isAmbientWhite;
 static DWORD stencilRef;
 static bool stage0Complete, isFrameComplete, isHUDComplete;
 static bool isWaterMaterial, waterDrawn, distantWater;
+// The last material had the water mark. isWaterMaterial can come from a render link packet.
+static bool waterMarkSeen;
 // Marks the surface mesh of a water volume, set on its material by the mod that owns the mesh:
 // 99998 for a surface that reflects what is on screen, 99997 for one that reflects the sky only.
 // The emissive colour of that material is the colour of the water.
@@ -64,7 +66,7 @@ MGEProxyDevice::MGEProxyDevice(IDirect3DDevice9* real, ProxyD3D* d3d) : ProxyDev
     isHUDready = false;
     isMainView = isStencilScene = isAmbientWhite = stage0Complete = isFrameComplete = isHUDComplete = false;
     stencilRef = 0;
-    isWaterMaterial = waterDrawn = false;
+    isWaterMaterial = waterMarkSeen = waterDrawn = false;
     D3DXMatrixIdentity(&camEffectsMatrix);
 
     Configuration.CameraEffects.zoom = 1.0;
@@ -224,7 +226,9 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
         // Disable MW screenshot function to allow MGE to use the same key
         MWPatches::disableScreenshotFunc();
         // Mark water material to allow MGEProxyDevice to detect it
-        mwBridge->markWaterNode(99999.0f);
+        if (!RenderLink::usesWaterPlaneFact()) {
+            RenderLink::noteWaterMark(mwBridge->markWaterNode(99999.0f));
+        }
 
         // Raise the engine's per-node light limit, on request and only when the
         // renderer reports it can consume the extra lights. This is one
@@ -400,8 +404,6 @@ HRESULT _stdcall MGEProxyDevice::BeginScene() {
     }
 
     if (mwBridge->IsLoaded() && rendertargetNormal) {
-        RenderLink::observeBeginScene(isMainView, isMainView ? sceneCount + 1 : sceneCount);
-
         if (!isHUDready) {
             StatusOverlay::init(realDevice);
             StatusOverlay::setStatus(XE_VERSION_STRING);
@@ -416,7 +418,7 @@ HRESULT _stdcall MGEProxyDevice::BeginScene() {
 
         if (isMainView) {
             // Track scene count here in BeginScene; isMainView is not always valid at EndScene if Morrowind draws sunglare
-            ++sceneCount;
+            sceneCount = RenderLink::resolveSceneCount(sceneCount + 1);
 
             if (sceneCount == 0) {
                 if (Configuration.ScreenFOV > 0) {
@@ -564,7 +566,8 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 
 HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
     captureMaterial(a);
-    isWaterMaterial = (a->Power == 99999.0f);
+    waterMarkSeen = (a->Power == 99999.0f);
+    isWaterMaterial = RenderLink::resolve(MGE_LINK_FACT_WATER_PLANE, waterMarkSeen, RenderLink::drawIsWaterPlane());
     if (isWaterMaterial) {
         DistantLand::waterPlaneTint[0] = a->Emissive.r;
         DistantLand::waterPlaneTint[1] = a->Emissive.g;
@@ -729,7 +732,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
         rs.startIndex = d;
         rs.primCount = e;
 
-        RenderLink::observeWorldDraw(lightrs);
+        RenderLink::observeWorldDraw();
 
         if (!stage0Complete && !isAmbientWhite) {
             // In an exterior this is normally the first world draw after the sky; interiors may
@@ -738,7 +741,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
             stage0Complete = true;
         }
 
-        if (RenderLink::resolve(MGE_LINK_FACT_WATER_PLANE, isWaterMaterial, RenderLink::drawIsWaterPlane())) {
+        if (RenderLink::resolve(MGE_LINK_FACT_WATER_PLANE, waterMarkSeen, RenderLink::drawIsWaterPlane())) {
             if (distantWater) {
                 // Replacement water suppresses the original Morrowind grid.
                 if (!waterDrawn) {
@@ -1067,9 +1070,10 @@ void captureLight(DWORD a, const D3DLIGHT8* b) {
 
         // Morrowind resubmits unchanged lights for every object.
         if (falloffChanged) {
-            light->radius = MWBridge::get()->pointLightRadius(
+            light->inferredRadius = MWBridge::get()->pointLightRadius(
                 b->Attenuation0, b->Attenuation1, b->Attenuation2);
         }
+        light->radius = RenderLink::resolveLightRadius(a, light->inferredRadius);
     } else {
         D3DXVec3Normalize((D3DXVECTOR3*)&light->position, (D3DXVECTOR3*)&b->Direction);
         light->ambient.x = b->Ambient.r;
