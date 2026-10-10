@@ -109,15 +109,14 @@ pictures of the frame: facts off, facts on, facts off.
 
 | Place | Result |
 | --- | --- |
-| Balmora | the picture with the facts is equal, byte for byte |
+| Vivec, Balmora | the picture with the facts is equal, byte for byte, to a picture without |
 | Balmora, Guild of Mages | equal |
-| Vivec, Seyda Neen | no result: the water moves in menu mode, so the two pictures without the facts differ too |
+| Ald-ruhn | no result: the scene moves in menu mode, so the two pictures without the facts differ too |
 
 With the facts in use the game ran in each place, and the counters stayed equal.
 
 ## What comes next
 
-- A picture test that works where the scene moves.
 - The scene kind in place of the scene count, the moon shadow, and the radius of a light
   from the `lightAttachRadius` shim with the light pointer of the packet.
 - Then the removal of an inference and of its mark, one at a time.
