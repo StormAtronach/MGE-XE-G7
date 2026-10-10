@@ -552,7 +552,7 @@ namespace {
     uint32_t usedKinds = 0;
 
     uint32_t __cdecl useKinds(uint32_t kindMask) {
-        usedKinds = kindMask & (MGE_LINK_KIND_FRAME | MGE_LINK_KIND_BUFFERS);
+        usedKinds = kindMask & (MGE_LINK_KIND_FRAME | MGE_LINK_KIND_BUFFERS | MGE_LINK_KIND_OBJECTS);
         LOG::logline("-- Render link: device kinds of the host: mask 0x%x", usedKinds);
         return usedKinds;
     }
@@ -560,11 +560,38 @@ namespace {
     // A frame or scene call of the client. It goes through the D3D8 handler of the proxy,
     // as the D3D8 call of the game did.
     uint32_t __cdecl call(uint32_t call, const uint32_t* args) {
+        const auto pointer = [](uint32_t value) { return reinterpret_cast<void*>(static_cast<uintptr_t>(value)); };
+        // The calls on a resource need no device. A handle is a D3D8 interface pointer: a
+        // proxy object for a texture or a surface, and the D3D9 object for a buffer. A vertex
+        // buffer and an index buffer have Lock, Unlock and GetDesc at the same places.
+        switch (call) {
+        case MGE_LINK_CALL_ADD_REF:
+            return static_cast<IUnknown*>(pointer(args[0]))->AddRef();
+        case MGE_LINK_CALL_RELEASE:
+            return static_cast<IUnknown*>(pointer(args[0]))->Release();
+        case MGE_LINK_CALL_BUFFER_LOCK:
+            return static_cast<IDirect3DVertexBuffer9*>(pointer(args[0]))->Lock(args[1], args[2], static_cast<void**>(pointer(args[3])), args[4]);
+        case MGE_LINK_CALL_BUFFER_UNLOCK:
+            return static_cast<IDirect3DVertexBuffer9*>(pointer(args[0]))->Unlock();
+        case MGE_LINK_CALL_BUFFER_DESCRIPTION:
+            return static_cast<IDirect3DVertexBuffer9*>(pointer(args[0]))->GetDesc(static_cast<D3DVERTEXBUFFER_DESC*>(pointer(args[1])));
+        case MGE_LINK_CALL_TEXTURE_LEVEL:
+            return static_cast<IDirect3DTexture8*>(pointer(args[0]))->GetSurfaceLevel(args[1], static_cast<IDirect3DSurface8**>(pointer(args[2])));
+        case MGE_LINK_CALL_CUBE_FACE:
+            // The proxy makes no cube texture, so no handle of one exists.
+            return static_cast<uint32_t>(D3DERR_INVALIDCALL);
+        case MGE_LINK_CALL_SURFACE_DESCRIPTION:
+            return static_cast<IDirect3DSurface8*>(pointer(args[0]))->GetDesc(static_cast<D3DSURFACE_DESC8*>(pointer(args[1])));
+        case MGE_LINK_CALL_SURFACE_LOCK:
+            return static_cast<IDirect3DSurface8*>(pointer(args[0]))->LockRect(static_cast<D3DLOCKED_RECT*>(pointer(args[1])),
+                static_cast<const RECT*>(pointer(args[2])), args[3]);
+        case MGE_LINK_CALL_SURFACE_UNLOCK:
+            return static_cast<IDirect3DSurface8*>(pointer(args[0]))->UnlockRect();
+        }
         auto device = static_cast<MGEProxyDevice*>(linkDevice.load());
         if (!device) {
             return static_cast<uint32_t>(D3DERR_INVALIDCALL);
         }
-        const auto pointer = [](uint32_t value) { return reinterpret_cast<void*>(static_cast<uintptr_t>(value)); };
         switch (call) {
         case MGE_LINK_CALL_TEST_DEVICE:
             return device->ProxyDevice::TestCooperativeLevel();

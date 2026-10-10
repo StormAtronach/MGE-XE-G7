@@ -49,6 +49,9 @@
 #define MGE_LINK_KIND_FRAME 0x00000001u
 // The creation of vertex buffers and index buffers.
 #define MGE_LINK_KIND_BUFFERS 0x00000002u
+// The work on a resource through its handle: the reference count, the lock of a buffer,
+// the levels and the pixels of a texture.
+#define MGE_LINK_KIND_OBJECTS 0x00000004u
 
 // The calls. `args` is an array of words. The result is the HRESULT of D3D8.
 // The device is lost or not: no arguments. The result is the answer of the device.
@@ -70,6 +73,25 @@
 #define MGE_LINK_CALL_CREATE_VERTEX_BUFFER 8u
 // Makes an index buffer: length in bytes, usage, index format, pool, address for the handle.
 #define MGE_LINK_CALL_CREATE_INDEX_BUFFER 9u
+// The calls on a resource. The first argument is its handle. In this version a handle is a
+// D3D8 interface pointer, and each call has the arguments and the result of the D3D8 method.
+// One more reference, and one less. The result is the new count.
+#define MGE_LINK_CALL_ADD_REF 10u
+#define MGE_LINK_CALL_RELEASE 11u
+// A vertex or index buffer: offset, size, address for the data pointer, flags.
+#define MGE_LINK_CALL_BUFFER_LOCK 12u
+#define MGE_LINK_CALL_BUFFER_UNLOCK 13u
+// The address of the description of the buffer.
+#define MGE_LINK_CALL_BUFFER_DESCRIPTION 14u
+// A texture: level, address for the handle of the surface.
+#define MGE_LINK_CALL_TEXTURE_LEVEL 15u
+// A cube texture: face, level, address for the handle of the surface.
+#define MGE_LINK_CALL_CUBE_FACE 16u
+// A surface: the address of its description.
+#define MGE_LINK_CALL_SURFACE_DESCRIPTION 17u
+// A surface: address of the D3DLOCKED_RECT, address of the rectangle, flags.
+#define MGE_LINK_CALL_SURFACE_LOCK 18u
+#define MGE_LINK_CALL_SURFACE_UNLOCK 19u
 
 // The commands. A command is device state that is not a part of the state packet of a
 // draw. The host takes it at once, in the order of the client. The values are those of D3D8.
