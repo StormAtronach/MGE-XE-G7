@@ -541,7 +541,7 @@ namespace {
             }
             break;
         case MGE_LINK_COMMAND_TRANSFORM:
-            if (b && (a == D3DTS_VIEW || a == D3DTS_PROJECTION)) {
+            if (b) {
                 device->MGEProxyDevice::SetTransform(static_cast<D3DTRANSFORMSTATETYPE>(a), reinterpret_cast<const D3DMATRIX*>(static_cast<uintptr_t>(b)));
             }
             break;

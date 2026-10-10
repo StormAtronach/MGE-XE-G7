@@ -122,8 +122,8 @@
 #define MGE_LINK_COMMAND_RENDER_STATE 1u
 // A texture stage state: a is the stage, b the state, c the value.
 #define MGE_LINK_COMMAND_STAGE_STATE 2u
-// The view or the projection transform: a is the D3D8 transform state, b the address of 16
-// floats.
+// A transform: a is the D3D8 transform state, b the address of 16 floats. The ports of the
+// client send the view and the projection so; other code can send each transform so.
 #define MGE_LINK_COMMAND_TRANSFORM 3u
 // A draw with the index buffer: a is the address of 5 words: primitive type, least index,
 // number of vertices, first index, number of primitives. The host draws with the state
