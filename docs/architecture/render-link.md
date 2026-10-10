@@ -136,6 +136,11 @@ pictures of the frame: facts off, facts on, facts off.
 | Balmora, Guild of Mages | equal |
 | Vivec | equal in one run, no result in the others: the scene moves in menu mode |
 
+The place of the test save, "Vivec, Temple", is under water: the player stands in a water
+volume of a mod. So each Vivec row of the tests is the underwater case. The caustics move in
+menu mode there, which is why its picture test often has no result, and the sun and its
+glare are not in view from there.
+
 A mod can add things that move in menu mode. The frost breath of Ashfall did, and it is off
 in the test install.
 
