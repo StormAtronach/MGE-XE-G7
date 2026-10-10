@@ -51,7 +51,8 @@ namespace {
         | (1u << MGE_LINK_FACT_SCENE_KIND) | (1u << MGE_LINK_FACT_MOON_SHADOW) | (1u << MGE_LINK_FACT_STATE_DRAW)
         | (1u << MGE_LINK_FACT_DEVICE_RENDER_STATES) | (1u << MGE_LINK_FACT_DEVICE_STAGE_STATES)
         | (1u << MGE_LINK_FACT_DEVICE_TEXTURES) | (1u << MGE_LINK_FACT_DEVICE_BUFFERS)
-        | (1u << MGE_LINK_FACT_DEVICE_TRANSFORMS) | (1u << MGE_LINK_FACT_DEVICE_LIGHTS);
+        | (1u << MGE_LINK_FACT_DEVICE_TRANSFORMS) | (1u << MGE_LINK_FACT_DEVICE_LIGHTS)
+        | (1u << MGE_LINK_FACT_CLIENT_CAMERA_SPACE);
     // The radius of a light is not in this list. The light fade needs the radius that agrees
     // with the attenuation of the light. A light of a mod can have an attenuation that does
     // not come from the radius that the game has for it. The comparison stays.
@@ -159,6 +160,7 @@ namespace {
             return;
         }
         copyPacket(currentScene, scene);
+        CameraRelative::setExternalOrigin((currentScene.flags & MGE_LINK_SCENE_HAS_CAMERA_ORIGIN) ? currentScene.cameraOrigin : nullptr);
         sceneViewPending = true;
         sceneOpen = true;
         drawValid = false;
@@ -401,6 +403,11 @@ namespace {
     uint32_t __cdecl useFacts(uint32_t factMask) {
         const uint32_t before = usedFacts;
         usedFacts = factMask & kUsableFacts;
+        // The matrices of the client come only in the state packets.
+        if (!(usedFacts & (1u << MGE_LINK_FACT_DEVICE_TRANSFORMS))) {
+            usedFacts &= ~(1u << MGE_LINK_FACT_CLIENT_CAMERA_SPACE);
+        }
+        CameraRelative::setExternalOwner((usedFacts >> MGE_LINK_FACT_CLIENT_CAMERA_SPACE) & 1u);
         // The client takes the lights back: all lights go off, and the client puts its
         // lights on again.
         const uint32_t lightsBit = 1u << MGE_LINK_FACT_DEVICE_LIGHTS;
@@ -499,6 +506,10 @@ namespace {
         return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(device->factoryProxyTexture(real)));
     }
 
+    uint32_t __cdecl cameraSpace(double origin[3]) {
+        return origin && CameraRelative::activeOrigin(origin) ? 1u : 0u;
+    }
+
     uint32_t __cdecl worldSpace() {
         return CameraRelative::peekWorldRelative() ? 1u : 0u;
     }
@@ -507,7 +518,7 @@ namespace {
         sizeof(MgeRenderLinkHostV1),
         MGE_RENDER_LINK_VERSION,
         MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS | MGE_RENDER_LINK_CAP_DRAW_STATE
-            | MGE_RENDER_LINK_CAP_TEXTURES | MGE_RENDER_LINK_CAP_WORLD_SPACE,
+            | MGE_RENDER_LINK_CAP_TEXTURES | MGE_RENDER_LINK_CAP_WORLD_SPACE | MGE_RENDER_LINK_CAP_CAMERA_SPACE,
         0,
         sceneBegin,
         sceneEnd,
@@ -518,6 +529,7 @@ namespace {
         drawState,
         textureCreate,
         worldSpace,
+        cameraSpace,
     };
 }
 

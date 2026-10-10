@@ -716,6 +716,10 @@ void __fastcall hookSetCameraData(
 
 bool isActive = false;
 double origin[3] = {};
+// The client of the render link makes the camera-relative matrices.
+bool externalOwner = false;
+bool externalOriginValid = false;
+double externalOrigin[3] = {};
 D3DXMATRIX viewRotationOnly;   // recorder view while active
 D3DXMATRIX viewAbsoluteBase;   // absolute view rebuilt from the pose, no camera effects
 D3DXMATRIX viewAbsoluteEffects;
@@ -740,7 +744,11 @@ double dot3(const float* a, const double* b) {
 }
 
 void activate(const D3DMATRIX* engineView) {
-    if (pose.exactValid) {
+    if (externalOwner && externalOriginValid) {
+        origin[0] = externalOrigin[0];
+        origin[1] = externalOrigin[1];
+        origin[2] = externalOrigin[2];
+    } else if (pose.exactValid) {
         origin[0] = pose.exactLocation[0];
         origin[1] = pose.exactLocation[1];
         origin[2] = pose.exactLocation[2];
@@ -849,7 +857,7 @@ void __fastcall hookRenderTriStrips(
 }
 
 void __fastcall patchSetModelTransform(void* renderer, void* /*edx*/, const NI::Transform* transform) {
-    if (isActive && rigidHooksInstalled && transform && transform == currentGeometryTransform) {
+    if (isActive && !externalOwner && rigidHooksInstalled && transform && transform == currentGeometryTransform) {
         double exact[3];
         if (exactWorldTranslation(nodeFromWorldTransform(transform), exact)) {
             NI::Transform relative = *transform;
@@ -915,7 +923,7 @@ void __fastcall patchSetSkinnedModelTransforms(
     void* renderer, void* /*edx*/, NI::SkinInstance* skinInstance, NI::SkinPartition::Partition* partition,
     NI::Transform* transform, void* bound) {
     const NI::SkinData* skinData = skinInstance ? skinInstance->skinData : nullptr;
-    if (!isActive || !skinnedHooksInstalled || !partition || !transform || !skinData
+    if (!isActive || externalOwner || !skinnedHooksInstalled || !partition || !transform || !skinData
         || !skinData->boneData || !skinInstance->rootParent || !skinInstance->bones || !partition->bones) {
         engineSetSkinnedModelTransforms(renderer, skinInstance, partition, transform, bound);
         return;
@@ -1125,6 +1133,29 @@ bool takeWorldRelative() {
     const bool pending = worldRelativePending;
     worldRelativePending = false;
     return pending;
+}
+
+void setExternalOwner(bool owner) {
+    externalOwner = owner;
+}
+
+void setExternalOrigin(const double* external) {
+    externalOriginValid = external != nullptr;
+    if (external) {
+        externalOrigin[0] = external[0];
+        externalOrigin[1] = external[1];
+        externalOrigin[2] = external[2];
+    }
+}
+
+bool activeOrigin(double out[3]) {
+    if (!isActive) {
+        return false;
+    }
+    out[0] = origin[0];
+    out[1] = origin[1];
+    out[2] = origin[2];
+    return true;
 }
 
 bool peekWorldRelative() {

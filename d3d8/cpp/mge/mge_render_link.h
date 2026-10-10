@@ -34,6 +34,8 @@
 #define MGE_RENDER_LINK_CAP_TEXTURES 0x00000008u
 // The host tells the space of a world matrix: MgeRenderLinkHostV1::worldSpace.
 #define MGE_RENDER_LINK_CAP_WORLD_SPACE 0x00000010u
+// The host tells if the scene is in camera space: MgeRenderLinkHostV1::cameraSpace.
+#define MGE_RENDER_LINK_CAP_CAMERA_SPACE 0x00000020u
 
 // Scene kinds. A scene is the time between BeginPaint and EndPaint of the renderer.
 #define MGE_LINK_SCENE_OTHER 0u
@@ -90,6 +92,10 @@
 // The draw is a partition of a skinned mesh. `world` is the matrix of the first bone and
 // `blendWorlds` has the matrices of the other bones.
 #define MGE_LINK_STATE_SKINNED 0x00000001u
+
+// Flags of a scene packet.
+// `cameraOrigin` is valid: the camera is the world camera or the first-person camera.
+#define MGE_LINK_SCENE_HAS_CAMERA_ORIGIN 0x00000001u
 
 // Flags of a texture description.
 // The game can change the pixels of the texture later.
@@ -171,6 +177,10 @@
 #define MGE_LINK_FACT_DEVICE_TRANSFORMS 29u
 // The lights: their values, which ones are on, and their order.
 #define MGE_LINK_FACT_DEVICE_LIGHTS 30u
+// The client makes the world matrices that are relative to the camera, and the scene packet
+// has the origin. The hooks of the host in the game make no matrix. The host uses this only
+// together with MGE_LINK_FACT_DEVICE_TRANSFORMS.
+#define MGE_LINK_FACT_CLIENT_CAMERA_SPACE 31u
 
 // The texture stages of a state packet, and the states of each stage. The order of the
 // states is: COLOROP, COLORARG1, COLORARG2, ALPHAOP, ALPHAARG1, ALPHAARG2, COLORARG0,
@@ -195,7 +205,12 @@ typedef struct MgeLinkSceneV1 {
     uint32_t sceneRoot;
     // The NiRenderedTexture that is the target, or 0 for the back buffer.
     uint32_t renderTarget;
-    uint32_t reserved;
+    // MGE_LINK_SCENE_HAS_*
+    uint32_t flags;
+    // The exact position of the camera in the world space of the game. A world matrix that
+    // is relative to the camera has its translation relative to this point. Valid with
+    // MGE_LINK_SCENE_HAS_CAMERA_ORIGIN.
+    double cameraOrigin[3];
 } MgeLinkSceneV1;
 
 typedef struct MgeLinkLightV1 {
@@ -391,11 +406,15 @@ typedef struct MgeRenderLinkHostV1 {
     // worldRelativeMask. This member goes away when the client makes these matrices itself.
     // Only a host with MGE_RENDER_LINK_CAP_WORLD_SPACE has this member.
     uint32_t (__cdecl* worldSpace)(void);
+    // Returns 1 when the scene in progress is in camera space, and then writes the origin
+    // that the host uses to `origin`. Returns 0 for a scene in world space.
+    // Only a host with MGE_RENDER_LINK_CAP_CAMERA_SPACE has this member.
+    uint32_t (__cdecl* cameraSpace)(double origin[3]);
 } MgeRenderLinkHostV1;
 
 #ifdef __cplusplus
 static_assert(sizeof(void*) == 4, "the render link is for 32-bit code");
-static_assert(sizeof(MgeLinkSceneV1) == 24, "MgeLinkSceneV1 size");
+static_assert(sizeof(MgeLinkSceneV1) == 48, "MgeLinkSceneV1 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
@@ -403,7 +422,7 @@ static_assert(sizeof(MgeLinkDrawStateV1) == 1728, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 528, "MgeLinkCountersV1 size");
 static_assert(sizeof(MgeLinkTextureV1) == 52, "MgeLinkTextureV1 size");
-static_assert(sizeof(MgeRenderLinkHostV1) == 52, "MgeRenderLinkHostV1 size");
+static_assert(sizeof(MgeRenderLinkHostV1) == 56, "MgeRenderLinkHostV1 size");
 
 extern "C" {
 #endif

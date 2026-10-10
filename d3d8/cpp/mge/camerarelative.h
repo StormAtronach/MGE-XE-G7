@@ -98,6 +98,15 @@ void absoluteFromRelative(const D3DMATRIX* relative, D3DXMATRIX* out);
 // then skip its own subtraction.
 bool takeWorldRelative();
 
+// For the render link, when its client makes the camera-relative world matrices. With an
+// owner, the hooks of this module on the transform functions of the game pass the call on
+// and make no matrix, and a scene takes the origin that the client gave for it.
+void setExternalOwner(bool owner);
+// The origin of the scene that starts, or null when the client gave none.
+void setExternalOrigin(const double* origin);
+// True while a scene is in camera space; then `out` gets its origin.
+bool activeOrigin(double out[3]);
+
 // The same answer, and the flag stays. For the render link: its client asks at the place
 // of the SetTransform call and sends the matrix later.
 bool peekWorldRelative();
