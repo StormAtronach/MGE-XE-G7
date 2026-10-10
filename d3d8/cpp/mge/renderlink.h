@@ -25,6 +25,9 @@ namespace RenderLink {
     void noteStreamSource(const void* buffer, uint32_t stride);
     void noteIndices(const void* buffer, uint32_t baseVertexIndex);
     void noteVertexFormat(uint32_t format);
+    void noteTransform(uint32_t state, const void* matrix);
+    void noteLight(uint32_t index, const void* light);
+    void noteLightEnable(uint32_t index, bool on);
 
     // True after a client connected.
     bool isConnected();

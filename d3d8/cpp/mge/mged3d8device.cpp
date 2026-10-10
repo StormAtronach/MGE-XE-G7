@@ -504,6 +504,7 @@ HRESULT _stdcall MGEProxyDevice::Clear(DWORD a, const D3DRECT* b, DWORD c, D3DCO
 }
 
 HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3DMATRIX* b) {
+    RenderLink::noteTransform(a, b);
     worldAlreadyRelative = CameraRelative::takeWorldRelative();
 
     if (a == D3DTS_VIEW) {
@@ -589,6 +590,7 @@ HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
 }
 
 HRESULT _stdcall MGEProxyDevice::SetLight(DWORD a, const D3DLIGHT8* b) {
+    RenderLink::noteLight(a, b);
     captureLight(a, b);
 
     // Exterior sunlight/interior "sun" appears to always be light 6
@@ -883,6 +885,7 @@ HRESULT _stdcall MGEProxyDevice::SetIndices(IDirect3DIndexBuffer8* a, UINT b) {
 }
 
 HRESULT _stdcall MGEProxyDevice::LightEnable(DWORD a, BOOL b) {
+    RenderLink::noteLightEnable(a, b != FALSE);
     if (b) {
         if (std::find(lightrs.active.begin(), lightrs.active.end(), a) == lightrs.active.end()) {
             lightrs.active.push_back(a);

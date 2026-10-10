@@ -165,6 +165,12 @@
 #define MGE_LINK_FACT_DEVICE_TEXTURES 27u
 // The vertex buffer, the index buffer and the vertex format.
 #define MGE_LINK_FACT_DEVICE_BUFFERS 28u
+// The texture transforms of the stages that use one. The world matrices are not a device
+// kind: the host has a hook in the game that tells it, at the D3D8 call, if a world matrix
+// is relative to the camera.
+#define MGE_LINK_FACT_DEVICE_TRANSFORMS 29u
+// The lights: their values, which ones are on, and their order.
+#define MGE_LINK_FACT_DEVICE_LIGHTS 30u
 
 // The texture stages of a state packet, and the states of each stage. The order of the
 // states is: COLOROP, COLORARG1, COLORARG2, ALPHAOP, ALPHAARG1, ALPHAARG2, COLORARG0,

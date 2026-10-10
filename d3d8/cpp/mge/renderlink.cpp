@@ -12,7 +12,9 @@
 #include "proxydx/d3d8texture.h"
 #include "support/log.h"
 
+#include <algorithm>
 #include <atomic>
+#include <vector>
 #include <unordered_map>
 
 #include <cmath>
@@ -48,7 +50,8 @@ namespace {
         | (1u << MGE_LINK_FACT_SUN_LIGHT) | (1u << MGE_LINK_FACT_SKY_DRAW) | (1u << MGE_LINK_FACT_LAND_SPLAT)
         | (1u << MGE_LINK_FACT_SCENE_KIND) | (1u << MGE_LINK_FACT_MOON_SHADOW) | (1u << MGE_LINK_FACT_STATE_DRAW)
         | (1u << MGE_LINK_FACT_DEVICE_RENDER_STATES) | (1u << MGE_LINK_FACT_DEVICE_STAGE_STATES)
-        | (1u << MGE_LINK_FACT_DEVICE_TEXTURES) | (1u << MGE_LINK_FACT_DEVICE_BUFFERS);
+        | (1u << MGE_LINK_FACT_DEVICE_TEXTURES) | (1u << MGE_LINK_FACT_DEVICE_BUFFERS)
+        | (1u << MGE_LINK_FACT_DEVICE_TRANSFORMS) | (1u << MGE_LINK_FACT_DEVICE_LIGHTS);
     // The radius of a light is not in this list. The light fade needs the radius that agrees
     // with the attenuation of the light. A light of a mod can have an attenuation that does
     // not come from the radius that the game has for it. The comparison stays.
@@ -180,6 +183,19 @@ namespace {
     DeviceValue deviceStageStates[MGE_LINK_STATE_STAGES][32];
     DeviceValue deviceTextures[MGE_LINK_STATE_STAGES];
     DeviceValue deviceVertexBuffer, deviceStride, deviceFormat, deviceIndexBuffer, deviceBaseIndex;
+    // The texture transforms, as the game sent them.
+    struct DeviceMatrix {
+        D3DMATRIX matrix;
+        bool known;
+
+        bool is(const float* other) const {
+            return known && std::memcmp(&matrix, other, sizeof(matrix)) == 0;
+        }
+    };
+    DeviceMatrix deviceTextureTransforms[MGE_LINK_STATE_STAGES];
+    // The lights, as the game sent them, and the lights that are on, the oldest first.
+    std::unordered_map<uint32_t, D3DLIGHT8> deviceLights;
+    std::vector<uint32_t> deviceLightsOn;
 
     // The render states of a state packet: the D3D8 state and the value.
     struct PacketRenderState {
@@ -217,8 +233,47 @@ namespace {
         auto device = static_cast<MGEProxyDevice*>(linkDevice.load());
         const uint32_t kinds = (1u << MGE_LINK_FACT_DEVICE_RENDER_STATES) | (1u << MGE_LINK_FACT_DEVICE_STAGE_STATES)
             | (1u << MGE_LINK_FACT_DEVICE_TEXTURES) | (1u << MGE_LINK_FACT_DEVICE_BUFFERS);
-        if (!device || !(usedFacts & kinds) || s.structSize < sizeof(MgeLinkDrawStateV1)) {
+        if (!device || !(usedFacts & (kinds | (1u << MGE_LINK_FACT_DEVICE_TRANSFORMS) | (1u << MGE_LINK_FACT_DEVICE_LIGHTS)))
+                || s.structSize < sizeof(MgeLinkDrawStateV1)) {
             return;
+        }
+        if (usesFact(MGE_LINK_FACT_DEVICE_TRANSFORMS)) {
+            const uint32_t kTransformFlags = 10;
+            for (uint32_t stage = 0; stage != MGE_LINK_STATE_STAGES; ++stage) {
+                if (s.stages[stage][kTransformFlags] != D3DTTFF_DISABLE && s.stages[stage][kTransformFlags] != MGE_LINK_STATE_UNKNOWN
+                        && !deviceTextureTransforms[stage].is(s.textureTransforms[stage])) {
+                    device->MGEProxyDevice::SetTransform(static_cast<D3DTRANSFORMSTATETYPE>(D3DTS_TEXTURE0 + stage),
+                        reinterpret_cast<const D3DMATRIX*>(s.textureTransforms[stage]));
+                }
+                if (s.stages[stage][kColorOp] == D3DTOP_DISABLE) {
+                    break;
+                }
+            }
+        }
+        if (usesFact(MGE_LINK_FACT_DEVICE_LIGHTS)) {
+            // The values of the lights of the packet.
+            for (uint32_t i = 0; i != s.lightCount; ++i) {
+                const MgeLinkStateLightV1& l = stateLights[i];
+                const auto found = deviceLights.find(l.deviceIndex);
+                if (found == deviceLights.end() || std::memcmp(&found->second, l.d3dLight, sizeof(D3DLIGHT8)) != 0) {
+                    device->MGEProxyDevice::SetLight(l.deviceIndex, reinterpret_cast<const D3DLIGHT8*>(l.d3dLight));
+                }
+            }
+            // The lights that are on, in the order of the game: the packet has the newest
+            // first. When the list of the device is different, all go off and on again.
+            bool sameList = deviceLightsOn.size() == s.lightCount;
+            for (uint32_t i = 0; i != s.lightCount && sameList; ++i) {
+                sameList = deviceLightsOn[i] == stateLights[s.lightCount - 1 - i].deviceIndex;
+            }
+            if (!sameList) {
+                const std::vector<uint32_t> on = deviceLightsOn;
+                for (uint32_t index : on) {
+                    device->MGEProxyDevice::LightEnable(index, FALSE);
+                }
+                for (uint32_t i = s.lightCount; i-- != 0;) {
+                    device->MGEProxyDevice::LightEnable(stateLights[i].deviceIndex, TRUE);
+                }
+            }
         }
         if (usesFact(MGE_LINK_FACT_DEVICE_RENDER_STATES)) {
             PacketRenderState list[kPacketRenderStates];
@@ -330,7 +385,18 @@ namespace {
     }
 
     uint32_t __cdecl useFacts(uint32_t factMask) {
+        const uint32_t before = usedFacts;
         usedFacts = factMask & kUsableFacts;
+        // The client takes the lights back: all lights go off, and the client puts its
+        // lights on again.
+        const uint32_t lightsBit = 1u << MGE_LINK_FACT_DEVICE_LIGHTS;
+        auto device = static_cast<MGEProxyDevice*>(linkDevice.load());
+        if ((before & lightsBit) && !(usedFacts & lightsBit) && device) {
+            const std::vector<uint32_t> on = deviceLightsOn;
+            for (uint32_t index : on) {
+                device->MGEProxyDevice::LightEnable(index, FALSE);
+            }
+        }
         LOG::logline("-- Render link: facts taken from the packets: mask 0x%x", usedFacts);
 
         // The water plane comes from the packets: take the mark out of the material of the
@@ -467,6 +533,30 @@ namespace RenderLink {
 
     void noteVertexFormat(uint32_t format) {
         deviceFormat.set(format);
+    }
+
+    void noteTransform(uint32_t state, const void* matrix) {
+        DeviceMatrix* to = nullptr;
+        if (state >= D3DTS_TEXTURE0 && state <= D3DTS_TEXTURE7) {
+            to = &deviceTextureTransforms[state - D3DTS_TEXTURE0];
+        }
+        if (to) {
+            to->matrix = *static_cast<const D3DMATRIX*>(matrix);
+            to->known = true;
+        }
+    }
+
+    void noteLight(uint32_t index, const void* light) {
+        deviceLights[index] = *static_cast<const D3DLIGHT8*>(light);
+    }
+
+    void noteLightEnable(uint32_t index, bool on) {
+        const auto found = std::find(deviceLightsOn.begin(), deviceLightsOn.end(), index);
+        if (on && found == deviceLightsOn.end()) {
+            deviceLightsOn.push_back(index);
+        } else if (!on && found != deviceLightsOn.end()) {
+            deviceLightsOn.erase(found);
+        }
     }
 
     void setDevice(ProxyDevice* device) {
