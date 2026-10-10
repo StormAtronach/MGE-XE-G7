@@ -155,9 +155,12 @@ With the facts in use the game ran in each place, and the counters stayed equal.
 
 - The later views of a scene. `detectMenu` also runs for each view transform after the
   first one of a scene (a screen polygon, the sun glare). The host counts these as the fact
-  "later view" and does not use the packet for them. In the test install the count stayed
-  0 in all runs: its shader chain replaces the sun glare of the game ("Shader chain
-  replaces standard Morrowind sun glare" in the log), and nothing else made a later view.
-  A test needs an install without such a shader.
+  "later view" and does not use the packet for them. The count stayed 0 in all runs. It
+  also stayed 0 in a run with the sun glare of the game on the screen: Sunshafts out of the
+  shader chain (that shader makes MGE XE turn the glare off), clear weather at noon, the
+  player high above Seyda Neen, the camera near the sun, the glare shape drawn in each
+  frame. The UI scene fact and the scene kind fact were equal in each scene of that run. So
+  no case of a later view is known. The glare shape is an ordinary shape draw of the arm
+  scene.
 - The removal of an inference from the source, one at a time, when a client is a
   condition of the build.
