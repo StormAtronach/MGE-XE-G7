@@ -60,6 +60,7 @@ static float calcFPS();
 
 
 MGEProxyDevice::MGEProxyDevice(IDirect3DDevice9* real, ProxyD3D* d3d) : ProxyDevice(real, d3d) {
+    RenderLink::setDevice(this);
     // Initialize state here, as the device is released and recreated on fullscreen Alt-Tab
     sceneCount = -1;
     rendertargetNormal = true;

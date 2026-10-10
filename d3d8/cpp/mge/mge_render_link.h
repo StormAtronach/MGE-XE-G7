@@ -30,6 +30,8 @@
 #define MGE_RENDER_LINK_CAP_USE_FACTS 0x00000002u
 // The host takes a state packet for each D3D8 draw call (`drawState`).
 #define MGE_RENDER_LINK_CAP_DRAW_STATE 0x00000004u
+// The host makes textures from pixel data of the client: MgeRenderLinkHostV1::textureCreate.
+#define MGE_RENDER_LINK_CAP_TEXTURES 0x00000008u
 
 // Scene kinds. A scene is the time between BeginPaint and EndPaint of the renderer.
 #define MGE_LINK_SCENE_OTHER 0u
@@ -87,6 +89,10 @@
 // `blendWorlds` has the matrices of the other bones.
 #define MGE_LINK_STATE_SKINNED 0x00000001u
 
+// Flags of a texture description.
+// The game can change the pixels of the texture later.
+#define MGE_LINK_TEXTURE_DYNAMIC 0x00000001u
+
 // Flags of a draw.
 // The draw comes from the sorted queue of the accumulator.
 #define MGE_LINK_DRAW_FROM_SORTED_QUEUE 0x00000001u
@@ -141,6 +147,9 @@
 #define MGE_LINK_FACT_STATE_BONES 20u
 // The ambient colour of the scene.
 #define MGE_LINK_FACT_STATE_AMBIENT 21u
+// The textures that the host made from pixel data of the client. "Both yes" is the number
+// that it made, "host only" the number that failed.
+#define MGE_LINK_FACT_TEXTURE_CREATE 22u
 
 // The texture stages of a state packet, and the states of each stage. The order of the
 // states is: COLOROP, COLORARG1, COLORARG2, ALPHAOP, ALPHAARG1, ALPHAARG2, COLORARG0,
@@ -261,6 +270,33 @@ typedef struct MgeLinkDrawStateV1 {
     float textureTransforms[MGE_LINK_STATE_STAGES][16];
 } MgeLinkDrawStateV1;
 
+// A texture to make. The pixel data belongs to the client and is valid only during the call.
+typedef struct MgeLinkTextureV1 {
+    uint32_t structSize;
+    // MGE_LINK_TEXTURE_*
+    uint32_t flags;
+    // The size of the first level, and the number of levels.
+    uint32_t width;
+    uint32_t height;
+    uint32_t levels;
+    // The D3DFORMAT that the game chose for the texture.
+    uint32_t d3dFormat;
+    // The format number of the NiPixelFormat of the data, and its first channel mask. A host
+    // that reads a file format of its own puts its mark in the mask.
+    uint32_t pixelFormat;
+    uint32_t pixelFormatTag;
+    // 0 for compressed data.
+    uint32_t bytesPerPixel;
+    // The pixels of all levels in one block.
+    const uint8_t* pixels;
+    // For each level, the offset of its pixels in the block. There is one more value after
+    // the last level: the size of the block.
+    const uint32_t* levelOffsets;
+    // The width and the height of each level.
+    const uint32_t* levelWidths;
+    const uint32_t* levelHeights;
+} MgeLinkTextureV1;
+
 typedef struct MgeLinkFactCountV1 {
     // The packet and the inference of the host said yes.
     uint32_t bothYes;
@@ -307,6 +343,11 @@ typedef struct MgeRenderLinkHostV1 {
     // The D3D8 draw call that follows has this state.
     // Only a host with MGE_RENDER_LINK_CAP_DRAW_STATE has this member.
     void (__cdecl* drawState)(const MgeLinkDrawStateV1* state);
+    // Makes a texture with these pixels. Returns its handle, or 0 when it failed. In this
+    // version the handle is a D3D8 texture pointer with one reference. The call can come
+    // from a thread that is not the render thread.
+    // Only a host with MGE_RENDER_LINK_CAP_TEXTURES has this member.
+    uint32_t (__cdecl* textureCreate)(const MgeLinkTextureV1* texture);
 } MgeRenderLinkHostV1;
 
 #ifdef __cplusplus
@@ -318,7 +359,8 @@ static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
 static_assert(sizeof(MgeLinkDrawStateV1) == 1524, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 528, "MgeLinkCountersV1 size");
-static_assert(sizeof(MgeRenderLinkHostV1) == 44, "MgeRenderLinkHostV1 size");
+static_assert(sizeof(MgeLinkTextureV1) == 52, "MgeLinkTextureV1 size");
+static_assert(sizeof(MgeRenderLinkHostV1) == 48, "MgeRenderLinkHostV1 size");
 
 extern "C" {
 #endif

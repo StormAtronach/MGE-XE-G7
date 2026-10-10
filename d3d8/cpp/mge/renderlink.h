@@ -2,6 +2,7 @@
 
 #include "mge_render_link.h"
 
+class ProxyDevice;
 struct LightState;
 struct RenderedState;
 struct FragmentState;
@@ -14,6 +15,9 @@ struct FragmentState;
 // (MgeRenderLinkHostV1::useFacts). Without a client every function here does nothing, and
 // `resolve` returns the inference.
 namespace RenderLink {
+    // The device that makes the textures of the link. Null when the device goes away.
+    void setDevice(ProxyDevice* device);
+
     // True after a client connected.
     bool isConnected();
 

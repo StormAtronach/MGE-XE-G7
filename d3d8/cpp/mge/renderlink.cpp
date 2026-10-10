@@ -6,9 +6,12 @@
 #include "camerarelative.h"
 #include "ffeshader.h"
 #include "mwbridge.h"
+#include "bc7format.h"
+#include "proxydx/d3d8device.h"
 #include "proxydx/d3d8texture.h"
 #include "support/log.h"
 
+#include <atomic>
 #include <unordered_map>
 
 #include <cmath>
@@ -90,6 +93,10 @@ namespace {
     bool ambientIsWhite(uint32_t ambient) {
         return ambient == 0xffffffff;
     }
+
+    // The device of the game. textureCreate can run on a thread that loads a cell.
+    std::atomic<ProxyDevice*> linkDevice{nullptr};
+    std::atomic<uint32_t> texturesMade{0}, texturesFailed{0};
 
     bool uses(uint32_t fact) {
         return (usedFacts >> fact) & 1u;
@@ -204,6 +211,10 @@ namespace {
     void __cdecl readCounters(MgeLinkCountersV1* out, uint32_t reset) {
         if (out && out->structSize >= sizeof(uint32_t)) {
             const uint32_t size = out->structSize < sizeof(counters) ? out->structSize : sizeof(counters);
+            // The textures have their own counts: another thread can make a texture. A reset
+            // does not clear them: most textures come during a change of cell.
+            counters.facts[MGE_LINK_FACT_TEXTURE_CREATE].bothYes = texturesMade;
+            counters.facts[MGE_LINK_FACT_TEXTURE_CREATE].hostOnly = texturesFailed;
             std::memcpy(out, &counters, size);
             out->structSize = size;
         }
@@ -233,10 +244,80 @@ namespace {
         return usedFacts;
     }
 
+    // Copies the pixels of each level into a texture.
+    bool fillTexture(IDirect3DTexture9* texture, const MgeLinkTextureV1& t) {
+        // The NiPixelFormat numbers 6 to 8 are the compressed formats.
+        const bool compressed = t.pixelFormat >= 6 && t.pixelFormat <= 8;
+        for (uint32_t level = 0; level != t.levels; ++level) {
+            D3DLOCKED_RECT locked;
+            if (FAILED(texture->LockRect(level, &locked, nullptr, 0))) {
+                return false;
+            }
+            const uint8_t* source = t.pixels + t.levelOffsets[level];
+            const uint32_t rowBytes = t.levelWidths[level] * t.bytesPerPixel;
+            if (compressed || static_cast<uint32_t>(locked.Pitch) == rowBytes) {
+                std::memcpy(locked.pBits, source, t.levelOffsets[level + 1] - t.levelOffsets[level]);
+            } else {
+                auto row = static_cast<uint8_t*>(locked.pBits);
+                for (uint32_t y = 0; y != t.levelHeights[level]; ++y, row += locked.Pitch, source += rowBytes) {
+                    std::memcpy(row, source, rowBytes);
+                }
+            }
+            texture->UnlockRect(level);
+        }
+        return true;
+    }
+
+    IDirect3DTexture9* makeTexture(IDirect3DDevice9* device, const MgeLinkTextureV1& t) {
+        D3DFORMAT format = static_cast<D3DFORMAT>(t.d3dFormat);
+        // The mark that the DDS reader of the proxy puts on BC7 data. See mwtextureloader.cpp.
+        if (t.pixelFormat == 8 && t.pixelFormatTag == static_cast<uint32_t>(MGE_D3DFMT_BC7)) {
+            format = MGE_D3DFMT_BC7;
+        }
+        // The pixels go into a texture that the game can lock. For a texture that does not
+        // change, they then go from there into a texture in the default pool.
+        const bool dynamic = (t.flags & MGE_LINK_TEXTURE_DYNAMIC) != 0;
+        IDirect3DTexture9* first = nullptr;
+        if (FAILED(device->CreateTexture(t.width, t.height, t.levels, 0, format, dynamic ? D3DPOOL_MANAGED : D3DPOOL_SYSTEMMEM, &first, nullptr))) {
+            return nullptr;
+        }
+        if (!fillTexture(first, t)) {
+            first->Release();
+            return nullptr;
+        }
+        if (dynamic) {
+            return first;
+        }
+        IDirect3DTexture9* texture = nullptr;
+        if (SUCCEEDED(device->CreateTexture(t.width, t.height, t.levels, 0, format, D3DPOOL_DEFAULT, &texture, nullptr))) {
+            device->UpdateTexture(first, texture);
+        }
+        first->Release();
+        return texture;
+    }
+
+    uint32_t __cdecl textureCreate(const MgeLinkTextureV1* texture) {
+        ProxyDevice* device = linkDevice.load();
+        if (!device || !texture || texture->structSize < sizeof(MgeLinkTextureV1) || !texture->pixels || texture->levels == 0) {
+            ++texturesFailed;
+            return 0;
+        }
+        IDirect3DTexture9* real = makeTexture(device->realDevice, *texture);
+        if (!real) {
+            ++texturesFailed;
+            LOG::logline("-- Render link: texture not made: %u x %u, %u levels, D3D format %u, pixel format %u",
+                texture->width, texture->height, texture->levels, texture->d3dFormat, texture->pixelFormat);
+            return 0;
+        }
+        ++texturesMade;
+        return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(device->factoryProxyTexture(real)));
+    }
+
     const MgeRenderLinkHostV1 host = {
         sizeof(MgeRenderLinkHostV1),
         MGE_RENDER_LINK_VERSION,
-        MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS | MGE_RENDER_LINK_CAP_DRAW_STATE,
+        MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS | MGE_RENDER_LINK_CAP_DRAW_STATE
+            | MGE_RENDER_LINK_CAP_TEXTURES,
         0,
         sceneBegin,
         sceneEnd,
@@ -245,10 +326,15 @@ namespace {
         readCounters,
         useFacts,
         drawState,
+        textureCreate,
     };
 }
 
 namespace RenderLink {
+    void setDevice(ProxyDevice* device) {
+        linkDevice = device;
+    }
+
     bool isConnected() {
         return connected;
     }
