@@ -98,6 +98,14 @@ void absoluteFromRelative(const D3DMATRIX* relative, D3DXMATRIX* out);
 // then skip its own subtraction.
 bool takeWorldRelative();
 
+// The same answer, and the flag stays. For the render link: its client asks at the place
+// of the SetTransform call and sends the matrix later.
+bool peekWorldRelative();
+
+// Sets the flag for the next takeWorldRelative. For the render link: the proxy sends a
+// world matrix of a state packet through its SetTransform handler.
+void setWorldRelative(bool relative);
+
 // out = world * view in double precision, rounded once to float.
 void multiplyWorldView(const D3DXMATRIX* world, const D3DXMATRIX* view, D3DXMATRIX* out);
 

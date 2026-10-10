@@ -1127,6 +1127,14 @@ bool takeWorldRelative() {
     return pending;
 }
 
+bool peekWorldRelative() {
+    return worldRelativePending;
+}
+
+void setWorldRelative(bool relative) {
+    worldRelativePending = relative;
+}
+
 void multiplyWorldView(const D3DXMATRIX* world, const D3DXMATRIX* view, D3DXMATRIX* out) {
     double a[4][4];
     double b[4][4];

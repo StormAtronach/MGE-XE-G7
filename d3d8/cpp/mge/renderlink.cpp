@@ -183,7 +183,8 @@ namespace {
     DeviceValue deviceStageStates[MGE_LINK_STATE_STAGES][32];
     DeviceValue deviceTextures[MGE_LINK_STATE_STAGES];
     DeviceValue deviceVertexBuffer, deviceStride, deviceFormat, deviceIndexBuffer, deviceBaseIndex;
-    // The texture transforms, as the game sent them.
+    // The world matrices 0 to 3 with their space, and the texture transforms, as the game
+    // sent them.
     struct DeviceMatrix {
         D3DMATRIX matrix;
         bool known;
@@ -192,7 +193,8 @@ namespace {
             return known && std::memcmp(&matrix, other, sizeof(matrix)) == 0;
         }
     };
-    DeviceMatrix deviceTextureTransforms[MGE_LINK_STATE_STAGES];
+    DeviceMatrix deviceTextureTransforms[MGE_LINK_STATE_STAGES], deviceWorlds[4];
+    bool deviceWorldRelative[4] = {};
     // The lights, as the game sent them, and the lights that are on, the oldest first.
     std::unordered_map<uint32_t, D3DLIGHT8> deviceLights;
     std::vector<uint32_t> deviceLightsOn;
@@ -238,6 +240,18 @@ namespace {
             return;
         }
         if (usesFact(MGE_LINK_FACT_DEVICE_TRANSFORMS)) {
+            // A skinned draw: all four matrices, because the packet does not tell how many
+            // the vertex format needs.
+            const uint32_t worlds = (s.flags & MGE_LINK_STATE_SKINNED) ? 4 : 1;
+            for (uint32_t i = 0; i != worlds; ++i) {
+                const float* m = worldOfPacket(s, i);
+                const bool relative = (s.worldRelativeMask >> i) & 1u;
+                if (!deviceWorlds[i].is(m) || deviceWorldRelative[i] != relative) {
+                    // The handler takes the space of the matrix from this flag.
+                    CameraRelative::setWorldRelative(relative);
+                    device->MGEProxyDevice::SetTransform(D3DTS_WORLDMATRIX(i), reinterpret_cast<const D3DMATRIX*>(m));
+                }
+            }
             const uint32_t kTransformFlags = 10;
             for (uint32_t stage = 0; stage != MGE_LINK_STATE_STAGES; ++stage) {
                 if (s.stages[stage][kTransformFlags] != D3DTTFF_DISABLE && s.stages[stage][kTransformFlags] != MGE_LINK_STATE_UNKNOWN
@@ -485,11 +499,15 @@ namespace {
         return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(device->factoryProxyTexture(real)));
     }
 
+    uint32_t __cdecl worldSpace() {
+        return CameraRelative::peekWorldRelative() ? 1u : 0u;
+    }
+
     const MgeRenderLinkHostV1 host = {
         sizeof(MgeRenderLinkHostV1),
         MGE_RENDER_LINK_VERSION,
         MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS | MGE_RENDER_LINK_CAP_DRAW_STATE
-            | MGE_RENDER_LINK_CAP_TEXTURES,
+            | MGE_RENDER_LINK_CAP_TEXTURES | MGE_RENDER_LINK_CAP_WORLD_SPACE,
         0,
         sceneBegin,
         sceneEnd,
@@ -499,6 +517,7 @@ namespace {
         useFacts,
         drawState,
         textureCreate,
+        worldSpace,
     };
 }
 
@@ -535,9 +554,12 @@ namespace RenderLink {
         deviceFormat.set(format);
     }
 
-    void noteTransform(uint32_t state, const void* matrix) {
+    void noteTransform(uint32_t state, const void* matrix, bool worldIsRelative) {
         DeviceMatrix* to = nullptr;
-        if (state >= D3DTS_TEXTURE0 && state <= D3DTS_TEXTURE7) {
+        if (state >= D3DTS_WORLDMATRIX(0) && state < D3DTS_WORLDMATRIX(4)) {
+            to = &deviceWorlds[state - D3DTS_WORLDMATRIX(0)];
+            deviceWorldRelative[state - D3DTS_WORLDMATRIX(0)] = worldIsRelative;
+        } else if (state >= D3DTS_TEXTURE0 && state <= D3DTS_TEXTURE7) {
             to = &deviceTextureTransforms[state - D3DTS_TEXTURE0];
         }
         if (to) {
@@ -931,7 +953,7 @@ namespace RenderLink {
         count(MGE_LINK_FACT_STATE_SAMPLERS, true, samplersEqual);
     }
 
-    bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights, bool worldIsRelative) {
+    bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights) {
         if (!stateForThisDraw || !uses(MGE_LINK_FACT_STATE_DRAW)) {
             return false;
         }
@@ -1012,7 +1034,7 @@ namespace RenderLink {
                 const auto m = reinterpret_cast<const D3DMATRIX*>(worldOfPacket(s, i));
                 if (CameraRelative::active()) {
                     D3DXMATRIX world, absolute;
-                    if (worldIsRelative) {
+                    if ((s.worldRelativeMask >> i) & 1u) {
                         world = *m;
                         CameraRelative::absoluteFromRelative(m, &absolute);
                     } else {

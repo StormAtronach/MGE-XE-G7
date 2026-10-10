@@ -25,7 +25,8 @@ namespace RenderLink {
     void noteStreamSource(const void* buffer, uint32_t stride);
     void noteIndices(const void* buffer, uint32_t baseVertexIndex);
     void noteVertexFormat(uint32_t format);
-    void noteTransform(uint32_t state, const void* matrix);
+    // `worldIsRelative`: for a world matrix, the matrix is relative to the camera.
+    void noteTransform(uint32_t state, const void* matrix, bool worldIsRelative);
     void noteLight(uint32_t index, const void* light);
     void noteLightEnable(uint32_t index, bool on);
 
@@ -86,10 +87,9 @@ namespace RenderLink {
     // Call after observeDrawState. When the client asked for it (the fact
     // MGE_LINK_FACT_STATE_DRAW in useFacts) and the draw has a state packet, this puts the
     // state of the packet into the three structs. Returns true when it did.
-    // `worldIsRelative`: an engine hook put the world matrices relative to the camera.
     // Not from the packet: the view transform, the place of a light in view space, the
     // radius of a light and the matrix palette of indexed skinning.
-    bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights, bool worldIsRelative);
+    bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights);
 
     // The game attaches a point light. `recordRadius` is the radius that the game has for
     // the light. `attachRadius` is the radius that the shim of the light fade gives back,

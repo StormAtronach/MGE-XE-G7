@@ -32,6 +32,8 @@
 #define MGE_RENDER_LINK_CAP_DRAW_STATE 0x00000004u
 // The host makes textures from pixel data of the client: MgeRenderLinkHostV1::textureCreate.
 #define MGE_RENDER_LINK_CAP_TEXTURES 0x00000008u
+// The host tells the space of a world matrix: MgeRenderLinkHostV1::worldSpace.
+#define MGE_RENDER_LINK_CAP_WORLD_SPACE 0x00000010u
 
 // Scene kinds. A scene is the time between BeginPaint and EndPaint of the renderer.
 #define MGE_LINK_SCENE_OTHER 0u
@@ -165,9 +167,7 @@
 #define MGE_LINK_FACT_DEVICE_TEXTURES 27u
 // The vertex buffer, the index buffer and the vertex format.
 #define MGE_LINK_FACT_DEVICE_BUFFERS 28u
-// The texture transforms of the stages that use one. The world matrices are not a device
-// kind: the host has a hook in the game that tells it, at the D3D8 call, if a world matrix
-// is relative to the camera.
+// The world matrices, and the texture transforms of the stages that use one.
 #define MGE_LINK_FACT_DEVICE_TRANSFORMS 29u
 // The lights: their values, which ones are on, and their order.
 #define MGE_LINK_FACT_DEVICE_LIGHTS 30u
@@ -302,6 +302,9 @@ typedef struct MgeLinkDrawStateV1 {
     uint32_t stencil[8];
     // The sampler states of each stage. See MGE_LINK_STATE_SAMPLER_STATES.
     uint32_t samplers[MGE_LINK_STATE_STAGES][MGE_LINK_STATE_SAMPLER_STATES];
+    // The space of the world matrices: bit n is 1 when world matrix n is relative to the
+    // camera of the scene, and 0 when it is in the world space of the game.
+    uint32_t worldRelativeMask;
 } MgeLinkDrawStateV1;
 
 // A texture to make. The pixel data belongs to the client and is valid only during the call.
@@ -382,6 +385,12 @@ typedef struct MgeRenderLinkHostV1 {
     // from a thread that is not the render thread.
     // Only a host with MGE_RENDER_LINK_CAP_TEXTURES has this member.
     uint32_t (__cdecl* textureCreate)(const MgeLinkTextureV1* texture);
+    // Returns 1 when the world matrix that the game sends now is relative to the camera:
+    // a hook of the host in the game made it so. Returns 0 for a matrix in world space. The
+    // client calls it at the place of the SetTransform call and puts the answer in
+    // worldRelativeMask. This member goes away when the client makes these matrices itself.
+    // Only a host with MGE_RENDER_LINK_CAP_WORLD_SPACE has this member.
+    uint32_t (__cdecl* worldSpace)(void);
 } MgeRenderLinkHostV1;
 
 #ifdef __cplusplus
@@ -390,11 +399,11 @@ static_assert(sizeof(MgeLinkSceneV1) == 24, "MgeLinkSceneV1 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
-static_assert(sizeof(MgeLinkDrawStateV1) == 1724, "MgeLinkDrawStateV1 size");
+static_assert(sizeof(MgeLinkDrawStateV1) == 1728, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 528, "MgeLinkCountersV1 size");
 static_assert(sizeof(MgeLinkTextureV1) == 52, "MgeLinkTextureV1 size");
-static_assert(sizeof(MgeRenderLinkHostV1) == 48, "MgeRenderLinkHostV1 size");
+static_assert(sizeof(MgeRenderLinkHostV1) == 52, "MgeRenderLinkHostV1 size");
 
 extern "C" {
 #endif

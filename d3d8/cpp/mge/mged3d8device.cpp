@@ -504,8 +504,8 @@ HRESULT _stdcall MGEProxyDevice::Clear(DWORD a, const D3DRECT* b, DWORD c, D3DCO
 }
 
 HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3DMATRIX* b) {
-    RenderLink::noteTransform(a, b);
     worldAlreadyRelative = CameraRelative::takeWorldRelative();
+    RenderLink::noteTransform(a, b, worldAlreadyRelative);
 
     if (a == D3DTS_VIEW) {
         // Decide the space of this scene before the recorder sees the view, so every
@@ -739,7 +739,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
 
         RenderLink::observeWorldDraw();
         RenderLink::observeDrawState(rs, frs, lightrs);
-        RenderLink::applyDrawState(rs, frs, lightrs, worldAlreadyRelative);
+        RenderLink::applyDrawState(rs, frs, lightrs);
 
         if (!stage0Complete && !isAmbientWhite) {
             // In an exterior this is normally the first world draw after the sky; interiors may
