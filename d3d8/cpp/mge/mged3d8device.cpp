@@ -14,6 +14,7 @@
 #include "mwbridge.h"
 #include "waterlook.h"
 #include "mwpatches.h"
+#include "renderlink.h"
 #include "statusoverlay.h"
 #include "support/log.h"
 #include "userhud.h"
@@ -399,6 +400,8 @@ HRESULT _stdcall MGEProxyDevice::BeginScene() {
     }
 
     if (mwBridge->IsLoaded() && rendertargetNormal) {
+        RenderLink::observeBeginScene(isMainView, isMainView ? sceneCount + 1 : sceneCount);
+
         if (!isHUDready) {
             StatusOverlay::init(realDevice);
             StatusOverlay::setStatus(XE_VERSION_STRING);
@@ -725,6 +728,8 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
         rs.vertCount = c;
         rs.startIndex = d;
         rs.primCount = e;
+
+        RenderLink::observeWorldDraw(isWaterMaterial, lightrs);
 
         if (!stage0Complete && !isAmbientWhite) {
             // In an exterior this is normally the first world draw after the sky; interiors may

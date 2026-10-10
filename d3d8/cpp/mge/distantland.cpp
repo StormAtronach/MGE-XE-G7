@@ -7,6 +7,7 @@
 #include "distantshader.h"
 #include "postshaders.h"
 #include "mwbridge.h"
+#include "renderlink.h"
 #include "statusoverlay.h"
 #include "support/log.h"
 
@@ -1315,6 +1316,7 @@ bool DistantLand::inspectIndexedPrimitive(int sceneCount, const RenderedState* r
     static IDirect3DVertexBuffer9* lastVB = nullptr;
     bool isLandSplat = sceneCount == 0 && rs->vb == lastVB && rs->blendEnable && (rs->fvf & D3DFVF_DIFFUSE) && mwBridge->IsExterior();
     lastVB = rs->vb;
+    RenderLink::compare(MGE_LINK_FACT_LAND_SPLAT, isLandSplat, RenderLink::drawIsLandSplat());
 
     // Avoid recording decal passes from UV sets >0, shadow rendering only samples alpha from texture 0 with UV 0
     const auto& stage0 = frs->stage[0];
@@ -1346,8 +1348,12 @@ bool DistantLand::inspectIndexedPrimitive(int sceneCount, const RenderedState* r
     }
 
     // Special case, capture sky
-    if (recordMW.empty() && rs->blendEnable && sceneCount == 0 && mwBridge->IntLikeExterior(true)) {
+    const bool isSkyDraw = recordMW.empty() && rs->blendEnable && sceneCount == 0 && mwBridge->IntLikeExterior(true);
+    RenderLink::compare(MGE_LINK_FACT_SKY_DRAW, isSkyDraw, RenderLink::drawIsSky());
+    if (isSkyDraw) {
         recordSky.emplace_back(*rs);
+        RenderLink::compare(MGE_LINK_FACT_MOON_SHADOW, frs->material.emissive.a == kMoonTag,
+            RenderLink::drawClass() == MGE_LINK_CLASS_SKY_MOON_SHADOW);
 
         // Check for moon geometry, and mark those records by setting lighting off
         if (frs->material.emissive.a == kMoonTag) {

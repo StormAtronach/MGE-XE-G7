@@ -8,3 +8,4 @@ MGE_WaterVolumesSet
 MGE_WaterLookSet
 MGE_WaterMasksSet
 MGE_WaterDrySet
+MGE_RenderLinkConnect
