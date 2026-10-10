@@ -734,7 +734,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
 
         RenderLink::observeWorldDraw();
         RenderLink::observeDrawState(rs, frs, lightrs);
-        RenderLink::applyDrawState(rs, frs, lightrs);
+        RenderLink::applyDrawState(rs, frs, lightrs, worldAlreadyRelative);
 
         if (!stage0Complete && !isAmbientWhite) {
             // In an exterior this is normally the first world draw after the sky; interiors may

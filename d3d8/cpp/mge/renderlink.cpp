@@ -6,6 +6,7 @@
 #include "camerarelative.h"
 #include "ffeshader.h"
 #include "mwbridge.h"
+#include "proxydx/d3d8texture.h"
 #include "support/log.h"
 
 #include <unordered_map>
@@ -67,6 +68,28 @@ namespace {
     bool moonMarkRemoved = false;
     // The scene packet came and the view transform of the scene did not come yet.
     bool sceneViewPending = false;
+
+    // The texture of the proxy for a handle of a state packet. In this version the handle
+    // is the D3D8 interface pointer, and the object behind it is a texture of the proxy.
+    IDirect3DTexture9* textureOfHandle(uint32_t handle) {
+        const auto proxy = reinterpret_cast<IDirect3DBaseTexture8*>(static_cast<uintptr_t>(handle));
+        return proxy ? static_cast<ProxyTexture*>(proxy)->realTexture : nullptr;
+    }
+
+    // The number of world matrices that a draw uses.
+    uint32_t worldCount(const MgeLinkDrawStateV1& s) {
+        const bool blend = (s.flags & MGE_LINK_STATE_SKINNED) && s.vertexBlend >= D3DVBF_1WEIGHTS && s.vertexBlend <= D3DVBF_3WEIGHTS;
+        return blend ? s.vertexBlend + 1 : 1;
+    }
+
+    const float* worldOfPacket(const MgeLinkDrawStateV1& s, uint32_t index) {
+        return index == 0 ? s.world : s.blendWorlds[index - 1];
+    }
+
+    // The colour of D3DRS_AMBIENT as the proxy keeps it.
+    bool ambientIsWhite(uint32_t ambient) {
+        return ambient == 0xffffffff;
+    }
 
     bool uses(uint32_t fact) {
         return (usedFacts >> fact) & 1u;
@@ -508,9 +531,62 @@ namespace RenderLink {
                 why, s.lightCount, static_cast<uint32_t>(lights.active.size()), badLight);
         }
         count(MGE_LINK_FACT_STATE_LIGHTS, true, lightsEqual);
+
+        // The textures and the texture transforms, to the first stage that is off.
+        bool texturesEqual = true, textureTransformsEqual = true;
+        uint32_t badTexture = 0;
+        for (uint32_t i = 0; i != MGE_LINK_STATE_STAGES; ++i) {
+            const auto& g = frs.stage[i];
+            if (texturesEqual && textureOfHandle(s.textures[i]) != g.texture) {
+                texturesEqual = false;
+                badTexture = i;
+            }
+            if (g.texTransformFlags != D3DTTFF_DISABLE
+                    && std::memcmp(s.textureTransforms[i], &g.textureTransform, sizeof(D3DMATRIX)) != 0) {
+                textureTransformsEqual = false;
+            }
+            if (g.colorOp == D3DTOP_DISABLE) {
+                break;
+            }
+        }
+        if (!texturesEqual && loggedDifferences[MGE_LINK_FACT_STATE_TEXTURES] < kLoggedDifferences) {
+            LOG::logline("-- Render link: texture of stage %u: packet handle %08X, proxy texture %p",
+                badTexture, s.textures[badTexture], frs.stage[badTexture].texture);
+        }
+        count(MGE_LINK_FACT_STATE_TEXTURES, true, texturesEqual);
+        count(MGE_LINK_FACT_STATE_TEXTURE_TRANSFORMS, true, textureTransformsEqual);
+
+        // The bones. With indexed skinning the proxy has a matrix palette and the packet
+        // does not.
+        if ((s.flags & MGE_LINK_STATE_SKINNED) && !(rs.fvf & D3DFVF_LASTBETA_UBYTE4)) {
+            bool bonesEqual = true;
+            for (uint32_t i = 0; i != worldCount(s) && bonesEqual; ++i) {
+                const float* m = worldOfPacket(s, i);
+                bonesEqual = std::memcmp(m, &rs.worldTransforms[i], sizeof(D3DMATRIX)) == 0;
+                if (!bonesEqual && CameraRelative::active()) {
+                    D3DXMATRIX absolute;
+                    CameraRelative::absoluteFromRelative(reinterpret_cast<const D3DMATRIX*>(m), &absolute);
+                    bonesEqual = std::memcmp(&absolute, &rs.worldTransforms[i], sizeof(absolute)) == 0;
+                }
+            }
+            count(MGE_LINK_FACT_STATE_BONES, true, bonesEqual);
+        }
+
+        // The ambient colour. The proxy keeps the last colour that was not white.
+        bool ambientEqual = ambientIsWhite(s.ambient) == lights.ambientWhite;
+        if (ambientEqual && !lights.ambientWhite) {
+            const RGBVECTOR colour = D3DCOLOR(s.ambient);
+            ambientEqual = colour.r == lights.globalAmbient.r && colour.g == lights.globalAmbient.g
+                && colour.b == lights.globalAmbient.b;
+        }
+        if (!ambientEqual && loggedDifferences[MGE_LINK_FACT_STATE_AMBIENT] < kLoggedDifferences) {
+            LOG::logline("-- Render link: ambient: packet %08X, proxy white %u colour %g %g %g",
+                s.ambient, lights.ambientWhite ? 1u : 0u, lights.globalAmbient.r, lights.globalAmbient.g, lights.globalAmbient.b);
+        }
+        count(MGE_LINK_FACT_STATE_AMBIENT, true, ambientEqual);
     }
 
-    bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights) {
+    bool applyDrawState(RenderedState& rs, FragmentState& frs, LightState& lights, bool worldIsRelative) {
         if (!stateForThisDraw || !uses(MGE_LINK_FACT_STATE_DRAW)) {
             return false;
         }
@@ -567,6 +643,52 @@ namespace RenderLink {
             std::memcpy(g.bumpEnvMat, &p[11], 4 * sizeof(float));
             std::memcpy(&g.bumpLumiScale, &p[15], sizeof(float));
             std::memcpy(&g.bumpLumiBias, &p[16], sizeof(float));
+        }
+
+        // The textures and the texture transforms, to the first stage that is off. The
+        // client does not have the stages after that one.
+        for (uint32_t i = 0; i != MGE_LINK_STATE_STAGES; ++i) {
+            auto& g = frs.stage[i];
+            g.texture = textureOfHandle(s.textures[i]);
+            if (i == 0) {
+                rs.texture = g.texture;
+            }
+            if (g.texTransformFlags != D3DTTFF_DISABLE) {
+                std::memcpy(&g.textureTransform, s.textureTransforms[i], sizeof(D3DMATRIX));
+            }
+            if (g.colorOp == D3DTOP_DISABLE) {
+                break;
+            }
+        }
+
+        // The world matrices, as captureTransform of the proxy keeps them.
+        if (!(rs.fvf & D3DFVF_LASTBETA_UBYTE4)) {
+            for (uint32_t i = 0; i != worldCount(s); ++i) {
+                const auto m = reinterpret_cast<const D3DMATRIX*>(worldOfPacket(s, i));
+                if (CameraRelative::active()) {
+                    D3DXMATRIX world, absolute;
+                    if (worldIsRelative) {
+                        world = *m;
+                        CameraRelative::absoluteFromRelative(m, &absolute);
+                    } else {
+                        CameraRelative::relativeWorld(m, &world);
+                        absolute = *m;
+                    }
+                    rs.worldTransforms[i] = absolute;
+                    CameraRelative::multiplyWorldView(&world, &rs.viewTransform, &rs.worldViewTransforms[i]);
+                } else {
+                    rs.worldTransforms[i] = *m;
+                    D3DXMatrixMultiply(&rs.worldViewTransforms[i], static_cast<const D3DXMATRIX*>(m), &rs.viewTransform);
+                }
+            }
+        }
+
+        lights.ambientWhite = ambientIsWhite(s.ambient);
+        if (!lights.ambientWhite) {
+            const RGBVECTOR colour = D3DCOLOR(s.ambient);
+            lights.globalAmbient.r = colour.r;
+            lights.globalAmbient.g = colour.g;
+            lights.globalAmbient.b = colour.b;
         }
 
         // The lights that are on, oldest first as the proxy keeps them. The radius of a

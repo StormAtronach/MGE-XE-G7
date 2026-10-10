@@ -83,7 +83,8 @@
 #define MGE_LINK_CLASS_WATER_RIPPLE 17u
 
 // Flags of a state packet.
-// The draw is a partition of a skinned mesh. `world` is not valid.
+// The draw is a partition of a skinned mesh. `world` is the matrix of the first bone and
+// `blendWorlds` has the matrices of the other bones.
 #define MGE_LINK_STATE_SKINNED 0x00000001u
 
 // Flags of a draw.
@@ -131,6 +132,15 @@
 #define MGE_LINK_FACT_STATE_MATERIAL 15u
 #define MGE_LINK_FACT_STATE_STAGES 16u
 #define MGE_LINK_FACT_STATE_LIGHTS 17u
+// The textures of the stages that are on.
+#define MGE_LINK_FACT_STATE_TEXTURES 18u
+// The texture transforms of the stages that are on and use a transform.
+#define MGE_LINK_FACT_STATE_TEXTURE_TRANSFORMS 19u
+// The world matrices of the bones of a skinned draw. Draws that are not skinned are not
+// counted.
+#define MGE_LINK_FACT_STATE_BONES 20u
+// The ambient colour of the scene.
+#define MGE_LINK_FACT_STATE_AMBIENT 21u
 
 // The texture stages of a state packet, and the states of each stage. The order of the
 // states is: COLOROP, COLORARG1, COLORARG2, ALPHAOP, ALPHAARG1, ALPHAARG2, COLORARG0,
@@ -241,6 +251,14 @@ typedef struct MgeLinkDrawStateV1 {
     const MgeLinkStateLightV1* lights;
     // The texture stage states, with the values of D3D8. See MGE_LINK_STATE_STAGES.
     uint32_t stages[MGE_LINK_STATE_STAGES][MGE_LINK_STATE_STAGE_STATES];
+    // The world matrices 1 to 3. A skinned draw with the vertex blend state n uses `world`
+    // and the first n of these.
+    float blendWorlds[3][16];
+    // The handle of the texture of each stage, or 0.
+    uint32_t textures[MGE_LINK_STATE_STAGES];
+    // The texture transform of each stage. It is valid only for a stage whose
+    // TEXTURETRANSFORMFLAGS state is not 0.
+    float textureTransforms[MGE_LINK_STATE_STAGES][16];
 } MgeLinkDrawStateV1;
 
 typedef struct MgeLinkFactCountV1 {
@@ -297,7 +315,7 @@ static_assert(sizeof(MgeLinkSceneV1) == 24, "MgeLinkSceneV1 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
-static_assert(sizeof(MgeLinkDrawStateV1) == 788, "MgeLinkDrawStateV1 size");
+static_assert(sizeof(MgeLinkDrawStateV1) == 1524, "MgeLinkDrawStateV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 528, "MgeLinkCountersV1 size");
 static_assert(sizeof(MgeRenderLinkHostV1) == 44, "MgeRenderLinkHostV1 size");
