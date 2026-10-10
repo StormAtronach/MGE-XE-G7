@@ -16,9 +16,13 @@ inferred facts and their direct sources is in
 
 ## State
 
-The host compares only. At each place where MGE XE infers a fact, it counts if the packet
-says the same. Nothing that MGE XE draws depends on a packet. Without a client, each
-function of `RenderLink` returns at once.
+At each place where MGE XE infers a fact, it counts if the packet says the same. The
+client can tell the host to take a fact from the packets (`useFacts` with a mask). The
+default is the inference. Without a client, each function of `RenderLink` returns at once
+and `resolve` returns the inference.
+
+Facts that the host can take from a packet: UI scene, water plane, sun light, sky draw,
+land splat.
 
 ## Files
 
@@ -33,7 +37,9 @@ function of `RenderLink` returns at once.
 - The client calls `MGE_RenderLinkConnect(version)` one time and gets a table
   (`MgeRenderLinkHostV1`): its size, the version of the host, capability bits and five
   functions.
-- `sceneBegin(MgeLinkSceneV1)` comes before the `BeginScene` of a scene. It has the scene
+- `sceneBegin(MgeLinkSceneV1)` comes before the view transform and the `BeginScene` of a
+  scene. The client sends it at `SetCameraData`, because the proxy decides on the scene when
+  the view transform arrives. It has the scene
   kind (world, sorted alpha, water, shadow volume, shadow casters, first person, UI, ...),
   the camera, the scene root and the render target.
 - `sceneEnd()` comes after the `EndScene`.
@@ -88,7 +94,30 @@ an interior, Old Ebonheart, Ald-ruhn. About 6 seconds in each place with the gam
   record. It is the place to keep the true radius, with the light pointer of the packet as
   the key.
 
+## Use of the facts
+
+`RenderLink::resolve(fact, inferred, fromPacket)` counts the comparison and returns the
+answer to use. `RenderLink::resolveMainView` does the same for the view transform of a
+scene. Only the first view of a scene comes from the packet. A later view in a scene (a
+screen polygon, the sun glare) still goes through `detectMenu`.
+
+The marks in the materials stay. The water mark also carries the tint of the water plane,
+and the moon mark has no test yet.
+
+Test of 2026-10-10 (`tools/run_link.py --facts all`): with the game in menu mode, three
+pictures of the frame: facts off, facts on, facts off.
+
+| Place | Result |
+| --- | --- |
+| Balmora | the picture with the facts is equal, byte for byte |
+| Balmora, Guild of Mages | equal |
+| Vivec, Seyda Neen | no result: the water moves in menu mode, so the two pictures without the facts differ too |
+
+With the facts in use the game ran in each place, and the counters stayed equal.
+
 ## What comes next
 
-Phase D of the plan: one fact at a time, behind a switch, MGE XE takes the fact from the
-packet. The comparison stays as the test.
+- A picture test that works where the scene moves.
+- The scene kind in place of the scene count, the moon shadow, and the radius of a light
+  from the `lightAttachRadius` shim with the light pointer of the packet.
+- Then the removal of an inference and of its mark, one at a time.

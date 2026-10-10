@@ -515,7 +515,7 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 
     if (rendertargetNormal) {
         if (a == D3DTS_VIEW) {
-            isMainView = !detectMenu(b);
+            isMainView = RenderLink::resolveMainView(!detectMenu(b));
 
             if (CameraRelative::active()) {
                 // The scene was chosen by camera identity; the device view has to
@@ -588,7 +588,7 @@ HRESULT _stdcall MGEProxyDevice::SetLight(DWORD a, const D3DLIGHT8* b) {
     captureLight(a, b);
 
     // Exterior sunlight/interior "sun" appears to always be light 6
-    if (a == 6 && DistantLand::canRenderDistantLand()) {
+    if (RenderLink::resolve(MGE_LINK_FACT_SUN_LIGHT, a == 6, RenderLink::lightIsDirectional(a)) && DistantLand::canRenderDistantLand()) {
         DistantLand::setSunLight(b);
     }
 
@@ -729,7 +729,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
         rs.startIndex = d;
         rs.primCount = e;
 
-        RenderLink::observeWorldDraw(isWaterMaterial, lightrs);
+        RenderLink::observeWorldDraw(lightrs);
 
         if (!stage0Complete && !isAmbientWhite) {
             // In an exterior this is normally the first world draw after the sky; interiors may
@@ -738,7 +738,7 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
             stage0Complete = true;
         }
 
-        if (isWaterMaterial) {
+        if (RenderLink::resolve(MGE_LINK_FACT_WATER_PLANE, isWaterMaterial, RenderLink::drawIsWaterPlane())) {
             if (distantWater) {
                 // Replacement water suppresses the original Morrowind grid.
                 if (!waterDrawn) {

@@ -11,8 +11,6 @@
 
 namespace {
     const uint32_t kMaxLights = 64;
-    // The game sends the sun and the interior "sun" as light 6. See MGEProxyDevice::SetLight.
-    const uint32_t kSunLightIndex = 6;
     // A radius of a light record is an integer. The radius that the proxy solves from the
     // attenuation is equal when it is this near.
     const float kRadiusTolerance = 0.5f;
@@ -26,6 +24,22 @@ namespace {
     MgeLinkLightV1 currentLights[kMaxLights];
     // The number of D3D8 draws that the proxy saw for the current packet.
     uint32_t d3dDraws = 0;
+    // The facts that the client told the host to take from the packets. Bit n is fact n.
+    uint32_t usedFacts = 0;
+    // The facts that the proxy can take from a packet.
+    const uint32_t kUsableFacts = (1u << MGE_LINK_FACT_UI_SCENE) | (1u << MGE_LINK_FACT_WATER_PLANE)
+        | (1u << MGE_LINK_FACT_SUN_LIGHT) | (1u << MGE_LINK_FACT_SKY_DRAW) | (1u << MGE_LINK_FACT_LAND_SPLAT);
+    // The scene packet came and the view transform of the scene did not come yet.
+    bool sceneViewPending = false;
+
+    bool uses(uint32_t fact) {
+        return (usedFacts >> fact) & 1u;
+    }
+
+    bool sceneIsUi() {
+        const uint32_t kind = currentScene.kind;
+        return kind == MGE_LINK_SCENE_UI || kind == MGE_LINK_SCENE_SPLASH || kind == MGE_LINK_SCENE_RACE_MENU_HEAD;
+    }
 
     // Copies a packet of a client that can be older or newer than this build.
     template <typename T>
@@ -73,12 +87,14 @@ namespace {
             return;
         }
         copyPacket(currentScene, scene);
+        sceneViewPending = true;
         sceneOpen = true;
         drawValid = false;
         ++counters.scenes;
     }
 
     void __cdecl sceneEnd() {
+        sceneViewPending = false;
         sceneOpen = false;
         drawValid = false;
     }
@@ -119,16 +135,23 @@ namespace {
         }
     }
 
+    uint32_t __cdecl useFacts(uint32_t factMask) {
+        usedFacts = factMask & kUsableFacts;
+        LOG::logline("-- Render link: facts taken from the packets: mask 0x%x", usedFacts);
+        return usedFacts;
+    }
+
     const MgeRenderLinkHostV1 host = {
         sizeof(MgeRenderLinkHostV1),
         MGE_RENDER_LINK_VERSION,
-        MGE_RENDER_LINK_CAP_COMPARE,
+        MGE_RENDER_LINK_CAP_COMPARE | MGE_RENDER_LINK_CAP_USE_FACTS,
         0,
         sceneBegin,
         sceneEnd,
         frameEvent,
         draw,
         readCounters,
+        useFacts,
     };
 }
 
@@ -159,26 +182,52 @@ namespace RenderLink {
         return drawClass() == MGE_LINK_CLASS_LANDSCAPE && d3dDraws > 1;
     }
 
+    bool drawIsWaterPlane() {
+        return drawClass() == MGE_LINK_CLASS_WATER_PLANE;
+    }
+
+    bool lightIsDirectional(uint32_t deviceIndex) {
+        if (drawValid) {
+            for (uint32_t i = 0; i != currentDraw.lightCount; ++i) {
+                if (currentLights[i].deviceIndex == deviceIndex) {
+                    return currentLights[i].type == MGE_LINK_LIGHT_DIRECTIONAL;
+                }
+            }
+        }
+        return false;
+    }
+
     void compare(uint32_t fact, bool inferred, bool fromPacket) {
         if (drawValid) {
             count(fact, inferred, fromPacket);
         }
     }
 
-    void observeBeginScene(bool mainView, int sceneIndex) {
-        if (!sceneOpen) {
-            return;
+    bool resolve(uint32_t fact, bool inferred, bool fromPacket) {
+        if (!drawValid) {
+            return inferred;
         }
-        const uint32_t kind = currentScene.kind;
-        const bool uiScene = kind == MGE_LINK_SCENE_UI || kind == MGE_LINK_SCENE_SPLASH
-            || kind == MGE_LINK_SCENE_RACE_MENU_HEAD;
-        count(MGE_LINK_FACT_UI_SCENE, !mainView, uiScene);
-        if (mainView) {
-            count(MGE_LINK_FACT_SCENE_KIND, sceneIndex == 0, kind == MGE_LINK_SCENE_WORLD);
+        count(fact, inferred, fromPacket);
+        return uses(fact) ? fromPacket : inferred;
+    }
+
+    bool resolveMainView(bool inferredMainView) {
+        if (!sceneOpen || !sceneViewPending) {
+            return inferredMainView;
+        }
+        sceneViewPending = false;
+        const bool packetMainView = !sceneIsUi();
+        count(MGE_LINK_FACT_UI_SCENE, !inferredMainView, !packetMainView);
+        return uses(MGE_LINK_FACT_UI_SCENE) ? packetMainView : inferredMainView;
+    }
+
+    void observeBeginScene(bool mainView, int sceneIndex) {
+        if (sceneOpen && mainView) {
+            count(MGE_LINK_FACT_SCENE_KIND, sceneIndex == 0, currentScene.kind == MGE_LINK_SCENE_WORLD);
         }
     }
 
-    void observeWorldDraw(bool waterMaterial, const LightState& lights) {
+    void observeWorldDraw(const LightState& lights) {
         if (!connected) {
             return;
         }
@@ -187,17 +236,13 @@ namespace RenderLink {
             return;
         }
         ++d3dDraws;
-        count(MGE_LINK_FACT_WATER_PLANE, waterMaterial, currentDraw.objectClass == MGE_LINK_CLASS_WATER_PLANE);
         if (d3dDraws != 1) {
             // The lights of a packet are the same for each of its D3D8 draws.
             return;
         }
         for (uint32_t i = 0; i != currentDraw.lightCount; ++i) {
             const MgeLinkLightV1& light = currentLights[i];
-            if (light.type == MGE_LINK_LIGHT_DIRECTIONAL) {
-                // The proxy takes light 6 as the sun. The packet says which light is directional.
-                count(MGE_LINK_FACT_SUN_LIGHT, light.deviceIndex == kSunLightIndex, true);
-            } else if (light.type == MGE_LINK_LIGHT_POINT) {
+            if (light.type == MGE_LINK_LIGHT_POINT) {
                 const auto found = lights.lights.find(light.deviceIndex);
                 const float inferred = found != lights.lights.end() ? found->second.radius : 0.0f;
                 // Yes means a radius that is not 0. When the two radii are different, the

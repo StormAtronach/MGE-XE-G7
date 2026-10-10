@@ -186,7 +186,8 @@ typedef struct MgeRenderLinkHostV1 {
     // MGE_RENDER_LINK_CAP_*
     uint32_t capabilities;
     uint32_t reserved;
-    // BeginPaint is done. The D3D8 calls that follow belong to this scene.
+    // A scene starts. The call comes before the view transform of the scene goes to the
+    // device. The D3D8 calls that follow belong to this scene.
     void (__cdecl* sceneBegin)(const MgeLinkSceneV1* scene);
     // EndPaint starts.
     void (__cdecl* sceneEnd)(void);
@@ -196,6 +197,11 @@ typedef struct MgeRenderLinkHostV1 {
     void (__cdecl* draw)(const MgeLinkDrawV1* draw);
     // Copies the counters. `reset` not 0 sets them to 0 after the copy.
     void (__cdecl* readCounters)(MgeLinkCountersV1* out, uint32_t reset);
+    // Tells the host which facts it must take from the packets and not from its inference.
+    // Bit n of `factMask` is the fact MGE_LINK_FACT_ n. Returns the mask that the host uses:
+    // a host does not use a fact that it cannot take from a packet.
+    // Only a host with MGE_RENDER_LINK_CAP_USE_FACTS has this member.
+    uint32_t (__cdecl* useFacts)(uint32_t factMask);
 } MgeRenderLinkHostV1;
 
 #ifdef __cplusplus
@@ -205,7 +211,7 @@ static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkFactCountV1) == 16, "MgeLinkFactCountV1 size");
 static_assert(sizeof(MgeLinkCountersV1) == 272, "MgeLinkCountersV1 size");
-static_assert(sizeof(MgeRenderLinkHostV1) == 36, "MgeRenderLinkHostV1 size");
+static_assert(sizeof(MgeRenderLinkHostV1) == 40, "MgeRenderLinkHostV1 size");
 
 extern "C" {
 #endif
