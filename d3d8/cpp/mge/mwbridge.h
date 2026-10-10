@@ -131,7 +131,7 @@ public:
 
     void toggleRipples(BOOL enabled);
     float markWaterNode(float k);
-    void markMoonNodes(float k);
+    void markMoonNodes(const float k[2], float previous[2]);
     bool isIntroDone();
     bool isLoadingBar();
     void showLoadingBar(const char* text, float amount);

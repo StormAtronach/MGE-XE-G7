@@ -981,9 +981,11 @@ float MWBridge::markWaterNode(float k) {
 
 // markMoonNodes
 // Edits the material for both moons to set (normally unused) specular power to a recognizable value
-void MWBridge::markMoonNodes(float k) {
+// k has the value for Masser and for Secunda. previous, when not null, gets the values that were there
+void MWBridge::markMoonNodes(const float k[2], float previous[2]) {
     auto wthr = weatherController();
 
+    int index = 0;
     for (TES3::Moon* moon : { wthr->moonMasser, wthr->moonSecunda }) {
         NI::TriShape* shadow = moon->sgTriMoonShadow;
 
@@ -992,8 +994,15 @@ void MWBridge::markMoonNodes(float k) {
 
         // Write to specular power member
         if (property && reinterpret_cast<uintptr_t>(property->vTable) == TES3::Address::vtable_NiMaterialProperty) {
-            reinterpret_cast<NI::MaterialProperty*>(property)->shininess = k;
+            auto material = reinterpret_cast<NI::MaterialProperty*>(property);
+            if (previous) {
+                previous[index] = material->shininess;
+            }
+            material->shininess = k[index];
+            // The renderer keeps a copy of the material until the revision changes
+            ++material->revisionID;
         }
+        ++index;
     }
 }
 

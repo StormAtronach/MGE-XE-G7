@@ -111,7 +111,11 @@ test), the inference finds no water, and the picture is equal.
 
 The moon mark is in the material of the two shapes of a moon: the face, and the shape that
 hides the dark part. So the fact is "a shape of a moon". The proxy tells the two apart by
-the blend mode at the replay, as before. The mark stays in the material for now.
+the blend mode at the replay, as before. With the fact in use the host takes the mark out
+of the two moon materials, as it does for the water. In the night test the inference then
+found no moon, the packet found the two shapes in each frame, and the picture was the same
+but for 3 pixels that differ by one level of one colour (the night scene has that much
+noise between two frames without the facts).
 
 The scene count of the proxy comes from the scene kind: the world scene is 0, and each
 other world view scene is 1 or more.
@@ -144,6 +148,11 @@ With the facts in use the game ran in each place, and the counters stayed equal.
 
 ## What comes next
 
-- The moon mark can come out of the material in the same way as the water mark.
+- The later views of a scene. `detectMenu` also runs for each view transform after the
+  first one of a scene (a screen polygon, the sun glare). The host counts these as the fact
+  "later view" and does not use the packet for them. In the test install the count stayed
+  0 in all runs: its shader chain replaces the sun glare of the game ("Shader chain
+  replaces standard Morrowind sun glare" in the log), and nothing else made a later view.
+  A test needs an install without such a shader.
 - The removal of an inference from the source, one at a time, when a client is a
   condition of the build.

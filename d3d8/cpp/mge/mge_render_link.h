@@ -109,6 +109,9 @@
 #define MGE_LINK_FACT_SCENE_KIND 5u
 #define MGE_LINK_FACT_SKY_DRAW 6u
 #define MGE_LINK_FACT_LAND_SPLAT 7u
+// A view transform that is not the first one of its scene is a UI view. The packet side is
+// the kind of the scene. The host compares this fact and does not use it.
+#define MGE_LINK_FACT_LATER_VIEW 8u
 #define MGE_LINK_FACT_COUNT 16u
 
 typedef struct MgeLinkSceneV1 {

@@ -50,6 +50,11 @@ namespace {
     float waterShininess = 0.0f;
     bool waterMarked = false;
     bool waterMarkRemoved = false;
+    // The same for the mark in the materials of the two moons.
+    const float kMoonMark = 88888.0f;
+    float moonShininess[2] = {};
+    bool moonMarked = false;
+    bool moonMarkRemoved = false;
     // The scene packet came and the view transform of the scene did not come yet.
     bool sceneViewPending = false;
 
@@ -168,6 +173,12 @@ namespace {
             waterMarkRemoved = !waterMarkRemoved;
             LOG::logline("-- Render link: water mark %s", waterMarkRemoved ? "removed" : "put back");
         }
+        if (moonMarked && mwBridge->IsLoaded() && uses(MGE_LINK_FACT_MOON_SHADOW) != moonMarkRemoved) {
+            const float marks[2] = { kMoonMark, kMoonMark };
+            mwBridge->markMoonNodes(moonMarkRemoved ? marks : moonShininess, nullptr);
+            moonMarkRemoved = !moonMarkRemoved;
+            LOG::logline("-- Render link: moon mark %s", moonMarkRemoved ? "removed" : "put back");
+        }
         return usedFacts;
     }
 
@@ -247,7 +258,12 @@ namespace RenderLink {
     }
 
     bool resolveMainView(bool inferredMainView) {
-        if (!sceneOpen || !sceneViewPending) {
+        if (!sceneOpen) {
+            return inferredMainView;
+        }
+        if (!sceneViewPending) {
+            // A later view of the scene: a screen polygon, the sun glare. Compare only.
+            count(MGE_LINK_FACT_LATER_VIEW, !inferredMainView, sceneIsUi());
             return inferredMainView;
         }
         sceneViewPending = false;
@@ -339,6 +355,17 @@ namespace RenderLink {
     void noteWaterMark(float original) {
         waterShininess = original;
         waterMarked = true;
+    }
+
+    void noteMoonMark(const float original[2]) {
+        // The proxy marks the moons again when it makes its shaders again. Then the value
+        // that was there is the mark, and the first value stays.
+        if (!moonMarked) {
+            moonShininess[0] = original[0];
+            moonShininess[1] = original[1];
+            moonMarked = true;
+        }
+        moonMarkRemoved = false;
     }
 }
 

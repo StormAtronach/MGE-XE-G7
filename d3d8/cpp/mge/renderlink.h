@@ -78,4 +78,7 @@ namespace RenderLink {
     // The proxy put its mark in the material of the water. `original` is the value that was
     // there. The host puts it back while the water plane comes from the packets.
     void noteWaterMark(float original);
+
+    // The same for the mark in the materials of the two moons.
+    void noteMoonMark(const float original[2]);
 }
