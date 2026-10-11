@@ -39,7 +39,7 @@ use distantland::mge_xe::distant_terrain::{
 use mge_config::{ConfigDocument, FILE_NAME};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, Replay, SceneView};
+use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, Replay, SceneView};
 use water::{Water, WaterFrame};
 
 /// The side of an exterior cell of the game, in the units of the game.
@@ -701,8 +701,8 @@ fn extension_shade(in: VertexOut) -> vec4f {
     }
     var d = vec3f(0.0);
     var a = draw.scene_ambient.rgb;
-    for (var i = 0u; i < draw.counts.x; i++) {
-        let light = draw.lights[i];
+    for (var i = 0u; i < draw.light_range.y; i++) {
+        let light = lights[draw.light_range.x + i];
         if light.position.w == 3.0 {
             d += light.diffuse.rgb * clamp(dot(normal, -light.direction.xyz), 0.0, 1.0);
             a += light.ambient.rgb;
@@ -819,11 +819,10 @@ impl Extension for DistantLand {
     /// `decodeMorrowindPointLight` of MGE XE do (`ffeshader.cpp`). The game gives a point
     /// light in one of four forms of its three falloff numbers, and each form has its own
     /// sum; one constant is for all lights of the draw, from the last light that has one.
-    /// The renderer gives the first 8 lights of the draw; the Direct3D 9 path takes the
-    /// last 8 when there are more.
-    fn shade(&mut self, draw: &mut DrawData, facts: &DrawFacts) {
+    /// All lights of the draw: the game gives at most 8 for each node, or 32 with the patch
+    /// of `expanded_light_limit`.
+    fn shade(&mut self, draw: &mut DrawData, lights: &mut [LightData], facts: &DrawFacts) {
         let Some(p) = self.shade else { return };
-        let count = (draw.counts[0] as usize).min(8);
         let mut shared_constant = 0.33f32;
         // The z axis of the camera in the space of the lights: MGE XE moves one form of
         // light 25 units along it.
@@ -831,7 +830,7 @@ impl Extension for DistantLand {
         // A scene with white ambient light (the sky dome, a menu) has a fixed ambient light
         // and no sun.
         let white = draw.scene_ambient == [1.0; 4];
-        for light in &mut draw.lights[..count] {
+        for light in lights.iter_mut() {
             if light.position[3] == 3.0 {
                 let direction = light.direction;
                 let length = (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt().max(1e-12);
@@ -869,7 +868,7 @@ impl Extension for DistantLand {
                 light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, 0.0, 0.0];
             }
         }
-        for light in &mut draw.lights[..count] {
+        for light in lights.iter_mut() {
             light.attenuation[0] = shared_constant;
         }
         draw.scene_ambient = if white {

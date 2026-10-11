@@ -1400,6 +1400,11 @@ namespace Deviceless {
             // (distant land, alpha scenes, water mark, light limit). None is for this mode.
             mwBridge->Load();
             LOG::logline("-- wgpu renderer: the game is loaded, the frame logic of MGE XE runs from the stream");
+            // The wgpu renderer takes all lights of a node: the patch of the engine to 32
+            // needs no capability of the device here.
+            if (Configuration.ExpandedLightLimit) {
+                MWPatches::patchExpandedLightLimit();
+            }
         }
         if (mwBridge->IsLoaded()) {
             updateFrameLogic(mwBridge);
