@@ -37,7 +37,7 @@ use distantland::mge_xe::distant_terrain::{
 use mge_config::{ConfigDocument, FILE_NAME};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{Extension, SceneView};
+use nirender_wgpu::{Extension, PerPixel, SceneView};
 
 /// The side of an exterior cell of the game, in the units of the game.
 const CELL: f32 = 8192.0;
@@ -128,6 +128,11 @@ pub struct DistantLand {
     gpu: Option<Gpu>,
     /// The fog distances for the near cells of the frame, when the terrain is in it.
     near_fog: Option<(f32, f32)>,
+    /// The settings for the light for each pixel: on, only in interior cells, and the number
+    /// that the radius of a light is multiplied with for its end (0: no end).
+    per_pixel: (bool, bool, f32),
+    /// The world of the frame is in an interior cell.
+    interior: bool,
     statics: Option<statics::Statics>,
     started: Instant,
     meshes_drawn: u64,
@@ -316,6 +321,12 @@ impl DistantLand {
             loading: None,
             gpu: None,
             near_fog: None,
+            per_pixel: (
+                settings.per_pixel_lighting,
+                matches!(settings.per_pixel_mode, mge_config::PerPixelMode::InteriorsOnly),
+                if settings.per_pixel_light_fade { settings.per_pixel_light_fade_radius } else { 0.0 },
+            ),
+            interior: false,
             statics: None,
             started: Instant::now(),
             meshes_drawn: 0,
@@ -622,6 +633,7 @@ impl Extension for DistantLand {
 
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) -> bool {
         self.near_fog = None;
+        self.interior = scene.interior;
         if !self.enabled || scene.interior {
             return false;
         }
@@ -768,6 +780,18 @@ impl Extension for DistantLand {
             planes: planes(&view_projection),
         };
         statics.draw_grass(scene, pass, &frame);
+    }
+
+    /// The light for each pixel, by the setting `distant_land.per_pixel_lighting` and its
+    /// mode, with the numbers of the weather for the sun and the ambient light.
+    fn per_pixel(&self) -> Option<PerPixel> {
+        let (on, interiors_only, fade) = self.per_pixel;
+        if !on || (interiors_only && !self.interior) {
+            return None;
+        }
+        // In an interior the numbers are 1, as `adjustFog` of the Direct3D 9 path has them.
+        let (sun, ambient) = self.environment.filter(|_| !self.interior).map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
+        Some(PerPixel { sun, ambient, fade })
     }
 
     /// The draws of the world of the game get the fog distances of MGE XE for the near
