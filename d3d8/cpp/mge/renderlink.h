@@ -61,6 +61,36 @@ namespace RenderLink {
     // The light with this device index is the sun light of the game, by the current draw.
     bool lightIsSun(uint32_t deviceIndex);
 
+    // The draw census. It counts each draw of the game by the path that the draw takes in
+    // MGE XE, and by the limits of the generated shaders that the state of its packet is
+    // outside of. The counts go to the log when the client reads the counters.
+    enum CensusPath : uint32_t {
+        // A generated shader of MGE XE drew it.
+        CensusWorldShader,
+        // The generated shader did not compile: the draw is purple.
+        CensusWorldPurple,
+        // The packet path of the DXVK fork drew it.
+        CensusWorldNative,
+        // A world draw with per-pixel lighting off: fixed function.
+        CensusWorldFixed,
+        // MGE XE keeps the draw and draws it later: the sky.
+        CensusSkyRecorded,
+        // MGE XE draws its own water in place of this draw.
+        CensusWaterReplaced,
+        // Fixed function, because distant land is not ready.
+        CensusNotReady,
+        // Fixed function, because the target is not the back buffer.
+        CensusOtherTarget,
+        // Fixed function, because the scene is a stencil shadow scene.
+        CensusShadowStencil,
+        // Fixed function, because the view is not the main view: the UI and others.
+        CensusOtherView,
+        // A draw without indexes: fixed function.
+        CensusNotIndexed,
+        CensusPathCount,
+    };
+    void census(CensusPath path);
+
     // Counts one comparison of a fact. Does nothing without a packet for the current draw.
     void compare(uint32_t fact, bool inferred, bool fromPacket);
 

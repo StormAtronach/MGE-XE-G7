@@ -18,7 +18,9 @@
 #include <unordered_map>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace {
     const uint32_t kMaxLights = 64;
@@ -393,7 +395,139 @@ namespace {
         ++counters.draws;
     }
 
+    // ---- the draw census
+
+    using namespace RenderLink;
+
+    const char* const kCensusPaths[CensusPathCount] = {
+        "shader", "purple", "native packet", "world fixed function", "sky kept", "water replaced",
+        "not ready", "other target", "shadow stencil", "other view", "not indexed",
+    };
+    enum CensusLimit : uint32_t {
+        LimitStages, LimitCoordinateSets, LimitGenerators, LimitArgument, LimitOperation, LimitAlphaOperation,
+        LimitNoNormal, LimitTransformed, LimitPoints, LimitLines, LimitLights, LimitCount,
+    };
+    const char* const kCensusLimits[LimitCount] = {
+        "more than 6 stages", "more than 4 coordinate sets", "more than 1 generator", "argument", "operation",
+        "alpha operation", "no normal", "transformed vertices", "points", "lines", "more than 8 lights",
+    };
+    const uint32_t kSceneKinds = 10;
+    uint32_t censusDraws[CensusPathCount];
+    uint32_t censusNoPacket[CensusPathCount];
+    uint32_t censusKinds[CensusPathCount][kSceneKinds];
+    uint32_t censusLimits[CensusPathCount][LimitCount];
+    // The first objects that are outside each limit.
+    const uint32_t kCensusNames = 4;
+    char censusNames[LimitCount][kCensusNames][48];
+
+    // The limits of the generated shaders that the state of a packet is outside of, as bits.
+    uint32_t limitsOf(const MgeLinkDrawStateV1& s) {
+        uint32_t mask = 0;
+        uint32_t stages = 0, generators = 0;
+        while (stages != MGE_LINK_STATE_STAGES && s.stages[stages][kColorOp] != D3DTOP_DISABLE) {
+            const uint32_t* p = s.stages[stages];
+            const uint32_t op = p[0], alphaOp = p[3];
+            const bool known = (op >= D3DTOP_SELECTARG1 && op <= D3DTOP_SUBTRACT) || op == D3DTOP_BLENDDIFFUSEALPHA
+                || op == D3DTOP_BLENDTEXTUREALPHA || (op >= D3DTOP_BUMPENVMAP && op <= D3DTOP_MULTIPLYADD);
+            if (!known) {
+                mask |= 1u << LimitOperation;
+            }
+            if (alphaOp != op && alphaOp != D3DTOP_SELECTARG1) {
+                mask |= 1u << LimitAlphaOperation;
+            }
+            // DIFFUSE, CURRENT and TEXTURE are 0, 1 and 2.
+            if ((p[1] & D3DTA_SELECTMASK) > D3DTA_TEXTURE || (p[2] & D3DTA_SELECTMASK) > D3DTA_TEXTURE) {
+                mask |= 1u << LimitArgument;
+            }
+            if (p[9] != MGE_LINK_STATE_UNKNOWN && (p[9] >> 16) != 0) {
+                ++generators;
+            }
+            ++stages;
+        }
+        if (stages > 6) {
+            mask |= 1u << LimitStages;
+        }
+        if (generators > 1) {
+            mask |= 1u << LimitGenerators;
+        }
+        const uint32_t fvf = s.vertexFormat;
+        if (((fvf & D3DFVF_TEXCOUNT_MASK) >> D3DFVF_TEXCOUNT_SHIFT) > 4) {
+            mask |= 1u << LimitCoordinateSets;
+        }
+        if (!(fvf & D3DFVF_NORMAL)) {
+            mask |= 1u << LimitNoNormal;
+        }
+        if ((fvf & D3DFVF_POSITION_MASK) == D3DFVF_XYZRHW) {
+            mask |= 1u << LimitTransformed;
+        }
+        if (s.primitiveType == D3DPT_POINTLIST) {
+            mask |= 1u << LimitPoints;
+        }
+        if (s.primitiveType == D3DPT_LINELIST || s.primitiveType == D3DPT_LINESTRIP) {
+            mask |= 1u << LimitLines;
+        }
+        if (s.lighting && s.lightCount > 8) {
+            mask |= 1u << LimitLights;
+        }
+        return mask;
+    }
+
+    void censusReport() {
+        uint32_t total = 0;
+        for (uint32_t path = 0; path != CensusPathCount; ++path) {
+            total += censusDraws[path];
+        }
+        if (total == 0) {
+            return;
+        }
+        static const char* const kinds[kSceneKinds] = {
+            "other", "world", "sorted", "water", "shadow volume", "shadow casters", "first person", "ui", "race menu head", "splash",
+        };
+        for (uint32_t path = 0; path != CensusPathCount; ++path) {
+            if (censusDraws[path] == 0) {
+                continue;
+            }
+            std::string text;
+            char part[96];
+            for (uint32_t kind = 0; kind != kSceneKinds; ++kind) {
+                if (censusKinds[path][kind]) {
+                    std::snprintf(part, sizeof(part), " %s %u,", kinds[kind], censusKinds[path][kind]);
+                    text += part;
+                }
+            }
+            text += " limits:";
+            for (uint32_t limit = 0; limit != LimitCount; ++limit) {
+                if (censusLimits[path][limit]) {
+                    std::snprintf(part, sizeof(part), " %s %u,", kCensusLimits[limit], censusLimits[path][limit]);
+                    text += part;
+                }
+            }
+            LOG::logline("-- Census: path '%s': %u draws, %u without a packet; scenes:%s", kCensusPaths[path], censusDraws[path],
+                censusNoPacket[path], text.c_str());
+        }
+        for (uint32_t limit = 0; limit != LimitCount; ++limit) {
+            std::string text;
+            for (uint32_t i = 0; i != kCensusNames && censusNames[limit][i][0]; ++i) {
+                text += " '";
+                text += censusNames[limit][i];
+                text += "'";
+            }
+            if (!text.empty()) {
+                LOG::logline("-- Census: limit '%s', first objects:%s", kCensusLimits[limit], text.c_str());
+            }
+        }
+        LOG::logline("-- Census: end, %u draws", total);
+        std::memset(censusDraws, 0, sizeof(censusDraws));
+        std::memset(censusNoPacket, 0, sizeof(censusNoPacket));
+        std::memset(censusKinds, 0, sizeof(censusKinds));
+        std::memset(censusLimits, 0, sizeof(censusLimits));
+        std::memset(censusNames, 0, sizeof(censusNames));
+    }
+
     void __cdecl readCounters(MgeLinkCountersV1* out, uint32_t reset) {
+        if (reset) {
+            censusReport();
+        }
         if (out && out->structSize >= sizeof(uint32_t)) {
             const uint32_t size = out->structSize < sizeof(counters) ? out->structSize : sizeof(counters);
             // The textures have their own counts: another thread can make a texture. A reset
@@ -537,6 +671,7 @@ namespace {
         case MGE_LINK_COMMAND_DRAW:
             if (a) {
                 const auto w = reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(a));
+                RenderLink::census(CensusNotIndexed);
                 device->ProxyDevice::DrawPrimitive(static_cast<D3DPRIMITIVETYPE>(w[0]), w[1], w[2]);
             }
             break;
@@ -671,6 +806,46 @@ namespace {
 }
 
 namespace RenderLink {
+    void census(CensusPath path) {
+        if (!connected || path >= CensusPathCount) {
+            return;
+        }
+        ++censusDraws[path];
+        const uint32_t kind = sceneOpen ? currentScene.kind : 0;
+        ++censusKinds[path][kind < kSceneKinds ? kind : 0];
+        // observeDrawState takes the packet of a world draw and sets stateForThisDraw.
+        if (!stateValid && !stateForThisDraw) {
+            ++censusNoPacket[path];
+            return;
+        }
+        // The packet is of one draw. A second D3D8 draw without a new packet must not count
+        // its limits again.
+        stateValid = false;
+        const uint32_t mask = limitsOf(currentState);
+        for (uint32_t limit = 0; limit != LimitCount; ++limit) {
+            if (!((mask >> limit) & 1u)) {
+                continue;
+            }
+            ++censusLimits[path][limit];
+            const char* name = nullptr;
+            if (drawValid && currentDraw.geometry) {
+                name = *reinterpret_cast<const char* const*>(currentDraw.geometry + 8);
+            }
+            if (!name || !name[0]) {
+                continue;
+            }
+            for (uint32_t i = 0; i != kCensusNames; ++i) {
+                if (std::strncmp(censusNames[limit][i], name, sizeof(censusNames[limit][i]) - 1) == 0) {
+                    break;
+                }
+                if (!censusNames[limit][i][0]) {
+                    std::strncpy(censusNames[limit][i], name, sizeof(censusNames[limit][i]) - 1);
+                    break;
+                }
+            }
+        }
+    }
+
     void noteRenderState(uint32_t state, uint32_t value) {
         if (state < 256) {
             deviceRenderStates[state].set(value);

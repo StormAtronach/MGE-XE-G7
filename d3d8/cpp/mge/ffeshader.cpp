@@ -568,6 +568,7 @@ void FixedFunctionShader::renderMorrowindLegacy(
         shaderLRU.effect = effectFFE;
         shaderLRU.last_sk = data.key;
     }
+    RenderLink::census(effectFFE == effectDefaultPurple ? RenderLink::CensusWorldPurple : RenderLink::CensusWorldShader);
 
     effectFFE->SetVector(ehMaterialDiffuse, &data.materialDiffuse);
     effectFFE->SetVector(ehMaterialAmbient, &data.materialAmbient);
@@ -684,6 +685,7 @@ void FixedFunctionShader::renderMorrowind(
 
     if (useNative) {
         if (renderMorrowindNative(rs, data, packet)) {
+            RenderLink::census(RenderLink::CensusWorldNative);
             return;
         }
 

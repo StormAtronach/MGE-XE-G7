@@ -756,10 +756,12 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
                     DistantLand::renderStageWater();
                     waterDrawn = true;
                 }
+                RenderLink::census(RenderLink::CensusWaterReplaced);
                 return D3D_OK;
             }
         } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene, waterVolumeTint, waterVolumeSlot, &lightrs)) {
             // The surface of a water volume was drawn with the water shading.
+            RenderLink::census(RenderLink::CensusWaterReplaced);
             return D3D_OK;
         } else {
             // DistantLand may record the draw for a later pass and signal that the original is
@@ -768,6 +770,11 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
                 return D3D_OK;
             }
         }
+        RenderLink::census(RenderLink::CensusWorldFixed);
+    } else {
+        RenderLink::census(!DistantLand::canRenderDistantLand() ? RenderLink::CensusNotReady
+            : !rendertargetNormal ? RenderLink::CensusOtherTarget
+            : isShadowStencil ? RenderLink::CensusShadowStencil : RenderLink::CensusOtherView);
     }
 
     if (!indexedSkinning) {

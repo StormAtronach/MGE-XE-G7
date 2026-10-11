@@ -1360,6 +1360,7 @@ bool DistantLand::inspectIndexedPrimitive(int sceneCount, const RenderedState* r
 
         // If using atmosphere scattering, draw sky later in stage 0
         if ((Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER)) {
+            RenderLink::census(RenderLink::CensusSkyRecorded);
             return false;
         }
     } else if (isPPLActive) {
