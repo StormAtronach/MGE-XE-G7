@@ -29,6 +29,7 @@ use std::thread;
 use std::time::Instant;
 
 mod blend;
+mod post;
 mod shadow;
 mod statics;
 mod water;
@@ -42,6 +43,7 @@ use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, Replay, SceneView};
 use water::{Water, WaterFrame};
+use post::{Post, Variables};
 use shadow::Shadow;
 
 /// The side of an exterior cell of the game, in the units of the game.
@@ -162,6 +164,11 @@ pub struct DistantLand {
     shadow_in_frame: bool,
     shadows_enabled: bool,
     shadow_resolution: u32,
+    /// The post-processing chain, when the settings have shaders; `None` before the first
+    /// frame with the water (it needs the wave texture).
+    post: Option<Post>,
+    post_enabled: bool,
+    post_chain: Vec<String>,
     /// The water, when its wave texture was found; `None` before the first frame.
     water: Option<Water>,
     water_enabled: bool,
@@ -421,6 +428,9 @@ impl DistantLand {
             shadow_in_frame: false,
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
+            post: None,
+            post_enabled: document.settings().render.enable_shaders,
+            post_chain: document.settings().shaders.chain.clone(),
             water: None,
             water_enabled: true,
             waves: Vec::new(),
@@ -497,6 +507,7 @@ impl Drop for DistantLand {
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("water: {} frames, {} reflections", self.water.as_ref().map_or(0, |w| w.frames), self.water.as_ref().map_or(0, |w| w.reflections));
         println!("shadow map: {} frames", self.shadow.as_ref().map_or(0, |s| s.frames));
+        println!("post: {} frames, {} shaders run", self.post.as_ref().map_or(0, |p| p.frames), self.post.as_ref().map_or(0, |p| p.shaders_run));
     }
 }
 
@@ -977,6 +988,14 @@ impl Extension for DistantLand {
             }
         }
         let water = land && self.water.is_some() && self.environment.is_some_and(|e| e.has_water != 0);
+        if self.post_enabled && self.post.is_none() {
+            if let Some(waves) = self.water.as_ref().map(Water::waves) {
+                self.post = Some(Post::new(scene, &self.post_chain, waves));
+            }
+        }
+        let post = land && self.post.as_ref().is_some_and(|post| !post.is_empty());
+        // The glare of the sun of the game (class 8) goes when a shader draws its own sun.
+        let no_glare = post && self.post.as_ref().is_some_and(|post| post.no_sun_glare);
         // The shadow map: its matrices from the camera and the sun of this frame.
         let mut values = [[0.0f32; 4]; 32];
         let mut texture = None;
@@ -1007,10 +1026,11 @@ impl Extension for DistantLand {
             shade: self.shade.is_some() || self.shadow_in_frame,
             sky: self.sky(),
             blend: land,
-            // The water plane of the game is class 10.
-            watched: if water { 1 << 10 } else { 0 },
+            // The water plane of the game is class 10; the glare of the sun is class 8.
+            watched: (if water { 1 << 10 } else { 0 }) | (if no_glare { 1 << 8 } else { 0 }),
             values,
             texture,
+            post,
         }
     }
 
@@ -1379,6 +1399,40 @@ impl Extension for DistantLand {
 
 
     /// The draws of the game near the end of their view range go into the distant land.
+    /// The shader chain on the picture of the frame.
+    fn post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+        let (Some(post), Some(e)) = (self.post.as_mut(), self.environment) else { return };
+        let eye = eye_of(&scene.view);
+        let rows = |m: &[f32; 16]| -> [[f32; 4]; 4] { core::array::from_fn(|r| [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]]) };
+        let mut sun_pos = e.sun_pos;
+        if e.sun_vis == 0.0 {
+            sun_pos[2] = -sun_pos[2];
+        }
+        let sunvec = scene.sun_direction.unwrap_or(sun_pos.map(|v| -v));
+        let exponential = e.flags & 1 != 0;
+        let underwater = e.flags & 2 != 0;
+        let sunvis = e.sun_vis + (1.0 - e.sun_vis) * 0.333 * e.nice_weather;
+        let fov = 2.0 * (1.0 / scene.projection[0].max(1e-6)).atan().to_degrees();
+        let variables = Variables {
+            mview: rows(&scene.view),
+            mproj: rows(&scene.projection),
+            eyevec: [scene.view[2], scene.view[6], scene.view[10], sunvis],
+            eyepos: [eye[0], eye[1], eye[2], fov],
+            sunvec: [sunvec[0], sunvec[1], sunvec[2], e.time],
+            suncol: [scene.sun_color[0], scene.sun_color[1], scene.sun_color[2], if e.has_water != 0 { e.water_level } else { -1.0e9 }],
+            sunamb: [scene.sun_ambient[0] + scene.ambient[0], scene.sun_ambient[1] + scene.ambient[1], scene.sun_ambient[2] + scene.ambient[2], if scene.interior { 1.0 } else { 0.0 }],
+            sunpos: [sun_pos[0], sun_pos[1], sun_pos[2], if underwater { 1.0 } else { 0.0 }],
+            hdr: [1.0; 4],
+            fogcol: [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], if exponential { e.fog_exp_start } else { e.fog_start }],
+            fognearcol: [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2], if exponential { e.fog_exp_divisor } else { e.fog_end }],
+            fog_near: [e.fog_near_start, e.fog_near_end, 1.0 / scene.target_size.0.max(1) as f32, 1.0 / scene.target_size.1.max(1) as f32],
+        };
+        // The flags of the environment: 1 interior, 2 exterior, 4 an interior that behaves as
+        // an exterior (not known here), 8 under water, 16 above, 32 the sun visible, 64 not.
+        let flags = (if scene.interior { 1 } else { 2 }) | (if underwater { 8 } else { 16 }) | (if e.sun_vis >= 0.001 { 32 } else { 64 });
+        post.run(scene, encoder, target, &variables, flags);
+    }
+
     /// The water plane of MGE XE in place of the water plane of the game.
     fn draw_class(&mut self, class: u32, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
         if class != 10 {
