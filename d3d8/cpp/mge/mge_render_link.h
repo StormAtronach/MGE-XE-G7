@@ -212,6 +212,10 @@
 #define MGE_LINK_LIGHT_DIRECTIONAL 1u
 #define MGE_LINK_LIGHT_POINT 2u
 #define MGE_LINK_LIGHT_SPOT 3u
+// Not a type of NiLight::GetType: the directional light that is the sun light of the game.
+// In an interior the same light is the light of the cell. A directional light that is part
+// of a mesh has the type MGE_LINK_LIGHT_DIRECTIONAL.
+#define MGE_LINK_LIGHT_SUN 4u
 
 // Frame events. `a` and `b` are the arguments of `frameEvent`.
 // ClearBuffer. a: flags (1 colour, 2 stencil, 4 depth). b: 0.

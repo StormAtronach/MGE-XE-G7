@@ -58,8 +58,8 @@ namespace RenderLink {
     // The current draw is the water plane of the game.
     bool drawIsWaterPlane();
 
-    // The light with this device index is a directional light of the current draw.
-    bool lightIsDirectional(uint32_t deviceIndex);
+    // The light with this device index is the sun light of the game, by the current draw.
+    bool lightIsSun(uint32_t deviceIndex);
 
     // Counts one comparison of a fact. Does nothing without a packet for the current draw.
     void compare(uint32_t fact, bool inferred, bool fromPacket);

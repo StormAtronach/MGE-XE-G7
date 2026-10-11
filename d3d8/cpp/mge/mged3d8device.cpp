@@ -595,7 +595,7 @@ HRESULT _stdcall MGEProxyDevice::SetLight(DWORD a, const D3DLIGHT8* b) {
     captureLight(a, b);
 
     // Exterior sunlight/interior "sun" appears to always be light 6
-    if (RenderLink::resolve(MGE_LINK_FACT_SUN_LIGHT, a == 6, RenderLink::lightIsDirectional(a)) && DistantLand::canRenderDistantLand()) {
+    if (RenderLink::resolve(MGE_LINK_FACT_SUN_LIGHT, a == 6, RenderLink::lightIsSun(a)) && DistantLand::canRenderDistantLand()) {
         DistantLand::setSunLight(b);
     }
 

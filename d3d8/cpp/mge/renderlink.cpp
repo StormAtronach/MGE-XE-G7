@@ -780,11 +780,11 @@ namespace RenderLink {
         return drawClass() == MGE_LINK_CLASS_WATER_PLANE;
     }
 
-    bool lightIsDirectional(uint32_t deviceIndex) {
+    bool lightIsSun(uint32_t deviceIndex) {
         if (drawValid) {
             for (uint32_t i = 0; i != currentDraw.lightCount; ++i) {
                 if (currentLights[i].deviceIndex == deviceIndex) {
-                    return currentLights[i].type == MGE_LINK_LIGHT_DIRECTIONAL;
+                    return currentLights[i].type == MGE_LINK_LIGHT_SUN;
                 }
             }
         }
@@ -1185,6 +1185,11 @@ namespace RenderLink {
             std::memcpy(g.bumpEnvMat, &p[11], 4 * sizeof(float));
             std::memcpy(&g.bumpLumiScale, &p[15], sizeof(float));
             std::memcpy(&g.bumpLumiBias, &p[16], sizeof(float));
+            // To the first stage that is off, as for the device: the stages after that
+            // one keep the values that the handlers of the proxy wrote.
+            if (g.colorOp == D3DTOP_DISABLE) {
+                break;
+            }
         }
 
         // The textures and the texture transforms, to the first stage that is off. The
