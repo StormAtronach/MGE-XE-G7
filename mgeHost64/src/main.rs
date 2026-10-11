@@ -13,6 +13,7 @@ mod config;
 mod error;
 mod ipc;
 mod logging;
+mod renderer;
 mod startup_generation;
 mod state;
 #[cfg(test)]
@@ -31,7 +32,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 fn main() {
     let arguments: Vec<String> = std::env::args().collect();
     if arguments.iter().any(|argument| argument == "--live") {
-        nirender_wgpu::run(arguments);
+        renderer::run(arguments);
         return;
     }
 

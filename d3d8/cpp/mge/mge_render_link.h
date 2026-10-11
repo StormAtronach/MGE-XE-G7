@@ -197,6 +197,8 @@
 // Flags of a scene packet.
 // `cameraOrigin` is valid: the camera is the world camera or the first-person camera.
 #define MGE_LINK_SCENE_HAS_CAMERA_ORIGIN 0x00000001u
+// The player is in an interior cell. A renderer draws no distant land then.
+#define MGE_LINK_SCENE_INTERIOR 0x00000002u
 
 // Flags of a texture description.
 // The game can change the pixels of the texture later.
