@@ -28,6 +28,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 use std::time::Instant;
 
+mod blend;
 mod statics;
 
 use distantland::mge_xe::distant_terrain::{
@@ -133,6 +134,7 @@ pub struct DistantLand {
     per_pixel: (bool, bool, f32),
     /// The world of the frame is in an interior cell.
     interior: bool,
+    blend: Option<blend::Blend>,
     statics: Option<statics::Statics>,
     started: Instant,
     meshes_drawn: u64,
@@ -327,6 +329,7 @@ impl DistantLand {
                 if settings.per_pixel_light_fade { settings.per_pixel_light_fade_radius } else { 0.0 },
             ),
             interior: false,
+            blend: None,
             statics: None,
             started: Instant::now(),
             meshes_drawn: 0,
@@ -380,6 +383,7 @@ impl Drop for DistantLand {
             self.meshes_drawn,
             if self.environment.is_some() { "from the game with each frame" } else { "from mgeXE.toml" }
         );
+        println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
     }
 }
 
@@ -792,6 +796,18 @@ impl Extension for DistantLand {
         // In an interior the numbers are 1, as `adjustFog` of the Direct3D 9 path has them.
         let (sun, ambient) = self.environment.filter(|_| !self.interior).map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade })
+    }
+
+    /// The blend is for a frame with the terrain in it.
+    fn wants_blend(&self) -> bool {
+        self.near_fog.is_some()
+    }
+
+    /// The draws of the game near the end of their view range go into the distant land.
+    fn blend(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView) {
+        // Without the view range from the game, the default of the game with distant land.
+        let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
+        self.blend.get_or_insert_with(|| blend::Blend::new(scene)).draw(scene, pass, before, depth, near_view_range);
     }
 
     /// The draws of the world of the game get the fog distances of MGE XE for the near
