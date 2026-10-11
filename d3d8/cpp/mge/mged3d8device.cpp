@@ -1192,6 +1192,14 @@ namespace Deviceless {
         float outscatter[3];
         float inscatter[3];
         float skyScatterFar[4];
+        // Version 3, for the grass. The wind as the grass shader takes it: the wind of the
+        // game times the value of the weather, made smooth over the frames.
+        float wind[2];
+        // The position of the player, and 1 when it is known.
+        float footPos[3];
+        UINT footValid;
+        // The time of the simulation of the game, in seconds. It stops in a menu.
+        float time;
     };
     static const UINT EnvironmentId = 1;
 
@@ -1203,7 +1211,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 2;
+        e.version = 3;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1337,6 +1345,32 @@ namespace Deviceless {
                 mwBridge->setScenegraphFogCol((DWORD)nearFogCol);
             }
         }
+
+        // The wind, as in DistantLand::setupCommonEffect: it is very noisy, so each frame
+        // goes a small step to the wind of the game. Not in a menu.
+        static float smoothWind[2];
+        if (!mwBridge->IsMenu()) {
+            const float f = 0.02f;
+            float targetWind[2];
+            if (exterior) {
+                const float* wind = mwBridge->GetWindVector();
+                targetWind[0] = e.windScaling * wind[0];
+                targetWind[1] = e.windScaling * wind[1];
+            } else {
+                const float diagonal = 0.70710678f;
+                targetWind[0] = Configuration.Grass.InteriorWind * diagonal;
+                targetWind[1] = Configuration.Grass.InteriorWind * diagonal;
+            }
+            smoothWind[0] += f * (targetWind[0] - smoothWind[0]);
+            smoothWind[1] += f * (targetWind[1] - smoothWind[1]);
+        }
+        e.wind[0] = smoothWind[0];
+        e.wind[1] = smoothWind[1];
+        if (auto footPos = (const float*)mwBridge->PlayerPositionPointer()) {
+            std::memcpy(e.footPos, footPos, sizeof(e.footPos));
+            e.footValid = 1;
+        }
+        e.time = mwBridge->simulationTime();
         sendToRenderer(EnvironmentId, &e, sizeof(e));
     }
 

@@ -79,6 +79,12 @@ struct Environment {
     outscatter: [f32; 3],
     inscatter: [f32; 3],
     sky_scatter_far: [f32; 4],
+    /// Version 3, for the grass: the smooth wind, the position of the player with 1 when it
+    /// is known, and the time of the simulation of the game.
+    wind: [f32; 2],
+    foot_pos: [f32; 3],
+    foot_valid: u32,
+    time: f32,
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -323,8 +329,9 @@ impl DistantLand {
             settings.fog.above_water_end
         );
         if land.enabled {
-            let folder: PathBuf = root.join("Data Files").join("distantland");
-            if settings.statics {
+            // For a test, the distant land of another folder: MGE_XE_DISTANT_LAND_DIR.
+            let folder: PathBuf = std::env::var_os("MGE_XE_DISTANT_LAND_DIR").map_or_else(|| root.join("Data Files").join("distantland"), PathBuf::from);
+            if settings.statics || settings.render_grass {
                 land.statics = Some(statics::Statics::start(&document, folder.clone()));
             }
             let (sender, receiver) = channel();
@@ -607,7 +614,7 @@ impl Extension for DistantLand {
     fn data(&mut self, id: u32, bytes: &[u8]) {
         if id == ENVIRONMENT_ID && bytes.len() >= size_of::<Environment>() {
             let environment: Environment = bytemuck::pod_read_unaligned(&bytes[..size_of::<Environment>()]);
-            if environment.version == 2 {
+            if environment.version == 3 {
                 self.environment = Some(environment);
             }
         }
@@ -729,6 +736,38 @@ impl Extension for DistantLand {
             statics.draw(scene, pass, &frame);
         }
         true
+    }
+
+    /// The grass, at the end of the world scene of the game: with the projection and the
+    /// depth of the game, as `renderStage1` of the Direct3D 9 path draws it.
+    fn after_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) {
+        if !self.enabled || scene.interior {
+            return;
+        }
+        let Some(statics) = self.statics.as_mut() else { return };
+        let view_projection = multiply(&scene.view, &scene.projection);
+        let eye = eye_of(&scene.view);
+        let environment = self.environment;
+        // The grass has the linear fog of the near cells, with their fog colour.
+        let (fog_start, fog_end) = environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end));
+        let (sun_mult, ambient_mult) = environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
+        let sun = scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]);
+        let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
+        let frame = statics::GrassFrame {
+            view_projection,
+            // The view range of the game is the end of the grass. Without it from the game,
+            // the default of the game with distant land: 7168 units.
+            eye: [eye[0], eye[1], eye[2], environment.map_or(7168.0, |e| e.near_view_range)],
+            fog_color: scene.fog_color,
+            fog: [fog_start, fog_end, 0.0, 0.0],
+            sun_direction: [sun[0], sun[1], sun[2], 0.0],
+            sun_color: [scene.sun_color[0] * sun_mult, scene.sun_color[1] * sun_mult, scene.sun_color[2] * sun_mult, 0.0],
+            ambient: [ambient[0], ambient[1], ambient[2], 0.0],
+            wind: environment.map_or([0.0; 4], |e| [e.wind[0], e.wind[1], e.time, 0.0]),
+            foot: environment.map_or([0.0; 4], |e| [e.foot_pos[0], e.foot_pos[1], e.foot_pos[2], e.foot_valid as f32]),
+            planes: planes(&view_projection),
+        };
+        statics.draw_grass(scene, pass, &frame);
     }
 
     /// The draws of the world of the game get the fog distances of MGE XE for the near

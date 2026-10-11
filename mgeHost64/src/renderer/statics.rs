@@ -23,7 +23,14 @@
 //! subset names, the light of the sun is for each vertex, and a static goes away near the
 //! camera where the game draws the real one.
 //!
-//! Not here yet: interior cells, statics with a water flag, the groups of statics that the
+//! The grass is in the same files: a static of the type grass, with places in `usage.data`
+//! as the others. It is never merged and has no palette. The grass of a frame is one draw
+//! for each subset, with one record for each place (`rendergrass.cpp`): at most 16384
+//! records, out to the view range of the game. The shader is that of `XE Mod Grass.fx`
+//! without its shadows: the wind, the grass that the player pushes away, and the light of
+//! the sun from the two sides.
+//!
+//! Not here yet: the grass of interior cells, interior cells, statics with a water flag, the groups of statics that the
 //! game shows or hides (all of them are shown), the quadtree and the horizon culling of the
 //! IPC host mode, and a limit of the memory on the GPU.
 
@@ -52,6 +59,10 @@ const TRIANGLE: usize = 6;
 const HANDOFF: f32 = 1800.0;
 const HANDOFF_BAND: f32 = 512.0;
 const HANDOFF_CULL: f32 = 1024.0;
+/// `MaxGrassElements` of the Direct3D 9 path: the grass records of a frame.
+const GRASS_RECORDS: usize = 16384;
+/// The bytes of a grass record: three rows of four numbers.
+const GRASS_RECORD: usize = 48;
 /// The work of one frame for subsets that arrive from the reader thread.
 const ARRIVALS_IN_FRAME: usize = 24;
 const ARRIVAL_BYTES_IN_FRAME: usize = 16 << 20;
@@ -113,6 +124,17 @@ struct Instance {
     tier: u8,
 }
 
+/// A place of a grass static.
+struct GrassPlace {
+    first_subset: u32,
+    subset_count: u32,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: f32,
+    /// A sphere around the position that has all of the model.
+    radius: f32,
+}
+
 /// All that the files say without their vertices and indexes.
 struct Catalog {
     folder: PathBuf,
@@ -124,6 +146,9 @@ struct Catalog {
     palettes: Vec<[f32; 4]>,
     /// The one place of each merged subset.
     merged_place: HashMap<u32, u32>,
+    grass: Vec<GrassPlace>,
+    /// The grass places by the exterior cell of their position.
+    grass_cells: HashMap<(i32, i32), Vec<u32>>,
     ordinary_bytes: u64,
     merged_bytes: u64,
 }
@@ -131,6 +156,8 @@ struct Catalog {
 /// The settings of MGE XE for the statics, in the units of the game.
 #[derive(Clone, Copy)]
 struct Settings {
+    statics: bool,
+    grass: bool,
     band_ends: [f32; 3],
     far_min_size: f32,
     very_far_min_size: f32,
@@ -291,8 +318,30 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
     let mut instances: Vec<Instance> = Vec::new();
     let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
     let mut merged_place: HashMap<u32, u32> = HashMap::new();
+    let mut grass: Vec<GrassPlace> = Vec::new();
+    let mut grass_cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
     for place in &usage.exterior {
         let Some(model) = statics.get(place.id as usize) else { continue };
+        if model.kind == 4 {
+            // Grass: one record for the place. Its world matrix is made when it is drawn.
+            if settings.grass {
+                let center = (model.center[0].powi(2) + model.center[1].powi(2) + model.center[2].powi(2)).sqrt();
+                let cell = ((place.location.x / CELL).floor() as i32, (place.location.y / CELL).floor() as i32);
+                grass_cells.entry(cell).or_default().push(grass.len() as u32);
+                grass.push(GrassPlace {
+                    first_subset: model.first_subset,
+                    subset_count: model.subset_count,
+                    position: [place.location.x, place.location.y, place.location.z],
+                    rotation: [place.rotation.x, place.rotation.y, place.rotation.z],
+                    scale: place.scale,
+                    radius: (center + model.radius) * place.scale,
+                });
+            }
+            continue;
+        }
+        if !settings.statics {
+            continue;
+        }
         // A building counts as one object: each of its subsets has the bounds of the model.
         let Some(tier) = tier_of(model.kind, model.radius * place.scale, settings) else { continue };
         let world = world_matrix([place.location.x, place.location.y, place.location.z], [place.rotation.x, place.rotation.y, place.rotation.z], place.scale);
@@ -314,7 +363,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
             instances.push(Instance { subset, world, center, radius, tier });
         }
     }
-    Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, cells, textures, palettes, merged_place, ordinary_bytes, merged_bytes })
+    Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, cells, textures, palettes, merged_place, grass, grass_cells, ordinary_bytes, merged_bytes })
 }
 
 /// The bytes of a subset, from the reader thread.
@@ -392,6 +441,138 @@ struct Gpu {
     textures: Vec<wgpu::BindGroup>,
     instances: wgpu::Buffer,
     instance_capacity: usize,
+    grass_pipeline: wgpu::RenderPipeline,
+    grass_group: wgpu::BindGroup,
+    grass_uniforms: wgpu::Buffer,
+    grass_records: wgpu::Buffer,
+}
+
+/// The values of a frame for the grass.
+#[derive(Clone, Copy)]
+pub struct GrassFrame {
+    /// The view and the projection of the game.
+    pub view_projection: [f32; 16],
+    /// The position of the camera, and the view range of the game: the end of the grass.
+    pub eye: [f32; 4],
+    /// The fog colour of the near cells, and the start and the end of their linear fog.
+    pub fog_color: [f32; 4],
+    pub fog: [f32; 4],
+    pub sun_direction: [f32; 4],
+    pub sun_color: [f32; 4],
+    pub ambient: [f32; 4],
+    /// The smooth wind, and the time of the game in z.
+    pub wind: [f32; 4],
+    /// The position of the player, and 1 in w when it is known.
+    pub foot: [f32; 4],
+    pub planes: [[f32; 4]; 6],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GrassUniforms {
+    view_projection: [f32; 16],
+    eye: [f32; 4],
+    fog_color: [f32; 4],
+    fog: [f32; 4],
+    sun_direction: [f32; 4],
+    sun_color: [f32; 4],
+    ambient: [f32; 4],
+    wind: [f32; 4],
+    foot: [f32; 4],
+}
+
+const GRASS_SHADER: &str = "
+struct Uniforms {
+    view_projection: mat4x4f,
+    eye: vec4f,
+    fog_color: vec4f,
+    fog: vec4f,
+    sun_direction: vec4f,
+    sun_color: vec4f,
+    ambient: vec4f,
+    wind: vec4f,
+    foot: vec4f,
+}
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var base_sampler: sampler;
+@group(1) @binding(0) var base_texture: texture_2d<f32>;
+
+struct In {
+    @location(0) position: vec4f,
+    @location(1) normal: vec4f,
+    @location(2) color: vec4f,
+    @location(3) coordinate: vec2f,
+    // The world matrix of the place: its three columns that a position uses.
+    @location(4) world0: vec4f,
+    @location(5) world1: vec4f,
+    @location(6) world2: vec4f,
+}
+
+struct Out {
+    @builtin(position) position: vec4f,
+    @location(0) color: vec3f,
+    @location(1) coordinate: vec2f,
+    @location(2) fog: f32,
+}
+
+// grassDisplacement: the wind in four waves, and the grass that the player pushes away. The
+// height of a vertex in its model is the weight.
+fn displacement(world: vec3f, height: f32) -> vec2f {
+    let time = u.wind.z;
+    let speed = length(u.wind.xy);
+    let displace = 2.0 * u.wind.xy + 0.1;
+    var harmonics = vec2f(0.0);
+    harmonics += (1.0 - 0.10 * speed) * sin(1.0 * time + world.xy / 1104.0);
+    harmonics += (1.0 - 0.04 * speed) * cos(2.0 * time + world.xy / 751.0);
+    harmonics += (1.0 + 0.14 * speed) * sin(3.0 * time + world.xy / 526.0);
+    harmonics += (1.0 + 0.28 * speed) * sin(5.0 * time + world.xy / 209.0);
+    var stomp = vec2f(0.0);
+    if u.foot.w > 0.5 {
+        var d = length(world.xy - u.foot.xy);
+        let above = 0.06 * max(0.0, u.foot.z - world.z - 60.0);
+        d += above * above;
+        if d < 150.0 {
+            stomp = (60.0 / max(d, 0.001) - 0.4) * (world.xy - u.foot.xy);
+        }
+    }
+    return clamp(0.02 * height, 0.0, 1.0) * (harmonics * displace + stomp);
+}
+
+@vertex fn vs(in: In) -> Out {
+    var out: Out;
+    let model = vec4f(in.position.xyz, 1.0);
+    var world = vec3f(dot(model, in.world0), dot(model, in.world1), dot(model, in.world2));
+    let moved = displacement(world, in.position.z);
+    world = vec3f(world.xy + moved, world.z);
+    out.position = u.view_projection * vec4f(world, 1.0);
+    // The normal goes through the world matrix and is not made of length 1 again.
+    let n = vec4f(normalize(in.normal.xyz * 2.0 - 1.0), 0.0);
+    let normal = vec3f(dot(n, in.world0), dot(n, in.world1), dot(n, in.world2));
+    let to_vertex = world - u.eye.xyz;
+    // The light of the sun for the side that the camera sees; the other side gets a part.
+    var lambert = dot(normal, -u.sun_direction.xyz) * -sign(dot(to_vertex, normal));
+    if lambert < 0.0 {
+        lambert *= -0.3;
+    }
+    out.color = u.sun_color.rgb * lambert + u.ambient.rgb;
+    out.coordinate = in.coordinate;
+    // fogMWScalar: the linear fog of the near cells.
+    out.fog = clamp((u.fog.y - length(to_vertex)) / max(u.fog.y - u.fog.x, 1.0), 0.0, 1.0);
+    return out;
+}
+
+@fragment fn fs(in: Out) -> @location(0) vec4f {
+    let texel = textureSample(base_texture, base_sampler, in.coordinate);
+    if texel.a < 128.0 / 255.0 {
+        discard;
+    }
+    return vec4f(mix(u.fog_color.rgb, texel.rgb * in.color, in.fog), 1.0);
+}
+";
+
+/// The three columns of a world matrix of Direct3D that a position uses, as a grass record.
+fn grass_record(world: &[f32; 16]) -> [f32; 12] {
+    [world[0], world[4], world[8], world[12], world[1], world[5], world[9], world[13], world[2], world[6], world[10], world[14]]
 }
 
 /// The values of a frame that the terrain and the statics have in common. The names are
@@ -539,6 +720,11 @@ pub struct Statics {
     /// The draws of the frame: texture, subset, instance, triangles.
     draws: Vec<(u32, u32, u32, u32)>,
     instance_data: Vec<f32>,
+    /// The grass of the frame: texture, subset, record.
+    grass_draws: Vec<(u32, u32, [f32; 12])>,
+    grass_frames: u64,
+    grass_drawn: u64,
+    grass_cut: u64,
     frames: u64,
     drawn: u64,
     most_bytes: u64,
@@ -550,6 +736,8 @@ impl Statics {
     pub fn start(document: &ConfigDocument, folder: PathBuf) -> Statics {
         let land = &document.settings().distant_land;
         let settings = Settings {
+            statics: land.statics,
+            grass: land.render_grass,
             band_ends: [land.near_static_end * CELL, land.far_static_end * CELL, land.very_far_static_end * CELL],
             far_min_size: land.far_static_min_size,
             very_far_min_size: land.very_far_static_min_size,
@@ -576,6 +764,10 @@ impl Statics {
             resident_bytes: 0,
             draws: Vec::new(),
             instance_data: Vec::new(),
+            grass_draws: Vec::new(),
+            grass_frames: 0,
+            grass_drawn: 0,
+            grass_cut: 0,
             frames: 0,
             drawn: 0,
             most_bytes: 0,
@@ -597,9 +789,10 @@ impl Statics {
         };
         let catalog = loaded.catalog.clone();
         println!(
-            "distant statics: {} subsets, {} places in the exterior, {} textures; {:.0} MB ordinary, {:.0} MB merged",
+            "distant statics: {} subsets, {} places in the exterior, {} grass places, {} textures; {:.0} MB ordinary, {:.0} MB merged",
             catalog.subsets.len(),
             catalog.instances.len(),
+            catalog.grass.len(),
             catalog.textures.len(),
             catalog.ordinary_bytes as f64 / 1e6,
             catalog.merged_bytes as f64 / 1e6
@@ -611,6 +804,8 @@ impl Statics {
         thread::spawn(move || reader(for_reader, request_receiver, arrival_sender));
         // All ordinary subsets that a place uses go to the GPU now.
         let mut wanted: Vec<u32> = catalog.instances.iter().map(|i| i.subset).filter(|s| catalog.subsets[*s as usize].components.is_empty()).collect();
+        // The subsets of the grass too: they are never merged.
+        wanted.extend(catalog.grass.iter().flat_map(|place| place.first_subset..place.first_subset + place.subset_count));
         wanted.sort_unstable();
         wanted.dedup();
         for subset in wanted {
@@ -642,6 +837,90 @@ impl Statics {
             count += 1;
             bytes += size as usize;
         }
+    }
+
+    /// Draws the grass of the frame into the pass: the places within the view range of the
+    /// game that are in the view, one draw for each subset.
+    pub fn draw_grass(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame) {
+        if self.failed || !self.settings.grass {
+            return;
+        }
+        let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else { return };
+        let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
+        let view_range = frame.eye[3];
+        self.grass_draws.clear();
+        let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
+        let cells = (view_range / CELL).ceil() as i32;
+        let mut cut = false;
+        'cells: for y in cell_y - cells..=cell_y + cells {
+            for x in cell_x - cells..=cell_x + cells {
+                let Some(list) = catalog.grass_cells.get(&(x, y)) else { continue };
+                for index in list {
+                    let place = &catalog.grass[*index as usize];
+                    let to = [place.position[0] - eye[0], place.position[1] - eye[1], place.position[2] - eye[2]];
+                    let reach = view_range + place.radius;
+                    if to[0] * to[0] + to[1] * to[1] + to[2] * to[2] > reach * reach {
+                        continue;
+                    }
+                    let p = place.position;
+                    if !frame.planes.iter().all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -place.radius) {
+                        continue;
+                    }
+                    let record = grass_record(&world_matrix(place.position, place.rotation, place.scale));
+                    for subset in place.first_subset..place.first_subset + place.subset_count {
+                        if !self.resident.contains_key(&subset) {
+                            continue;
+                        }
+                        if self.grass_draws.len() == GRASS_RECORDS {
+                            cut = true;
+                            break 'cells;
+                        }
+                        self.grass_draws.push((catalog.subsets[subset as usize].texture, subset, record));
+                    }
+                }
+            }
+        }
+        self.grass_frames += 1;
+        self.grass_cut += cut as u64;
+        if self.grass_draws.is_empty() {
+            return;
+        }
+        self.grass_draws.sort_unstable_by_key(|draw| (draw.0, draw.1));
+        let records: Vec<f32> = self.grass_draws.iter().flat_map(|draw| draw.2).collect();
+        scene.queue.write_buffer(&gpu.grass_records, 0, bytemuck::cast_slice(&records));
+        let uniforms = GrassUniforms {
+            view_projection: frame.view_projection,
+            eye: frame.eye,
+            fog_color: frame.fog_color,
+            fog: frame.fog,
+            sun_direction: frame.sun_direction,
+            sun_color: frame.sun_color,
+            ambient: frame.ambient,
+            wind: frame.wind,
+            foot: frame.foot,
+        };
+        scene.queue.write_buffer(&gpu.grass_uniforms, 0, bytemuck::bytes_of(&uniforms));
+
+        pass.set_pipeline(&gpu.grass_pipeline);
+        pass.set_bind_group(0, &gpu.grass_group, &[]);
+        pass.set_vertex_buffer(1, gpu.grass_records.slice(..));
+        // One draw for each run of places with the same subset.
+        let mut start = 0;
+        while start < self.grass_draws.len() {
+            let (texture, subset, _) = self.grass_draws[start];
+            let mut end = start + 1;
+            while end < self.grass_draws.len() && self.grass_draws[end].1 == subset {
+                end += 1;
+            }
+            if let Some(resident) = self.resident.get(&subset) {
+                pass.set_bind_group(1, &gpu.textures[texture as usize], &[]);
+                pass.set_vertex_buffer(0, resident.vertices.slice(..));
+                pass.set_index_buffer(resident.indexes.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..resident.faces[0] * 3, 0, start as u32..end as u32);
+            }
+            start = end;
+        }
+        self.grass_drawn += self.grass_draws.len() as u64;
     }
 
     /// Draws the statics of the frame into the pass. Returns the number of draws.
@@ -798,6 +1077,12 @@ impl Drop for Statics {
             self.frames,
             self.drawn as f64 / self.frames.max(1) as f64,
             self.most_bytes as f64 / 1e6
+        );
+        println!(
+            "grass: {} frames, {:.0} records in a frame as a mean, {} frames with more than {GRASS_RECORDS}",
+            self.grass_frames,
+            self.grass_drawn as f64 / self.grass_frames.max(1) as f64,
+            self.grass_cut
         );
     }
 }
@@ -995,5 +1280,74 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    Gpu { pipeline, group, uniforms, textures, instances, instance_capacity: 1024 }
+
+    // The grass: its own uniforms and shader, and the textures of the statics.
+    let grass_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("grass"),
+        size: size_of::<GrassUniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let grass_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+        ],
+    });
+    let grass_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &grass_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: grass_uniforms.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+        ],
+    });
+    let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("grass"), source: wgpu::ShaderSource::Wgsl(GRASS_SHADER.into()) });
+    let grass_pipeline_layout =
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&grass_layout), Some(&texture_layout)], immediate_size: 0 });
+    let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4];
+    let grass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("grass"),
+        layout: Some(&grass_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &grass_module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[
+                Some(wgpu::VertexBufferLayout { array_stride: VERTEX as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &vertex }),
+                Some(wgpu::VertexBufferLayout { array_stride: GRASS_RECORD as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &grass_place }),
+            ],
+        },
+        // `CullMode = none` of the grass pass: the two sides of a blade.
+        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: scene.depth_format,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &grass_module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let grass_records = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("grass, the places of a frame"),
+        size: (GRASS_RECORDS * GRASS_RECORD) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    Gpu { pipeline, group, uniforms, textures, instances, instance_capacity: 1024, grass_pipeline, grass_group, grass_uniforms, grass_records }
 }
