@@ -38,7 +38,7 @@ use distantland::mge_xe::distant_terrain::{
 use mge_config::{ConfigDocument, FILE_NAME};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{Extension, FrameParameters, PerPixel, Replay, SceneView};
+use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, Replay, SceneView};
 
 /// The side of an exterior cell of the game, in the units of the game.
 const CELL: f32 = 8192.0;
@@ -134,6 +134,8 @@ pub struct DistantLand {
     per_pixel: (bool, bool, f32),
     /// The world of the frame is in an interior cell.
     interior: bool,
+    /// The light for each pixel of this frame, or `None`.
+    shade: Option<PerPixel>,
     /// The loads complete before a frame: a capture file, where each frame must be the same.
     synchronous: bool,
     blend: Option<blend::Blend>,
@@ -331,6 +333,7 @@ impl DistantLand {
                 if settings.per_pixel_light_fade { settings.per_pixel_light_fade_radius } else { 0.0 },
             ),
             interior: false,
+            shade: None,
             synchronous: false,
             blend: None,
             statics: None,
@@ -629,6 +632,75 @@ fn eye_of(view: &[f32; 16]) -> [f32; 3] {
     core::array::from_fn(|i| -(translation[0] * view[i * 4] + translation[1] * view[i * 4 + 1] + translation[2] * view[i * 4 + 2]))
 }
 
+/// The light for each pixel of MGE XE, for the draws of the world of a frame.
+#[derive(Clone, Copy)]
+struct PerPixel {
+    /// The numbers that the light of the sun and the ambient light are multiplied with: the
+    /// settings of MGE XE for the weather.
+    sun: f32,
+    ambient: f32,
+    /// A point light ends at this number times its radius. 0: a light has no end.
+    fade: f32,
+}
+
+/// The light of a pixel, as the shader of MGE XE for its light for each pixel makes it
+/// (`PerPixelPS` of `XE FixedFuncEmu.fx`), and its curve. `shade` packs the lights of the
+/// draw for it: a directional light is the sun; for a point light `ambient.x` is a part that
+/// does not depend on the normal, `attenuation.z` and `attenuation.x` are the two numbers
+/// of the falloff, and `cone.x` is 1 over the distance where the light ends (0: no end).
+/// Bit 2 of `counts.w`: the fog makes the colour darker and adds no fog colour (a draw that
+/// adds to the picture).
+const DRAW_SHADER: &str = "
+fn extension_shade(in: VertexOut) -> vec4f {
+    if draw.flags.x == 0u {
+        return in.vertex_color;
+    }
+    var normal = vec3f(0.0, 0.0, 1.0);
+    if draw.flags.y != 0u {
+        normal = normalize(in.world_normal + vec3f(0.0, 0.0, 1e-20));
+    }
+    var d = vec3f(0.0);
+    var a = draw.scene_ambient.rgb;
+    for (var i = 0u; i < draw.counts.x; i++) {
+        let light = draw.lights[i];
+        if light.position.w == 3.0 {
+            d += light.diffuse.rgb * clamp(dot(normal, -light.direction.xyz), 0.0, 1.0);
+            a += light.ambient.rgb;
+        } else {
+            let to_light = light.position.xyz - in.world_position;
+            let distance2 = dot(to_light, to_light);
+            let distance = sqrt(distance2);
+            let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
+            var strength = 1.0 / max(light.attenuation.z * distance2 + light.attenuation.x, 0.0001);
+            // The light goes to zero over the last quarter of its distance.
+            var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
+            fade = 1.0 - fade * fade;
+            strength *= fade * fade;
+            d += (lambert + light.ambient.x) * strength * light.diffuse.rgb;
+        }
+    }
+    // The three ways of a material with a vertex colour.
+    if draw.more.x == 1u {
+        return vec4f(in.vertex_color.rgb * (d + a) + draw.material_emissive.rgb, in.vertex_color.a);
+    }
+    if draw.more.y == 1u {
+        return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + in.vertex_color.rgb, draw.material_diffuse.a);
+    }
+    return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + draw.material_emissive.rgb, draw.material_diffuse.a);
+}
+
+// The curve of MGE XE for a colour with light for each pixel: 0 stays 0, 1 becomes 0.84,
+// and 2.2 becomes 1.
+fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
+    let c = clamp(color, vec3f(0.0), vec3f(2.2));
+    let lit = (((0.0548303 * c - 0.189786) * c - 0.154732) * c + 1.12969) * c;
+    if (draw.counts.w & 2u) != 0u {
+        return vec4f(lit * clear, alpha);
+    }
+    return vec4f(mix(draw.fog_color.rgb, lit, clear), alpha);
+}
+";
+
 /// The sky of MGE XE: `SkyVS` and `SkyPS` of `XE Mod Sky.fx` for the sky dome, with
 /// `fogColourSky` and `fogColourScatter` of `XE Common.fx`. The values of `draw.extension`:
 /// 0 the far fog colour; 1 the sky colour, and the nice weather number in w; 2 the sky colour
@@ -678,12 +750,86 @@ impl Extension for DistantLand {
         self.interior = scene.interior;
         self.finish_load(scene);
         let land = self.enabled && !scene.interior && self.gpu.is_some();
+        self.shade = self.per_pixel();
         FrameParameters {
             fog_range: land.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
-            per_pixel: self.per_pixel(),
+            shade: self.shade.is_some(),
             sky: self.sky(),
             blend: land,
         }
+    }
+
+    fn draw_shader(&self) -> Option<String> {
+        Some(DRAW_SHADER.to_string())
+    }
+
+    /// Packs the lights of a world draw for the light of a pixel, as `buildPplDrawData` and
+    /// `decodeMorrowindPointLight` of MGE XE do (`ffeshader.cpp`). The game gives a point
+    /// light in one of four forms of its three falloff numbers, and each form has its own
+    /// sum; one constant is for all lights of the draw, from the last light that has one.
+    /// The renderer gives the first 8 lights of the draw; the Direct3D 9 path takes the
+    /// last 8 when there are more.
+    fn shade(&mut self, draw: &mut DrawData, facts: &DrawFacts) {
+        let Some(p) = self.shade else { return };
+        let count = (draw.counts[0] as usize).min(8);
+        let mut shared_constant = 0.33f32;
+        // The z axis of the camera in the space of the lights: MGE XE moves one form of
+        // light 25 units along it.
+        let camera_z = [draw.view[2], draw.view[6], draw.view[10]];
+        // A scene with white ambient light (the sky dome, a menu) has a fixed ambient light
+        // and no sun.
+        let white = draw.scene_ambient == [1.0; 4];
+        for light in &mut draw.lights[..count] {
+            if light.position[3] == 3.0 {
+                let direction = light.direction;
+                let length = (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt().max(1e-12);
+                let (sun, amb) = if white { (0.0, 0.0) } else { (p.sun, p.ambient) };
+                light.diffuse = [light.diffuse[0] * sun, light.diffuse[1] * sun, light.diffuse[2] * sun, 0.0];
+                light.ambient = [light.ambient[0] * amb, light.ambient[1] * amb, light.ambient[2] * amb, 0.0];
+                light.position = [0.0, 0.0, 0.0, 3.0];
+                light.direction = [direction[0] / length, direction[1] / length, direction[2] / length, 0.0];
+            } else {
+                let falloff = light.attenuation;
+                let mut color = [light.diffuse[0], light.diffuse[1], light.diffuse[2]];
+                let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
+                if falloff[0] > 0.0 {
+                    shared_constant = falloff[0];
+                    quadratic = falloff[2];
+                } else if falloff[2] > 0.0 {
+                    color = color.map(|c| c * shared_constant);
+                    wrap = 1.0 + 1e-4 / falloff[2].sqrt();
+                    quadratic = shared_constant * falloff[2];
+                } else if falloff[1] == 0.100_000_01 {
+                    quadratic = 5e-5;
+                } else if falloff[1] > 0.0 {
+                    color = [0.25 + 1e-4 / falloff[1]; 3];
+                    wrap = 1.0;
+                    quadratic = 0.5555 * falloff[1] * falloff[1];
+                    bias = 25.0;
+                }
+                let radius = light.cone[2];
+                let cutoff = if p.fade > 0.0 && radius > 0.0 { (p.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
+                let position = light.position;
+                light.diffuse = [color[0], color[1], color[2], 0.0];
+                light.ambient = [wrap, 0.0, 0.0, 0.0];
+                light.position = [position[0] + bias * camera_z[0], position[1] + bias * camera_z[1], position[2] + bias * camera_z[2], 1.0];
+                light.attenuation = [0.0, 0.0, quadratic, 0.0];
+                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, 0.0, 0.0];
+            }
+        }
+        for light in &mut draw.lights[..count] {
+            light.attenuation[0] = shared_constant;
+        }
+        draw.scene_ambient = if white {
+            [1.25, 1.25, 1.25, 1.0]
+        } else {
+            [draw.scene_ambient[0] * p.ambient, draw.scene_ambient[1] * p.ambient, draw.scene_ambient[2] * p.ambient, draw.scene_ambient[3]]
+        };
+        // A draw that adds to the picture gets darker in the fog and no fog colour.
+        let adds = facts.blend_enable && (facts.source_blend == 2 || facts.destination_blend == 2);
+        draw.counts[3] |= 1 | if adds { 2 } else { 0 };
+        // The fog of this shading is on the distance from the camera.
+        draw.fog[3] = 1.0;
     }
 
     fn sky_shader(&self) -> Option<String> {
