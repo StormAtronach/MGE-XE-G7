@@ -211,6 +211,89 @@ HRESULT _stdcall MGEProxyDevice::GetIndexedSkinningCaps(MgeIndexedSkinningCaps* 
     return S_OK;
 }
 
+// The logic of a frame that is not drawing: third-person camera, crosshair, zoom, mouse
+// sensitivity, screen rotation and shake. The proxy device runs it at each Present. Without
+// a device, the stream of the nirender plugin runs it (Deviceless::present).
+static void updateFrameLogic(MWBridge* mwBridge) {
+    if (Configuration.Force3rdPerson && DistantLand::canRenderDistantLand()) {
+        // Set 3rd person camera
+        D3DXVECTOR3* camera = mwBridge->PCam3Offset();
+        if (camera) {
+            camera->x = Configuration.Offset3rdPerson.x;
+            camera->y = Configuration.Offset3rdPerson.y;
+            camera->z = Configuration.Offset3rdPerson.z;
+        }
+    }
+
+    if ((Configuration.MGEFlags & CROSSHAIR_AUTOHIDE) && !mwBridge->isLoadingBar()) {
+        // Update crosshair visibility
+        float t = mwBridge->simulationTime();
+
+        // Turn on if Morrowind ray cast picks up a target
+        if (mwBridge->getPlayerTarget()) {
+            crosshairTimeout = t + 1.5f;
+        }
+
+        // Turn on short duration if the player requires aim
+        if (mwBridge->isPlayerCasting() || mwBridge->isPlayerAimingWeapon()) {
+            crosshairTimeout = t + 0.5f;
+        }
+
+        // Turn off in menu mode
+        if (mwBridge->IsMenu()) {
+            crosshairTimeout = t;
+        }
+
+        // Allow manual toggle of crosshair to work again from 0.5 seconds after timeout
+        if (t < crosshairTimeout + 0.5) {
+            mwBridge->SetCrosshairEnabled(t < crosshairTimeout);
+        }
+    }
+
+    if (Configuration.CameraEffects.zoomRateTarget != 0 && !mwBridge->IsMenu()) {
+        // Update zoom controller
+        Configuration.CameraEffects.zoomRate += 0.25f * Configuration.CameraEffects.zoomRateTarget * mwBridge->frameTime();
+        if (Configuration.CameraEffects.zoomRate / Configuration.CameraEffects.zoomRateTarget > 1.0) {
+            Configuration.CameraEffects.zoomRate = Configuration.CameraEffects.zoomRateTarget;
+        }
+
+        Configuration.CameraEffects.zoom += Configuration.CameraEffects.zoomRate * mwBridge->frameTime();
+        Configuration.CameraEffects.zoom = std::max(1.0f, Configuration.CameraEffects.zoom);
+        Configuration.CameraEffects.zoom = std::min(Configuration.CameraEffects.zoom, 8.0f);
+    }
+
+    float* mwSens = mwBridge->getMouseSensitivityYX();
+    if ((Configuration.MGEFlags & ZOOM_ASPECT) && !mwBridge->IsMenu()) {
+        // Adjust sensitivity to accommodate zoom level
+        if (!zoomSensSaved) {
+            zoomSensY = mwSens[0];
+            zoomSensX = mwSens[1];
+            zoomSensSaved = true;
+        }
+        mwSens[0] = zoomSensY / Configuration.CameraEffects.zoom;
+        mwSens[1] = zoomSensX / Configuration.CameraEffects.zoom;
+    } else if (zoomSensSaved) {
+        // Restore unzoomed sensitivity
+        mwSens[0] = zoomSensY;
+        mwSens[1] = zoomSensX;
+        zoomSensSaved = false;
+    }
+
+    if (Configuration.CameraEffects.rotateUpdate) {
+        Configuration.CameraEffects.rotation += Configuration.CameraEffects.rotationRate * mwBridge->frameTime();
+        D3DXMatrixRotationZ(&camEffectsMatrix, Configuration.CameraEffects.rotation);
+        if (Configuration.CameraEffects.rotationRate == 0) {
+            Configuration.CameraEffects.rotateUpdate = false;
+        }
+    }
+    if (Configuration.CameraEffects.shake) {
+        // Update screen shake controller
+        Configuration.CameraEffects.shakeMagnitude += Configuration.CameraEffects.shakeAccel * mwBridge->frameTime();
+        Configuration.CameraEffects.shakeMagnitude = std::max(0.0f, std::min(100.0f, Configuration.CameraEffects.shakeMagnitude));
+        camEffectsMatrix._41 = Configuration.CameraEffects.shakeMagnitude * sin(0.001f*GetTickCount());
+    }
+}
+
 HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, const RGNDATA* d) {
     CameraRelative::onPresent();
 
@@ -274,83 +357,7 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
     }
 
     if (mwBridge->IsLoaded()) {
-        if (Configuration.Force3rdPerson && DistantLand::canRenderDistantLand()) {
-            // Set 3rd person camera
-            D3DXVECTOR3* camera = mwBridge->PCam3Offset();
-            if (camera) {
-                camera->x = Configuration.Offset3rdPerson.x;
-                camera->y = Configuration.Offset3rdPerson.y;
-                camera->z = Configuration.Offset3rdPerson.z;
-            }
-        }
-
-        if ((Configuration.MGEFlags & CROSSHAIR_AUTOHIDE) && !mwBridge->isLoadingBar()) {
-            // Update crosshair visibility
-            float t = mwBridge->simulationTime();
-
-            // Turn on if Morrowind ray cast picks up a target
-            if (mwBridge->getPlayerTarget()) {
-                crosshairTimeout = t + 1.5f;
-            }
-
-            // Turn on short duration if the player requires aim
-            if (mwBridge->isPlayerCasting() || mwBridge->isPlayerAimingWeapon()) {
-                crosshairTimeout = t + 0.5f;
-            }
-
-            // Turn off in menu mode
-            if (mwBridge->IsMenu()) {
-                crosshairTimeout = t;
-            }
-
-            // Allow manual toggle of crosshair to work again from 0.5 seconds after timeout
-            if (t < crosshairTimeout + 0.5) {
-                mwBridge->SetCrosshairEnabled(t < crosshairTimeout);
-            }
-        }
-
-        if (Configuration.CameraEffects.zoomRateTarget != 0 && !mwBridge->IsMenu()) {
-            // Update zoom controller
-            Configuration.CameraEffects.zoomRate += 0.25f * Configuration.CameraEffects.zoomRateTarget * mwBridge->frameTime();
-            if (Configuration.CameraEffects.zoomRate / Configuration.CameraEffects.zoomRateTarget > 1.0) {
-                Configuration.CameraEffects.zoomRate = Configuration.CameraEffects.zoomRateTarget;
-            }
-
-            Configuration.CameraEffects.zoom += Configuration.CameraEffects.zoomRate * mwBridge->frameTime();
-            Configuration.CameraEffects.zoom = std::max(1.0f, Configuration.CameraEffects.zoom);
-            Configuration.CameraEffects.zoom = std::min(Configuration.CameraEffects.zoom, 8.0f);
-        }
-
-        float* mwSens = mwBridge->getMouseSensitivityYX();
-        if ((Configuration.MGEFlags & ZOOM_ASPECT) && !mwBridge->IsMenu()) {
-            // Adjust sensitivity to accommodate zoom level
-            if (!zoomSensSaved) {
-                zoomSensY = mwSens[0];
-                zoomSensX = mwSens[1];
-                zoomSensSaved = true;
-            }
-            mwSens[0] = zoomSensY / Configuration.CameraEffects.zoom;
-            mwSens[1] = zoomSensX / Configuration.CameraEffects.zoom;
-        } else if (zoomSensSaved) {
-            // Restore unzoomed sensitivity
-            mwSens[0] = zoomSensY;
-            mwSens[1] = zoomSensX;
-            zoomSensSaved = false;
-        }
-
-        if (Configuration.CameraEffects.rotateUpdate) {
-            Configuration.CameraEffects.rotation += Configuration.CameraEffects.rotationRate * mwBridge->frameTime();
-            D3DXMatrixRotationZ(&camEffectsMatrix, Configuration.CameraEffects.rotation);
-            if (Configuration.CameraEffects.rotationRate == 0) {
-                Configuration.CameraEffects.rotateUpdate = false;
-            }
-        }
-        if (Configuration.CameraEffects.shake) {
-            // Update screen shake controller
-            Configuration.CameraEffects.shakeMagnitude += Configuration.CameraEffects.shakeAccel * mwBridge->frameTime();
-            Configuration.CameraEffects.shakeMagnitude = std::max(0.0f, std::min(100.0f, Configuration.CameraEffects.shakeMagnitude));
-            camEffectsMatrix._41 = Configuration.CameraEffects.shakeMagnitude * sin(0.001f*GetTickCount());
-        }
+        updateFrameLogic(mwBridge);
 
         // Main menu background video
         VideoPatch::monitor(realDevice);
@@ -1144,4 +1151,62 @@ float calcFPS() {
     }
 
     return fps;
+}
+
+//-----------------------------------------------------------------------------
+// Without a device: the wgpu renderer of the helper draws the picture, and the nirender
+// plugin gives the game its Direct3D 8 (runtime.renderer_wgpu). No proxy device exists, so
+// the plugin calls these functions at the same points of a frame.
+
+namespace Deviceless {
+    static bool ready = false;
+    static bool mainView = false;
+
+    static void prepare() {
+        if (!ready) {
+            D3DXMatrixIdentity(&camEffectsMatrix);
+            ready = true;
+        }
+    }
+
+    // The game showed a frame. The size is that of its back buffer.
+    void present(unsigned width, unsigned height) {
+        prepare();
+        MGEhud::setScreenSize(width, height);
+
+        auto mwBridge = MWBridge::get();
+        if (!mwBridge->IsLoaded() && mwBridge->CanLoad()) {
+            // The patches of the first Present of the proxy device prepare its drawing
+            // (distant land, alpha scenes, water mark, light limit). None is for this mode.
+            mwBridge->Load();
+            LOG::logline("-- wgpu renderer: the game is loaded, the frame logic of MGE XE runs from the stream");
+        }
+        if (mwBridge->IsLoaded()) {
+            updateFrameLogic(mwBridge);
+            if (Configuration.ScreenFOV > 0) {
+                mwBridge->SetFOV(Configuration.ScreenFOV);
+            }
+        }
+    }
+
+    // The game sets its view or its projection. The matrix is changed in place, as the
+    // proxy device changes it in SetTransform: the camera effects on the view of the world,
+    // and the zoom on the projection of the world.
+    void transform(unsigned state, D3DMATRIX* matrix, bool targetIsBackBuffer) {
+        prepare();
+        if (!targetIsBackBuffer || !matrix) {
+            return;
+        }
+        if (state == D3DTS_VIEW) {
+            mainView = !detectMenu(matrix);
+            if (mainView) {
+                D3DXMATRIX view = *matrix;
+                view *= camEffectsMatrix;
+                *matrix = view;
+            }
+        } else if (state == D3DTS_PROJECTION && mainView && (Configuration.MGEFlags & ZOOM_ASPECT)) {
+            matrix->_11 *= Configuration.CameraEffects.zoom;
+            matrix->_22 *= Configuration.CameraEffects.zoom;
+        }
+    }
 }

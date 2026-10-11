@@ -33,6 +33,7 @@ public:
     static void draw();
     static int getScreenWidth();
     static int getScreenHeight();
+    static void setScreenSize(unsigned width, unsigned height);
 
     static void reset();
     static void reload();

@@ -160,6 +160,26 @@ void PostShaders::waitForShaderLoading() {
 
 
 bool PostShaders::loadNewShader(const char* name) {
+    if (!device) {
+        // No device: the wgpu renderer mode, which has no post-processing yet. A mod that
+        // loads a shader gets a placeholder with the name of the file. The calls of the mod
+        // on it do nothing, and the mod runs as it does with the shader.
+        char placeholderPath[MAX_PATH];
+        std::snprintf(placeholderPath, sizeof(placeholderPath), "Data Files\\shaders\\XEshaders\\%s.fx", name);
+        if (GetFileAttributesA(placeholderPath) == INVALID_FILE_ATTRIBUTES) {
+            return false;
+        }
+        auto placeholder = std::make_unique<MGEShader>();
+        placeholder->effect = nullptr;
+        placeholder->enabled = false;
+        placeholder->disableFlags = 0;
+        placeholder->priority = 0;
+        placeholder->timestamp = 0;
+        placeholder->name = name;
+        std::memset(placeholder->ehVars, 0, sizeof(placeholder->ehVars));
+        shaders.push_back(std::move(placeholder));
+        return true;
+    }
     char path[MAX_PATH];
     WIN32_FILE_ATTRIBUTE_DATA fileAttrs;
     ID3DXEffect* newEffect;
@@ -213,6 +233,9 @@ bool PostShaders::loadNewShader(const char* name) {
 }
 
 bool PostShaders::updateShaderChain() {
+    if (!device) {
+        return false;
+    }
     char path[MAX_PATH];
     bool updated = false;
 
@@ -739,7 +762,7 @@ const std::vector<std::unique_ptr<MGEShader>>& PostShaders::listShaders() {
 
 bool PostShaders::setShaderVar(const char* shaderName, const char* varName, bool b) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader) {
+    if (!shader || !shader->effect) {
         return false;
     }
 
@@ -754,7 +777,7 @@ bool PostShaders::setShaderVar(const char* shaderName, const char* varName, bool
 
 bool PostShaders::setShaderVar(const char* shaderName, const char* varName, int x) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader) {
+    if (!shader || !shader->effect) {
         return false;
     }
 
@@ -769,7 +792,7 @@ bool PostShaders::setShaderVar(const char* shaderName, const char* varName, int 
 
 bool PostShaders::setShaderVar(const char* shaderName, const char* varName, float x) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader) {
+    if (!shader || !shader->effect) {
         return false;
     }
 
@@ -784,7 +807,7 @@ bool PostShaders::setShaderVar(const char* shaderName, const char* varName, floa
 
 bool PostShaders::setShaderVar(const char* shaderName, const char* varName, float* v) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader) {
+    if (!shader || !shader->effect) {
         return false;
     }
 
@@ -799,7 +822,7 @@ bool PostShaders::setShaderVar(const char* shaderName, const char* varName, floa
 
 bool PostShaders::setShaderEnable(const char* shaderName, bool enable) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader) {
+    if (!shader || !shader->effect) {
         return false;
     }
 

@@ -589,6 +589,10 @@ bool DistantLand::finishLandscapeUpload() {
 }
 
 bool DistantLand::reloadShaders() {
+    if (!device) {
+        // No device, no distant land shaders: the wgpu renderer mode.
+        return false;
+    }
     LOG::logline(">> Distant Land reloading");
     indexedSkinningShaderCheckComplete = false;
     indexedSkinningShadersCompatible = false;

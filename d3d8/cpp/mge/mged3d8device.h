@@ -45,3 +45,9 @@ private:
     // that uploadLight writes into D3DLIGHT8::Range.
     bool softLightRangeSupported;
 };
+
+// The points of a frame for the mode without a device (runtime.renderer_wgpu).
+namespace Deviceless {
+    void present(unsigned width, unsigned height);
+    void transform(unsigned state, D3DMATRIX* matrix, bool targetIsBackBuffer);
+}

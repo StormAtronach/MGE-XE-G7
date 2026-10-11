@@ -440,6 +440,10 @@ namespace api {
 
     bool MGEAPIv1::shaderGetVariableInfo(ShaderHandle handle, size_t index, ShaderVariableInfo* out_info) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameter(0, index);
 
         if (param_handle) {
@@ -513,6 +517,10 @@ namespace api {
 
     bool MGEAPIv1::shaderGetBool(ShaderHandle handle, const char* variableName, bool* out_value) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -528,6 +536,10 @@ namespace api {
 
     bool MGEAPIv1::shaderGetFloat(ShaderHandle handle, const char* variableName, float* out_value) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -538,6 +550,10 @@ namespace api {
 
     bool MGEAPIv1::shaderGetInt(ShaderHandle handle, const char* variableName, int* out_value) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -548,6 +564,10 @@ namespace api {
 
     bool MGEAPIv1::shaderGetString(ShaderHandle handle, const char* variableName, const char** out_value) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -558,6 +578,10 @@ namespace api {
 
     bool MGEAPIv1::shaderGetFloatArray(ShaderHandle handle, const char* variableName, float* out_values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -575,6 +599,10 @@ namespace api {
 
     bool MGEAPIv1::shaderGetVector(ShaderHandle handle, const char* variableName, float* out_values, size_t count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -585,6 +613,10 @@ namespace api {
 
     bool MGEAPIv1::shaderGetMatrix(ShaderHandle handle, const char* variableName, float* out_values) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -595,6 +627,10 @@ namespace api {
 
     bool MGEAPIv3::shaderGetBoolArray(ShaderHandle handle, const char* variableName, int* out_values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -612,6 +648,10 @@ namespace api {
 
     bool MGEAPIv3::shaderGetIntArray(ShaderHandle handle, const char* variableName, int* out_values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -629,6 +669,10 @@ namespace api {
 
     bool MGEAPIv3::shaderGetVectorArray(ShaderHandle handle, const char* variableName, float* out_values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -646,6 +690,10 @@ namespace api {
 
     bool MGEAPIv1::shaderSetBool(ShaderHandle handle, const char* variableName, bool value) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -656,6 +704,10 @@ namespace api {
 
     bool MGEAPIv1::shaderSetFloat(ShaderHandle handle, const char* variableName, float value) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -666,6 +718,10 @@ namespace api {
 
     bool MGEAPIv1::shaderSetInt(ShaderHandle handle, const char* variableName, int value) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -676,6 +732,10 @@ namespace api {
 
     bool MGEAPIv1::shaderSetString(ShaderHandle handle, const char* variableName, const char* value) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -686,6 +746,10 @@ namespace api {
 
     bool MGEAPIv1::shaderSetFloatArray(ShaderHandle handle, const char* variableName, const float* values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -696,6 +760,10 @@ namespace api {
 
     bool MGEAPIv1::shaderSetVector(ShaderHandle handle, const char* variableName, const float* values, size_t count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -706,6 +774,10 @@ namespace api {
 
     bool MGEAPIv1::shaderSetMatrix(ShaderHandle handle, const char* variableName, const float* values) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -716,6 +788,10 @@ namespace api {
 
     bool MGEAPIv3::shaderSetBoolArray(ShaderHandle handle, const char* variableName, const int* values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -726,6 +802,10 @@ namespace api {
 
     bool MGEAPIv3::shaderSetIntArray(ShaderHandle handle, const char* variableName, const int* values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {
@@ -736,6 +816,10 @@ namespace api {
 
     bool MGEAPIv3::shaderSetVectorArray(ShaderHandle handle, const char* variableName, const float* values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect) {
+            // A placeholder: the wgpu renderer mode has no post-processing yet.
+            return {};
+        }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
         if (param_handle) {

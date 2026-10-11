@@ -148,6 +148,14 @@ void MGEhud::release() {
     vbHUD->Release();
 }
 
+// Without a device the size comes from the stream of the nirender plugin.
+void MGEhud::setScreenSize(unsigned width, unsigned height) {
+    if (!device) {
+        vp.Width = width;
+        vp.Height = height;
+    }
+}
+
 int MGEhud::getScreenWidth() {
     return vp.Width;
 }
@@ -186,6 +194,10 @@ void MGEhud::reload() {
 }
 
 MGEhud::hud_id MGEhud::load(const char* name, const char* texture) {
+    if (!device) {
+        // No device, no HUD: the wgpu renderer mode.
+        return MGEhud::invalid_hud_id;
+    }
     hud_id hud = resolveName(name);
 
     if (hud == MGEhud::invalid_hud_id) {
@@ -264,6 +276,9 @@ void MGEhud::setFullscreen(hud_id hud) {
 }
 
 void MGEhud::setTexture(hud_id hud, const char* texturePath) {
+    if (!device || hud == MGEhud::invalid_hud_id) {
+        return;
+    }
     Element* e = &elements[hud];
 
     if (e->texture) {
@@ -292,6 +307,9 @@ void MGEhud::setTexture(hud_id hud, const char* texturePath) {
 }
 
 void MGEhud::setEffect(hud_id hud, const char* effectPath) {
+    if (!device || hud == MGEhud::invalid_hud_id) {
+        return;
+    }
     Element* e = &elements[hud];
     char path[MAX_PATH];
     ID3DXBuffer* errors;

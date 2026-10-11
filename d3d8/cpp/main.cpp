@@ -2,6 +2,7 @@
 #include "mge/configuration.h"
 #include "mge/mgeversion.h"
 #include "mge/mwinitpatch.h"
+#include "mge/mged3d8device.h"
 #include "mge/startupgen.h"
 #include "mwse/mgebridge.h"
 #include "support/winheader.h"
@@ -74,7 +75,7 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             HMODULE dll = LoadLibraryA("MWSE.dll");
 
             if (dll) {
-                if ((~Configuration.MGEFlags & MGE_DISABLED) && !Configuration.OnlyProxyD3D8To9) {
+                if ((~Configuration.MGEFlags & MGE_DISABLED) && (!Configuration.OnlyProxyD3D8To9 || Configuration.RendererWgpu)) {
                     // MWSE-MGE integration
                     MWSE_MGEPlugin::init(dll);
                 }
@@ -134,6 +135,20 @@ static void* createStreamedD3D(UINT version) {
 // from the plugin. The plugin then puts its renderer code on before the game makes its renderer.
 extern "C" UINT _stdcall MgeRendererWgpuActive() {
     return (isMW && Configuration.RendererWgpu) ? 1 : 0;
+}
+
+// The nirender plugin calls these two at the points of a frame where the proxy device ran
+// the logic of MGE XE that is not drawing. See Deviceless in mge/mged3d8device.cpp.
+extern "C" void __cdecl MGE_StreamPresent(UINT width, UINT height) {
+    if (isMW && Configuration.RendererWgpu) {
+        Deviceless::present(width, height);
+    }
+}
+
+extern "C" void __cdecl MGE_StreamTransform(UINT state, float* matrix, UINT targetIsBackBuffer) {
+    if (isMW && Configuration.RendererWgpu) {
+        Deviceless::transform(state, reinterpret_cast<D3DMATRIX*>(matrix), targetIsBackBuffer != 0);
+    }
 }
 
 extern "C" void* _stdcall FakeDirect3DCreate(UINT version) {
