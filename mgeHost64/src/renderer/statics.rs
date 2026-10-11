@@ -24,8 +24,8 @@
 //! camera where the game draws the real one.
 //!
 //! Not here yet: interior cells, statics with a water flag, the groups of statics that the
-//! game shows or hides (all of them are shown), textures from a BSA archive, the quadtree and
-//! the horizon culling of the IPC host mode, and a limit of the memory on the GPU.
+//! game shows or hides (all of them are shown), the quadtree and the horizon culling of the
+//! IPC host mode, and a limit of the memory on the GPU.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -558,7 +558,8 @@ impl Statics {
         let (sender, receiver) = channel();
         thread::spawn(move || {
             let result = read_catalog(&folder, &settings).map(|catalog| {
-                let textures = catalog.textures.iter().map(|name| read_texture(&folder, name)).collect();
+                let mut textures: Vec<Option<Vec<u8>>> = catalog.textures.iter().map(|name| read_texture(&folder, name)).collect();
+                archive_textures(&folder, &catalog.textures, &mut textures);
                 Loaded { catalog: Arc::new(catalog), textures }
             });
             let _ = sender.send(result);
@@ -817,6 +818,29 @@ fn read_texture(folder: &Path, name: &str) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Reads the textures that are not loose files from the archives of the game, with the file
+/// system layer of the generator: it knows the archives of `Morrowind.ini` and the rule for
+/// a texture name with another extension.
+fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<u8>>]) {
+    if textures.iter().all(Option::is_some) {
+        return;
+    }
+    let Some(game) = folder.parent().and_then(Path::parent) else { return };
+    let options = distantland::vfs::VfsLoadOptions { morrowind_ini: Some(game.join("Morrowind.ini")), ..Default::default() };
+    let files = match distantland::vfs::Vfs::load(&options) {
+        Ok(files) => files,
+        Err(problem) => {
+            println!("distant statics: the archives of the game are not read: {problem}");
+            return;
+        }
+    };
+    for (name, texture) in names.iter().zip(textures.iter_mut()).filter(|(_, texture)| texture.is_none()) {
+        if let Some(asset) = files.resolve_texture(name) {
+            *texture = files.read_asset_bytes(&asset).ok().map(|bytes| bytes.into_owned());
+        }
+    }
 }
 
 fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
