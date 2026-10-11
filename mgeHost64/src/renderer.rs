@@ -756,6 +756,7 @@ impl Extension for DistantLand {
             shade: self.shade.is_some(),
             sky: self.sky(),
             blend: land,
+            watched: 0,
         }
     }
 
