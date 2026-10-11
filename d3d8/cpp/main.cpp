@@ -105,6 +105,16 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
 // The Direct3D 8 of the nirender plugin: an object that makes no Direct3D device. The plugin
 // sends the draws of the game as a stream, and mgeHost64.exe draws the stream with wgpu.
 // Returns null when the plugin is not there.
+// The function of the nirender plugin that puts data of MGE XE into its stream, or null.
+static void (__cdecl * streamExtension)(UINT id, const void* data, UINT length) = nullptr;
+
+// Sends data to the wgpu renderer in the helper. It arrives with the frame in progress.
+void sendToRenderer(UINT id, const void* data, UINT length) {
+    if (streamExtension) {
+        streamExtension(id, data, length);
+    }
+}
+
 static void* createStreamedD3D(UINT version) {
     char path[MAX_PATH];
     DWORD length = GetModuleFileNameA(NULL, path, MAX_PATH);
@@ -127,6 +137,7 @@ static void* createStreamedD3D(UINT version) {
         LOG::logline("!! wgpu renderer: the nirender plugin has no nirender_direct3d_create8");
         return nullptr;
     }
+    streamExtension = (void (__cdecl *)(UINT, const void*, UINT))GetProcAddress(plugin, "nirender_stream_extension");
     LOG::logline("-- wgpu renderer: the nirender plugin gives the game its Direct3D 8");
     return create(version);
 }

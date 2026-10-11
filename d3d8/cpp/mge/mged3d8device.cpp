@@ -1158,9 +1158,114 @@ float calcFPS() {
 // plugin gives the game its Direct3D 8 (runtime.renderer_wgpu). No proxy device exists, so
 // the plugin calls these functions at the same points of a frame.
 
+// In main.cpp: sends data to the wgpu renderer in the helper.
+void sendToRenderer(UINT id, const void* data, UINT length);
+
 namespace Deviceless {
     static bool ready = false;
     static bool mainView = false;
+    // The position of the camera of the world, from its last view matrix.
+    static float eye[3] = { 0, 0, 0 };
+
+    // The state of the game that the features of MGE XE in the helper need for a frame.
+    // mgeHost64/src/renderer.rs has the same layout: 4 bytes for each member.
+    struct Environment {
+        UINT version;
+        // 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior
+        // that is like one.
+        UINT flags;
+        float nearViewRange;
+        float fogStart, fogEnd;
+        float fogExpStart, fogExpDivisor;
+        float fogNearStart, fogNearEnd;
+        float niceWeather;
+        float lightSunMult, lightAmbMult;
+        float windScaling;
+        float eye[3];
+    };
+    static const UINT EnvironmentId = 1;
+
+    static float mix(float a, float b, float t) {
+        return a + (b - a) * t;
+    }
+
+    // The fog distances and the weather values of a frame, as DistantLand::adjustFog makes
+    // them for the Direct3D 9 path, without its device calls.
+    static void sendEnvironment(MWBridge* mwBridge) {
+        Environment e = {};
+        e.version = 1;
+        e.nearViewRange = mwBridge->GetViewDistance();
+        e.lightSunMult = 1.0f;
+        e.lightAmbMult = 1.0f;
+        std::memcpy(e.eye, eye, sizeof(eye));
+
+        const bool underwater = mwBridge->IsUnderwater(eye[2]);
+        const bool exterior = mwBridge->IntLikeExterior(true);
+        const bool expFog = (Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & EXP_FOG);
+        float fogStart, fogEnd;
+
+        if (underwater) {
+            fogStart = Configuration.DL.BelowWaterFogStart;
+            fogEnd = Configuration.DL.BelowWaterFogEnd;
+        } else if (exterior) {
+            int wthr1 = mwBridge->GetCurrentWeather(), wthr2 = mwBridge->GetNextWeather();
+            float ratio = mwBridge->GetWeatherRatio(), ff = 1.0f, fo = 0.0f, ws = 0.0f;
+
+            if (ratio != 0 && wthr1 >= 0 && wthr1 <= 9 && wthr2 >= 0 && wthr2 <= 9) {
+                ff = mix(Configuration.DL.FogD[wthr1], Configuration.DL.FogD[wthr2], ratio);
+                fo = 0.01f * mix(Configuration.DL.FgOD[wthr1], Configuration.DL.FgOD[wthr2], ratio);
+                ws = mix(Configuration.DL.Wind[wthr1], Configuration.DL.Wind[wthr2], ratio);
+                e.niceWeather = mix((wthr1 <= 1) ? 1.0f : 0.0f, (wthr2 <= 1) ? 1.0f : 0.0f, ratio);
+                e.niceWeather *= e.niceWeather;
+                e.lightSunMult = mix(Configuration.Lighting.SunMult[wthr1], Configuration.Lighting.SunMult[wthr2], ratio);
+                e.lightAmbMult = mix(Configuration.Lighting.AmbMult[wthr1], Configuration.Lighting.AmbMult[wthr2], ratio);
+            } else if (wthr1 >= 0 && wthr1 <= 9) {
+                ff = Configuration.DL.FogD[wthr1];
+                fo = Configuration.DL.FgOD[wthr1] / 100.0f;
+                ws = Configuration.DL.Wind[wthr1];
+                e.niceWeather = (wthr1 <= 1) ? 1.0f : 0.0f;
+                e.lightSunMult = Configuration.Lighting.SunMult[wthr1];
+                e.lightAmbMult = Configuration.Lighting.AmbMult[wthr1];
+            }
+
+            fogEnd = std::max(0.875f, ff * Configuration.DL.AboveWaterFogEnd);
+            fogStart = ff * Configuration.DL.AboveWaterFogStart - fo * fogEnd;
+            e.windScaling = ws;
+            if (expFog) {
+                float lg = log(1.0f - 0.25f * fo);
+                float expCorrection = lg / (1 + lg);
+                fogStart = ff * Configuration.DL.AboveWaterFogStart + expCorrection * fogEnd;
+            }
+        } else {
+            float density = std::max(0.01f, mwBridge->getInteriorFogDens());
+            fogStart = mix(Configuration.DL.InteriorFogEnd, Configuration.DL.InteriorFogStart, density);
+            fogEnd = Configuration.DL.InteriorFogEnd;
+        }
+
+        const float cellSize = 8192.0f;
+        fogStart *= cellSize;
+        fogEnd *= cellSize;
+        e.fogStart = fogStart;
+        e.fogEnd = fogEnd;
+        e.fogNearStart = fogStart;
+        e.fogNearEnd = fogEnd;
+
+        const float expFogDistScale = 4.4f;
+        e.fogExpStart = fogStart / expFogDistScale;
+        e.fogExpDivisor = (fogEnd - e.fogExpStart) / expFogDistScale;
+        if (expFog && !underwater && exterior) {
+            // The linear fog of the near cells, as near to the exponential curve as it can be.
+            float farIntercept = std::min(fogEnd, e.nearViewRange);
+            float expFogNear = exp(-(1280.0f - e.fogExpStart) / e.fogExpDivisor);
+            float expFogFar = exp(-(farIntercept - e.fogExpStart) / e.fogExpDivisor);
+            if (expFogFar != expFogNear) {
+                e.fogNearStart = 1280.0f + (farIntercept - 1280.0f) * (1.0f - expFogNear) / (expFogFar - expFogNear);
+                e.fogNearEnd = 1280.0f + (farIntercept - 1280.0f) * -expFogNear / (expFogFar - expFogNear);
+            }
+        }
+        e.flags = (expFog ? 1u : 0u) | (underwater ? 2u : 0u) | (exterior ? 4u : 0u);
+        sendToRenderer(EnvironmentId, &e, sizeof(e));
+    }
 
     static void prepare() {
         if (!ready) {
@@ -1186,6 +1291,7 @@ namespace Deviceless {
             if (Configuration.ScreenFOV > 0) {
                 mwBridge->SetFOV(Configuration.ScreenFOV);
             }
+            sendEnvironment(mwBridge);
         }
     }
 
@@ -1200,6 +1306,11 @@ namespace Deviceless {
         if (state == D3DTS_VIEW) {
             mainView = !detectMenu(matrix);
             if (mainView) {
+                // The camera is at -translation * transposed rotation of its view matrix.
+                const D3DMATRIX& m = *matrix;
+                eye[0] = -(m._41 * m._11 + m._42 * m._12 + m._43 * m._13);
+                eye[1] = -(m._41 * m._21 + m._42 * m._22 + m._43 * m._23);
+                eye[2] = -(m._41 * m._31 + m._42 * m._32 + m._43 * m._33);
                 D3DXMATRIX view = *matrix;
                 view *= camEffectsMatrix;
                 *matrix = view;
