@@ -156,8 +156,10 @@ pub struct DistantLand {
     synchronous: bool,
     blend: Option<blend::Blend>,
     statics: Option<statics::Statics>,
-    /// The shadow map, when the settings have shadows; `None` before the first frame.
+    /// The shadow map, when the settings have shadows; `None` before the first frame. True
+    /// when the map is made in this frame.
     shadow: Option<Shadow>,
+    shadow_in_frame: bool,
     shadows_enabled: bool,
     shadow_resolution: u32,
     /// The water, when its wave texture was found; `None` before the first frame.
@@ -416,6 +418,7 @@ impl DistantLand {
             blend: None,
             statics: None,
             shadow: None,
+            shadow_in_frame: false,
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
             water: None,
@@ -797,7 +800,57 @@ struct PerPixel {
 /// Bit 2 of `counts.w`: the fog makes the colour darker and adds no fog colour (a draw that
 /// adds to the picture).
 const DRAW_SHADER: &str = "
+// The shadow of the draw at the pixel: `RenderShadowsPS` of `XE Mod Shadow.fx`. From
+// `extension_shade` for `extension_finish`.
+var<private> shadow_v: f32;
+
+// shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
+// the pixel; a positive number when the map has nothing nearer to the sun.
+fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
+    let rcp = frame.values[8].w;
+    let margin = vec3f(1.0 - 8.0 * rcp, 1.0 - 8.0 * rcp, 1.0);
+    if all(abs(s0) < margin) {
+        let uv = vec2f(0.5 + 0.5 * s0.x, 0.5 - 0.5 * s0.y);
+        return textureSample(extension_texture, extension_sampler, vec2f(uv.x * 0.5, uv.y)).r / frame.values[8].z - s0.z;
+    }
+    if all(abs(s1) < margin) {
+        let uv = vec2f(0.5 + 0.5 * s1.x, 0.5 - 0.5 * s1.y);
+        return textureSample(extension_texture, extension_sampler, vec2f(0.5 + uv.x * 0.5, uv.y)).r / frame.values[8].z - s1.z;
+    }
+    return 1e-6;
+}
+
 fn extension_shade(in: VertexOut) -> vec4f {
+    shadow_v = 0.0;
+    if (draw.counts.w & 32u) != 0u {
+        // The light that the sun gives the pixel, as shadowSunEstimate: the sun of the draw
+        // is in draw.extension[5] (its direction) and [7].x (its colour and visibility).
+        var normal = vec3f(0.0, 0.0, 1.0);
+        if draw.flags.y != 0u {
+            normal = normalize(in.world_normal + vec3f(0.0, 0.0, 1e-20));
+        }
+        let x = clamp(dot(normal, -draw.extension[5].xyz), 0.0, 1.0) * draw.extension[7].x;
+        var light = x / (frame.values[9].w + x);
+        // The shadow in the space of the two layers: from the view space of the draw.
+        let view_position = draw.view * vec4f(in.world_position, 1.0);
+        let to0 = mat4x4f(frame.values[0], frame.values[1], frame.values[2], frame.values[3]);
+        let to1 = mat4x4f(frame.values[4], frame.values[5], frame.values[6], frame.values[7]);
+        var s0 = to0 * view_position;
+        var s1 = to1 * view_position;
+        s0 = vec4f(s0.xy, s0.z / s0.w, s0.w);
+        s1 = vec4f(s1.xy, s1.z / s1.w, s1.w);
+        let dz = shadow_delta(s0.xyz, s1.xyz);
+        if dz < 0.0 {
+            // shadowESM, and the fade at the edge of the outer layer.
+            var v = (1.0 - clamp(exp(frame.values[8].x * dz + frame.values[8].y), 0.0, 1.0)) * light;
+            let fade = clamp(25.0 * (1.0 - abs(s1.xy)), vec2f(0.0), vec2f(1.0));
+            shadow_v = v * fade.x * fade.y;
+        }
+    }
+    if (draw.counts.w & 16u) == 0u {
+        // No light for each pixel: the colour of the vertex stage.
+        return in.color;
+    }
     if draw.flags.x == 0u {
         return in.vertex_color;
     }
@@ -836,14 +889,32 @@ fn extension_shade(in: VertexOut) -> vec4f {
 }
 
 // The curve of MGE XE for a colour with light for each pixel: 0 stays 0, 1 becomes 0.84,
-// and 2.2 becomes 1.
+// and 2.2 becomes 1. Then the shadow, as the overlay of the Direct3D 9 path: the colour
+// times 1 - v * shadecolor, with the light in the fog and the alpha of a draw that blends.
 fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
-    let c = clamp(color, vec3f(0.0), vec3f(2.2));
-    let lit = (((0.0548303 * c - 0.189786) * c - 0.154732) * c + 1.12969) * c;
-    if (draw.counts.w & 2u) != 0u {
-        return vec4f(lit * clear, alpha);
+    var out: vec4f;
+    if (draw.counts.w & 16u) != 0u {
+        let c = clamp(color, vec3f(0.0), vec3f(2.2));
+        let lit = (((0.0548303 * c - 0.189786) * c - 0.154732) * c + 1.12969) * c;
+        if (draw.counts.w & 2u) != 0u {
+            out = vec4f(lit * clear, alpha);
+        } else {
+            out = vec4f(mix(draw.fog_color.rgb, lit, clear), alpha);
+        }
+    } else {
+        out = vec4f(mix(draw.fog_color.rgb, color, clear), alpha);
     }
-    return vec4f(mix(draw.fog_color.rgb, lit, clear), alpha);
+    if (draw.counts.w & 32u) != 0u && shadow_v > 0.0 {
+        let fogatt = clear * clear;
+        var v = shadow_v * select(clamp(4.0 * fogatt, 0.0, 1.0), fogatt, frame.values[10].y > 0.5);
+        if (draw.counts.w & 64u) != 0u {
+            v *= alpha;
+        }
+        if v >= 2.0 / 255.0 {
+            out = vec4f(out.rgb * (1.0 - v * frame.values[9].xyz), out.a);
+        }
+    }
+    return out;
 }
 ";
 
@@ -909,6 +980,7 @@ impl Extension for DistantLand {
         // The shadow map: its matrices from the camera and the sun of this frame.
         let mut values = [[0.0f32; 4]; 32];
         let mut texture = None;
+        self.shadow_in_frame = false;
         if land && self.shadows_enabled {
             if self.shadow.is_none() {
                 self.shadow = Some(Shadow::new(scene, self.shadow_resolution));
@@ -924,14 +996,15 @@ impl Extension for DistantLand {
                 }
                 let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.unwrap_or(sun_pos.map(|v| -v)) };
                 shadow.set_frame(eye, eye_vec, light_vec);
-                values = shadow.frame_values(e.sun_vis);
+                values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > -1.0);
                 texture = Some(shadow.atlas_view.clone());
+                self.shadow_in_frame = true;
             }
         }
         self.shade = self.per_pixel();
         FrameParameters {
             fog_range: land.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
-            shade: self.shade.is_some(),
+            shade: self.shade.is_some() || self.shadow_in_frame,
             sky: self.sky(),
             blend: land,
             // The water plane of the game is class 10.
@@ -952,7 +1025,32 @@ impl Extension for DistantLand {
     /// All lights of the draw: the game gives at most 8 for each node, or 32 with the patch
     /// of `expanded_light_limit`.
     fn shade(&mut self, draw: &mut DrawData, lights: &mut [LightData], facts: &DrawFacts) {
-        let Some(p) = self.shade else { return };
+        let shadows = self.shadow.is_some() && self.shadow_in_frame;
+        if self.shade.is_none() && !shadows {
+            return;
+        }
+        // The sun of the draw, for the shadow: its direction and the light it gives, as
+        // shadowSunEstimate takes it (with the multiplier of the per-pixel light).
+        if shadows && facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) {
+            if let Some(sun) = lights.iter().find(|light| light.position[3] == 3.0) {
+                let d = sun.direction;
+                let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
+                let mult = self.shade.map_or(1.0, |p| p.sun);
+                let luminance = (sun.diffuse[0] * 0.36 + sun.diffuse[1] * 0.53 + sun.diffuse[2] * 0.11) * mult;
+                let sun_vis = self.environment.map_or(0.0, |e| e.sun_vis);
+                draw.extension[5] = [d[0] / length, d[1] / length, d[2] / length, 0.0];
+                draw.extension[7] = [luminance * (0.25 + 0.75 * sun_vis), 0.0, 0.0, 0.0];
+                draw.counts[3] |= 1 | 32;
+                if facts.blend_enable {
+                    draw.counts[3] |= 64;
+                }
+            }
+        }
+        let Some(p) = self.shade else {
+            draw.counts[3] |= 1;
+            return;
+        };
+        draw.counts[3] |= 16 | 128;
         let mut shared_constant = 0.33f32;
         // The z axis of the camera in the space of the lights: MGE XE moves one form of
         // light 25 units along it.
@@ -1129,7 +1227,7 @@ impl Extension for DistantLand {
 
         // The shadow map: the land and the statics from the sun, in passes of their own
         // that go to the GPU before the frame.
-        if let Some(shadow) = self.shadow.as_mut() {
+        if let Some(shadow) = self.shadow.as_mut().filter(|_| self.shadow_in_frame) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shadow map") });
             let mut pass = shadow.begin(&mut encoder);
             for layer in 0..2 {
@@ -1289,6 +1387,10 @@ impl Extension for DistantLand {
         let frame = self.water_frame(scene);
         if let (Some(water), Some(frame)) = (self.water.as_mut(), frame.as_ref()) {
             water.draw(scene, pass, frame);
+        }
+        // The debug view of the shadow map again: the water is drawn over that corner.
+        if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
+            shadow.draw_debug(pass);
         }
     }
 

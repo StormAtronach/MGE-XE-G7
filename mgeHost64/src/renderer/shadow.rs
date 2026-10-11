@@ -113,6 +113,51 @@ fn look_at_rh(eye: [f32; 3], at: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     [x[0], y[0], z[0], 0.0, x[1], y[1], z[1], 0.0, x[2], y[2], z[2], 0.0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1.0]
 }
 
+/// The inverse of a matrix with the layout of Direct3D (the identity when there is none).
+pub fn inverse(m: &[f32; 16]) -> [f32; 16] {
+    let a = |r: usize, c: usize| m[r * 4 + c] as f64;
+    let s0 = a(0, 0) * a(1, 1) - a(1, 0) * a(0, 1);
+    let s1 = a(0, 0) * a(1, 2) - a(1, 0) * a(0, 2);
+    let s2 = a(0, 0) * a(1, 3) - a(1, 0) * a(0, 3);
+    let s3 = a(0, 1) * a(1, 2) - a(1, 1) * a(0, 2);
+    let s4 = a(0, 1) * a(1, 3) - a(1, 1) * a(0, 3);
+    let s5 = a(0, 2) * a(1, 3) - a(1, 2) * a(0, 3);
+    let c5 = a(2, 2) * a(3, 3) - a(3, 2) * a(2, 3);
+    let c4 = a(2, 1) * a(3, 3) - a(3, 1) * a(2, 3);
+    let c3 = a(2, 1) * a(3, 2) - a(3, 1) * a(2, 2);
+    let c2 = a(2, 0) * a(3, 3) - a(3, 0) * a(2, 3);
+    let c1 = a(2, 0) * a(3, 2) - a(3, 0) * a(2, 2);
+    let c0 = a(2, 0) * a(3, 1) - a(3, 0) * a(2, 1);
+    let det = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
+    if det.abs() < 1e-30 {
+        let mut identity = [0.0; 16];
+        for i in 0..4 {
+            identity[i * 5] = 1.0;
+        }
+        return identity;
+    }
+    let d = 1.0 / det;
+    let out = [
+        (a(1, 1) * c5 - a(1, 2) * c4 + a(1, 3) * c3) * d,
+        (-a(0, 1) * c5 + a(0, 2) * c4 - a(0, 3) * c3) * d,
+        (a(3, 1) * s5 - a(3, 2) * s4 + a(3, 3) * s3) * d,
+        (-a(2, 1) * s5 + a(2, 2) * s4 - a(2, 3) * s3) * d,
+        (-a(1, 0) * c5 + a(1, 2) * c2 - a(1, 3) * c1) * d,
+        (a(0, 0) * c5 - a(0, 2) * c2 + a(0, 3) * c1) * d,
+        (-a(3, 0) * s5 + a(3, 2) * s2 - a(3, 3) * s1) * d,
+        (a(2, 0) * s5 - a(2, 2) * s2 + a(2, 3) * s1) * d,
+        (a(1, 0) * c4 - a(1, 1) * c2 + a(1, 3) * c0) * d,
+        (-a(0, 0) * c4 + a(0, 1) * c2 - a(0, 3) * c0) * d,
+        (a(3, 0) * s4 - a(3, 1) * s2 + a(3, 3) * s0) * d,
+        (-a(2, 0) * s4 + a(2, 1) * s2 - a(2, 3) * s0) * d,
+        (-a(1, 0) * c3 + a(1, 1) * c1 - a(1, 2) * c0) * d,
+        (a(0, 0) * c3 - a(0, 1) * c1 + a(0, 2) * c0) * d,
+        (-a(3, 0) * s3 + a(3, 1) * s1 - a(3, 2) * s0) * d,
+        (a(2, 0) * s3 - a(2, 1) * s1 + a(2, 2) * s0) * d,
+    ];
+    out.map(|v| v as f32)
+}
+
 /// `D3DXMatrixOrthoRH`.
 fn ortho_rh(width: f32, height: f32, near: f32, far: f32) -> [f32; 16] {
     let mut m = [0.0f32; 16];
@@ -326,17 +371,21 @@ impl Shadow {
     }
 
     /// The values of the frame for the shader functions of the draws of the game: the two
-    /// matrices (8 vectors), then the constants.
-    pub fn frame_values(&self, sun_vis: f32) -> [[f32; 4]; 32] {
+    /// matrices from the view space of the game to the layers (8 vectors, the rows of
+    /// Direct3D), then the constants, the visibility of the sun, and 1 when the camera is
+    /// above the sea.
+    pub fn frame_values(&self, sun_vis: f32, view: &[f32; 16], above_sea: bool) -> [[f32; 4]; 32] {
         let mut values = [[0.0f32; 4]; 32];
+        let from_view = inverse(view);
         for layer in 0..2 {
+            let to_shadow = multiply(&from_view, &self.viewproj[layer]);
             for row in 0..4 {
-                values[layer * 4 + row] = [self.viewproj[layer][row * 4], self.viewproj[layer][row * 4 + 1], self.viewproj[layer][row * 4 + 2], self.viewproj[layer][row * 4 + 3]];
+                values[layer * 4 + row] = [to_shadow[row * 4], to_shadow[row * 4 + 1], to_shadow[row * 4 + 2], to_shadow[row * 4 + 3]];
             }
         }
         values[8] = [ESM_C, ESM_BIAS, ESM_SCALE, 1.0 / self.resolution as f32];
         values[9] = [SHADE_COLOR[0], SHADE_COLOR[1], SHADE_COLOR[2], SHADE];
-        values[10] = [sun_vis, 1.0, 0.0, 0.0];
+        values[10] = [sun_vis, if above_sea { 1.0 } else { 0.0 }, 0.0, 0.0];
         values
     }
 }
