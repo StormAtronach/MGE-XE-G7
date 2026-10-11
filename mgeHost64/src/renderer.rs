@@ -38,7 +38,7 @@ use distantland::mge_xe::distant_terrain::{
 use mge_config::{ConfigDocument, FILE_NAME};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{Extension, PerPixel, SceneView};
+use nirender_wgpu::{Extension, FrameParameters, PerPixel, Replay, SceneView};
 
 /// The side of an exterior cell of the game, in the units of the game.
 const CELL: f32 = 8192.0;
@@ -672,36 +672,24 @@ impl Extension for DistantLand {
         }
     }
 
+    /// The answers for the frame: the fog distances and the blend when the terrain is in
+    /// the frame, the light for each pixel by its settings, the sky with the scattering.
+    fn frame(&mut self, scene: &SceneView) -> FrameParameters {
+        self.interior = scene.interior;
+        self.finish_load(scene);
+        let land = self.enabled && !scene.interior && self.gpu.is_some();
+        FrameParameters {
+            fog_range: land.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
+            per_pixel: self.per_pixel(),
+            sky: self.sky(),
+            blend: land,
+        }
+    }
+
     fn sky_shader(&self) -> Option<String> {
         Some(SKY_SHADER.to_string())
     }
 
-    /// The sky of MGE XE is for an exterior with the scattering on and the distant land in
-    /// the frame, as `renderStage0` of the Direct3D 9 path has it.
-    fn sky(&mut self) -> Option<[[f32; 4]; 8]> {
-        if !self.enabled || self.interior || self.gpu.is_none() {
-            return None;
-        }
-        let e = self.environment.filter(|e| e.flags & 12 == 12)?;
-        let far = e.sky_scatter_far;
-        let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
-        let altitude = (1.0 + e.sun_pos[2]).powi(10);
-        Some([
-            [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 0.0],
-            [e.sky_col[0], e.sky_col[1], e.sky_col[2], e.nice_weather],
-            [sky[0], sky[1], sky[2], if e.eye[2] > -1.0 { 1.0 } else { 0.0 }],
-            [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], 0.0],
-            [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
-            [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
-            [
-                2.8 + 4.3 / altitude.max(1e-6),
-                (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
-                (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
-                0.0,
-            ],
-            [0.0; 4],
-        ])
-    }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {
         if id == ENVIRONMENT_ID && bytes.len() >= size_of::<Environment>() {
@@ -712,7 +700,7 @@ impl Extension for DistantLand {
         }
     }
 
-    fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) -> bool {
+    fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) -> bool {
         self.near_fog = None;
         self.interior = scene.interior;
         if !self.enabled || scene.interior {
@@ -833,7 +821,7 @@ impl Extension for DistantLand {
 
     /// The grass, at the end of the world scene of the game: with the projection and the
     /// depth of the game, as `renderStage1` of the Direct3D 9 path draws it.
-    fn after_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) {
+    fn after_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
         if !self.enabled || scene.interior {
             return;
         }
@@ -863,6 +851,45 @@ impl Extension for DistantLand {
         statics.draw_grass(scene, pass, &frame);
     }
 
+
+
+    /// The draws of the game near the end of their view range go into the distant land.
+    fn blend(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView) {
+        // Without the view range from the game, the default of the game with distant land.
+        let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
+        self.blend.get_or_insert_with(|| blend::Blend::new(scene)).draw(scene, pass, before, depth, near_view_range);
+    }
+
+}
+
+impl DistantLand {
+    /// The sky of MGE XE is for an exterior with the scattering on and the distant land in
+    /// the frame, as `renderStage0` of the Direct3D 9 path has it.
+    fn sky(&mut self) -> Option<[[f32; 4]; 8]> {
+        if !self.enabled || self.interior || self.gpu.is_none() {
+            return None;
+        }
+        let e = self.environment.filter(|e| e.flags & 12 == 12)?;
+        let far = e.sky_scatter_far;
+        let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
+        let altitude = (1.0 + e.sun_pos[2]).powi(10);
+        Some([
+            [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 0.0],
+            [e.sky_col[0], e.sky_col[1], e.sky_col[2], e.nice_weather],
+            [sky[0], sky[1], sky[2], if e.eye[2] > -1.0 { 1.0 } else { 0.0 }],
+            [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], 0.0],
+            [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
+            [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
+            [
+                2.8 + 4.3 / altitude.max(1e-6),
+                (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
+                (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
+                0.0,
+            ],
+            [0.0; 4],
+        ])
+    }
+
     /// The light for each pixel, by the setting `distant_land.per_pixel_lighting` and its
     /// mode, with the numbers of the weather for the sun and the ambient light.
     fn per_pixel(&self) -> Option<PerPixel> {
@@ -873,23 +900,5 @@ impl Extension for DistantLand {
         // In an interior the numbers are 1, as `adjustFog` of the Direct3D 9 path has them.
         let (sun, ambient) = self.environment.filter(|_| !self.interior).map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade })
-    }
-
-    /// The blend is for a frame with the terrain in it.
-    fn wants_blend(&self) -> bool {
-        self.near_fog.is_some()
-    }
-
-    /// The draws of the game near the end of their view range go into the distant land.
-    fn blend(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView) {
-        // Without the view range from the game, the default of the game with distant land.
-        let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
-        self.blend.get_or_insert_with(|| blend::Blend::new(scene)).draw(scene, pass, before, depth, near_view_range);
-    }
-
-    /// The draws of the world of the game get the fog distances of MGE XE for the near
-    /// cells, so that they go into the fog as the terrain behind them does.
-    fn fog_range(&self) -> Option<(f32, f32)> {
-        self.near_fog
     }
 }
