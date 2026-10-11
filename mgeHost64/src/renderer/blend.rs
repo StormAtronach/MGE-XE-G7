@@ -11,6 +11,9 @@ struct Uniforms {
     // The two numbers of the projection that give the depth, the distance where the blend
     // starts, and its length.
     values: vec4f,
+    // The two numbers of the projection for the width and the height, and the size of the
+    // picture.
+    more: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var before: texture_2d<f32>;
@@ -21,15 +24,18 @@ struct Uniforms {
     return vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0);
 }
 
-// The distance along the view of the camera, from the depth of a pixel. A pixel that the
-// game did not draw is very far.
+// The distance from the camera, from the depth of a pixel. A pixel that the game did not
+// draw is very far. The original has the distance along the view of the camera; the fog of
+// the draws of the game is on the distance from the camera here, and the blend must start
+// where that fog ends for each direction of the camera.
 fn distance_at(at: vec2i) -> f32 {
     let size = vec2i(textureDimensions(depth));
     let d = textureLoad(depth, clamp(at, vec2i(0), size - 1), 0);
     if d >= 1.0 {
         return 1e30;
     }
-    return u.values.y / (d - u.values.x);
+    let ndc = (vec2f(at) + 0.5) / u.more.zw * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
+    return u.values.y / (d - u.values.x) * length(vec3f(ndc / u.more.xy, 1.0));
 }
 
 @fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
@@ -109,14 +115,23 @@ impl Blend {
             multiview_mask: None,
             cache: None,
         });
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("blend"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("blend"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         Self { pipeline, layout, uniforms, frames: 0 }
     }
 
     /// Draws the blend. `near_view_range` is the view range of the game.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView, near_view_range: f32) {
         // A projection of Direct3D gives the depth (p10 * z + p14) / z for the distance z.
-        let values = [scene.projection[10], scene.projection[14], near_view_range - ZONE, ZONE];
+        let values = [
+            scene.projection[10],
+            scene.projection[14],
+            near_view_range - ZONE,
+            ZONE,
+            scene.projection[0],
+            scene.projection[5],
+            scene.target_size.0 as f32,
+            scene.target_size.1 as f32,
+        ];
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
