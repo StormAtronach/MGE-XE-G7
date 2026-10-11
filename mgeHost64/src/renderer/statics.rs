@@ -708,6 +708,10 @@ struct Out {
     let dy = dpdy(in.coordinate) * scale;
     let atlas = in.bounds.zx + fract(in.coordinate) * scale;
     let texel = textureSampleGrad(base_texture, base_sampler, atlas, dx, dy);
+    // In a reflection, only one side of the water plane: flags.y is the side, flags.z the plane.
+    if u.flags.y != 0.0 && (in.world.z - u.flags.z) * u.flags.y < 0.0 {
+        discard;
+    }
     let range = length(in.world - u.eye.xyz);
     let dissolve = clamp((range - (u.handoff.y - u.handoff.z)) / u.handoff.z, 0.0, 1.0);
     if dissolve < 1.0 / 255.0 || (in.alpha_test > 0.5 && texel.a < 133.0 / 255.0) {

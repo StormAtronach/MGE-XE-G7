@@ -31,7 +31,7 @@ struct Uniforms {
     sky_col: [f32; 4],
     /// The far fog colour, and 1 when the scattering is on.
     fog_col_far: [f32; 4],
-    /// The start and the divisor of the exponential fog.
+    /// The start and the divisor of the exponential fog; z the debug term; w 1 under water.
     fog: [f32; 4],
     /// The two numbers of the depth of the projection of the game, for the distance of a
     /// pixel from its depth.
@@ -132,10 +132,31 @@ fn distance_at(uv: vec2f) -> f32 {
     return u.projection.y / (d - u.projection.x);
 }
 
+// UnderwaterPS: the plane seen from below.
+fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
+    let fog = clamp(exp(-dist / 4096.0), 0.0, 1.0);
+    let normal = -water_normal(in.texcoords, dist);
+    let reffactor = 2.0 * (u.sun_col.w * dist + 0.1) * normal.xy;
+    let uv = in.position.xy / u.size.xy;
+    let w = in.clip_w;
+    var refracted = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
+    refracted = mix(u.fog_col_far.rgb, refracted, exp(-dist / 500.0));
+    let reflected = textureSample(reflection, clamp_sampler, uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w).rgb;
+    // With the total reflection of the inside of the water.
+    let fresnel = pow(clamp(1.12 - 0.65 * dot(-eye_vec, normal), 0.0, 1.0), 8.0);
+    let result = mix(refracted, reflected, fresnel);
+    let refract_sun = dot(-eye_vec, normalize(-u.sun_pos.xyz + normal));
+    let spec = u.sun_col.rgb * pow(max(refract_sun, 0.0), 6.0) * fog;
+    return vec4f(result + spec, 1.0);
+}
+
 @fragment fn fs(in: Out) -> @location(0) vec4f {
     var eye_vec = in.world - u.eye.xyz;
     let dist = length(eye_vec);
     eye_vec /= dist;
+    if u.fog.w > 0.5 {
+        return underwater(in, eye_vec, dist);
+    }
     let fog = fog_water(eye_vec, dist);
     let sun_col_adjusted = u.sun_col.rgb;
     let depth_base = sun_col_adjusted * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
@@ -463,7 +484,7 @@ impl Water {
             sun_col: [frame.sun_color[0] * sunlight, frame.sun_color[1] * sunlight, frame.sun_color[2] * sunlight, wind_factor],
             sky_col: [frame.sky_color[0], frame.sky_color[1], frame.sky_color[2], frame.nice_weather],
             fog_col_far: [frame.fog_color_far[0], frame.fog_color_far[1], frame.fog_color_far[2], if frame.scattering.is_some() { 1.0 } else { 0.0 }],
-            fog: [frame.fog_exp.0, frame.fog_exp.1, self.debug, 0.0],
+            fog: [frame.fog_exp.0, frame.fog_exp.1, self.debug, if frame.underwater { 1.0 } else { 0.0 }],
             projection: [scene.projection[10], scene.projection[14], 0.0, 0.0],
             size: [scene.target_size.0 as f32, scene.target_size.1 as f32, 0.0, 0.0],
             sky: scattering[1],

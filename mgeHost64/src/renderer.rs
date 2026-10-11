@@ -176,7 +176,8 @@ struct Uniforms {
     fog_color: [f32; 4],
     /// The exponential fog: its start and its divisor. The linear fog: its start and its end.
     fog: [f32; 4],
-    /// x: 1 for the exponential fog past the view range.
+    /// x: 1 for the exponential fog past the view range. In a reflection: y the side of the
+    /// water plane to keep (1 above, -1 below), z the plane (the water level less 1).
     flags: [f32; 4],
     sun_direction: [f32; 4],
     sun_color: [f32; 4],
@@ -232,10 +233,16 @@ struct Out {
 @vertex fn vs(@location(0) position: vec3f, @location(1) normal: vec4f, @location(2) color: vec4f) -> Out {
     var out: Out;
     var world = position;
-    // landBias: the land goes down near the camera, so that a mesh with less detail does
-    // not come through the land of the game.
-    let distance = length(world - u.eye.xyz);
-    world.z += -1.0 - 2.0 * max(0.0, u.eye.w - 1152.0 - distance);
+    if u.flags.y != 0.0 {
+        // LandscapeReflVS: in a reflection the land near the water line sinks, so that the
+        // edge of the water is clean; no landBias.
+        world.z += -16.0 * clamp(1.0 - world.z / 16.0, 0.0, 1.0);
+    } else {
+        // landBias: the land goes down near the camera, so that a mesh with less detail
+        // does not come through the land of the game.
+        let distance = length(world - u.eye.xyz);
+        world.z += -1.0 - 2.0 * max(0.0, u.eye.w - 1152.0 - distance);
+    }
     out.position = u.view_projection * vec4f(world, 1.0);
     out.normal = normal.xyz * 2.0 - 1.0;
     // The colour of a vertex has the bytes blue, green, red.
@@ -291,6 +298,10 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0);
     let lit = albedo * in.color * light;
 
+    // In a reflection, only one side of the water plane: flags.y is the side, flags.z the plane.
+    if u.flags.y != 0.0 && (in.world.z - u.flags.z) * u.flags.y < 0.0 {
+        discard;
+    }
     return vec4f(fog_of(lit, in.world), 1.0);
 }
 ";
@@ -1005,6 +1016,9 @@ impl Extension for DistantLand {
             let (mut mirror_pass, mirrored_view, far_projection) = water.begin_reflection(scene, &mut encoder, frame);
             let mut mirror_uniforms = uniforms;
             mirror_uniforms.view_projection = multiply(&mirrored_view, &far_projection);
+            // Only the side of the water plane that the mirror shows.
+            mirror_uniforms.flags[1] = if frame.underwater { -1.0 } else { 1.0 };
+            mirror_uniforms.flags[2] = frame.water_level - 1.0;
             scene.queue.write_buffer(&gpu.mirror_uniforms, 0, bytemuck::bytes_of(&mirror_uniforms));
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             mirror_pass.set_pipeline(&gpu.pipeline);
@@ -1026,7 +1040,7 @@ impl Extension for DistantLand {
                     eye: [uniforms.eye[0], uniforms.eye[1], uniforms.eye[2], 0.0],
                     fog_color,
                     fog,
-                    flags: uniforms.flags,
+                    flags: mirror_uniforms.flags,
                     sun_direction: uniforms.sun_direction,
                     sun_color: uniforms.sun_color,
                     ambient: uniforms.ambient,
