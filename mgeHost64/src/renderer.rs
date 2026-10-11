@@ -26,6 +26,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
+use std::time::Instant;
+
+mod statics;
 
 use distantland::mge_xe::distant_terrain::{
     TERRAIN_ATLAS_FILE_NAME, TERRAIN_BLEND_PATTERNS_FILE_NAME, TERRAIN_FILE_NAME, TERRAIN_MATERIAL_FILE_NAME, TERRAIN_MATERIAL_FLAGS_FILE_NAME,
@@ -119,6 +122,8 @@ pub struct DistantLand {
     gpu: Option<Gpu>,
     /// The fog distances for the near cells of the frame, when the terrain is in it.
     near_fog: Option<(f32, f32)>,
+    statics: Option<statics::Statics>,
+    started: Instant,
     meshes_drawn: u64,
     frames: u64,
 }
@@ -255,9 +260,19 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0);
     let lit = albedo * in.color * light;
 
+    return vec4f(fog_of(lit, in.world), 1.0);
+}
+";
+
+/// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
+/// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
+/// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
+/// `sun_altitude`.
+const FOG_FUNCTION: &str = "
+fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
     // fogColour: the exponential curve past the view range of the game, and the linear fog
     // of the near cells before it.
-    let to_pixel = in.world - u.eye.xyz;
+    let to_pixel = world - u.eye.xyz;
     let distance = length(to_pixel);
     let linear = clamp((u.fog.w - distance) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
     let fog_distance = (distance - u.fog.x) / max(u.fog.y, 1.0);
@@ -278,7 +293,7 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
         let scattered = (0.125 * mie + u.sky.rgb * rayleigh) * lost * (1.17 * air + 0.89) * u.sun_altitude.y;
         added = mix(added, scattered, u.sun_pos.w);
     }
-    return vec4f(fog * lit + added, 1.0);
+    return fog * lit + added;
 }
 ";
 
@@ -295,6 +310,8 @@ impl DistantLand {
             loading: None,
             gpu: None,
             near_fog: None,
+            statics: None,
+            started: Instant::now(),
             meshes_drawn: 0,
             frames: 0,
         };
@@ -307,6 +324,9 @@ impl DistantLand {
         );
         if land.enabled {
             let folder: PathBuf = root.join("Data Files").join("distantland");
+            if settings.statics {
+                land.statics = Some(statics::Statics::start(&document, folder.clone()));
+            }
             let (sender, receiver) = channel();
             land.loading = Some(receiver);
             thread::spawn(move || {
@@ -372,11 +392,21 @@ fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::Textur
         return Err(format!("{name} is not a DDS file"));
     }
     let (height, width, levels) = (word(dds, 12), word(dds, 16), word(dds, 28).max(1));
-    let format = if &dds[84..88] == b"DXT1" {
+    let block = match &dds[84..88] {
+        b"DXT1" => Some(wgpu::TextureFormat::Bc1RgbaUnorm),
+        b"DXT3" => Some(wgpu::TextureFormat::Bc2RgbaUnorm),
+        b"DXT5" => Some(wgpu::TextureFormat::Bc3RgbaUnorm),
+        _ => None,
+    };
+    let limit = scene.device.limits().max_texture_dimension_2d;
+    if width > limit || height > limit {
+        return Err(format!("{name} has the size {width} x {height}, and the GPU takes {limit} at most"));
+    }
+    let format = if let Some(format) = block {
         if width % 4 != 0 || height % 4 != 0 {
             return Err(format!("{name} has the size {width} x {height}, not a multiple of 4"));
         }
-        wgpu::TextureFormat::Bc1RgbaUnorm
+        format
     } else if word(dds, 88) == 32 && word(dds, 92) == 0xFF {
         wgpu::TextureFormat::Rgba8Unorm
     } else if word(dds, 88) == 32 && word(dds, 92) == 0x00FF_0000 {
@@ -461,7 +491,8 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
     }
     entries.push(wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&sampler) });
     let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries });
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+    let source = format!("{SHADER}{FOG_FUNCTION}");
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
@@ -680,6 +711,23 @@ impl Extension for DistantLand {
         self.meshes_drawn += drawn;
         self.frames += 1;
         self.near_fog = Some(near_fog);
+        if let Some(statics) = self.statics.as_mut() {
+            let frame = statics::Frame {
+                view_projection,
+                eye: uniforms.eye,
+                fog_color,
+                fog,
+                flags: uniforms.flags,
+                sun_direction: uniforms.sun_direction,
+                sun_color: uniforms.sun_color,
+                ambient: uniforms.ambient,
+                scattering,
+                planes,
+                fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
+                time: self.started.elapsed().as_secs_f32(),
+            };
+            statics.draw(scene, pass, &frame);
+        }
         true
     }
 
