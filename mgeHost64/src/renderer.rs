@@ -625,7 +625,73 @@ fn eye_of(view: &[f32; 16]) -> [f32; 3] {
     core::array::from_fn(|i| -(translation[0] * view[i * 4] + translation[1] * view[i * 4 + 1] + translation[2] * view[i * 4 + 2]))
 }
 
+/// The sky of MGE XE: `SkyVS` and `SkyPS` of `XE Mod Sky.fx` for the sky dome, with
+/// `fogColourSky` and `fogColourScatter` of `XE Common.fx`. The values of `draw.extension`:
+/// 0 the far fog colour; 1 the sky colour, and the nice weather number in w; 2 the sky colour
+/// for the scattering, and 1 in w when the camera is above the water; 3 the direction to the
+/// sun; 4 `outscatter`; 5 `inscatter`; 6 the three numbers of the altitude of the sun.
+const SKY_SHADER: &str = "
+// The dome of the game gets a height that puts its lower edge on the horizon.
+fn extension_sky_position(position: vec3f) -> vec3f {
+    return vec3f(position.xy, 50.0 * (position.z + 200.0));
+}
+
+fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
+    let e = draw.extension;
+    // fogColourSky: the far fog colour at the horizon goes into the sky colour above it.
+    let up = 1.0 - pow(clamp(1.0 - 2.22 * clamp(direction.z - 0.075, 0.0, 1.0), 0.0, 1.0), 1.15);
+    var color = mix(e[0].rgb, e[1].rgb, up);
+    // fogColourScatter with a fog distance of 1 and no fog.
+    if e[1].w > 0.001 && e[2].w > 0.5 {
+        let sun_cos = dot(direction, e[3].xyz);
+        let mie = (1.58 / (1.24 - sun_cos)) * e[6].z;
+        let rayleigh = 1.0 - 0.09 * mie;
+        let air = 1.33 * exp(-2.0 * clamp(direction.z, 0.0, 1.0));
+        let sun_scatter = mix(e[5].rgb, e[4].rgb, 0.5 * (1.0 + sun_cos));
+        var lost = air * sun_scatter * (e[6].x + 0.7 * mie);
+        lost = (1.0 - exp(-lost)) / lost;
+        let scattered = (0.125 * mie + e[2].rgb * rayleigh) * lost * (1.17 * air + 0.89) * e[6].y;
+        color = mix(color, scattered, e[1].w);
+    }
+    // ditherSky: an ordered dither against bands in the sky.
+    let dither = array<f32, 16>(0.001176, 0.001961, -0.001176, -0.001699, -0.000654, -0.000915, 0.000392, 0.000131, -0.000131, -0.001961, 0.000654, 0.000915, 0.001699, 0.001438, -0.000392, -0.001438);
+    let at = vec2u(pixel) % 4u;
+    return color + dither[at.x * 4u + at.y];
+}
+";
+
 impl Extension for DistantLand {
+    fn sky_shader(&self) -> Option<String> {
+        Some(SKY_SHADER.to_string())
+    }
+
+    /// The sky of MGE XE is for an exterior with the scattering on and the distant land in
+    /// the frame, as `renderStage0` of the Direct3D 9 path has it.
+    fn sky(&mut self) -> Option<[[f32; 4]; 8]> {
+        if !self.enabled || self.interior || self.gpu.is_none() {
+            return None;
+        }
+        let e = self.environment.filter(|e| e.flags & 12 == 12)?;
+        let far = e.sky_scatter_far;
+        let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
+        let altitude = (1.0 + e.sun_pos[2]).powi(10);
+        Some([
+            [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 0.0],
+            [e.sky_col[0], e.sky_col[1], e.sky_col[2], e.nice_weather],
+            [sky[0], sky[1], sky[2], if e.eye[2] > -1.0 { 1.0 } else { 0.0 }],
+            [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], 0.0],
+            [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
+            [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
+            [
+                2.8 + 4.3 / altitude.max(1e-6),
+                (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
+                (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
+                0.0,
+            ],
+            [0.0; 4],
+        ])
+    }
+
     fn data(&mut self, id: u32, bytes: &[u8]) {
         if id == ENVIRONMENT_ID && bytes.len() >= size_of::<Environment>() {
             let environment: Environment = bytemuck::pod_read_unaligned(&bytes[..size_of::<Environment>()]);
