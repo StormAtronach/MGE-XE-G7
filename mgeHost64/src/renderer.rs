@@ -819,6 +819,7 @@ impl Extension for DistantLand {
             blend: land,
             // The water plane of the game is class 10.
             watched: if water { 1 << 10 } else { 0 },
+            ..Default::default()
         }
     }
 
