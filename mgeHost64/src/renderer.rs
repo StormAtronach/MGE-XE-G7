@@ -134,6 +134,8 @@ pub struct DistantLand {
     per_pixel: (bool, bool, f32),
     /// The world of the frame is in an interior cell.
     interior: bool,
+    /// The loads complete before a frame: a capture file, where each frame must be the same.
+    synchronous: bool,
     blend: Option<blend::Blend>,
     statics: Option<statics::Statics>,
     started: Instant,
@@ -329,6 +331,7 @@ impl DistantLand {
                 if settings.per_pixel_light_fade { settings.per_pixel_light_fade_radius } else { 0.0 },
             ),
             interior: false,
+            synchronous: false,
             blend: None,
             statics: None,
             started: Instant::now(),
@@ -360,7 +363,8 @@ impl DistantLand {
     /// Makes the buffers, the textures and the pipeline when the loader thread is done.
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(receiver) = self.loading.as_ref() else { return };
-        let Ok(result) = receiver.try_recv() else { return };
+        let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
+        let Some(result) = result else { return };
         self.loading = None;
         match result.and_then(|loaded| make_gpu(scene, &loaded)) {
             Ok(gpu) => {
@@ -661,6 +665,13 @@ fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
 ";
 
 impl Extension for DistantLand {
+    fn offline(&mut self) {
+        self.synchronous = true;
+        if let Some(statics) = self.statics.as_mut() {
+            statics.synchronous = true;
+        }
+    }
+
     fn sky_shader(&self) -> Option<String> {
         Some(SKY_SHADER.to_string())
     }

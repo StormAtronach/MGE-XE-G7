@@ -729,6 +729,8 @@ pub struct Statics {
     drawn: u64,
     most_bytes: u64,
     failed: bool,
+    /// The loads complete before a frame, and all arrivals go to the GPU in the frame.
+    pub synchronous: bool,
 }
 
 impl Statics {
@@ -772,12 +774,14 @@ impl Statics {
             drawn: 0,
             most_bytes: 0,
             failed: false,
+            synchronous: false,
         }
     }
 
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(receiver) = self.loading.as_ref() else { return };
-        let Ok(result) = receiver.try_recv() else { return };
+        let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
+        let Some(result) = result else { return };
         self.loading = None;
         let loaded = match result {
             Ok(loaded) => loaded,
@@ -822,8 +826,24 @@ impl Statics {
     fn take_arrivals(&mut self, scene: &SceneView) {
         let Some(arrivals) = self.arrivals.as_ref() else { return };
         let (mut count, mut bytes) = (0, 0);
-        while count < ARRIVALS_IN_FRAME && bytes < ARRIVAL_BYTES_IN_FRAME {
-            let Ok(arrival) = arrivals.try_recv() else { break };
+        while self.synchronous || (count < ARRIVALS_IN_FRAME && bytes < ARRIVAL_BYTES_IN_FRAME) {
+            // Synchronous: all that was asked for comes now. A subset that the reader thread
+            // could not read never comes: a limit of time.
+            let arrival = if self.synchronous {
+                if self.requested.is_empty() {
+                    break;
+                }
+                arrivals.recv_timeout(std::time::Duration::from_secs(5)).ok()
+            } else {
+                arrivals.try_recv().ok()
+            };
+            let Some(arrival) = arrival else {
+                if self.synchronous {
+                    println!("distant statics: {} subsets did not come in time", self.requested.len());
+                    self.requested.clear();
+                }
+                break;
+            };
             // The camera can be far away again.
             if !self.requested.remove(&arrival.subset) || arrival.indexes.is_empty() {
                 continue;
@@ -1112,7 +1132,15 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
     if textures.iter().all(Option::is_some) {
         return;
     }
-    let Some(game) = folder.parent().and_then(Path::parent) else { return };
+    // The folder of the game: two above the distant land, or MGE_XE_GAME_DIR for a replay
+    // where the distant land is elsewhere.
+    let game = match std::env::var_os("MGE_XE_GAME_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => match folder.parent().and_then(Path::parent) {
+            Some(game) => game.to_path_buf(),
+            None => return,
+        },
+    };
     let options = distantland::vfs::VfsLoadOptions { morrowind_ini: Some(game.join("Morrowind.ini")), ..Default::default() };
     let files = match distantland::vfs::Vfs::load(&options) {
         Ok(files) => files,
