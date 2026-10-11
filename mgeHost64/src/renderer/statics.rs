@@ -449,7 +449,10 @@ struct Gpu {
     /// The same with the other side culled: for the reflection, where the mirror turns the
     /// winding of each triangle.
     mirror_pipeline: wgpu::RenderPipeline,
-    sets: [BufferSet; 2],
+    /// The depth from the sun into the shadow map.
+    shadow_pipeline: wgpu::RenderPipeline,
+    /// The main view, the reflection, and the two layers of the shadow map.
+    sets: [BufferSet; 4],
     textures: Vec<wgpu::BindGroup>,
     grass_pipeline: wgpu::RenderPipeline,
     grass_group: wgpu::BindGroup,
@@ -577,6 +580,80 @@ fn displacement(world: vec3f, height: f32) -> vec2f {
         discard;
     }
     return vec4f(mix(u.fog_color.rgb, texel.rgb * in.color, in.fog), 1.0);
+}
+";
+
+/// The casters of the shadow map: `StaticShadowVS` and `StaticShadowPS` of `XE Shadowmap.fx`.
+/// The uniforms are those of the statics (the matrix of the layer in `view_projection`).
+const SHADOW_SHADER: &str = "
+struct Uniforms {
+    view_projection: mat4x4f,
+    eye: vec4f,
+    fog_color: vec4f,
+    fog: vec4f,
+    flags: vec4f,
+    sun_direction: vec4f,
+    sun_color: vec4f,
+    ambient: vec4f,
+    sun_pos: vec4f,
+    sky: vec4f,
+    outscatter: vec4f,
+    inscatter: vec4f,
+    sun_altitude: vec4f,
+    handoff: vec4f,
+}
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var<storage, read> palettes: array<vec4f>;
+@group(0) @binding(2) var base_sampler: sampler;
+@group(1) @binding(0) var base_texture: texture_2d<f32>;
+
+struct In {
+    @location(0) position: vec4f,
+    @location(1) normal: vec4f,
+    @location(2) color: vec4f,
+    @location(3) coordinate: vec2f,
+    @location(4) world0: vec4f,
+    @location(5) world1: vec4f,
+    @location(6) world2: vec4f,
+    @location(7) world3: vec4f,
+    @location(8) subset: vec4f,
+}
+
+struct Out {
+    @builtin(position) position: vec4f,
+    @location(0) coordinate: vec2f,
+    @location(1) depth: f32,
+    @location(2) @interpolate(flat) bounds: vec4f,
+    @location(3) @interpolate(flat) alpha_test: f32,
+}
+
+@vertex fn vs(in: In) -> Out {
+    var out: Out;
+    let world = in.position.x * in.world0.xyz + in.position.y * in.world1.xyz + in.position.z * in.world2.xyz + in.world3.xyz;
+    var clip = u.view_projection * vec4f(world, 1.0);
+    // What is nearer to the sun than the near plane stays, at the near plane.
+    clip.z = max(0.0, clip.z);
+    out.position = clip;
+    out.depth = clip.z / clip.w;
+    out.coordinate = in.coordinate;
+    if in.subset.z > 0.5 {
+        out.coordinate.y += fract(0.08 * u.handoff.x);
+    }
+    out.bounds = palettes[u32(in.subset.x) + u32(in.position.w)];
+    out.alpha_test = in.subset.y;
+    return out;
+}
+
+@fragment fn fs(in: Out) -> @location(0) vec4f {
+    if in.alpha_test > 0.5 {
+        let scale = in.bounds.yw - in.bounds.zx;
+        let atlas = in.bounds.zx + fract(in.coordinate) * scale;
+        let texel = textureSampleGrad(base_texture, base_sampler, atlas, dpdx(in.coordinate) * scale, dpdy(in.coordinate) * scale);
+        if texel.a < 180.0 / 255.0 {
+            discard;
+        }
+    }
+    return vec4f(32768.0 * in.depth, 0.0, 0.0, 1.0);
 }
 ";
 
@@ -959,6 +1036,8 @@ impl Statics {
 
     /// Draws the statics of the frame into the pass. Returns the number of draws.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
+        // The sets 2 and 3 are the layers of the shadow map.
+        let shadow = set >= 2;
         if self.failed {
             return 0;
         }
@@ -1083,7 +1162,7 @@ impl Statics {
         };
         scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        pass.set_pipeline(if set == 1 { &gpu.mirror_pipeline } else { &gpu.pipeline });
+        pass.set_pipeline(if shadow { &gpu.shadow_pipeline } else if set == 1 { &gpu.mirror_pipeline } else { &gpu.pipeline });
         pass.set_bind_group(0, &buffers.group, &[]);
         pass.set_vertex_buffer(1, buffers.instances.slice(..));
         let (mut texture, mut bound) = (u32::MAX, u32::MAX);
@@ -1182,7 +1261,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
             mapped_at_creation: false,
         })
     };
-    let uniform_buffers = [make_uniforms(), make_uniforms()];
+    let uniform_buffers = [make_uniforms(), make_uniforms(), make_uniforms(), make_uniforms()];
     let palettes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant statics, the palettes"),
         contents: bytemuck::cast_slice(&catalog.palettes),
@@ -1324,6 +1403,38 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
     });
     let pipeline = make_pipeline(wgpu::Face::Back);
     let mirror_pipeline = make_pipeline(wgpu::Face::Front);
+    // The casters of the shadow map: the same vertices and places, the depth from the sun.
+    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics shadow"), source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER.into()) });
+    let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("distant statics shadow"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shadow_module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[
+                Some(wgpu::VertexBufferLayout { array_stride: VERTEX as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &vertex }),
+                Some(wgpu::VertexBufferLayout { array_stride: 80, step_mode: wgpu::VertexStepMode::Instance, attributes: &place }),
+            ],
+        },
+        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: scene.depth_format,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shadow_module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
     let make_instances = || {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("distant statics, the places of a frame"),
@@ -1332,11 +1443,13 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
             mapped_at_creation: false,
         })
     };
-    let [group_main, group_mirror] = groups;
-    let [uniforms_main, uniforms_mirror] = uniform_buffers;
+    let [group_main, group_mirror, group_shadow0, group_shadow1] = groups;
+    let [uniforms_main, uniforms_mirror, uniforms_shadow0, uniforms_shadow1] = uniform_buffers;
     let sets = [
         BufferSet { group: group_main, uniforms: uniforms_main, instances: make_instances(), instance_capacity: 1024 },
         BufferSet { group: group_mirror, uniforms: uniforms_mirror, instances: make_instances(), instance_capacity: 1024 },
+        BufferSet { group: group_shadow0, uniforms: uniforms_shadow0, instances: make_instances(), instance_capacity: 1024 },
+        BufferSet { group: group_shadow1, uniforms: uniforms_shadow1, instances: make_instances(), instance_capacity: 1024 },
     ];
 
     // The grass: its own uniforms and shader, and the textures of the statics.
@@ -1407,5 +1520,5 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    Gpu { pipeline, mirror_pipeline, sets, textures, grass_pipeline, grass_group, grass_uniforms, grass_records }
+    Gpu { pipeline, mirror_pipeline, shadow_pipeline, sets, textures, grass_pipeline, grass_group, grass_uniforms, grass_records }
 }

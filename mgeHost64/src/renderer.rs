@@ -29,6 +29,7 @@ use std::thread;
 use std::time::Instant;
 
 mod blend;
+mod shadow;
 mod statics;
 mod water;
 
@@ -41,6 +42,7 @@ use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, Replay, SceneView};
 use water::{Water, WaterFrame};
+use shadow::Shadow;
 
 /// The side of an exterior cell of the game, in the units of the game.
 const CELL: f32 = 8192.0;
@@ -121,6 +123,10 @@ struct Gpu {
     /// The same with other uniforms: for the reflection of the land in the water.
     mirror_group: wgpu::BindGroup,
     mirror_uniforms: wgpu::Buffer,
+    /// The depth of the land from the sun, for the two layers of the shadow map.
+    shadow_pipeline: wgpu::RenderPipeline,
+    shadow_groups: [wgpu::BindGroup; 2],
+    shadow_uniforms: [wgpu::Buffer; 2],
     meshes: Vec<Mesh>,
     /// The numbers of the header of `terrain.bin` for the shader.
     terrain: [f32; 4],
@@ -150,6 +156,10 @@ pub struct DistantLand {
     synchronous: bool,
     blend: Option<blend::Blend>,
     statics: Option<statics::Statics>,
+    /// The shadow map, when the settings have shadows; `None` before the first frame.
+    shadow: Option<Shadow>,
+    shadows_enabled: bool,
+    shadow_resolution: u32,
     /// The water, when its wave texture was found; `None` before the first frame.
     water: Option<Water>,
     water_enabled: bool,
@@ -310,6 +320,49 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 /// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
 /// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
 /// `sun_altitude`.
+/// The casters of the shadow map: `ShadowVS` and `ShadowPS` of `XE Shadowmap.fx` for the
+/// land. The uniforms are those of the land (the matrix of the layer in `view_projection`).
+const LAND_SHADOW_SHADER: &str = "
+struct Uniforms {
+    view_projection: mat4x4f,
+    eye: vec4f,
+    terrain: vec4f,
+    atlas: vec4f,
+    atlas_more: vec4f,
+    patterns: vec4f,
+    fog_color: vec4f,
+    fog: vec4f,
+    flags: vec4f,
+    sun_direction: vec4f,
+    sun_color: vec4f,
+    ambient: vec4f,
+    sun_pos: vec4f,
+    sky: vec4f,
+    outscatter: vec4f,
+    inscatter: vec4f,
+    sun_altitude: vec4f,
+}
+@group(0) @binding(0) var<uniform> u: Uniforms;
+
+struct Out {
+    @builtin(position) position: vec4f,
+    @location(0) depth: f32,
+}
+
+@vertex fn vs(@location(0) position: vec3f, @location(1) normal: vec4f, @location(2) color: vec4f) -> Out {
+    var out: Out;
+    var clip = u.view_projection * vec4f(position, 1.0);
+    clip.z = max(0.0, clip.z);
+    out.position = clip;
+    out.depth = clip.z / clip.w;
+    return out;
+}
+
+@fragment fn fs(in: Out) -> @location(0) vec4f {
+    return vec4f(32768.0 * in.depth, 0.0, 0.0, 1.0);
+}
+";
+
 const FOG_FUNCTION: &str = "
 fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
     // fogColour: the exponential curve past the view range of the game, and the linear fog
@@ -362,6 +415,9 @@ impl DistantLand {
             synchronous: false,
             blend: None,
             statics: None,
+            shadow: None,
+            shadows_enabled: settings.shadows.enabled,
+            shadow_resolution: settings.shadows.map_resolution,
             water: None,
             water_enabled: true,
             waves: Vec::new(),
@@ -437,6 +493,7 @@ impl Drop for DistantLand {
         );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("water: {} frames, {} reflections", self.water.as_ref().map_or(0, |w| w.frames), self.water.as_ref().map_or(0, |w| w.reflections));
+        println!("shadow map: {} frames", self.shadow.as_ref().map_or(0, |s| s.frames));
     }
 }
 
@@ -569,6 +626,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
     let mirror_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("distant land mirror"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     entries[0] = wgpu::BindGroupEntry { binding: 0, resource: mirror_uniforms.as_entire_binding() };
     let mirror_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries });
+    let shadow_uniforms: [wgpu::Buffer; 2] = core::array::from_fn(|_| device.create_buffer(&wgpu::BufferDescriptor { label: Some("distant land shadow"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+    let shadow_groups: [wgpu::BindGroup; 2] = core::array::from_fn(|i| {
+        entries[0] = wgpu::BindGroupEntry { binding: 0, resource: shadow_uniforms[i].as_entire_binding() };
+        device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries })
+    });
     let source = format!("{SHADER}{FOG_FUNCTION}");
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
@@ -598,6 +660,36 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
             entry_point: Some("fs"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+
+    // The casters of the shadow map: the land with the depth from the sun.
+    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land shadow"), source: wgpu::ShaderSource::Wgsl(LAND_SHADOW_SHADER.into()) });
+    let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("distant land shadow"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shadow_module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 20, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
+        },
+        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: scene.depth_format,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shadow_module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
         }),
         multiview_mask: None,
         cache: None,
@@ -635,6 +727,9 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
         uniforms,
         mirror_group,
         mirror_uniforms,
+        shadow_pipeline,
+        shadow_groups,
+        shadow_uniforms,
         meshes,
         terrain: [terrain.world_origin.x, terrain.world_origin.y, 1.0 / material[0].max(1) as f32, 1.0 / material[1].max(1) as f32],
         atlas: [terrain.logical_tile_size as f32, terrain.gutter_size as f32, terrain.physical_tile_size as f32, terrain.tiles_per_row.max(1) as f32],
@@ -811,6 +906,28 @@ impl Extension for DistantLand {
             }
         }
         let water = land && self.water.is_some() && self.environment.is_some_and(|e| e.has_water != 0);
+        // The shadow map: its matrices from the camera and the sun of this frame.
+        let mut values = [[0.0f32; 4]; 32];
+        let mut texture = None;
+        if land && self.shadows_enabled {
+            if self.shadow.is_none() {
+                self.shadow = Some(Shadow::new(scene, self.shadow_resolution));
+            }
+            if let (Some(shadow), Some(e)) = (self.shadow.as_mut(), self.environment) {
+                let eye = eye_of(&scene.view);
+                let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
+                // lightVec: against the sun when it is up; the sun light of the game when
+                // it is not (the direction of the sun is turned when it is not visible).
+                let mut sun_pos = e.sun_pos;
+                if e.sun_vis == 0.0 {
+                    sun_pos[2] = -sun_pos[2];
+                }
+                let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.unwrap_or(sun_pos.map(|v| -v)) };
+                shadow.set_frame(eye, eye_vec, light_vec);
+                values = shadow.frame_values(e.sun_vis);
+                texture = Some(shadow.atlas_view.clone());
+            }
+        }
         self.shade = self.per_pixel();
         FrameParameters {
             fog_range: land.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
@@ -819,7 +936,8 @@ impl Extension for DistantLand {
             blend: land,
             // The water plane of the game is class 10.
             watched: if water { 1 << 10 } else { 0 },
-            ..Default::default()
+            values,
+            texture,
         }
     }
 
@@ -1009,6 +1127,55 @@ impl Extension for DistantLand {
         self.frames += 1;
         self.near_fog = Some(near_fog);
 
+        // The shadow map: the land and the statics from the sun, in passes of their own
+        // that go to the GPU before the frame.
+        if let Some(shadow) = self.shadow.as_mut() {
+            let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shadow map") });
+            let mut pass = shadow.begin(&mut encoder);
+            for layer in 0..2 {
+                shadow.set_layer(&mut pass, layer);
+                let viewproj = shadow.viewproj[layer];
+                let mut layer_uniforms = uniforms;
+                layer_uniforms.view_projection = viewproj;
+                layer_uniforms.flags[1] = 0.0;
+                scene.queue.write_buffer(&gpu.shadow_uniforms[layer], 0, bytemuck::bytes_of(&layer_uniforms));
+                let layer_planes = crate::renderer::planes(&viewproj);
+                if self.environment.is_some_and(|e| e.flags & 4 != 0) {
+                    pass.set_pipeline(&gpu.shadow_pipeline);
+                    pass.set_bind_group(0, &gpu.shadow_groups[layer], &[]);
+                    for mesh in &gpu.meshes {
+                        let inside = layer_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
+                        if !inside {
+                            continue;
+                        }
+                        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                        pass.set_index_buffer(mesh.indexes.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+                    }
+                }
+                if let Some(statics) = self.statics.as_mut() {
+                    let layer_frame = statics::Frame {
+                        view_projection: viewproj,
+                        eye: [uniforms.eye[0], uniforms.eye[1], uniforms.eye[2], 0.0],
+                        fog_color,
+                        fog,
+                        flags: layer_uniforms.flags,
+                        sun_direction: uniforms.sun_direction,
+                        sun_color: uniforms.sun_color,
+                        ambient: uniforms.ambient,
+                        scattering,
+                        planes: layer_planes,
+                        fog_end: 1.0e9,
+                        time: self.started.elapsed().as_secs_f32(),
+                    };
+                    statics.draw(scene, &mut pass, &layer_frame, 2 + layer);
+                }
+            }
+            drop(pass);
+            shadow.blur(&mut encoder);
+            scene.queue.submit([encoder.finish()]);
+        }
+
         // The reflection in the water: the land and the sky, mirrored, in a pass of their
         // own that goes to the GPU before the frame.
         let water_frame = self.water_frame(scene);
@@ -1106,6 +1273,9 @@ impl Extension for DistantLand {
             planes: planes(&view_projection),
         };
         statics.draw_grass(scene, pass, &frame);
+        if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
+            shadow.draw_debug(pass);
+        }
     }
 
 
