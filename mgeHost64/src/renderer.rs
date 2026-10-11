@@ -11,14 +11,15 @@
 //! the material map and the blend patterns, far from it the patch albedo, times the vertex
 //! colour and the light of the sun and the sky.
 //!
-//! The fog is that of `XE Common.fx` without scattering: the exponential curve past the view
-//! range of the game and the linear fog of the near cells before it. The distances come from
+//! The fog is `fogColour` of `XE Common.fx`: the exponential curve past the view range of the
+//! game and the linear fog of the near cells before it, with the scattering of the
+//! atmosphere in good weather. The distances and the scattering values come from
 //! the 32-bit part of MGE XE with each frame (`Deviceless::sendEnvironment` in
 //! `mged3d8device.cpp`), because they follow the weather. Without them (the game runs with
 //! the `d3d8.dll` of the plugin and not with that of MGE XE) the fog is linear with the
 //! distances of `mgeXE.toml`.
 //!
-//! Not here yet: the scattering of the atmosphere in the fog, the quadtree and the horizon
+//! Not here yet: the quadtree and the horizon
 //! culling of the IPC host mode (a test of each mesh against the view is enough for the 358
 //! meshes of the test data), distant statics, grass, water and shadows.
 
@@ -67,6 +68,14 @@ struct Environment {
     light_amb_mult: f32,
     wind_scaling: f32,
     eye: [f32; 3],
+    /// Version 2. Flag 8: the scattering of the atmosphere is on for this frame.
+    sun_pos: [f32; 3],
+    sky_col: [f32; 3],
+    /// The fog colour of the weather, before the scattering changed it.
+    fog_col_far: [f32; 3],
+    outscatter: [f32; 3],
+    inscatter: [f32; 3],
+    sky_scatter_far: [f32; 4],
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -136,6 +145,14 @@ struct Uniforms {
     sun_direction: [f32; 4],
     sun_color: [f32; 4],
     ambient: [f32; 4],
+    /// The scattering: the position of the sun and the good weather value; the sky colour
+    /// with the far scatter colour in it and 1 when the scattering is on; the two scatter
+    /// colours; the three values of the height of the sun.
+    sun_pos: [f32; 4],
+    sky: [f32; 4],
+    outscatter: [f32; 4],
+    inscatter: [f32; 4],
+    sun_altitude: [f32; 4],
 }
 
 const SHADER: &str = "
@@ -152,6 +169,11 @@ struct Uniforms {
     sun_direction: vec4f,
     sun_color: vec4f,
     ambient: vec4f,
+    sun_pos: vec4f,
+    sky: vec4f,
+    outscatter: vec4f,
+    inscatter: vec4f,
+    sun_altitude: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -233,13 +255,30 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0);
     let lit = albedo * in.color * light;
 
-    // fogColour without scattering: the exponential curve past the view range of the game,
-    // and the linear fog of the near cells before it.
-    let distance = length(in.world - u.eye.xyz);
+    // fogColour: the exponential curve past the view range of the game, and the linear fog
+    // of the near cells before it.
+    let to_pixel = in.world - u.eye.xyz;
+    let distance = length(to_pixel);
     let linear = clamp((u.fog.w - distance) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
-    let exponential = clamp(exp(-(distance - u.fog.x) / max(u.fog.y, 1.0)), 0.0, 1.0);
+    let fog_distance = (distance - u.fog.x) / max(u.fog.y, 1.0);
+    let exponential = clamp(exp(-fog_distance), 0.0, 1.0);
     let fog = select(linear, exponential, u.flags.x > 0.5 && distance > u.eye.w);
-    return vec4f(mix(u.fog_color.rgb, lit, fog), 1.0);
+    // fogColourScatter: the light that the air adds, in good weather and over the water.
+    var added = u.fog_color.rgb * (1.0 - fog);
+    if u.sky.w > 0.5 && u.sun_pos.w > 0.001 && u.eye.z > -1.0 {
+        let direction = to_pixel / max(distance, 1.0);
+        let depth = clamp(0.224 * fog_distance, 0.0, 1.0);
+        let sun_cos = dot(direction, u.sun_pos.xyz);
+        let mie = (1.58 / (1.24 - sun_cos)) * u.sun_altitude.z;
+        let rayleigh = 1.0 - 0.09 * mie;
+        let air = 1.33 * exp(-2.0 * clamp(direction.z, 0.0, 1.0));
+        let sun_scatter = mix(u.inscatter.rgb, u.outscatter.rgb, 0.5 * (1.0 + sun_cos));
+        var lost = air * sun_scatter * (u.sun_altitude.x + 0.7 * mie);
+        lost = (1.0 - exp(-depth * lost)) / lost;
+        let scattered = (0.125 * mie + u.sky.rgb * rayleigh) * lost * (1.17 * air + 0.89) * u.sun_altitude.y;
+        added = mix(added, scattered, u.sun_pos.w);
+    }
+    return vec4f(fog * lit + added, 1.0);
 }
 ";
 
@@ -537,7 +576,7 @@ impl Extension for DistantLand {
     fn data(&mut self, id: u32, bytes: &[u8]) {
         if id == ENVIRONMENT_ID && bytes.len() >= size_of::<Environment>() {
             let environment: Environment = bytemuck::pod_read_unaligned(&bytes[..size_of::<Environment>()]);
-            if environment.version == 1 {
+            if environment.version == 2 {
                 self.environment = Some(environment);
             }
         }
@@ -579,6 +618,30 @@ impl Extension for DistantLand {
             // Without a sun in the draw of the game: the colour of the terrain as it is.
             None => ([0.0; 3], [1.0; 3]),
         };
+        // The far fog colour is that of the weather. The fog colour of the game is the near
+        // one: MGE XE changes it for the scattering.
+        let mut fog_color = scene.fog_color;
+        let mut scattering = [[0.0f32; 4]; 5];
+        if let Some(e) = self.environment.filter(|e| e.flags & 4 != 0) {
+            fog_color = [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 1.0];
+            if e.flags & 8 != 0 {
+                let far = e.sky_scatter_far;
+                let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
+                let altitude = (1.0 + e.sun_pos[2]).powi(10);
+                scattering = [
+                    [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], e.nice_weather],
+                    [sky[0], sky[1], sky[2], 1.0],
+                    [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
+                    [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
+                    [
+                        2.8 + 4.3 / altitude.max(1e-6),
+                        (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
+                        (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
+                        0.0,
+                    ],
+                ];
+            }
+        }
         let uniforms = Uniforms {
             view_projection,
             eye: [eye[0], eye[1], eye[2], view_range],
@@ -586,12 +649,17 @@ impl Extension for DistantLand {
             atlas: gpu.atlas,
             atlas_more: gpu.atlas_more,
             patterns: gpu.patterns,
-            fog_color: scene.fog_color,
+            fog_color,
             fog,
             flags: [exponential as u32 as f32, 0.0, 0.0, 0.0],
             sun_direction: [sun[0], sun[1], sun[2], 0.0],
             sun_color: [sun_color[0], sun_color[1], sun_color[2], 0.0],
             ambient: [ambient[0], ambient[1], ambient[2], 0.0],
+            sun_pos: scattering[0],
+            sky: scattering[1],
+            outscatter: scattering[2],
+            inscatter: scattering[3],
+            sun_altitude: scattering[4],
         };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&uniforms));
 

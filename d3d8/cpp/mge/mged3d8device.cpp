@@ -1166,6 +1166,8 @@ namespace Deviceless {
     static bool mainView = false;
     // The position of the camera of the world, from its last view matrix.
     static float eye[3] = { 0, 0, 0 };
+    // The direction that the camera of the world looks in.
+    static float look[3] = { 0, 1, 0 };
 
     // The state of the game that the features of MGE XE in the helper need for a frame.
     // mgeHost64/src/renderer.rs has the same layout: 4 bytes for each member.
@@ -1182,6 +1184,14 @@ namespace Deviceless {
         float lightSunMult, lightAmbMult;
         float windScaling;
         float eye[3];
+        // Version 2. Flag 8: the scattering of the atmosphere is on for this frame.
+        float sunPos[3];
+        float skyCol[3];
+        // The fog colour of the weather, before the scattering changed it.
+        float fogColFar[3];
+        float outscatter[3];
+        float inscatter[3];
+        float skyScatterFar[4];
     };
     static const UINT EnvironmentId = 1;
 
@@ -1193,7 +1203,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 1;
+        e.version = 2;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1264,6 +1274,69 @@ namespace Deviceless {
             }
         }
         e.flags = (expFog ? 1u : 0u) | (underwater ? 2u : 0u) | (exterior ? 4u : 0u);
+
+        // The scattering of the atmosphere, as in DistantLand::adjustFog: the fog colour of
+        // the near cells becomes the colour that the scattering has at the view range of the
+        // game, and the game gets it through its scene graph. The shaders of the helper get
+        // the values for the same sum in each pixel.
+        const bool scatter = (Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER) && exterior && !underwater;
+        if (exterior) {
+            const RGBVECTOR fogCol = *mwBridge->getCurrentWeatherFogCol();
+            const RGBVECTOR* skyCol = mwBridge->getCurrentWeatherSkyCol();
+            float sun[3];
+            mwBridge->GetSunDir(sun[0], sun[1], sun[2]);
+            const float sunLength = sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
+            for (int i = 0; i < 3; ++i) {
+                e.sunPos[i] = sunLength > 0 ? sun[i] / sunLength : 0.0f;
+            }
+            e.skyCol[0] = skyCol->r; e.skyCol[1] = skyCol->g; e.skyCol[2] = skyCol->b;
+            e.fogColFar[0] = fogCol.r; e.fogColFar[1] = fogCol.g; e.fogColFar[2] = fogCol.b;
+            const RGBVECTOR& out = DistantLand::atmOutscatter;
+            const RGBVECTOR& in = DistantLand::atmInscatter;
+            const D3DXVECTOR4& far4 = DistantLand::atmSkylightScatter;
+            e.outscatter[0] = out.r; e.outscatter[1] = out.g; e.outscatter[2] = out.b;
+            e.inscatter[0] = in.r; e.inscatter[1] = in.g; e.inscatter[2] = in.b;
+            e.skyScatterFar[0] = far4.x; e.skyScatterFar[1] = far4.y; e.skyScatterFar[2] = far4.z; e.skyScatterFar[3] = far4.w;
+
+            if (scatter) {
+                e.flags |= 8u;
+                const float newSky[3] = {
+                    mix(skyCol->r, far4.x, far4.w), mix(skyCol->g, far4.y, far4.w), mix(skyCol->b, far4.z, far4.w)
+                };
+                const float sunaltitude = powf(1 + e.sunPos[2], 10);
+                const float sunaltitude_a = 2.8f + 4.3f / sunaltitude;
+                const float sunaltitude_b = std::min(1.0f, std::max(0.0f, 1.0f - exp2f(-1.9f * sunaltitude)));
+                const float sunaltitude_c = std::min(1.0f, std::max(0.0f, expf(-4.0f * e.sunPos[2]))) * std::min(1.0f, std::max(0.0f, sunaltitude));
+
+                float fogdist = (e.nearViewRange - e.fogExpStart) / e.fogExpDivisor;
+                const float fog = std::min(1.0f, std::max(0.0f, expf(-fogdist)));
+                fogdist = std::min(1.0f, std::max(0.0f, 0.224f * fogdist));
+
+                const float lookLength = sqrt(look[0] * look[0] + look[1] * look[1]);
+                const float dirX = lookLength > 0 ? look[0] / lookLength : 0.0f;
+                const float dirY = lookLength > 0 ? look[1] / lookLength : 1.0f;
+                const float suncos = dirX * e.sunPos[0] + dirY * e.sunPos[1];
+                const float mie = (1.58f / (1.24f - suncos)) * sunaltitude_c;
+                const float rayl = 1.0f - 0.09f * mie;
+                const float atmdep = 1.33f;
+                const float scatterT = 0.5f * (1 + suncos);
+                float c1[3];
+                for (int i = 0; i < 3; ++i) {
+                    const float scatterI = mix(e.inscatter[i], e.outscatter[i], scatterT);
+                    float att = atmdep * scatterI * (sunaltitude_a + 0.7f * mie);
+                    att = (1 - expf(-fogdist * att)) / att;
+                    const float k0 = mie * 0.125f + rayl * newSky[i];
+                    const float k1 = att * (1.17f * atmdep + 0.89f) * sunaltitude_b;
+                    // From the added light of the scattering to the fog model of Direct3D.
+                    c1[i] = k0 * k1 / std::max(0.02f, 1.0f - fog);
+                }
+                RGBVECTOR nearFogCol(
+                    (1.0f - e.niceWeather) * fogCol.r + e.niceWeather * c1[0],
+                    (1.0f - e.niceWeather) * fogCol.g + e.niceWeather * c1[1],
+                    (1.0f - e.niceWeather) * fogCol.b + e.niceWeather * c1[2]);
+                mwBridge->setScenegraphFogCol((DWORD)nearFogCol);
+            }
+        }
         sendToRenderer(EnvironmentId, &e, sizeof(e));
     }
 
@@ -1311,6 +1384,10 @@ namespace Deviceless {
                 eye[0] = -(m._41 * m._11 + m._42 * m._12 + m._43 * m._13);
                 eye[1] = -(m._41 * m._21 + m._42 * m._22 + m._43 * m._23);
                 eye[2] = -(m._41 * m._31 + m._42 * m._32 + m._43 * m._33);
+                // The camera looks along the third axis of its view.
+                look[0] = m._13;
+                look[1] = m._23;
+                look[2] = m._33;
                 D3DXMATRIX view = *matrix;
                 view *= camEffectsMatrix;
                 *matrix = view;
