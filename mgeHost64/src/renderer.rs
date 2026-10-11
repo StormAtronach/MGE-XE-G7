@@ -169,6 +169,8 @@ pub struct DistantLand {
     post: Option<Post>,
     post_enabled: bool,
     post_chain: Vec<String>,
+    /// The folder of the game (the current folder), for the files of the shaders.
+    root: PathBuf,
     /// The water, when its wave texture was found; `None` before the first frame.
     water: Option<Water>,
     water_enabled: bool,
@@ -329,6 +331,20 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 /// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
 /// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
 /// `sun_altitude`.
+/// The bytes of a file under `Data Files`: in the game folder (the mods of Mod Organizer are
+/// in its file system), in `MGE_XE_GAME_DIR`, or beside this program (for a replay).
+fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
+    let name = Path::new("Data Files").join(relative);
+    let mut places = vec![root.join(&name)];
+    if let Some(game) = std::env::var_os("MGE_XE_GAME_DIR") {
+        places.push(PathBuf::from(game).join(&name));
+    }
+    if let Some(exe) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+        places.push(exe.join(&name));
+    }
+    places.iter().find_map(|place| std::fs::read(place).ok())
+}
+
 /// The casters of the shadow map: `ShadowVS` and `ShadowPS` of `XE Shadowmap.fx` for the
 /// land. The uniforms are those of the land (the matrix of the layer in `view_projection`).
 const LAND_SHADOW_SHADER: &str = "
@@ -429,6 +445,7 @@ impl DistantLand {
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
             post: None,
+            root: root.to_path_buf(),
             post_enabled: document.settings().render.enable_shaders,
             post_chain: document.settings().shaders.chain.clone(),
             water: None,
@@ -448,15 +465,7 @@ impl DistantLand {
         if land.enabled && land.water_enabled {
             // The wave texture: in the game folder (the mod of MGE XE in the file system of
             // Mod Organizer), or beside this program for a replay.
-            let name = ["Data Files", "textures", "MGE", "water_NRM.dds"].iter().collect::<PathBuf>();
-            let mut places = vec![root.join(&name)];
-            if let Some(game) = std::env::var_os("MGE_XE_GAME_DIR") {
-                places.push(PathBuf::from(game).join(&name));
-            }
-            if let Some(exe) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
-                places.push(exe.join(&name));
-            }
-            land.waves = places.iter().find_map(|place| std::fs::read(place).ok()).unwrap_or_default();
+            land.waves = data_file(root, "textures/MGE/water_NRM.dds").unwrap_or_default();
             if land.waves.is_empty() {
                 println!("water: the wave texture water_NRM.dds was not found; no water");
                 land.water_enabled = false;
@@ -990,7 +999,8 @@ impl Extension for DistantLand {
         let water = land && self.water.is_some() && self.environment.is_some_and(|e| e.has_water != 0);
         if self.post_enabled && self.post.is_none() {
             if let Some(waves) = self.water.as_ref().map(Water::waves) {
-                self.post = Some(Post::new(scene, &self.post_chain, waves));
+                let root = self.root.clone();
+                self.post = Some(Post::new(scene, &self.post_chain, waves, &|name| data_file(&root, name)));
             }
         }
         let post = land && self.post.as_ref().is_some_and(|post| !post.is_empty());

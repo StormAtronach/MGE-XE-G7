@@ -64,6 +64,10 @@ struct Variables {
 @group(0) @binding(5) var point_clamp: sampler;
 @group(0) @binding(6) var linear_clamp: sampler;
 @group(0) @binding(7) var linear_wrap: sampler;
+@group(0) @binding(8) var linear_mirror: sampler;
+@group(0) @binding(9) var point_wrap: sampler;
+// The texture of the shader (its `src` annotation), white without one.
+@group(0) @binding(10) var tex1: texture_2d<f32>;
 
 // The rows of the matrices of Direct3D: mview[row][col] of HLSL.
 fn mview(row: u32, col: u32) -> f32 {
@@ -106,6 +110,11 @@ pub struct Shader {
     pub disable_flags: u32,
     /// The shader has `disableSunglare`.
     pub no_sun_glare: bool,
+    /// The priority of the order: the category (scene 1M, atmosphere 2M, lens 3M, sensor
+    /// 4M, tone 5M, none 6M, final 9M) plus `priorityAdjust`.
+    pub priority: i64,
+    /// The texture of the shader under `Data Files/textures`, from its `src` annotation.
+    pub texture: Option<&'static str>,
 }
 
 /// Sunshafts by phal and Hrnchamd, MGE XE 0.11.0, as `Sunshafts.fx` has it: a mask of the
@@ -278,8 +287,175 @@ fn to_world(tex: vec2f) -> vec3f {
 }
 ";
 
+/// Bloom, fine, by Hrnchamd, v2, as `Bloom Fine.fx` has it: the energy over a threshold,
+/// a vertical and a horizontal blur, the sum in a linear space.
+const BLOOM_FINE: &str = "
+const bloomThreshold: f32 = 0.48;
+const bloomLevel: f32 = 0.23;
+const bloomColourSens: f32 = 0.39;
+const bloomGamma: f32 = 2.45;
+
+fn shader_at(t: vec2f) -> vec4f {
+    return textureSampleLevel(lastshader, point_clamp, t, 0.0);
+}
+fn pass_at(t: vec2f) -> vec4f {
+    return textureSampleLevel(lastpass, linear_clamp, t, 0.0);
+}
+
+@fragment fn energy_levels(in: Quad) -> @location(0) vec4f {
+    var radiance = shader_at(in.tex);
+    let depth = textureSampleLevel(depthframe, point_clamp, in.tex, 0.0).r;
+    let lum = dot(vec3f(0.27, 0.54, 0.19), radiance.rgb);
+    // Mix with luminance to avoid oversaturated single channels.
+    radiance = mix(vec4f(lum), radiance, bloomColourSens);
+    // Cut sky/distant illumination down.
+    let fogstart = u.fogcol.w;
+    let fogrange = u.fognearcol.w;
+    radiance *= 1.0 - 0.45 * saturate(2.0 * (depth - fogstart) / (fogrange - fogstart));
+    return clamp(radiance - bloomThreshold, vec4f(0.0), vec4f(1.0));
+}
+
+@fragment fn blur_vert(in: Quad) -> @location(0) vec4f {
+    var kernel = array<f32, 7>(0.05, 0.14, 0.31, 0.22, 0.31, 0.14, 0.05);
+    var taps = array<f32, 7>(-6.5, -4.5, -2.5, 0.0, 2.5, 4.5, 6.5);
+    var radiance = vec4f(0.0);
+    for (var i = 0; i < 7; i++) {
+        radiance += kernel[i] * pass_at(in.tex + vec2f(0.0, rcpres().y * taps[i]));
+    }
+    return radiance;
+}
+
+@fragment fn blur_horz_combine(in: Quad) -> @location(0) vec4f {
+    var kernel = array<f32, 7>(0.05, 0.14, 0.31, 0.22, 0.31, 0.14, 0.05);
+    var taps = array<f32, 7>(-6.5, -4.5, -2.5, 0.0, 2.5, 4.5, 6.5);
+    var base = shader_at(in.tex);
+    var radiance = vec4f(0.0);
+    for (var i = 0; i < 7; i++) {
+        radiance += kernel[i] * pass_at(in.tex + vec2f(rcpres().x * taps[i], 0.0));
+    }
+    // Mix in linear space.
+    base = pow(max(base, vec4f(0.0)), vec4f(bloomGamma));
+    return pow(max(base + bloomLevel * radiance, vec4f(0.0)), vec4f(1.0 / bloomGamma));
+}
+";
+
+/// Screen space ambient occlusion, the fast version with 8 taps, from ssao v09 by Knu, as
+/// `SSAO Fast.fx` has it with BLUR and ROTATE: the occlusion, two smart blurs, the sum.
+const SSAO_FAST: &str = "
+const N: i32 = 8;
+const R: f32 = 15.0;
+const multiplier: f32 = 1.8;
+const occlusion_falloff: f32 = 20.0;
+const blur_falloff: f32 = 0.1;
+const blur_radius: f32 = 5.0;
+const depth_scale: f32 = 10000.0;
+const eps: f32 = 1e-6;
+const sky: f32 = 1e6;
+const M: i32 = 8;
+
+fn invproj() -> vec2f {
+    let fov = u.eyepos.w;
+    return 2.0 * tan(0.5 * radians(fov)) * vec2f(1.0, rcpres().x / rcpres().y);
+}
+
+fn to_view(tex: vec2f) -> vec3f {
+    let depth = textureSampleLevel(depthframe, point_clamp, tex, 0.0).r;
+    let xy = depth * (tex - 0.5) * invproj();
+    return vec3f(xy, depth);
+}
+
+fn from_view(view: vec3f) -> vec2f {
+    return (view.xy / view.z) / invproj() + vec2f(0.5, 0.5);
+}
+
+fn pack2(f: f32) -> vec2f {
+    return vec2f(f, fract(f * 255.0 - 0.5));
+}
+
+fn unpack2(f: vec2f) -> f32 {
+    return f.x + ((f.y - 0.5) / 255.0);
+}
+
+@fragment fn ssao(in: Quad) -> @location(0) vec4f {
+    var dirs = array<vec3f, 8>(
+        vec3f(0.00762, -0.01247, 0.03311), vec3f(-0.61057, 0.20510, 0.58876),
+        vec3f(0.55319, 0.67960, -0.19194), vec3f(-0.43533, 0.62404, 0.45133),
+        vec3f(-0.02386, -0.03104, 0.01502), vec3f(-0.20990, 0.10082, 0.03849),
+        vec3f(0.06331, -0.17620, -0.31359), vec3f(-0.12261, 0.00720, -0.12465));
+    let tex = in.tex;
+    let xylength = sqrt(1.0 - u.eyevec.z * u.eyevec.z);
+    let pos = to_view(tex);
+    let waterlevel = u.suncol.w;
+    let water = pos.z * u.eyevec.z - pos.y * xylength + u.eyepos.z;
+    if pos.z <= 0.0 || pos.z > sky || (water - waterlevel) < 0.0 {
+        return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
+    let rcp = rcpres();
+    let left = pos - to_view(tex + rcp * vec2f(-1.0, 0.0));
+    let right = to_view(tex + rcp * vec2f(1.0, 0.0)) - pos;
+    let up = pos - to_view(tex + rcp * vec2f(0.0, -1.0));
+    let down = to_view(tex + rcp * vec2f(0.0, 1.0)) - pos;
+    var dx = select(right, left, length(left) < length(right));
+    var dy = select(down, up, length(up) < length(down));
+    let normal = normalize(cross(dy, dx));
+    dy = normalize(cross(dx, normal));
+    dx = normalize(dx);
+    let rnd = textureSampleLevel(tex1, point_wrap, tex / rcp / 8.0, 0.0).xyz * 2.0 - 1.0;
+    var ao = 0.0;
+    var amount = 0.0;
+    for (var j = 0; j < N; j++) {
+        var ray = reflect(dirs[j] * R, rnd);
+        ray *= sign(ray.z);
+        ray = dx * ray.x + dy * ray.y + normal * ray.z;
+        let weight = dot(normalize(ray), normal);
+        let occ = to_view(from_view(pos + ray));
+        // Bias occ.z to avoid self-occlusion errors from point sampling depth.
+        let diff = (pos.z + ray.z) - 1.00025 * occ.z;
+        amount += weight;
+        ao += weight * step(0.0, diff) * exp2(-diff / occlusion_falloff);
+    }
+    return vec4f(ao / amount, pack2(pos.z / depth_scale), 1.0);
+}
+
+@fragment fn smartblur(in: Quad) -> @location(0) vec4f {
+    var taps = array<vec2f, 8>(
+        vec2f(-0.695914, 0.457137), vec2f(-0.203345, 0.620716),
+        vec2f(0.96234, -0.194983), vec2f(0.473434, -0.480026),
+        vec2f(0.507431, 0.064425), vec2f(0.89642, 0.412458),
+        vec2f(-0.32194, -0.932615), vec2f(-0.791559, -0.59771));
+    let data = textureSampleLevel(lastpass, linear_mirror, in.tex, 0.0);
+    var total = data.r;
+    let depth = unpack2(data.gb);
+    let rev = blur_radius * (2.0 * data.a - 1.0);
+    var amount = 1.0;
+    for (var i = 0; i < M; i++) {
+        let s_tex = in.tex + rcpres() * taps[i] * rev;
+        let s_data = textureSampleLevel(lastpass, linear_mirror, s_tex, 0.0).xyz;
+        let s_depth = unpack2(s_data.gb);
+        let weight = exp2(-abs(depth - s_depth) / depth / blur_falloff);
+        amount += weight;
+        total += s_data.r * weight;
+    }
+    return vec4f(total / amount, data.gb, 1.0 - data.a);
+}
+
+@fragment fn combine(in: Quad) -> @location(0) vec4f {
+    let dist = length(to_view(in.tex));
+    let fognearstart = u.fog_near.x;
+    let fognearrange = u.fog_near.y;
+    let fog = saturate((fognearrange - dist) / (fognearrange - fognearstart));
+    let final_ao = fog * multiplier * textureSampleLevel(lastpass, point_clamp, in.tex, 0.0).r;
+    let result = mix(textureSampleLevel(lastshader, point_clamp, in.tex, 0.0).rgb, u.fognearcol.xyz * (1.0 - fog), final_ao);
+    return vec4f(result, 1.0);
+}
+";
+
 /// The shaders that this program has a port of.
-pub const SHADERS: &[Shader] = &[Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &["stretch", "blur_r_half", "rays", "blur_t", "combine"], disable_flags: 9, no_sun_glare: true }];
+pub const SHADERS: &[Shader] = &[
+    Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &["stretch", "blur_r_half", "rays", "blur_t", "combine"], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, texture: None },
+    Shader { name: "Bloom Fine", source: BLOOM_FINE, passes: &["energy_levels", "blur_vert", "blur_horz_combine"], disable_flags: 0, no_sun_glare: false, priority: 4_000_000, texture: None },
+    Shader { name: "SSAO Fast", source: SSAO_FAST, passes: &["ssao", "smartblur", "smartblur", "combine"], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: Some("MGE/poisson_nrm.dds") },
+];
 
 /// The linear depth of the game from its depth buffer: `XE Depth.fx` for the native depth,
 /// `1e38` where the game drew nothing.
@@ -330,9 +506,40 @@ struct Quad {
 }
 ";
 
+/// A look at a term, for a test: MGE_XE_POST_DEBUG 1 tints the result, 2 shows the linear
+/// depth over 10000 units as grey.
+const DEBUG_BLIT_SHADER: &str = "
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var source_sampler: sampler;
+@group(0) @binding(2) var<uniform> mode: vec4f;
+
+struct Quad {
+    @builtin(position) position: vec4f,
+    @location(0) tex: vec2f,
+}
+
+@vertex fn vs(@builtin(vertex_index) index: u32) -> Quad {
+    var out: Quad;
+    let x = f32(i32(index & 1u) * 4 - 1);
+    let y = f32(i32(index >> 1u) * 4 - 1);
+    out.position = vec4f(x, y, 0.0, 1.0);
+    out.tex = vec2f(0.5 + 0.5 * x, 0.5 - 0.5 * y);
+    return out;
+}
+
+@fragment fn fs(in: Quad) -> @location(0) vec4f {
+    let c = textureSampleLevel(source, source_sampler, in.tex, 0.0);
+    if mode.x == 2.0 {
+        return vec4f(vec3f(clamp(c.r / 10000.0, 0.0, 1.0)), 1.0);
+    }
+    return vec4f(c.r, 0.5 * c.g, 0.5 * c.b, 1.0);
+}
+";
+
 struct Compiled {
     index: usize,
     pipelines: Vec<wgpu::RenderPipeline>,
+    texture: Option<wgpu::TextureView>,
 }
 
 pub struct Post {
@@ -340,7 +547,8 @@ pub struct Post {
     chain: Vec<Compiled>,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
-    samplers: [wgpu::Sampler; 3],
+    samplers: [wgpu::Sampler; 5],
+    white: wgpu::TextureView,
     /// The three textures of the size of the picture, and their size.
     textures: Vec<wgpu::Texture>,
     views: Vec<wgpu::TextureView>,
@@ -352,6 +560,10 @@ pub struct Post {
     depth_uniform: wgpu::Buffer,
     blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
+    debug: f32,
+    debug_pipeline: wgpu::RenderPipeline,
+    debug_layout: wgpu::BindGroupLayout,
+    debug_uniform: wgpu::Buffer,
     waves: wgpu::TextureView,
     pub no_sun_glare: bool,
     pub frames: u64,
@@ -360,8 +572,9 @@ pub struct Post {
 
 impl Post {
     /// Makes the chain from the names of the settings; a name without a port is reported
-    /// and skipped. `waves` is the 3D wave texture of the water.
-    pub fn new(scene: &SceneView, chain: &[String], waves: wgpu::TextureView) -> Post {
+    /// and skipped. `waves` is the 3D wave texture of the water; `read` gives the bytes of
+    /// a file under `Data Files`.
+    pub fn new(scene: &SceneView, chain: &[String], waves: wgpu::TextureView, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Post {
         let device = scene.device;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post"),
@@ -379,6 +592,9 @@ impl Post {
                 sampler(5, wgpu::SamplerBindingType::NonFiltering),
                 sampler(6, wgpu::SamplerBindingType::Filtering),
                 sampler(7, wgpu::SamplerBindingType::Filtering),
+                sampler(8, wgpu::SamplerBindingType::Filtering),
+                sampler(9, wgpu::SamplerBindingType::NonFiltering),
+                texture(10, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
@@ -414,8 +630,20 @@ impl Post {
                 })
                 .collect();
             no_sun_glare |= shader.no_sun_glare;
-            compiled.push(Compiled { index, pipelines });
+            // The texture of the shader.
+            let texture = shader.texture.and_then(|name| {
+                let path = format!("textures/{name}");
+                let bytes = read(&path);
+                let view = bytes.and_then(|bytes| super::dds_texture(scene, name, &bytes).ok());
+                if view.is_none() {
+                    println!("post: the texture {name} of the shader {} was not read; white", shader.name);
+                }
+                view
+            });
+            compiled.push(Compiled { index, pipelines, texture });
         }
+        // The order of MGE XE: by the category, stable in the order of the chain.
+        compiled.sort_by_key(|c| SHADERS[c.index].priority);
         println!("post: {} of {} shaders of the chain have a port", compiled.len(), chain.len());
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let make_sampler = |filter: wgpu::FilterMode, address: wgpu::AddressMode| {
@@ -425,7 +653,28 @@ impl Post {
             make_sampler(wgpu::FilterMode::Nearest, wgpu::AddressMode::ClampToEdge),
             make_sampler(wgpu::FilterMode::Linear, wgpu::AddressMode::ClampToEdge),
             make_sampler(wgpu::FilterMode::Linear, wgpu::AddressMode::Repeat),
+            make_sampler(wgpu::FilterMode::Linear, wgpu::AddressMode::MirrorRepeat),
+            make_sampler(wgpu::FilterMode::Nearest, wgpu::AddressMode::Repeat),
         ];
+        // A white pixel, for a shader without a texture.
+        use wgpu::util::DeviceExt;
+        let white = device
+            .create_texture_with_data(
+                scene.queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("post white"),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::MipMajor,
+                &[255, 255, 255, 255],
+            )
+            .create_view(&Default::default());
         // The linear depth.
         let depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post depth"),
@@ -446,11 +695,26 @@ impl Post {
             entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
+        let debug = std::env::var("MGE_XE_POST_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post debug"),
+            entries: &[
+                texture(0, wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureViewDimension::D2),
+                sampler(1, wgpu::SamplerBindingType::NonFiltering),
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let debug_pipeline = full_screen_pipeline(device, "post debug", DEBUG_BLIT_SHADER, &debug_layout, scene.target_format);
+        let debug_uniform = {
+            use wgpu::util::DeviceExt;
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("post debug"), contents: bytemuck::cast_slice(&[debug, 0.0, 0.0, 0.0]), usage: wgpu::BufferUsages::UNIFORM })
+        };
         Post {
             chain: compiled,
             layout,
             uniforms,
             samplers,
+            white,
             textures: Vec::new(),
             views: Vec::new(),
             size: (0, 0),
@@ -460,6 +724,10 @@ impl Post {
             depth_uniform,
             blit_pipeline,
             blit_layout,
+            debug,
+            debug_pipeline,
+            debug_layout,
+            debug_uniform,
             waves,
             no_sun_glare,
             frames: 0,
@@ -553,6 +821,9 @@ impl Post {
                         wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) },
                         wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.samplers[1]) },
                         wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.samplers[2]) },
+                        wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&self.samplers[3]) },
+                        wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&self.samplers[4]) },
+                        wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(compiled.texture.as_ref().unwrap_or(&self.white)) },
                     ],
                 });
                 // A pass keeps what the texture held where it discards a pixel.
@@ -565,6 +836,24 @@ impl Post {
             }
             // The output of the last pass is the input of the next shader.
             last = previous;
+        }
+        // A look at a term, for a test.
+        if self.debug > 0.0 {
+            let source = if self.debug == 2.0 { depth_view } else { &self.views[last.unwrap_or(0)] };
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("post debug"),
+                layout: &self.debug_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) },
+                    wgpu::BindGroupEntry { binding: 2, resource: self.debug_uniform.as_entire_binding() },
+                ],
+            });
+            let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
+            pass.set_pipeline(&self.debug_pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+            return;
         }
         // The result into the picture of the frame.
         if let Some(index) = last {
