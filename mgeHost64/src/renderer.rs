@@ -30,6 +30,7 @@ use std::time::Instant;
 
 mod blend;
 mod statics;
+mod water;
 
 use distantland::mge_xe::distant_terrain::{
     TERRAIN_ATLAS_FILE_NAME, TERRAIN_BLEND_PATTERNS_FILE_NAME, TERRAIN_FILE_NAME, TERRAIN_MATERIAL_FILE_NAME, TERRAIN_MATERIAL_FLAGS_FILE_NAME,
@@ -39,6 +40,7 @@ use mge_config::{ConfigDocument, FILE_NAME};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, Replay, SceneView};
+use water::{Water, WaterFrame};
 
 /// The side of an exterior cell of the game, in the units of the game.
 const CELL: f32 = 8192.0;
@@ -86,6 +88,11 @@ struct Environment {
     foot_pos: [f32; 3],
     foot_valid: u32,
     time: f32,
+    /// Version 4, for the water: the level of the water of the cell, the visibility of the
+    /// sun (0 to 1), and 1 when the cell has water.
+    water_level: f32,
+    sun_vis: f32,
+    has_water: u32,
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -111,6 +118,9 @@ struct Gpu {
     pipeline: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
+    /// The same with other uniforms: for the reflection of the land in the water.
+    mirror_group: wgpu::BindGroup,
+    mirror_uniforms: wgpu::Buffer,
     meshes: Vec<Mesh>,
     /// The numbers of the header of `terrain.bin` for the shader.
     terrain: [f32; 4],
@@ -140,6 +150,10 @@ pub struct DistantLand {
     synchronous: bool,
     blend: Option<blend::Blend>,
     statics: Option<statics::Statics>,
+    /// The water, when its wave texture was found; `None` before the first frame.
+    water: Option<Water>,
+    water_enabled: bool,
+    waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
     frames: u64,
@@ -337,6 +351,9 @@ impl DistantLand {
             synchronous: false,
             blend: None,
             statics: None,
+            water: None,
+            water_enabled: true,
+            waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
             frames: 0,
@@ -348,6 +365,23 @@ impl DistantLand {
             settings.fog.above_water_start,
             settings.fog.above_water_end
         );
+        if land.enabled && land.water_enabled {
+            // The wave texture: in the game folder (the mod of MGE XE in the file system of
+            // Mod Organizer), or beside this program for a replay.
+            let name = ["Data Files", "textures", "MGE", "water_NRM.dds"].iter().collect::<PathBuf>();
+            let mut places = vec![root.join(&name)];
+            if let Some(game) = std::env::var_os("MGE_XE_GAME_DIR") {
+                places.push(PathBuf::from(game).join(&name));
+            }
+            if let Some(exe) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+                places.push(exe.join(&name));
+            }
+            land.waves = places.iter().find_map(|place| std::fs::read(place).ok()).unwrap_or_default();
+            if land.waves.is_empty() {
+                println!("water: the wave texture water_NRM.dds was not found; no water");
+                land.water_enabled = false;
+            }
+        }
         if land.enabled {
             // For a test, the distant land of another folder: MGE_XE_DISTANT_LAND_DIR.
             let folder: PathBuf = std::env::var_os("MGE_XE_DISTANT_LAND_DIR").map_or_else(|| root.join("Data Files").join("distantland"), PathBuf::from);
@@ -391,6 +425,7 @@ impl Drop for DistantLand {
             if self.environment.is_some() { "from the game with each frame" } else { "from mgeXE.toml" }
         );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
+        println!("water: {} frames, {} reflections", self.water.as_ref().map_or(0, |w| w.frames), self.water.as_ref().map_or(0, |w| w.reflections));
     }
 }
 
@@ -520,6 +555,9 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
     }
     entries.push(wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&sampler) });
     let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries });
+    let mirror_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("distant land mirror"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    entries[0] = wgpu::BindGroupEntry { binding: 0, resource: mirror_uniforms.as_entire_binding() };
+    let mirror_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries });
     let source = format!("{SHADER}{FOG_FUNCTION}");
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
@@ -584,6 +622,8 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
         pipeline,
         group,
         uniforms,
+        mirror_group,
+        mirror_uniforms,
         meshes,
         terrain: [terrain.world_origin.x, terrain.world_origin.y, 1.0 / material[0].max(1) as f32, 1.0 / material[1].max(1) as f32],
         atlas: [terrain.logical_tile_size as f32, terrain.gutter_size as f32, terrain.physical_tile_size as f32, terrain.tiles_per_row.max(1) as f32],
@@ -750,13 +790,24 @@ impl Extension for DistantLand {
         self.interior = scene.interior;
         self.finish_load(scene);
         let land = self.enabled && !scene.interior && self.gpu.is_some();
+        if land && self.water_enabled && self.water.is_none() {
+            match Water::new(scene, &self.waves) {
+                Ok(water) => self.water = Some(water),
+                Err(problem) => {
+                    println!("water: {problem}; no water");
+                    self.water_enabled = false;
+                }
+            }
+        }
+        let water = land && self.water.is_some() && self.environment.is_some_and(|e| e.has_water != 0);
         self.shade = self.per_pixel();
         FrameParameters {
             fog_range: land.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
             shade: self.shade.is_some(),
             sky: self.sky(),
             blend: land,
-            watched: 0,
+            // The water plane of the game is class 10.
+            watched: if water { 1 << 10 } else { 0 },
         }
     }
 
@@ -841,13 +892,13 @@ impl Extension for DistantLand {
     fn data(&mut self, id: u32, bytes: &[u8]) {
         if id == ENVIRONMENT_ID && bytes.len() >= size_of::<Environment>() {
             let environment: Environment = bytemuck::pod_read_unaligned(&bytes[..size_of::<Environment>()]);
-            if environment.version == 3 {
+            if environment.version == 4 {
                 self.environment = Some(environment);
             }
         }
     }
 
-    fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) -> bool {
+    fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
         self.near_fog = None;
         self.interior = scene.interior;
         if !self.enabled || scene.interior {
@@ -946,6 +997,51 @@ impl Extension for DistantLand {
         self.meshes_drawn += drawn;
         self.frames += 1;
         self.near_fog = Some(near_fog);
+
+        // The reflection in the water: the land and the sky, mirrored, in a pass of their
+        // own that goes to the GPU before the frame.
+        let water_frame = self.water_frame(scene);
+        if let (Some(water), Some(frame)) = (self.water.as_mut(), water_frame.as_ref()) {
+            let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection") });
+            let (mut mirror_pass, mirrored_view, far_projection) = water.begin_reflection(scene, &mut encoder, frame);
+            let mut mirror_uniforms = uniforms;
+            mirror_uniforms.view_projection = multiply(&mirrored_view, &far_projection);
+            scene.queue.write_buffer(&gpu.mirror_uniforms, 0, bytemuck::bytes_of(&mirror_uniforms));
+            let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
+            mirror_pass.set_pipeline(&gpu.pipeline);
+            mirror_pass.set_bind_group(0, &gpu.mirror_group, &[]);
+            for mesh in &gpu.meshes {
+                let inside = mirror_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
+                if !inside {
+                    continue;
+                }
+                mirror_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                mirror_pass.set_index_buffer(mesh.indexes.slice(..), wgpu::IndexFormat::Uint32);
+                mirror_pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+            // The statics, all of them: the game draws nothing in the reflection, so there is
+            // no handoff (a view range of 0, as the Direct3D 9 path has it).
+            if let Some(statics) = self.statics.as_mut() {
+                let mirror_frame = statics::Frame {
+                    view_projection: mirror_uniforms.view_projection,
+                    eye: [uniforms.eye[0], uniforms.eye[1], uniforms.eye[2], 0.0],
+                    fog_color,
+                    fog,
+                    flags: uniforms.flags,
+                    sun_direction: uniforms.sun_direction,
+                    sun_color: uniforms.sun_color,
+                    ambient: uniforms.ambient,
+                    scattering,
+                    planes: mirror_planes,
+                    fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
+                    time: self.started.elapsed().as_secs_f32(),
+                };
+                statics.draw(scene, &mut mirror_pass, &mirror_frame, 1);
+            }
+            water.reflect_sky(scene, &mut mirror_pass, replay, frame);
+            drop(mirror_pass);
+            scene.queue.submit([encoder.finish()]);
+        }
         if let Some(statics) = self.statics.as_mut() {
             let frame = statics::Frame {
                 view_projection,
@@ -961,7 +1057,7 @@ impl Extension for DistantLand {
                 fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
                 time: self.started.elapsed().as_secs_f32(),
             };
-            statics.draw(scene, pass, &frame);
+            statics.draw(scene, pass, &frame, 0);
         }
         true
     }
@@ -1001,6 +1097,17 @@ impl Extension for DistantLand {
 
 
     /// The draws of the game near the end of their view range go into the distant land.
+    /// The water plane of MGE XE in place of the water plane of the game.
+    fn draw_class(&mut self, class: u32, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
+        if class != 10 {
+            return;
+        }
+        let frame = self.water_frame(scene);
+        if let (Some(water), Some(frame)) = (self.water.as_mut(), frame.as_ref()) {
+            water.draw(scene, pass, frame);
+        }
+    }
+
     fn blend(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView) {
         // Without the view range from the game, the default of the game with distant land.
         let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
@@ -1010,6 +1117,52 @@ impl Extension for DistantLand {
 }
 
 impl DistantLand {
+    /// What the water needs from the environment of the frame, or `None` without water in
+    /// the cell, without the land, or without the environment.
+    fn water_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
+        let e = self.environment.filter(|e| e.has_water != 0 && e.flags & 4 != 0)?;
+        if self.interior || self.gpu.is_none() {
+            return None;
+        }
+        // The sun: z is negated when the sun is not visible, as the Direct3D 9 path has it.
+        let mut sun_pos = e.sun_pos;
+        if e.sun_vis == 0.0 {
+            sun_pos[2] = -sun_pos[2];
+        }
+        let scattering = (e.flags & 12 == 12).then(|| {
+            let far = e.sky_scatter_far;
+            let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
+            let altitude = (1.0 + e.sun_pos[2]).powi(10);
+            [
+                [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], e.nice_weather],
+                [sky[0], sky[1], sky[2], 1.0],
+                [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
+                [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
+                [
+                    2.8 + 4.3 / altitude.max(1e-6),
+                    (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
+                    (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
+                    0.0,
+                ],
+            ]
+        });
+        Some(WaterFrame {
+            water_level: e.water_level,
+            underwater: e.flags & 2 != 0,
+            time: e.time,
+            sun_pos,
+            sun_vis: e.sun_vis,
+            sun_color: scene.sun_color.map(|c| c * e.light_sun_mult),
+            sky_color: e.sky_col,
+            fog_color_far: e.fog_col_far,
+            nice_weather: e.nice_weather,
+            scattering,
+            wind: e.wind,
+            fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
+            draw_distance: self.draw_distance,
+        })
+    }
+
     /// The sky of MGE XE is for an exterior with the scattering on and the distant land in
     /// the frame, as `renderStage0` of the Direct3D 9 path has it.
     fn sky(&mut self) -> Option<[[f32; 4]; 8]> {

@@ -434,13 +434,23 @@ struct Loaded {
     textures: Vec<Option<Vec<u8>>>,
 }
 
-struct Gpu {
-    pipeline: wgpu::RenderPipeline,
+/// The buffers of one draw of the statics in a frame: the main view, and the reflection in
+/// the water. A write of a buffer is before all commands of the frame, so each draw of a
+/// frame has its own.
+struct BufferSet {
     group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
-    textures: Vec<wgpu::BindGroup>,
     instances: wgpu::Buffer,
     instance_capacity: usize,
+}
+
+struct Gpu {
+    pipeline: wgpu::RenderPipeline,
+    /// The same with the other side culled: for the reflection, where the mirror turns the
+    /// winding of each triangle.
+    mirror_pipeline: wgpu::RenderPipeline,
+    sets: [BufferSet; 2],
+    textures: Vec<wgpu::BindGroup>,
     grass_pipeline: wgpu::RenderPipeline,
     grass_group: wgpu::BindGroup,
     grass_uniforms: wgpu::Buffer,
@@ -944,7 +954,7 @@ impl Statics {
     }
 
     /// Draws the statics of the frame into the pass. Returns the number of draws.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame) -> u32 {
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
         if self.failed {
             return 0;
         }
@@ -1039,17 +1049,18 @@ impl Statics {
             self.instance_data.extend_from_slice(&[s.palette as f32, s.has_alpha as u32 as f32, s.animate_uv as u32 as f32, 0.0]);
         }
         let Some(gpu) = self.gpu.as_mut() else { return 0 };
+        let buffers = &mut gpu.sets[set];
         let needed = self.draws.len();
-        if needed > gpu.instance_capacity {
-            gpu.instance_capacity = needed.next_power_of_two().max(1024);
-            gpu.instances = scene.device.create_buffer(&wgpu::BufferDescriptor {
+        if needed > buffers.instance_capacity {
+            buffers.instance_capacity = needed.next_power_of_two().max(1024);
+            buffers.instances = scene.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("distant statics, the places of a frame"),
-                size: (gpu.instance_capacity * 80) as u64,
+                size: (buffers.instance_capacity * 80) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
         }
-        scene.queue.write_buffer(&gpu.instances, 0, bytemuck::cast_slice(&self.instance_data));
+        scene.queue.write_buffer(&buffers.instances, 0, bytemuck::cast_slice(&self.instance_data));
         let uniforms = Uniforms {
             view_projection: frame.view_projection,
             eye: frame.eye,
@@ -1066,11 +1077,11 @@ impl Statics {
             sun_altitude: frame.scattering[4],
             handoff: [frame.time, complete_at, HANDOFF_BAND, HANDOFF_CULL],
         };
-        scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        pass.set_pipeline(&gpu.pipeline);
-        pass.set_bind_group(0, &gpu.group, &[]);
-        pass.set_vertex_buffer(1, gpu.instances.slice(..));
+        pass.set_pipeline(if set == 1 { &gpu.mirror_pipeline } else { &gpu.pipeline });
+        pass.set_bind_group(0, &buffers.group, &[]);
+        pass.set_vertex_buffer(1, buffers.instances.slice(..));
         let (mut texture, mut bound) = (u32::MAX, u32::MAX);
         for (i, (draw_texture, subset, _, faces)) in self.draws.iter().enumerate() {
             let Some(resident) = self.resident.get(subset) else { continue };
@@ -1159,12 +1170,15 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
 fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
     let device = scene.device;
     let catalog = &loaded.catalog;
-    let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("distant statics"),
-        size: size_of::<Uniforms>() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+    let make_uniforms = || {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("distant statics"),
+            size: size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    let uniform_buffers = [make_uniforms(), make_uniforms()];
     let palettes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant statics, the palettes"),
         contents: bytemuck::cast_slice(&catalog.palettes),
@@ -1210,14 +1224,16 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
             count: None,
         }],
     });
-    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: palettes.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
-        ],
+    let groups = uniform_buffers.each_ref().map(|uniforms| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: palettes.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        })
     });
 
     // A texture that is not there, or that this program does not read, is white.
@@ -1270,7 +1286,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
     // half floats, the normal, the colour, and the texture coordinate as two half floats.
     let vertex = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4, 3 => Float16x2];
     let place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let make_pipeline = |cull: wgpu::Face| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant statics"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -1284,7 +1300,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         },
         // `CullMode = CW` of the pass of MGE XE: a triangle with its corners clockwise on
         // the screen is not drawn.
-        primitive: wgpu::PrimitiveState { front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+        primitive: wgpu::PrimitiveState { front_face: wgpu::FrontFace::Ccw, cull_mode: Some(cull), ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
@@ -1302,12 +1318,22 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         multiview_mask: None,
         cache: None,
     });
-    let instances = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("distant statics, the places of a frame"),
-        size: 1024 * 80,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+    let pipeline = make_pipeline(wgpu::Face::Back);
+    let mirror_pipeline = make_pipeline(wgpu::Face::Front);
+    let make_instances = || {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("distant statics, the places of a frame"),
+            size: 1024 * 80,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    let [group_main, group_mirror] = groups;
+    let [uniforms_main, uniforms_mirror] = uniform_buffers;
+    let sets = [
+        BufferSet { group: group_main, uniforms: uniforms_main, instances: make_instances(), instance_capacity: 1024 },
+        BufferSet { group: group_mirror, uniforms: uniforms_mirror, instances: make_instances(), instance_capacity: 1024 },
+    ];
 
     // The grass: its own uniforms and shader, and the textures of the statics.
     let grass_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1377,5 +1403,5 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    Gpu { pipeline, group, uniforms, textures, instances, instance_capacity: 1024, grass_pipeline, grass_group, grass_uniforms, grass_records }
+    Gpu { pipeline, mirror_pipeline, sets, textures, grass_pipeline, grass_group, grass_uniforms, grass_records }
 }

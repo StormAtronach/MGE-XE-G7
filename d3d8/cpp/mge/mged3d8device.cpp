@@ -1200,6 +1200,11 @@ namespace Deviceless {
         UINT footValid;
         // The time of the simulation of the game, in seconds. It stops in a menu.
         float time;
+        // Version 4, for the water: the level of the water of the cell, the visibility of
+        // the sun (0 to 1), and 1 when the cell has water.
+        float waterLevel;
+        float sunVis;
+        UINT hasWater;
     };
     static const UINT EnvironmentId = 1;
 
@@ -1211,7 +1216,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 3;
+        e.version = 4;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1371,6 +1376,9 @@ namespace Deviceless {
             e.footValid = 1;
         }
         e.time = mwBridge->simulationTime();
+        e.waterLevel = mwBridge->WaterLevel();
+        e.sunVis = exterior ? mwBridge->GetSunVis() / 255.0f : 0.0f;
+        e.hasWater = mwBridge->CellHasWater() ? 1u : 0u;
         sendToRenderer(EnvironmentId, &e, sizeof(e));
     }
 
