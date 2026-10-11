@@ -74,6 +74,7 @@ fn main() {
         "runtime.disabled",
         "runtime.mwse_disabled",
         "runtime.proxy_only",
+        "runtime.renderer_wgpu",
         "distant_land.water_without_land",
         "graphics.anti_aliasing",
         "graphics.z_buffer_format",

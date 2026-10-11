@@ -25,8 +25,16 @@ use ipc::server::{OutputState, Server};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Only the IPC host mode launched by `d3d8.dll` is supported.
+/// Two modes. The IPC host mode, launched by `d3d8.dll`, is the default. With `--live <name>`
+/// the process is the wgpu renderer: the nirender plugin launches it, and it draws the stream
+/// of the shared memory with that name in the window of the game until the stream ends.
 fn main() {
+    let arguments: Vec<String> = std::env::args().collect();
+    if arguments.iter().any(|argument| argument == "--live") {
+        nirender_wgpu::run(arguments);
+        return;
+    }
+
     let guard = match logging::init_logger("mgeHost64.log") {
         Ok(guard) => guard,
         Err(error) => {

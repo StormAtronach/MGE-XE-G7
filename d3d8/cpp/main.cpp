@@ -9,6 +9,7 @@
 #include "support/crashlog.h"
 
 #include <cstdio>
+#include <string>
 
 
 
@@ -58,6 +59,13 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             isMW = false;
         }
 
+        if (Configuration.RendererWgpu) {
+            // The wgpu renderer of the helper draws the picture, and no Direct3D device
+            // exists. The parts of MGE XE that need its device stay off, as in proxy-only mode.
+            LOG::logline(">> Using the wgpu renderer: no Direct3D device");
+            Configuration.OnlyProxyD3D8To9 = true;
+        }
+
         // Early startup patches
         MWInitPatch::patch();
 
@@ -93,8 +101,50 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
 
 
 
+// The Direct3D 8 of the nirender plugin: an object that makes no Direct3D device. The plugin
+// sends the draws of the game as a stream, and mgeHost64.exe draws the stream with wgpu.
+// Returns null when the plugin is not there.
+static void* createStreamedD3D(UINT version) {
+    char path[MAX_PATH];
+    DWORD length = GetModuleFileNameA(NULL, path, MAX_PATH);
+    while (length > 0 && path[length - 1] != '\\') {
+        --length;
+    }
+    std::string folder(path, length);
+
+    // The plugin starts the program that this variable names as its renderer.
+    SetEnvironmentVariableA("NIRENDER_HOST_EXE", (folder + "mgeHost64.exe").c_str());
+
+    HMODULE plugin = LoadLibraryA((folder + "Data Files\\MWSE\\lib\\nirender.dll").c_str());
+    if (!plugin) {
+        LOG::logline("!! wgpu renderer: Data Files\\MWSE\\lib\\nirender.dll did not load");
+        return nullptr;
+    }
+    typedef void* (__cdecl * CreateProc) (UINT);
+    CreateProc create = (CreateProc)GetProcAddress(plugin, "nirender_direct3d_create8");
+    if (!create) {
+        LOG::logline("!! wgpu renderer: the nirender plugin has no nirender_direct3d_create8");
+        return nullptr;
+    }
+    LOG::logline("-- wgpu renderer: the nirender plugin gives the game its Direct3D 8");
+    return create(version);
+}
+
+// The nirender plugin asks this when it loads: nonzero when the game gets its Direct3D 8
+// from the plugin. The plugin then puts its renderer code on before the game makes its renderer.
+extern "C" UINT _stdcall MgeRendererWgpuActive() {
+    return (isMW && Configuration.RendererWgpu) ? 1 : 0;
+}
+
 extern "C" void* _stdcall FakeDirect3DCreate(UINT version) {
     // Wrap Morrowind only, not TESCS
+    if (isMW && Configuration.RendererWgpu) {
+        Configuration.EnsureSettingsFile();
+        if (void* d3d = createStreamedD3D(version)) {
+            return d3d;
+        }
+        LOG::logline("!! wgpu renderer: not available, MGE XE continues with Direct3D 9 in proxy-only mode");
+    }
     if (isMW) {
         Configuration.EnsureSettingsFile();
         StartupGeneration::launchEarlyHost(isMW);

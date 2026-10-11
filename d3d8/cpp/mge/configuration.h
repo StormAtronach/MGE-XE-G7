@@ -83,6 +83,7 @@ typedef unsigned char BYTE;
 struct ConfigurationStruct {
     DWORD MGEFlags;
     bool OnlyProxyD3D8To9;
+    bool RendererWgpu;
     BYTE AALevel;
     BYTE ZBufFormat;
     BYTE VWait;

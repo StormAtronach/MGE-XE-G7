@@ -40,7 +40,11 @@ void MWInitPatch::patch() {
     }
 
     // Patch texture loading to reduce process memory footprint
-    MWTextureLoader::patchLoadTexture2D();
+    // The patch gives its textures to a Direct3D device with UpdateTexture. With the wgpu
+    // renderer the game has no Direct3D device, and the game code loads the textures.
+    if (!Configuration.RendererWgpu) {
+        MWTextureLoader::patchLoadTexture2D();
+    }
 
     // Patches certain calls to timeGetTime to redirect to a better time.
     HighResolutionTimer::init();

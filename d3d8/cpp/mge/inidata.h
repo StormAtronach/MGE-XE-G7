@@ -24,6 +24,7 @@ const iniSetting iniSettings[] = {
     BIT(Configuration.MGEFlags, DISPLAY_MESSAGES_BIT, "render.messages", 0),
     BIT(Configuration.MGEFlags, USE_MENU_CACHING_BIT, "runtime.menu_caching", 0),
     NUM(Configuration.OnlyProxyD3D8To9, t_bool, "runtime.proxy_only", DONT_SAVE),
+    NUM(Configuration.RendererWgpu, t_bool, "runtime.renderer_wgpu", DONT_SAVE),
 
     BIT(Configuration.MGEFlags, USE_DISTANT_LAND_BIT, "distant_land.enabled", 0),
     NUM(Configuration.AutomaticDistantLandRebuild, t_bool, "distant_land.automatic_rebuild", 0),

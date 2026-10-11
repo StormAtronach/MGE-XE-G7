@@ -82,6 +82,7 @@ the same mapping ten times.
 | `[Misc] MGE Disabled` | `runtime.disabled` |
 | `[Misc] Internal MWSE Disabled` | `runtime.mwse_disabled` |
 | `[Misc] Only Proxy D3D8To9` | `runtime.proxy_only` |
+| (new, no INI key) | `runtime.renderer_wgpu` |
 | `[Misc] Skip Intro Movies` | `runtime.skip_intro` |
 | `[Misc] Use Menu Background Caching` | `runtime.menu_caching` |
 | `[Misc] Customize 3rd Person Camera` | `runtime.custom_camera` |

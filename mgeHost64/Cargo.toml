@@ -16,6 +16,9 @@ la-arena = "0.3.1"
 mge-config = { path = "../mge-config" }
 distantland = { path = "../distantland" }
 arc-swap = "1.9"
+# The wgpu renderer for the stream of the nirender plugin. The crate is in the repository of
+# the plugin for now: the two repositories are side by side.
+nirender_wgpu = { package = "nirender-host", path = "../../nirender-plugin/host" }
 
 [dev-dependencies]
 distantland_test_support = { path = "../distantland/crates/test-support" }

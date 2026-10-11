@@ -9,3 +9,4 @@ MGE_WaterLookSet
 MGE_WaterMasksSet
 MGE_WaterDrySet
 MGE_RenderLinkConnect
+NirenderD3D8=MgeRendererWgpuActive
