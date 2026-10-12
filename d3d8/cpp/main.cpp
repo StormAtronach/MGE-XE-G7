@@ -60,6 +60,15 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             isMW = false;
         }
 
+        if (Configuration.RendererWgpu && GetFileAttributesA("mgeHost64.exe") == INVALID_FILE_ATTRIBUTES) {
+            // The helper is the renderer. Without its program nothing draws, and the window
+            // of the game stays empty: a program that is missing was taken away (a virus
+            // scanner) or was not installed. The decision is made here, before the plugin
+            // asks, so the plugin stays idle and MGE XE runs as without the switch.
+            LOG::logline("!! wgpu renderer: mgeHost64.exe is missing in the folder of the game; MGE XE continues with Direct3D 9");
+            Configuration.RendererWgpu = false;
+        }
+
         if (Configuration.RendererWgpu) {
             // The wgpu renderer of the helper draws the picture, and no Direct3D device
             // exists. The parts of MGE XE that need its device stay off, as in proxy-only mode.

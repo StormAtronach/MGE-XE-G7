@@ -35,6 +35,9 @@ same files; the plugin stays idle. That is the way back.
   `renderer_wgpu = false` to get MGE XE with its distant land back until the cause is
   known.
 - Another mod that changes the renderer code of the game (not its Lua) has the same effect.
+- When `mgeHost64.exe` is not in the folder of the game (a virus scanner took it away, or
+  the archive was not extracted in full), MGE XE runs on Direct3D 9 as without the switch,
+  and `mgeXE.log` says so.
 - The same fallback applies when the Lua side of the plugin does not run (the Lua of MWSE
   failed to start, or `Data Files/MWSE/mods/nirender/main.lua` is missing): the game runs
   on Direct3D 9 through the proxy for that session, and `nirender.log` says why.
@@ -81,7 +84,8 @@ is small, the game is near a crash for lack of memory. The panel is not in scree
 1. Press F11 in the game (the key is `captureKey` in `Data Files/MWSE/config/nirender.json`;
    `"none"` turns it off). The plugin writes the next 3 frames into
    `nirender-<date>.nircap` in the Morrowind folder. We can draw that file without your
-   game and your mods, and see what you saw.
+   game and your mods, and see what you saw. Some pictures of the menus are not in the
+   file (the game cannot give them a second time), so a menu can have blank parts in it.
 2. Send that file with `mgeXE.log`, `MWSE.log`, `nirender.log` and `nirender-host.log`
    from the Morrowind folder, and a screenshot. The first lines of `nirender.log` and
    `nirender-host.log` name the versions.
