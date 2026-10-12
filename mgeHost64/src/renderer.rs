@@ -880,8 +880,25 @@ fn extension_shade(in: VertexOut) -> vec4f {
     }
     var d = vec3f(0.0);
     var a = draw.scene_ambient.rgb;
-    for (var i = 0u; i < draw.light_range.y; i++) {
-        let light = lights[draw.light_range.x + i];
+    // The lights of the draw, or of the cluster of the pixel when the frame has clusters.
+    var first = draw.light_range.x;
+    var count = draw.light_range.y;
+    var clustered = false;
+    if draw.light_range.w != 0u {
+        let view_z = (draw.view * vec4f(in.world_position, 1.0)).z;
+        let cluster = cluster_lights(in.clip.xy, view_z);
+        if clusters.grid.w != 0u {
+            first = cluster.x;
+            count = cluster.y;
+            clustered = true;
+        }
+    }
+    for (var i = 0u; i < count; i++) {
+        var at = first + i;
+        if clustered {
+            at = cluster_indexes[at];
+        }
+        let light = lights[at];
         if light.position.w == 3.0 {
             d += light.diffuse.rgb * clamp(dot(normal, -light.direction.xyz), 0.0, 1.0);
             a += light.ambient.rgb;
