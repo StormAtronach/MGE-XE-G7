@@ -10,14 +10,33 @@ It is a test build. Read the known issues before you report one.
 
 ## The switch
 
-In `mgeXE.toml`, under `[runtime]`:
+The new renderer is on by default. With a new settings file, you do not have to set
+anything.
+
+MGE XE does not change a settings file that you have. If you used an earlier test build,
+your `mgeXE.toml` has the line `renderer_wgpu = false`, because those builds wrote it. Then
+the new renderer is off, and a message in the game tells you. To turn it on, change the
+line below `[runtime]` in `mgeXE.toml`:
 
 ```toml
+[runtime]
 renderer_wgpu = true
 ```
 
-With `false`, or without the line, the game runs MGE XE on Direct3D 9 as before, with the
-same files; the plugin stays idle. That is the way back.
+The line must be below `[runtime]`. Below `[render]` it has no effect, and `mgeXE.log` has
+a warning about an unknown key.
+
+To go back to MGE XE on Direct3D 9, set the line to `false`. The plugin is then idle.
+
+This archive does not have the `d3d9.dll` (DXVK) of MGE XE G7. The new renderer does not
+use it. MGE XE on Direct3D 9 runs with the `d3d9.dll` that you have, or with the one of
+Windows.
+
+How to know that the new renderer is in use:
+
+- `mgeXE.log` has the line `>> Using the wgpu renderer: no Direct3D device`.
+- `MWSE.log` has a line `[nirender] ... mode live`.
+- The file `nirender-host.log` is in the Morrowind folder.
 
 The renderer draws with Vulkan or with Direct3D 12. It takes the first choice for the
 machine; to name one, add a line under `[runtime]`:
@@ -45,9 +64,10 @@ adapter and the one in use.
   `renderer_wgpu = false` to get MGE XE with its distant land back until the cause is
   known.
 - Another mod that changes the renderer code of the game (not its Lua) has the same effect.
-- When `mgeHost64.exe` is not in the folder of the game (a virus scanner took it away, or
-  the archive was not extracted in full), MGE XE runs on Direct3D 9 as without the switch,
-  and `mgeXE.log` says so.
+- When a part of the new renderer is missing, MGE XE runs on Direct3D 9 as without the
+  switch, and `mgeXE.log` names the part. The parts are `mgeHost64.exe`, `MWSE.dll`,
+  `Data Files/MWSE/lib/nirender.dll` and `Data Files/MWSE/mods/nirender/main.lua`. A virus
+  scanner can take a program away, and an archive can be extracted in part.
 - The same fallback applies when the Lua side of the plugin does not run (the Lua of MWSE
   failed to start, or `Data Files/MWSE/mods/nirender/main.lua` is missing): the game runs
   on Direct3D 9 through the proxy for that session, and `nirender.log` says why.

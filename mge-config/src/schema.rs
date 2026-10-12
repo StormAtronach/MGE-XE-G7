@@ -463,7 +463,7 @@ impl Default for RuntimeSettings {
             disabled: false,
             mwse_disabled: false,
             proxy_only: false,
-            renderer_wgpu: false,
+            renderer_wgpu: true,
             renderer_backend: RendererBackend::Auto,
             skip_intro: true,
             menu_caching: false,

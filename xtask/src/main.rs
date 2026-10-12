@@ -383,6 +383,13 @@ fn cmd_dist(root: &Path) {
         fs::copy(&src, staging.join(name)).unwrap();
     }
     mirror_dir(&root.join("assets"), &staging);
+    // The d3d9.dll of the assets is the DXVK build for the Direct3D 9 path. The wgpu
+    // renderer does not use it, and a file with this name in an archive replaces the
+    // d3d9.dll that a user has. The Direct3D 9 path runs with the d3d9.dll of Windows.
+    let dxvk = staging.join("d3d9.dll");
+    if dxvk.exists() {
+        fs::remove_file(&dxvk).unwrap_or_else(|e| panic!("failed to remove {}: {e}", dxvk.display()));
+    }
     copy_readme(root, &staging);
     // The wgpu renderer needs the nirender plugin: the archive carries it.
     if !collect_plugin(root, &staging, true) {

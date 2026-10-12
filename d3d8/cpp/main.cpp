@@ -60,13 +60,33 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             isMW = false;
         }
 
-        if (Configuration.RendererWgpu && GetFileAttributesA("mgeHost64.exe") == INVALID_FILE_ATTRIBUTES) {
-            // The helper is the renderer. Without its program nothing draws, and the window
-            // of the game stays empty: a program that is missing was taken away (a virus
-            // scanner) or was not installed. The decision is made here, before the plugin
-            // asks, so the plugin stays idle and MGE XE runs as without the switch.
-            LOG::logline("!! wgpu renderer: mgeHost64.exe is missing in the folder of the game; MGE XE continues with Direct3D 9");
-            Configuration.RendererWgpu = false;
+        if (Configuration.RendererWgpu) {
+            // The wgpu renderer is on by default. It needs the helper program, which draws,
+            // and the nirender plugin with MWSE, which gives the game its Direct3D 8. When a
+            // part is missing, MGE XE runs as without the switch: all of MGE XE on
+            // Direct3D 9. A program that is missing was taken away (a virus scanner) or was
+            // not installed. The decision is made here, before the plugin asks, so the
+            // plugin stays idle.
+            static const char* const parts[] = {
+                "mgeHost64.exe",
+                "MWSE.dll",
+                "Data Files\\MWSE\\lib\\nirender.dll",
+                "Data Files\\MWSE\\mods\\nirender\\main.lua",
+            };
+            const char* missing = nullptr;
+            for (const char* part : parts) {
+                if (GetFileAttributesA(part) == INVALID_FILE_ATTRIBUTES) {
+                    missing = part;
+                    break;
+                }
+            }
+            if (!missing && (Configuration.MGEFlags & MWSE_DISABLED)) {
+                missing = "MWSE (the setting runtime.mwse_disabled is on)";
+            }
+            if (missing) {
+                LOG::logline("!! wgpu renderer: not in use, a part is missing: %s. MGE XE continues with Direct3D 9", missing);
+                Configuration.RendererWgpu = false;
+            }
         }
 
         if (Configuration.RendererWgpu) {

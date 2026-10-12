@@ -120,11 +120,11 @@ draw distances can see 2x improvements around dense modded cells.
 
 ## The wgpu renderer (test build)
 
-This build carries a second renderer: with `renderer_wgpu = true` under `[runtime]` of
-`mgeXE.toml`, the game draws through the `nirender` MWSE plugin and `mgeHost64.exe`
-with wgpu instead of Direct3D. The archive includes the plugin. The switch, the
-requirements, the known issues and how to report a problem are in
-`MGE XE Renderer Readme.md`.
+This build carries a second renderer, and it is on by default. The game draws through the
+`nirender` MWSE plugin and `mgeHost64.exe` with wgpu instead of Direct3D. The archive
+includes the plugin. To go back to Direct3D 9, set `renderer_wgpu = false` under
+`[runtime]` of `mgeXE.toml`. The switch, the requirements, the known issues and how to
+report a problem are in `MGE XE Renderer Readme.md`.
 
 ## Requirements (IMPORTANT, READ CAREFULLY)
 
