@@ -528,7 +528,7 @@ impl Water {
 }
 
 /// The wave texture: a DDS volume of 32-bit BGRA pixels, its first level only.
-fn wave_texture(scene: &SceneView, dds: &[u8]) -> Result<wgpu::TextureView, String> {
+pub(super) fn wave_texture(scene: &SceneView, dds: &[u8]) -> Result<wgpu::TextureView, String> {
     let word = |at: usize| u32::from_le_bytes(dds[at..at + 4].try_into().unwrap());
     if dds.len() < 128 || &dds[0..4] != b"DDS " {
         return Err("the wave texture is not a DDS file".into());

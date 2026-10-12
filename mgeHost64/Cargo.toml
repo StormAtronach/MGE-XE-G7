@@ -19,6 +19,8 @@ arc-swap = "1.9"
 # The wgpu renderer for the stream of the nirender plugin. The crate is in the repository of
 # the plugin for now: the two repositories are side by side.
 nirender_wgpu = { package = "nirender-host", path = "../../nirender-plugin/host" }
+# For the answer of an error scope of wgpu (the compile of a shader file of a mod).
+pollster = "0.3"
 
 [dev-dependencies]
 distantland_test_support = { path = "../distantland/crates/test-support" }

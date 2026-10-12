@@ -115,6 +115,206 @@ pub struct Shader {
     pub priority: i64,
     /// The texture of the shader under `Data Files/textures`, from its `src` annotation.
     pub texture: Option<&'static str>,
+    /// The shader has `requiresHDR`: it reads the adaptation point `u.hdr`.
+    pub requires_hdr: bool,
+}
+
+/// A shader of the chain as this program compiles it: from a WGSL file of a mod, or from
+/// the table of the ports.
+struct Definition {
+    name: String,
+    source: String,
+    passes: Vec<String>,
+    disable_flags: u32,
+    no_sun_glare: bool,
+    priority: i64,
+    texture: Option<String>,
+    requires_hdr: bool,
+}
+
+impl Definition {
+    fn of_port(shader: &Shader) -> Definition {
+        Definition {
+            name: shader.name.to_string(),
+            source: shader.source.to_string(),
+            passes: shader.passes.iter().map(|pass| pass.to_string()).collect(),
+            disable_flags: shader.disable_flags,
+            no_sun_glare: shader.no_sun_glare,
+            priority: shader.priority,
+            texture: shader.texture.map(str::to_string),
+            requires_hdr: shader.requires_hdr,
+        }
+    }
+
+    /// A shader file of a mod: `Data Files/shaders/XEshaders/<name>.wgsl`. The file starts
+    /// with lines `//! key: value`, which have what the technique of an effect file of
+    /// MGE XE has in its annotations; the rest is WGSL, compiled after the common part
+    /// (`COMMON`: the variables `u`, the textures, the samplers, the vertex function `vs`
+    /// and the struct `Quad`). The keys:
+    ///
+    /// - `interface: mge-xe-wgsl 1` (needed)
+    /// - `passes: a, b` (needed): the fragment functions, one for each pass, in their order
+    /// - `category: scene | atmosphere | lens | sensor | tone | none | final` (`none`)
+    /// - `priority_adjust: N` (0)
+    /// - `mgeflags: N` (0): the shader does not run when a bit is set in the frame: 1
+    ///   interior, 2 exterior, 4 interior that behaves as an exterior, 8 under the water,
+    ///   16 above the water, 32 the sun is visible, 64 the sun is not visible
+    /// - `requires_hdr: true | false` (false)
+    /// - `disable_sunglare: true | false` (false)
+    /// - `texture: path under Data Files/textures` (none): bound as `tex1`
+    fn of_file(name: &str, text: &str) -> Result<Definition, String> {
+        let mut definition = Definition { name: name.to_string(), source: text.to_string(), passes: Vec::new(), disable_flags: 0, no_sun_glare: false, priority: 0, texture: None, requires_hdr: false };
+        let (mut category, mut adjust, mut interface) = (6_000_000i64, 0i64, false);
+        let flag = |value: &str| match value {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            other => Err(format!("`{other}` is not true or false")),
+        };
+        for line in text.lines() {
+            let Some(rest) = line.strip_prefix("//!") else { break };
+            let Some((key, value)) = rest.split_once(':') else { return Err(format!("the line `{line}` has no `key: value`")) };
+            let value = value.trim();
+            match key.trim() {
+                "interface" => interface = value == "mge-xe-wgsl 1",
+                "passes" => definition.passes = value.split(',').map(|pass| pass.trim().to_string()).filter(|pass| !pass.is_empty()).collect(),
+                "category" => {
+                    category = match value {
+                        "scene" => 1_000_000,
+                        "atmosphere" => 2_000_000,
+                        "lens" => 3_000_000,
+                        "sensor" => 4_000_000,
+                        "tone" => 5_000_000,
+                        "none" => 6_000_000,
+                        "final" => 9_000_000,
+                        other => return Err(format!("the category `{other}` is not known")),
+                    }
+                }
+                "priority_adjust" => adjust = value.parse().map_err(|_| format!("the priority adjust `{value}` is not a number"))?,
+                "mgeflags" => definition.disable_flags = value.parse().map_err(|_| format!("the flags `{value}` are not a number"))?,
+                "requires_hdr" => definition.requires_hdr = flag(value)?,
+                "disable_sunglare" => definition.no_sun_glare = flag(value)?,
+                "texture" => definition.texture = Some(value.to_string()),
+                other => return Err(format!("the key `{other}` is not known")),
+            }
+        }
+        if !interface {
+            return Err("no line `//! interface: mge-xe-wgsl 1` at its start".to_string());
+        }
+        if definition.passes.is_empty() {
+            return Err("no line `//! passes: ...` with the fragment functions".to_string());
+        }
+        definition.priority = category + adjust;
+        Ok(definition)
+    }
+}
+
+/// The HDR measure of MGE XE (`PostShaders::evalAdaptHDR`): the picture before the chain
+/// goes into 512 x 512 pixels and then by halves to 1 pixel, which is read back some frames
+/// later; its luminance moves the adaptation point of each frame, the `HDR` of a shader.
+struct Hdr {
+    texture: wgpu::Texture,
+    /// The levels of the texture, 512 x 512 to 1 x 1.
+    levels: Vec<wgpu::TextureView>,
+    pipeline: wgpu::RenderPipeline,
+    buffer: wgpu::Buffer,
+    state: HdrState,
+    /// The last luminance read, 0.5 before the first one.
+    luminance: f32,
+    point: [f32; 4],
+    last: Option<std::time::Instant>,
+    /// `render.hdr_reaction_time`, seconds.
+    reaction: f32,
+}
+
+/// The copy of the pixel into the buffer is in the commands of a frame; the map of the
+/// buffer is asked for in the frame after, when those commands are with the GPU.
+enum HdrState {
+    Idle,
+    Copied,
+    Mapping(std::sync::Arc<std::sync::atomic::AtomicBool>),
+}
+
+impl Hdr {
+    fn new(device: &wgpu::Device, blit_layout: &wgpu::BindGroupLayout, reaction: f32) -> Hdr {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("post hdr"),
+            size: wgpu::Extent3d { width: 512, height: 512, depth_or_array_layers: 1 },
+            mip_level_count: 10,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let levels = (0..10).map(|level| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: level, mip_level_count: Some(1), ..Default::default() })).collect();
+        let pipeline = full_screen_pipeline(device, "post hdr", BLIT_SHADER, blit_layout, wgpu::TextureFormat::Rgba8Unorm);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post hdr"), size: 4, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        Hdr { texture, levels, pipeline, buffer, state: HdrState::Idle, luminance: 0.5, point: [1.0; 4], last: None, reaction: reaction.clamp(0.01, 30.0) }
+    }
+
+    /// One frame of the measure. Returns the adaptation point.
+    fn frame(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, picture: &wgpu::TextureView, blit_layout: &wgpu::BindGroupLayout, linear: &wgpu::Sampler, environment_flags: u32) -> [f32; 4] {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        match &self.state {
+            HdrState::Idle => {
+                // A linear copy into each level is the linear `StretchRect` of Direct3D 9:
+                // the mean of 2 x 2 pixels from the second level on.
+                let mut source = picture;
+                for level in &self.levels {
+                    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("post hdr"),
+                        layout: blit_layout,
+                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(linear) }],
+                    });
+                    let mut pass = full_screen_pass(encoder, level, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+                    pass.set_pipeline(&self.pipeline);
+                    pass.set_bind_group(0, &group, &[]);
+                    pass.draw(0..3, 0..1);
+                    drop(pass);
+                    source = level;
+                }
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo { texture: &self.texture, mip_level: 9, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    wgpu::TexelCopyBufferInfo { buffer: &self.buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: None, rows_per_image: None } },
+                    wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                );
+                self.state = HdrState::Copied;
+            }
+            HdrState::Copied => {
+                let ready = std::sync::Arc::new(AtomicBool::new(false));
+                let flag = ready.clone();
+                self.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                    if result.is_ok() {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                });
+                self.state = HdrState::Mapping(ready);
+            }
+            HdrState::Mapping(ready) => {
+                if ready.load(Ordering::Relaxed) {
+                    if let Ok(pixel) = self.buffer.slice(..).get_mapped_range() {
+                        let (r, g, b) = (pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0, pixel[2] as f32 / 255.0);
+                        self.luminance = 0.27 * r + 0.67 * g + 0.06 * b;
+                    }
+                    self.buffer.unmap();
+                    self.state = HdrState::Idle;
+                }
+            }
+        }
+        // Each frame: the point follows the luminance with the reaction time. The scale is
+        // for an exterior and an interior that behaves as one (the flags 2 and 4).
+        let now = std::time::Instant::now();
+        let dt = self.last.map_or(0.0, |last| (now - last).as_secs_f32());
+        self.last = Some(now);
+        let scale = if environment_flags & 6 != 0 { 2.5 } else { 1.0 };
+        let lambda = (-dt / self.reaction).exp();
+        let p = &mut self.point;
+        p[3] = self.luminance;
+        p[2] = p[3] * scale + (p[2] - p[3] * scale) * lambda;
+        p[1] = p[3] + (p[1] - p[3]) * lambda;
+        p[0] = p[2] / scale;
+        *p
+    }
 }
 
 /// Sunshafts by phal and Hrnchamd, MGE XE 0.11.0, as `Sunshafts.fx` has it: a mask of the
@@ -541,15 +741,37 @@ fn fetch(tex: vec3f, uw: f32) -> f32 {
 }
 ");
 
+/// Eye Adaptation (HDR) by Hrnchamd, v4, as `Eye Adaptation (HDR).fx` has it: the exposure
+/// from the adaptation point, a film response curve, and less colour in low light.
+const EYE_ADAPTATION: &str = "
+const neutral_point: f32 = 0.335;
+const sensitivity: f32 = 0.11;
+const max_exposure: f32 = 3.2;
+
+@fragment fn tone(in: Quad) -> @location(0) vec4f {
+    let exposure = clamp(mix(1.0, neutral_point / u.hdr.x, sensitivity), 0.5, max_exposure) * sqrt(u.hdr.y / u.hdr.x);
+    let scotopic = 0.5 * saturate(exposure / max_exposure - 0.66666);
+    let c = textureSampleLevel(lastshader, point_wrap, in.tex, 0.0).rgb;
+    // More dynamic range in low light.
+    var g = exposure * c + (1.0 - exposure) * (c * c * c * c);
+    // The toe and the knee of a film response.
+    g = (((0.727408 * g + vec3f(-2.05477)) * g + vec3f(1.63747)) * g + vec3f(0.712032)) * g;
+    // Less colour when the exposure is high.
+    g = mix(g, vec3f(dot(g, vec3f(0.33333))), scotopic);
+    return vec4f(saturate3(g), 1.0);
+}
+";
+
 /// The shaders that this program has a port of.
 pub const SHADERS: &[Shader] = &[
-    Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &["stretch", "blur_r_half", "rays", "blur_t", "combine"], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, texture: None },
-    Shader { name: "Bloom Fine", source: BLOOM_FINE, passes: &["energy_levels", "blur_vert", "blur_horz_combine"], disable_flags: 0, no_sun_glare: false, priority: 4_000_000, texture: None },
+    Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &["stretch", "blur_r_half", "rays", "blur_t", "combine"], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, texture: None, requires_hdr: false },
+    Shader { name: "Bloom Fine", source: BLOOM_FINE, passes: &["energy_levels", "blur_vert", "blur_horz_combine"], disable_flags: 0, no_sun_glare: false, priority: 4_000_000, texture: None, requires_hdr: false },
     // `mgeflags` 22: not in a true exterior, not in an interior that behaves as an exterior,
     // not above the water. 17: not in an interior, not above the water.
-    Shader { name: "Underwater Interior Effects", source: UNDERWATER_INTERIOR, passes: &["wobble"], disable_flags: 22, no_sun_glare: false, priority: 1_000_000, texture: None },
-    Shader { name: "Underwater Effects", source: UNDERWATER, passes: &["rays"], disable_flags: 17, no_sun_glare: false, priority: 1_000_000, texture: None },
-    Shader { name: "SSAO Fast", source: SSAO_FAST, passes: &["ssao", "smartblur", "smartblur", "combine"], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: Some("MGE/poisson_nrm.dds") },
+    Shader { name: "Underwater Interior Effects", source: UNDERWATER_INTERIOR, passes: &["wobble"], disable_flags: 22, no_sun_glare: false, priority: 1_000_000, texture: None, requires_hdr: false },
+    Shader { name: "Underwater Effects", source: UNDERWATER, passes: &["rays"], disable_flags: 17, no_sun_glare: false, priority: 1_000_000, texture: None, requires_hdr: false },
+    Shader { name: "Eye Adaptation (HDR)", source: EYE_ADAPTATION, passes: &["tone"], disable_flags: 0, no_sun_glare: false, priority: 5_000_000, texture: None, requires_hdr: true },
+    Shader { name: "SSAO Fast", source: SSAO_FAST, passes: &["ssao", "smartblur", "smartblur", "combine"], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: Some("MGE/poisson_nrm.dds"), requires_hdr: false },
 ];
 
 /// The linear depth of the game from its depth buffer: `XE Depth.fx` for the native depth,
@@ -632,7 +854,9 @@ struct Quad {
 ";
 
 struct Compiled {
-    index: usize,
+    name: String,
+    disable_flags: u32,
+    priority: i64,
     pipelines: Vec<wgpu::RenderPipeline>,
     texture: Option<wgpu::TextureView>,
 }
@@ -661,15 +885,19 @@ pub struct Post {
     debug_uniform: wgpu::Buffer,
     waves: wgpu::TextureView,
     pub no_sun_glare: bool,
+    /// The HDR measure, when a shader of the chain needs it.
+    hdr: Option<Hdr>,
     pub frames: u64,
     pub shaders_run: u64,
 }
 
 impl Post {
-    /// Makes the chain from the names of the settings; a name without a port is reported
-    /// and skipped. `waves` is the 3D wave texture of the water; `read` gives the bytes of
-    /// a file under `Data Files`.
-    pub fn new(scene: &SceneView, chain: &[String], waves: wgpu::TextureView, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Post {
+    /// Makes the chain from the names of the settings. A name is a WGSL file of a mod
+    /// (`shaders/XEshaders/<name>.wgsl`, see `Definition::of_file`) or, without such a file,
+    /// a port of this program; a name with neither, and a file that does not compile, is
+    /// reported and skipped. `waves` is the 3D wave texture of the water; `read` gives the
+    /// bytes of a file under `Data Files`; `hdr_reaction` is `render.hdr_reaction_time`.
+    pub fn new(scene: &SceneView, chain: &[String], waves: wgpu::TextureView, read: &dyn Fn(&str) -> Option<Vec<u8>>, hdr_reaction: f32) -> Post {
         let device = scene.device;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post"),
@@ -695,19 +923,37 @@ impl Post {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let mut compiled = Vec::new();
         let mut no_sun_glare = false;
+        let mut requires_hdr = false;
+        let (mut ports, mut files) = (0, 0);
         for name in chain {
-            let Some((index, shader)) = SHADERS.iter().enumerate().find(|(_, shader)| shader.name == name) else {
-                println!("post: no port of the shader {name}; skipped");
-                continue;
+            let file = read(&format!("shaders/XEshaders/{name}.wgsl"));
+            let shader = match &file {
+                Some(bytes) => match Definition::of_file(name, &String::from_utf8_lossy(bytes)) {
+                    Ok(definition) => definition,
+                    Err(problem) => {
+                        println!("post: the shader file {name}.wgsl is not used: {problem}");
+                        continue;
+                    }
+                },
+                None => match SHADERS.iter().find(|shader| shader.name == name) {
+                    Some(port) => Definition::of_port(port),
+                    None => {
+                        println!("post: no file {name}.wgsl and no port of the shader {name}; skipped");
+                        continue;
+                    }
+                },
             };
             let source = format!("{COMMON}\n{}", shader.source);
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(shader.name), source: wgpu::ShaderSource::Wgsl(source.into()) });
-            let pipelines = shader
+            // An error of the WGSL of a file, or a pass that is not a function of it, comes
+            // back from the scope and does not stop the program.
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(&shader.name), source: wgpu::ShaderSource::Wgsl(source.into()) });
+            let pipelines: Vec<wgpu::RenderPipeline> = shader
                 .passes
                 .iter()
                 .map(|pass| {
                     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                        label: Some(shader.name),
+                        label: Some(&shader.name),
                         layout: Some(&pipeline_layout),
                         vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
                         primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
@@ -715,7 +961,7 @@ impl Post {
                         multisample: Default::default(),
                         fragment: Some(wgpu::FragmentState {
                             module: &module,
-                            entry_point: Some(pass),
+                            entry_point: Some(pass.as_str()),
                             compilation_options: Default::default(),
                             targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                         }),
@@ -724,9 +970,20 @@ impl Post {
                     })
                 })
                 .collect();
+            if let Some(error) = pollster::block_on(scope.pop()) {
+                // The lines of the message count the common part first.
+                println!("post: the shader {} does not compile; skipped (its first line is the line {} of the message):\n{error}", shader.name, COMMON.lines().count() + 1);
+                continue;
+            }
+            if file.is_some() {
+                files += 1;
+            } else {
+                ports += 1;
+            }
             no_sun_glare |= shader.no_sun_glare;
+            requires_hdr |= shader.requires_hdr;
             // The texture of the shader.
-            let texture = shader.texture.and_then(|name| {
+            let texture = shader.texture.as_deref().and_then(|name| {
                 let path = format!("textures/{name}");
                 let bytes = read(&path);
                 let view = bytes.and_then(|bytes| super::dds_texture(scene, name, &bytes).ok());
@@ -735,11 +992,11 @@ impl Post {
                 }
                 view
             });
-            compiled.push(Compiled { index, pipelines, texture });
+            compiled.push(Compiled { name: shader.name, disable_flags: shader.disable_flags, priority: shader.priority, pipelines, texture });
         }
         // The order of MGE XE: by the category, stable in the order of the chain.
-        compiled.sort_by_key(|c| SHADERS[c.index].priority);
-        println!("post: {} of {} shaders of the chain have a port", compiled.len(), chain.len());
+        compiled.sort_by_key(|c| c.priority);
+        println!("post: {} of {} shaders of the chain run: {ports} ports, {files} files of mods", compiled.len(), chain.len());
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let make_sampler = |filter: wgpu::FilterMode, address: wgpu::AddressMode| {
             device.create_sampler(&wgpu::SamplerDescriptor { address_mode_u: address, address_mode_v: address, address_mode_w: address, mag_filter: filter, min_filter: filter, ..Default::default() })
@@ -790,6 +1047,7 @@ impl Post {
             entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
+        let hdr = requires_hdr.then(|| Hdr::new(device, &blit_layout, hdr_reaction));
         let debug = std::env::var("MGE_XE_POST_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
         let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post debug"),
@@ -825,6 +1083,7 @@ impl Post {
             debug_uniform,
             waves,
             no_sun_glare,
+            hdr,
             frames: 0,
             shaders_run: 0,
         }
@@ -869,6 +1128,12 @@ impl Post {
         let device = scene.device;
         self.size_textures(device, scene.target_size);
         self.frames += 1;
+        // The adaptation point of the frame, from the picture before the chain.
+        let mut variables = *variables;
+        if let Some(hdr) = self.hdr.as_mut() {
+            variables.hdr = hdr.frame(device, encoder, picture, &self.blit_layout, &self.samplers[1], environment_flags);
+        }
+        let variables = &variables;
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(variables));
         // The linear depth of the game.
         scene.queue.write_buffer(&self.depth_uniform, 0, bytemuck::cast_slice(&[variables.mproj[2][2], variables.mproj[3][2], 0.0, 0.0]));
@@ -889,8 +1154,7 @@ impl Post {
         let mut last: Option<usize> = None;
         let mut previous: Option<usize> = None;
         for compiled in &self.chain {
-            let shader = &SHADERS[compiled.index];
-            if shader.disable_flags & environment_flags != 0 {
+            if compiled.disable_flags & environment_flags != 0 {
                 continue;
             }
             self.shaders_run += 1;
@@ -905,7 +1169,7 @@ impl Post {
                     None => lastshader_view,
                 };
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some(shader.name),
+                    label: Some(&compiled.name),
                     layout: &self.layout,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },

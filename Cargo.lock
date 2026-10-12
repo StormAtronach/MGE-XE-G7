@@ -2640,6 +2640,7 @@ dependencies = [
  "mge-config",
  "mimalloc",
  "nirender-host",
+ "pollster",
  "thiserror 2.0.19",
  "tracing",
  "tracing-appender",

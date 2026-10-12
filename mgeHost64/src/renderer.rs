@@ -171,6 +171,8 @@ pub struct DistantLand {
     post: Option<Post>,
     post_enabled: bool,
     post_chain: Vec<String>,
+    /// `render.hdr_reaction_time`: the seconds that the HDR measure takes to follow the picture.
+    hdr_reaction: f32,
     /// The folder of the game (the current folder), for the files of the shaders.
     root: PathBuf,
     /// The water, when its wave texture was found; `None` before the first frame.
@@ -450,6 +452,7 @@ impl DistantLand {
             root: root.to_path_buf(),
             post_enabled: document.settings().render.enable_shaders,
             post_chain: document.settings().shaders.chain.clone(),
+            hdr_reaction: document.settings().render.hdr_reaction_time,
             water: None,
             water_enabled: true,
             waves: Vec::new(),
@@ -1036,13 +1039,20 @@ impl Extension for DistantLand {
             }
         }
         let water = land && self.water.is_some() && self.environment.is_some_and(|e| e.has_water != 0);
+        // The chain of post shaders runs in an interior too, as it does with MGE XE on
+        // Direct3D 9: its wave texture is that of the water, or one of its own when the
+        // frame has no water object (the first frame is in an interior).
         if self.post_enabled && self.post.is_none() {
-            if let Some(waves) = self.water.as_ref().map(Water::waves) {
+            let waves = match self.water.as_ref() {
+                Some(water) => Some(water.waves()),
+                None => water::wave_texture(scene, &self.waves).ok(),
+            };
+            if let Some(waves) = waves {
                 let root = self.root.clone();
-                self.post = Some(Post::new(scene, &self.post_chain, waves, &|name| data_file(&root, name)));
+                self.post = Some(Post::new(scene, &self.post_chain, waves, &|name| data_file(&root, name), self.hdr_reaction));
             }
         }
-        let post = land && self.post.as_ref().is_some_and(|post| !post.is_empty());
+        let post = self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty());
         // The glare of the sun of the game (class 8) goes when a shader draws its own sun.
         let no_glare = post && self.post.as_ref().is_some_and(|post| post.no_sun_glare);
         // The shadow map: its matrices from the camera and the sun of this frame.
