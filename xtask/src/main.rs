@@ -309,8 +309,50 @@ fn cmd_build(root: &Path, mode: BuildMode) {
     // next to the binaries. mirror_dir only rewrites files that actually changed.
     mirror_dir(&root.join("assets"), &out_dir);
     copy_readme(root, &out_dir);
+    // The nirender plugin, when its release build is there (dist builds it).
+    if collect_plugin(root, &out_dir, false) {
+        println!("nirender plugin collected from {}", plugin_dir(root).display());
+    }
 
     println!("Artifacts and assets collected into {}", out_dir.display());
+}
+
+/// The repository of the nirender plugin: the sibling folder `nirender-plugin`, or the one
+/// that NIRENDER_PLUGIN_DIR names.
+fn plugin_dir(root: &Path) -> PathBuf {
+    env::var("NIRENDER_PLUGIN_DIR").map(PathBuf::from).unwrap_or_else(|_| root.parent().unwrap().join("nirender-plugin"))
+}
+
+/// The nirender plugin into the output, as the MWSE mod that the wgpu renderer needs: the
+/// DLL under `Data Files/MWSE/lib` and `main.lua` under `Data Files/MWSE/mods/nirender`.
+/// The other Lua files of the mod are its test harness and stay out. With `build`, the
+/// release build of the plugin runs first. Returns false when the plugin is not there.
+fn collect_plugin(root: &Path, out_dir: &Path, build: bool) -> bool {
+    let plugin = plugin_dir(root);
+    if !plugin.join("Cargo.toml").exists() {
+        return false;
+    }
+    if build {
+        run(cargo().arg("build").arg("--release").current_dir(&plugin));
+    }
+    let dll = plugin.join("target/i686-pc-windows-msvc/release/nirender.dll");
+    let lua = plugin.join("mod/MWSE/mods/nirender/main.lua");
+    if !dll.exists() || !lua.exists() {
+        return false;
+    }
+    let lib = out_dir.join("Data Files/MWSE/lib");
+    let mods = out_dir.join("Data Files/MWSE/mods/nirender");
+    fs::create_dir_all(&lib).unwrap();
+    fs::create_dir_all(&mods).unwrap();
+    fs::copy(&dll, lib.join("nirender.dll")).unwrap();
+    fs::copy(&lua, mods.join("main.lua")).unwrap();
+    true
+}
+
+/// 7-Zip: on the PATH, or at its usual place.
+fn seven_zip() -> PathBuf {
+    let usual = PathBuf::from(r"C:\Program Files\7-Zip\7z.exe");
+    if usual.exists() { usual } else { PathBuf::from("7z") }
 }
 
 /// The release archive: `--max-perf` binaries plus assets, packed flat so it
@@ -342,6 +384,11 @@ fn cmd_dist(root: &Path) {
     }
     mirror_dir(&root.join("assets"), &staging);
     copy_readme(root, &staging);
+    // The wgpu renderer needs the nirender plugin: the archive carries it.
+    if !collect_plugin(root, &staging, true) {
+        eprintln!("error: the nirender plugin was not found at {} (set NIRENDER_PLUGIN_DIR)", plugin_dir(root).display());
+        process::exit(1);
+    }
 
     let out_dir = root.join("dist");
     fs::create_dir_all(&out_dir).unwrap();
@@ -354,7 +401,7 @@ fn cmd_dist(root: &Path) {
 
     // Every top-level entry is named explicitly, from inside the staging directory,
     // so the archive holds no wrapper folder and no "./" prefixes.
-    let mut pack = Command::new("7z");
+    let mut pack = Command::new(seven_zip());
     pack.arg("a").arg("-t7z").arg("-mx=9").arg(&archive);
     for entry in fs::read_dir(&staging).unwrap() {
         pack.arg(entry.unwrap().file_name());
@@ -434,9 +481,12 @@ fn resolve_from_local_toml(root: &Path) -> Option<PathBuf> {
 /// Ship the repo root README next to the binaries, renamed: the destination is a
 /// shared Morrowind directory where a bare README.md would collide with other mods.
 fn copy_readme(root: &Path, dest: &Path) {
-    let src = root.join("README.md");
-    if src.exists() {
-        fs::copy(&src, dest.join("MGE XE Readme.md")).unwrap();
+    let readmes = [("README.md", "MGE XE Readme.md"), ("RENDERER.md", "MGE XE Renderer Readme.md"), ("mgeHost64/POST_SHADERS.md", "MGE XE Post Shaders Readme.md")];
+    for (name, shipped) in readmes {
+        let src = root.join(name);
+        if src.exists() {
+            fs::copy(&src, dest.join(shipped)).unwrap();
+        }
     }
 }
 

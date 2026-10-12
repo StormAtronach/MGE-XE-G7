@@ -118,6 +118,14 @@ draw distances can see 2x improvements around dense modded cells.
   * **BC7 texture support**, a newer compression format that preserves
     significantly more detail, providing better compatibility with OpenMW mods.
 
+## The wgpu renderer (test build)
+
+This build carries a second renderer: with `renderer_wgpu = true` under `[runtime]` of
+`mgeXE.toml`, the game draws through the `nirender` MWSE plugin and `mgeHost64.exe`
+with wgpu instead of Direct3D. The archive includes the plugin. The switch, the
+requirements, the known issues and how to report a problem are in
+`MGE XE Renderer Readme.md`.
+
 ## Requirements (IMPORTANT, READ CAREFULLY)
 
 This release raises the hardware floor a long way over MGE XE 0.19.1. On
