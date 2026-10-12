@@ -67,6 +67,15 @@ same files; the plugin stays idle. That is the way back.
 - Only tested at 1920 x 1080 on one machine (NVIDIA, Vulkan). Other GPU vendors, other
   resolutions, windowed modes and long sessions are not tested.
 
+## The debug overlay
+
+Press F10 in the game (the key is `overlayKey` in `Data Files/MWSE/config/nirender.json`;
+`"none"` turns it off). A panel shows the frame rate, the time of each of the last 600
+frames as a graph with the long frames in red, the memory of the renderer and of the GPU,
+and the memory of the game with its address space and the largest free block of it. The
+game is a 32-bit program: when the address space is near 4096 MB, or the largest free block
+is small, the game is near a crash for lack of memory. The panel is not in screenshots.
+
 ## When something is wrong
 
 1. Press F11 in the game (the key is `captureKey` in `Data Files/MWSE/config/nirender.json`;
