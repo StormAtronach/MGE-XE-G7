@@ -418,6 +418,28 @@ impl Default for RenderSettings {
     }
 }
 
+/// The graphics API that the wgpu renderer of the helper draws with.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RendererBackend {
+    /// The first choice of wgpu for the machine.
+    #[default]
+    Auto,
+    Vulkan,
+    Dx12,
+}
+
+impl RendererBackend {
+    /// The value of the `--backend` argument of the helper, or `None` for the first choice.
+    pub fn argument(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Vulkan => Some("vulkan"),
+            Self::Dx12 => Some("dx12"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuntimeSettings {
@@ -425,6 +447,7 @@ pub struct RuntimeSettings {
     pub mwse_disabled: bool,
     pub proxy_only: bool,
     pub renderer_wgpu: bool,
+    pub renderer_backend: RendererBackend,
     pub skip_intro: bool,
     pub menu_caching: bool,
     pub custom_camera: bool,
@@ -441,6 +464,7 @@ impl Default for RuntimeSettings {
             mwse_disabled: false,
             proxy_only: false,
             renderer_wgpu: false,
+            renderer_backend: RendererBackend::Auto,
             skip_intro: true,
             menu_caching: false,
             custom_camera: false,

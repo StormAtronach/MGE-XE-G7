@@ -54,7 +54,15 @@ const NEAR: f32 = 64.0;
 const ENVIRONMENT_ID: u32 = 1;
 
 /// Runs the renderer with the distant land of MGE XE.
-pub fn run(arguments: Vec<String>) {
+pub fn run(mut arguments: Vec<String>) {
+    // The graphics API of the settings (`runtime.renderer_backend`), when the command line
+    // names none: the plugin gives `--backend` only for a test.
+    if !arguments.iter().any(|argument| argument == "--backend") {
+        let document = ConfigDocument::open(Path::new(".").join(FILE_NAME));
+        if let Some(backend) = document.settings().runtime.renderer_backend.argument() {
+            arguments.extend(["--backend".to_string(), backend.to_string()]);
+        }
+    }
     nirender_wgpu::run_with(arguments, Some(Box::new(DistantLand::start(Path::new(".")))));
 }
 

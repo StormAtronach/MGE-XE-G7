@@ -19,6 +19,16 @@ renderer_wgpu = true
 With `false`, or without the line, the game runs MGE XE on Direct3D 9 as before, with the
 same files; the plugin stays idle. That is the way back.
 
+The renderer draws with Vulkan or with Direct3D 12. It takes the first choice for the
+machine; to name one, add a line under `[runtime]`:
+
+```toml
+renderer_backend = "dx12"
+```
+
+The values are `auto`, `vulkan` and `dx12`. The first lines of `nirender-host.log` name the
+adapter and the one in use.
+
 ## Requirements
 
 - Everything that MGE XE G7 needs (see `MGE XE Readme.md`): a GPU with Vulkan 1.3, 64-bit
