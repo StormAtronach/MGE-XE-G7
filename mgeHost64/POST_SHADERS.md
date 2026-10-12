@@ -8,9 +8,16 @@ each name of the chain the renderer takes, in this order:
 2. its own port of the stock shader with that name;
 3. nothing: the log says that the shader was skipped.
 
-The stock shaders with a port: SSAO Fast, Sunshafts, Bloom Fine, Eye Adaptation (HDR),
-Underwater Effects, Underwater Interior Effects. Bloom Soft, Depth of Field and SSAO HQ have
-no port yet.
+The stock shaders with a port: SSAO Fast, SSAO HQ, Sunshafts, Depth of Field, Bloom Fine,
+Bloom Soft, Eye Adaptation (HDR), Underwater Effects, Underwater Interior Effects. A port has
+the switches of the file as it ships (for example the quality 3 of Bloom Soft).
+
+The renderer also has three shaders of its own, with methods that the pass model of
+Direct3D 9 did not allow: `Bloom G7` (a chain of half-size levels, after Jimenez 2014),
+`SSAO G7` (ground-truth ambient occlusion at half size, after Jimenez 2016) and
+`Depth of Field G7` (a thin lens with the near and the far field apart, at half size). A
+chain names them like any other; MGE XE on Direct3D 9 has no file of these names and skips
+them.
 
 So a mod can ship a `.wgsl` file beside its `.fx` file, with the same name: MGE XE on
 Direct3D 9 uses the `.fx`, the wgpu renderer uses the `.wgsl`.
@@ -34,7 +41,7 @@ has in its annotations. The rest of the file is WGSL.
 | key | needed | meaning |
 |---|---|---|
 | `interface` | yes | `mge-xe-wgsl 1` |
-| `passes` | yes | the fragment functions, one for each pass, with commas, in their order |
+| `passes` | yes | the fragment functions, one for each pass, with commas, in their order. A pass draws into a texture of the size of the picture with 8-bit colours; `name /N` draws into one of the picture size over N (2, 4, 8, ...), `name f16` into 16-bit floats, and `name /4 f16` both |
 | `category` | no | `scene`, `atmosphere`, `lens`, `sensor`, `tone`, `none` or `final`: the place in the chain, as in an effect file. `none` without the key |
 | `priority_adjust` | no | a number added to the place of the category |
 | `mgeflags` | no | the shader does not run in a frame that has one of these bits: 1 interior, 2 exterior, 4 interior that behaves as an exterior, 8 under the water, 16 above the water, 32 the sun is visible, 64 the sun is not visible |
@@ -50,12 +57,17 @@ The renderer puts a common part before the file. A shader does not declare these
   top left corner is 0, 0), and the vertex function `vs`. A pass is a fragment function
   that takes `in: Quad` and returns `@location(0) vec4f`.
 - The textures: `lastshader` (the picture before this shader), `lastpass` (the output of
-  the pass before, the picture for the first pass), `depthframe` (the distance of the
-  pixel from the camera along the view axis in its red part, in units of the game; `1e38`
-  where the game drew nothing), `watertexture` (the wave texture of the water, 3D), `tex1`
-  (the texture of the shader, white without one).
+  the pass before, the picture for the first pass), `pass0` to `pass7` (the outputs of the
+  first eight passes of this shader, white before they are drawn), `depthframe` (the
+  distance of the pixel from the camera along the view axis in its red part, in units of
+  the game; `1e38` where the game drew nothing), `watertexture` (the wave texture of the
+  water, 3D), `tex1` (the texture of the shader, white without one).
 - The samplers: `point_clamp`, `linear_clamp`, `linear_wrap`, `linear_mirror`,
   `point_wrap`. Read a texture with `textureSampleLevel(texture, sampler, coordinate, 0.0)`.
+  `depthframe` takes `point_clamp` or `point_wrap` only (32-bit floats take no filter);
+  `textureLoad(depthframe, vec2i, 0)` reads one texel.
+- `target_size()` and `target_rcpres()`: the size of the target of this pass and 1 over it
+  (`rcpres()` is always 1 over the size of the picture).
 - The variables of MGE XE, in the uniform `u`:
 
 | HLSL of MGE XE | WGSL here |
@@ -75,8 +87,9 @@ The renderer puts a common part before the file. A shader does not declare these
 
 - The helpers `saturate(x)` for a number and `saturate3(x)` for a `vec3f`.
 
-Each pass draws the whole screen into a texture of the size of the picture, with 8 bits for
-each colour part. A pass that uses `discard` keeps what the texture held at that pixel.
+Each pass draws the whole of its target. A pass that uses `discard` keeps what the texture
+held at that pixel. The output of the last pass is what the next shader gets, whatever its
+size and format.
 
 ## From HLSL to WGSL
 

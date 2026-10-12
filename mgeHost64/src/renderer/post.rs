@@ -4,9 +4,12 @@
 //! `moreFPS/docs/plans/mge-xe-post-process-spec.md`.
 //!
 //! A shader is a WGSL module with one fragment function for each pass; each pass draws a
-//! full-screen triangle into one of three `rgba8unorm` textures of the size of the picture.
-//! `lastshader` is the input of the shader (the picture, or the output of the shader before)
-//! and `lastpass` the output of the pass before. The variables of MGE XE are one uniform.
+//! full-screen triangle into a texture of its own: `rgba8unorm` of the size of the picture
+//! without a word, or a fraction of the size and 16-bit floats when the pass asks for them
+//! (a pool of textures by size and format serves all the shaders of the chain).
+//! `lastshader` is the input of the shader (the picture, or the output of the shader before),
+//! `lastpass` the output of the pass before, and `pass0` to `pass7` the outputs of the first
+//! eight passes of the shader. The variables of MGE XE are one uniform.
 
 use nirender_wgpu::{SceneView, wgpu};
 
@@ -68,6 +71,17 @@ struct Variables {
 @group(0) @binding(9) var point_wrap: sampler;
 // The texture of the shader (its `src` annotation), white without one.
 @group(0) @binding(10) var tex1: texture_2d<f32>;
+// The size of the target of the pass in xy, and 1 over it in zw.
+@group(0) @binding(11) var<uniform> pass_info: vec4f;
+// The outputs of the first eight passes of the shader; white before they are drawn.
+@group(0) @binding(12) var pass0: texture_2d<f32>;
+@group(0) @binding(13) var pass1: texture_2d<f32>;
+@group(0) @binding(14) var pass2: texture_2d<f32>;
+@group(0) @binding(15) var pass3: texture_2d<f32>;
+@group(0) @binding(16) var pass4: texture_2d<f32>;
+@group(0) @binding(17) var pass5: texture_2d<f32>;
+@group(0) @binding(18) var pass6: texture_2d<f32>;
+@group(0) @binding(19) var pass7: texture_2d<f32>;
 
 // The rows of the matrices of Direct3D: mview[row][col] of HLSL.
 fn mview(row: u32, col: u32) -> f32 {
@@ -76,8 +90,16 @@ fn mview(row: u32, col: u32) -> f32 {
 fn mproj(row: u32, col: u32) -> f32 {
     return u.mproj[row][col];
 }
+// 1 over the size of the picture.
 fn rcpres() -> vec2f {
     return u.fog_near.zw;
+}
+// The size of the target of this pass, and 1 over it.
+fn target_size() -> vec2f {
+    return pass_info.xy;
+}
+fn target_rcpres() -> vec2f {
+    return pass_info.zw;
 }
 fn saturate(x: f32) -> f32 {
     return clamp(x, 0.0, 1.0);
@@ -101,12 +123,31 @@ struct Quad {
 }
 ";
 
-/// A shader of the chain: its name, the names of its pass functions in its module, and the
-/// environment flags that disable it (`mgeflags`).
+/// A pass of a shader: its fragment function, and its target: the picture size over `scale`
+/// (1, 2, 4, ...), with 8-bit colours or 16-bit floats.
+#[derive(Clone)]
+pub struct Pass {
+    pub entry: &'static str,
+    pub scale: u32,
+    pub half_float: bool,
+}
+
+/// A pass into a texture of the size of the picture with 8-bit colours.
+const fn full(entry: &'static str) -> Pass {
+    Pass { entry, scale: 1, half_float: false }
+}
+
+/// A pass into a texture of the picture size over `scale`, with 16-bit floats.
+const fn scaled(entry: &'static str, scale: u32) -> Pass {
+    Pass { entry, scale, half_float: true }
+}
+
+/// A shader of the chain: its name, its passes, and the environment flags that disable it
+/// (`mgeflags`).
 pub struct Shader {
     pub name: &'static str,
     pub source: &'static str,
-    pub passes: &'static [&'static str],
+    pub passes: &'static [Pass],
     pub disable_flags: u32,
     /// The shader has `disableSunglare`.
     pub no_sun_glare: bool,
@@ -124,7 +165,7 @@ pub struct Shader {
 struct Definition {
     name: String,
     source: String,
-    passes: Vec<String>,
+    passes: Vec<(String, u32, bool)>,
     disable_flags: u32,
     no_sun_glare: bool,
     priority: i64,
@@ -132,12 +173,30 @@ struct Definition {
     requires_hdr: bool,
 }
 
+/// A pass of the `passes` line of a file: `name`, `name /N` for a target of the picture size
+/// over N, `name f16` for 16-bit floats, or both.
+fn parse_pass(item: &str) -> Result<(String, u32, bool), String> {
+    let mut words = item.split_whitespace();
+    let Some(name) = words.next() else { return Err("a pass without a name".to_string()) };
+    let (mut scale, mut half_float) = (1u32, false);
+    for word in words {
+        if let Some(number) = word.strip_prefix('/') {
+            scale = number.parse().ok().filter(|n: &u32| *n >= 1).ok_or_else(|| format!("the scale `{word}` of the pass {name} is not /N with N 1 or more"))?;
+        } else if word == "f16" {
+            half_float = true;
+        } else {
+            return Err(format!("the word `{word}` of the pass {name} is not known (/N or f16)"));
+        }
+    }
+    Ok((name.to_string(), scale, half_float))
+}
+
 impl Definition {
     fn of_port(shader: &Shader) -> Definition {
         Definition {
             name: shader.name.to_string(),
             source: shader.source.to_string(),
-            passes: shader.passes.iter().map(|pass| pass.to_string()).collect(),
+            passes: shader.passes.iter().map(|pass| (pass.entry.to_string(), pass.scale, pass.half_float)).collect(),
             disable_flags: shader.disable_flags,
             no_sun_glare: shader.no_sun_glare,
             priority: shader.priority,
@@ -153,7 +212,9 @@ impl Definition {
     /// and the struct `Quad`). The keys:
     ///
     /// - `interface: mge-xe-wgsl 1` (needed)
-    /// - `passes: a, b` (needed): the fragment functions, one for each pass, in their order
+    /// - `passes: a, b /2 f16, c` (needed): the fragment functions, one for each pass, in
+    ///   their order; `/N` draws the pass into a target of the picture size over N, `f16`
+    ///   into 16-bit floats (8-bit colours without it)
     /// - `category: scene | atmosphere | lens | sensor | tone | none | final` (`none`)
     /// - `priority_adjust: N` (0)
     /// - `mgeflags: N` (0): the shader does not run when a bit is set in the frame: 1
@@ -176,7 +237,7 @@ impl Definition {
             let value = value.trim();
             match key.trim() {
                 "interface" => interface = value == "mge-xe-wgsl 1",
-                "passes" => definition.passes = value.split(',').map(|pass| pass.trim().to_string()).filter(|pass| !pass.is_empty()).collect(),
+                "passes" => definition.passes = value.split(',').map(str::trim).filter(|pass| !pass.is_empty()).map(parse_pass).collect::<Result<_, _>>()?,
                 "category" => {
                     category = match value {
                         "scene" => 1_000_000,
@@ -762,16 +823,724 @@ const max_exposure: f32 = 3.2;
 }
 ";
 
+/// Screen space ambient occlusion, the high-quality version with 16 taps at full resolution,
+/// from ssao v09 by Knu, as `SSAO HQ.fx` has it with BLUR and ROTATE: the occlusion, two
+/// smart blurs, the sum.
+const SSAO_HQ: &str = "
+const N: i32 = 16;
+const R: f32 = 15.0;
+const multiplier: f32 = 1.8;
+const occlusion_falloff: f32 = 15.0;
+const blur_falloff: f32 = 0.06;
+const blur_radius: f32 = 4.0;
+const depth_scale: f32 = 10000.0;
+const sky: f32 = 1e6;
+const M: i32 = 12;
+
+fn invproj() -> vec2f {
+    let fov = u.eyepos.w;
+    return 2.0 * tan(0.5 * radians(fov)) * vec2f(1.0, rcpres().x / rcpres().y);
+}
+
+// The depth with the linear filter of the sampler of the effect: the depth texture takes
+// no filter here (32-bit float), so the four texels are mixed by hand.
+fn depth_linear(t: vec2f) -> f32 {
+    let size = vec2f(textureDimensions(depthframe));
+    let p = t * size - 0.5;
+    let i = vec2i(floor(p));
+    let f = fract(p);
+    let limit = vec2i(size) - 1;
+    let a = textureLoad(depthframe, clamp(i, vec2i(0), limit), 0).r;
+    let b = textureLoad(depthframe, clamp(i + vec2i(1, 0), vec2i(0), limit), 0).r;
+    let c = textureLoad(depthframe, clamp(i + vec2i(0, 1), vec2i(0), limit), 0).r;
+    let d = textureLoad(depthframe, clamp(i + vec2i(1, 1), vec2i(0), limit), 0).r;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+fn to_view(tex: vec2f) -> vec3f {
+    let depth = depth_linear(tex);
+    let xy = depth * (tex - 0.5) * invproj();
+    return vec3f(xy, depth);
+}
+
+fn from_view(view: vec3f) -> vec2f {
+    return (view.xy / view.z) / invproj() + vec2f(0.5, 0.5);
+}
+
+fn pack2(f: f32) -> vec2f {
+    return vec2f(f, fract(f * 255.0 - 0.5));
+}
+
+fn unpack2(f: vec2f) -> f32 {
+    return f.x + ((f.y - 0.5) / 255.0);
+}
+
+@fragment fn ssao(in: Quad) -> @location(0) vec4f {
+    var dirs = array<vec3f, 16>(
+        vec3f(-0.00941, -0.00326, -0.05597), vec3f(0.11686, 0.00831, 0.04915),
+        vec3f(-0.08125, -0.24638, 0.30141), vec3f(0.35193, 0.29639, 0.47544),
+        vec3f(0.32063, -0.70203, -0.40622), vec3f(-0.37344, -0.18112, 0.37140),
+        vec3f(-0.73605, -0.39320, 0.04992), vec3f(0.02274, 0.21583, 0.19429),
+        vec3f(0.00762, -0.01247, 0.03311), vec3f(-0.61057, 0.20510, 0.58876),
+        vec3f(0.55319, 0.67960, -0.19194), vec3f(-0.43533, 0.62404, 0.45133),
+        vec3f(-0.02386, -0.03104, 0.01502), vec3f(-0.20990, 0.10082, 0.03849),
+        vec3f(0.06331, -0.17620, -0.31359), vec3f(-0.12261, 0.00720, -0.12465));
+    let tex = in.tex;
+    let xylength = sqrt(1.0 - u.eyevec.z * u.eyevec.z);
+    let pos = to_view(tex);
+    let waterlevel = u.suncol.w;
+    let water = pos.z * u.eyevec.z - pos.y * xylength + u.eyepos.z;
+    if pos.z <= 0.0 || pos.z > sky || (water - waterlevel) < 0.0 {
+        return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
+    let rcp = rcpres();
+    let left = pos - to_view(tex + rcp * vec2f(-1.0, 0.0));
+    let right = to_view(tex + rcp * vec2f(1.0, 0.0)) - pos;
+    let up = pos - to_view(tex + rcp * vec2f(0.0, -1.0));
+    let down = to_view(tex + rcp * vec2f(0.0, 1.0)) - pos;
+    var dx = select(right, left, length(left) < length(right));
+    var dy = select(down, up, length(up) < length(down));
+    let normal = normalize(cross(dy, dx));
+    dy = normalize(cross(dx, normal));
+    dx = normalize(dx);
+    let rnd = textureSampleLevel(tex1, point_wrap, tex / rcp / 8.0, 0.0).xyz * 2.0 - 1.0;
+    var ao = 0.0;
+    var amount = 0.0;
+    for (var j = 0; j < N; j++) {
+        var ray = reflect(dirs[j] * R, rnd);
+        ray *= sign(ray.z);
+        ray = dx * ray.x + dy * ray.y + normal * ray.z;
+        let weight = dot(normalize(ray), normal);
+        let occ = to_view(from_view(pos + ray));
+        let diff = pos.z + ray.z - occ.z;
+        amount += weight;
+        ao += weight * step(0.0, diff) * exp2(-diff / occlusion_falloff);
+    }
+    return vec4f(ao / amount, pack2(pos.z / depth_scale), 1.0);
+}
+
+@fragment fn smartblur(in: Quad) -> @location(0) vec4f {
+    var taps = array<vec2f, 12>(
+        vec2f(-0.326212, -0.40581), vec2f(-0.840144, -0.07358),
+        vec2f(-0.695914, 0.457137), vec2f(-0.203345, 0.620716),
+        vec2f(0.96234, -0.194983), vec2f(0.473434, -0.480026),
+        vec2f(0.519456, 0.767022), vec2f(0.185461, -0.893124),
+        vec2f(0.507431, 0.064425), vec2f(0.89642, 0.412458),
+        vec2f(-0.32194, -0.932615), vec2f(-0.791559, -0.59771));
+    let data = textureSampleLevel(lastpass, linear_mirror, in.tex, 0.0);
+    var total = data.r;
+    let depth = unpack2(data.gb);
+    let rev = blur_radius * (2.0 * data.a - 1.0);
+    var amount = 1.0;
+    for (var i = 0; i < M; i++) {
+        let s_tex = in.tex + rcpres() * taps[i] * rev;
+        let s_data = textureSampleLevel(lastpass, linear_mirror, s_tex, 0.0).xyz;
+        let s_depth = unpack2(s_data.gb);
+        let weight = exp2(-abs(depth - s_depth) / depth / blur_falloff);
+        amount += weight;
+        total += s_data.r * weight;
+    }
+    return vec4f(total / amount, data.gb, 1.0 - data.a);
+}
+
+@fragment fn combine(in: Quad) -> @location(0) vec4f {
+    let dist = length(to_view(in.tex));
+    let fognearstart = u.fog_near.x;
+    let fognearrange = u.fog_near.y;
+    let fog = saturate((fognearrange - dist) / (fognearrange - fognearstart));
+    let final_ao = fog * multiplier * textureSampleLevel(lastpass, point_clamp, in.tex, 0.0).r;
+    let result = mix(textureSampleLevel(lastshader, point_clamp, in.tex, 0.0).rgb, u.fognearcol.xyz * (1.0 - fog), final_ao);
+    return vec4f(result, 1.0);
+}
+";
+
+/// Depth of Field v12 by Knu, as `Depth of Field.fx` has it with ROTATE: the blur radius of
+/// each pixel from the eye focused on the centre of the picture (into the alpha of the
+/// first pass), then a blur with 12 taps turned by the noise texture.
+const DEPTH_OF_FIELD: &str = "
+const fr: f32 = 60.0;
+const fp: f32 = 60.0;
+const fpa: f32 = 10.0;
+const pupil: f32 = 0.006;
+const blur_radius: f32 = 0.273;
+const blur_falloff: f32 = 2.0;
+const R: f32 = 6.0;
+const k: f32 = 0.00001;
+const unit2m: f32 = 0.0142;
+const M: i32 = 12;
+
+// The blur radius for the width of the picture, the same at each resolution.
+fn rfixed() -> f32 {
+    return R / (1280.0 * rcpres().x);
+}
+
+fn depth_at(t: vec2f) -> f32 {
+    return textureSampleLevel(depthframe, point_clamp, t, 0.0).r;
+}
+
+@fragment fn dof(in: Quad) -> @location(0) vec4f {
+    let tex = in.tex;
+    let t = 2.0 * tan(radians(0.5 * u.eyepos.w));
+    let fogstart = u.fogcol.w;
+    let fogrange = u.fognearcol.w;
+    let fogoffset = saturate(-fogstart / (fogrange - fogstart));
+    let s = depth_at(vec2f(0.5, 0.5)) * unit2m;
+    let z_corr = length(vec3f((tex.x - 0.5) * t, (tex.y - 0.5) * t / rcpres().y * rcpres().x, 1.0));
+    let z = z_corr * unit2m * depth_at(tex);
+    let savemyhands = smoothstep(0.568, 0.781, z);
+    let fpf = clamp(1.0 / s + fr, fp, fp + fpa);
+    var c = pupil * (fr - fpf + 1.0 / z) / fr / k * blur_radius;
+    let fog = fogoffset * saturate(z / (4.0 * fogrange * unit2m));
+    c = min(abs(c / rfixed()) + fog, 1.0) * savemyhands;
+    return vec4f(textureSampleLevel(lastshader, point_clamp, tex, 0.0).rgb, c);
+}
+
+@fragment fn smartblur(in: Quad) -> @location(0) vec4f {
+    var taps = array<vec2f, 12>(
+        vec2f(-0.326212, -0.40581), vec2f(-0.840144, -0.07358),
+        vec2f(-0.695914, 0.457137), vec2f(-0.203345, 0.620716),
+        vec2f(0.96234, -0.194983), vec2f(0.473434, -0.480026),
+        vec2f(0.519456, 0.767022), vec2f(0.185461, -0.893124),
+        vec2f(0.507431, 0.064425), vec2f(0.89642, 0.412458),
+        vec2f(-0.32194, -0.932615), vec2f(-0.791559, -0.59771));
+    let tex = in.tex;
+    let rcp = rcpres();
+    var color = textureSampleLevel(lastpass, linear_mirror, tex, 0.0);
+    let c = color.a * rfixed();
+    let rnd = normalize(textureSampleLevel(tex1, point_wrap, tex / rcp / 64.0, 0.0).xy * 2.0 + 1.0);
+    var amount = 1.0;
+    for (var i = 0; i < M; i++) {
+        let dir = reflect(taps[i], rnd);
+        let s_tex = tex + rcp * dir * c;
+        let s_color = textureSampleLevel(lastpass, linear_mirror, s_tex, 0.0);
+        let s_c = s_color.a * rfixed();
+        let weight = exp2(-abs(c - s_c) / blur_falloff);
+        color += s_color * weight;
+        amount += weight;
+    }
+    return vec4f(color.rgb / amount, 1.0);
+}
+";
+
+/// trueBloom g6.6 by peachykeen, as `Bloom Soft.fx` has it with its switches as shipped
+/// (quality 3, no sky, no hands, dark): the depth cut, a blur of the squares, the bright
+/// pass, a blur that spreads with the brightness, the second combination and blur, and the
+/// sum. The quirk of `blurHor3` with `rcpres.y` for its two outer taps is kept.
+const BLOOM_SOFT: &str = "
+const bloom_mult_global: f32 = 0.22;
+const bloom_mult_uwater: f32 = 1.2;
+const bloom_mult_inside: f32 = 1.1;
+const bloom_mult_outside: f32 = 0.8;
+const bloom_cutoff: f32 = 0.72;
+const bloom_power: f32 = 1.1;
+
+fn shader_at(t: vec2f) -> vec4f {
+    return textureSampleLevel(lastshader, linear_mirror, t, 0.0);
+}
+fn pass_at(t: vec2f) -> vec4f {
+    return textureSampleLevel(lastpass, linear_mirror, t, 0.0);
+}
+fn depth_at(t: vec2f) -> f32 {
+    return textureSampleLevel(depthframe, point_clamp, t, 0.0).r;
+}
+
+// Without the sky and without the hands: the picture goes dark past the fog and under 50
+// units.
+fn depth_fixed(tex: vec2f) -> vec4f {
+    let d = depth_at(tex);
+    let fogstart = u.fogcol.w;
+    let fogrange = u.fognearcol.w;
+    var color = shader_at(tex);
+    color = vec4f(color.rgb * saturate((fogrange - d) / (fogrange - fogstart)) * smoothstep(35.0, 50.0, d), color.a);
+    return color;
+}
+
+// The six taps on each side of a blur along `step`, with the divisor of the quality 3.
+fn blur6(tex: vec2f, step: vec2f) -> vec4f {
+    var color = pass_at(tex);
+    color += pass_at(tex - step * 1.0) * 0.8;
+    color += pass_at(tex + step * 1.0) * 0.8;
+    color += pass_at(tex - step * 2.0) * 0.65;
+    color += pass_at(tex + step * 2.0) * 0.65;
+    color += pass_at(tex - step * 3.0) * 0.4;
+    color += pass_at(tex + step * 3.0) * 0.4;
+    color += pass_at(tex - step * 4.0) * 0.25;
+    color += pass_at(tex + step * 4.0) * 0.25;
+    return color;
+}
+
+// The spread of the second blur: wider where the picture is bright.
+fn spread_of(color: vec4f) -> f32 {
+    let spread = 1.0 - (color.r * 0.3) + (color.g * 0.6) + (color.b * 0.1);
+    return (smoothstep(0.0, 0.7, spread) * 4.0) + 1.0;
+}
+
+@fragment fn fix_sky(in: Quad) -> @location(0) vec4f {
+    return depth_fixed(in.tex);
+}
+
+@fragment fn blur_hor_i(in: Quad) -> @location(0) vec4f {
+    let step = vec2f(rcpres().x, 0.0);
+    var color = blur6(in.tex, step);
+    color += pass_at(in.tex - step * 5.0) * 0.15;
+    color += pass_at(in.tex + step * 5.0) * 0.15;
+    color += pass_at(in.tex - step * 6.0) * 0.10;
+    color += pass_at(in.tex + step * 6.0) * 0.10;
+    color /= 5.65;
+    return color * color;
+}
+
+@fragment fn blur_vert_i(in: Quad) -> @location(0) vec4f {
+    let step = vec2f(0.0, rcpres().y);
+    var color = blur6(in.tex, step);
+    color += pass_at(in.tex - step * 5.0) * 0.15;
+    color += pass_at(in.tex + step * 5.0) * 0.15;
+    color += pass_at(in.tex - step * 6.0) * 0.10;
+    color += pass_at(in.tex + step * 6.0) * 0.10;
+    return color / 5.65;
+}
+
+@fragment fn bright_pass(in: Quad) -> @location(0) vec4f {
+    let c_b = pass_at(in.tex);
+    var c = smoothstep(vec4f(0.0), vec4f(bloom_cutoff), c_b);
+    c = pow(c, vec4f(bloom_power));
+    c += smoothstep(vec4f(bloom_cutoff), vec4f(0.5 + bloom_cutoff), c_b);
+    return vec4f(c.rgb, 1.0);
+}
+
+@fragment fn blur_hor_2(in: Quad) -> @location(0) vec4f {
+    let spread = spread_of(pass_at(in.tex));
+    return blur6(in.tex, vec2f(rcpres().x * spread, 0.0)) / 5.2;
+}
+
+@fragment fn blur_vert_2(in: Quad) -> @location(0) vec4f {
+    let spread = spread_of(pass_at(in.tex));
+    return blur6(in.tex, vec2f(0.0, rcpres().y * spread)) / 5.2;
+}
+
+@fragment fn recombine_a(in: Quad) -> @location(0) vec4f {
+    let c_b = depth_fixed(in.tex);
+    var c = smoothstep(vec4f(0.0), vec4f(bloom_cutoff), pass_at(in.tex));
+    c += smoothstep(vec4f(bloom_cutoff - 0.5), vec4f(bloom_cutoff + 0.5), c_b);
+    return clamp(c, vec4f(0.0), vec4f(1.0));
+}
+
+@fragment fn blur_hor_3(in: Quad) -> @location(0) vec4f {
+    let rcp = rcpres();
+    var color = blur6(in.tex, vec2f(rcp.x, 0.0));
+    let outer = vec2f(rcp.y, 0.0);
+    color += pass_at(in.tex - outer * 5.0) * 0.15;
+    color += pass_at(in.tex + outer * 5.0) * 0.15;
+    color += pass_at(in.tex - outer * 6.0) * 0.10;
+    color += pass_at(in.tex + outer * 6.0) * 0.10;
+    return color / 5.65;
+}
+
+@fragment fn blur_vert_3(in: Quad) -> @location(0) vec4f {
+    let step = vec2f(0.0, rcpres().y);
+    var color = blur6(in.tex, step);
+    color += pass_at(in.tex - step * 5.0) * 0.15;
+    color += pass_at(in.tex + step * 5.0) * 0.15;
+    color += pass_at(in.tex - step * 6.0) * 0.10;
+    color += pass_at(in.tex + step * 6.0) * 0.10;
+    return color / 5.65;
+}
+
+@fragment fn bloom_b(in: Quad) -> @location(0) vec4f {
+    let scene = shader_at(in.tex);
+    var blur = pass_at(in.tex) * bloom_mult_global;
+    if u.sunamb.w > 0.5 {
+        blur *= bloom_mult_inside;
+    } else {
+        blur *= bloom_mult_outside;
+    }
+    if u.sunpos.w > 0.5 {
+        blur *= bloom_mult_uwater;
+    }
+    return scene + blur;
+}
+";
+
+/// A bloom of this program, not a port: the method of Jimenez (SIGGRAPH 2014, "Next
+/// Generation Post Processing in Call of Duty: Advanced Warfare"). A threshold with a soft
+/// knee, a chain of six half-size levels with a 13-tap downsample that has no ringing, an
+/// upsample with a tent filter that adds each level back, and one add into the picture.
+/// The levels are 16-bit floats, so the sum of the levels keeps its range.
+const BLOOM_G7: &str = "
+// The brightness where the bloom starts, the width of its soft start, and its strength.
+// The picture has 8-bit colours: a flame or a lamp is near 1, a lit wall near 0.5.
+const threshold: f32 = 0.5;
+const knee: f32 = 0.25;
+const intensity: f32 = 0.4;
+
+fn at(t: vec2f) -> vec3f {
+    return textureSampleLevel(lastpass, linear_clamp, t, 0.0).rgb;
+}
+
+// The 13 taps of a downsample by two: the centre, the four corners of the texel, and the
+// four corners of the four texels around (the source is twice the size of the target).
+fn down13(tex: vec2f, rcp: vec2f) -> vec3f {
+    let a = at(tex + rcp * vec2f(-2.0, -2.0));
+    let b = at(tex + rcp * vec2f(0.0, -2.0));
+    let c = at(tex + rcp * vec2f(2.0, -2.0));
+    let d = at(tex + rcp * vec2f(-2.0, 0.0));
+    let e = at(tex);
+    let f = at(tex + rcp * vec2f(2.0, 0.0));
+    let g = at(tex + rcp * vec2f(-2.0, 2.0));
+    let h = at(tex + rcp * vec2f(0.0, 2.0));
+    let i = at(tex + rcp * vec2f(2.0, 2.0));
+    let j = at(tex + rcp * vec2f(-1.0, -1.0));
+    let k = at(tex + rcp * vec2f(1.0, -1.0));
+    let l = at(tex + rcp * vec2f(-1.0, 1.0));
+    let m = at(tex + rcp * vec2f(1.0, 1.0));
+    return e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
+}
+
+// A 3 x 3 tent over the source, which is half the size of the target.
+fn tent9(tex: vec2f, rcp: vec2f) -> vec3f {
+    var sum = at(tex) * 4.0;
+    sum += (at(tex + rcp * vec2f(-1.0, 0.0)) + at(tex + rcp * vec2f(1.0, 0.0)) + at(tex + rcp * vec2f(0.0, -1.0)) + at(tex + rcp * vec2f(0.0, 1.0))) * 2.0;
+    sum += at(tex + rcp * vec2f(-1.0, -1.0)) + at(tex + rcp * vec2f(1.0, -1.0)) + at(tex + rcp * vec2f(-1.0, 1.0)) + at(tex + rcp * vec2f(1.0, 1.0));
+    return sum / 16.0;
+}
+
+// The part of a colour above the threshold, with a soft knee below it.
+fn bright(color: vec3f) -> vec3f {
+    let brightness = max(color.r, max(color.g, color.b));
+    var soft = brightness - threshold + knee;
+    soft = clamp(soft, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee + 1e-4);
+    let contribution = max(soft, brightness - threshold) / max(brightness, 1e-4);
+    return color * contribution;
+}
+
+// The first level: the picture through the threshold, at half size. The threshold is on
+// each tap, so that one bright pixel does not spread as a square.
+@fragment fn prefilter(in: Quad) -> @location(0) vec4f {
+    let rcp = rcpres();
+    let tex = in.tex;
+    let a = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(-2.0, -2.0), 0.0).rgb);
+    let b = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(0.0, -2.0), 0.0).rgb);
+    let c = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(2.0, -2.0), 0.0).rgb);
+    let d = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(-2.0, 0.0), 0.0).rgb);
+    let e = bright(textureSampleLevel(lastshader, linear_clamp, tex, 0.0).rgb);
+    let f = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(2.0, 0.0), 0.0).rgb);
+    let g = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(-2.0, 2.0), 0.0).rgb);
+    let h = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(0.0, 2.0), 0.0).rgb);
+    let i = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(2.0, 2.0), 0.0).rgb);
+    let j = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(-1.0, -1.0), 0.0).rgb);
+    let k = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(1.0, -1.0), 0.0).rgb);
+    let l = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(-1.0, 1.0), 0.0).rgb);
+    let m = bright(textureSampleLevel(lastshader, linear_clamp, tex + rcp * vec2f(1.0, 1.0), 0.0).rgb);
+    return vec4f(e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125, 1.0);
+}
+
+// The next level: half the size of the pass before.
+@fragment fn down(in: Quad) -> @location(0) vec4f {
+    return vec4f(down13(in.tex, target_rcpres() * 0.5), 1.0);
+}
+
+// Up the chain: the level below, spread by the tent, plus the level of this size.
+@fragment fn up4(in: Quad) -> @location(0) vec4f {
+    return vec4f(tent9(in.tex, target_rcpres() * 2.0) + textureSampleLevel(pass4, linear_clamp, in.tex, 0.0).rgb, 1.0);
+}
+@fragment fn up3(in: Quad) -> @location(0) vec4f {
+    return vec4f(tent9(in.tex, target_rcpres() * 2.0) + textureSampleLevel(pass3, linear_clamp, in.tex, 0.0).rgb, 1.0);
+}
+@fragment fn up2(in: Quad) -> @location(0) vec4f {
+    return vec4f(tent9(in.tex, target_rcpres() * 2.0) + textureSampleLevel(pass2, linear_clamp, in.tex, 0.0).rgb, 1.0);
+}
+@fragment fn up1(in: Quad) -> @location(0) vec4f {
+    return vec4f(tent9(in.tex, target_rcpres() * 2.0) + textureSampleLevel(pass1, linear_clamp, in.tex, 0.0).rgb, 1.0);
+}
+@fragment fn up0(in: Quad) -> @location(0) vec4f {
+    return vec4f(tent9(in.tex, target_rcpres() * 2.0) + textureSampleLevel(pass0, linear_clamp, in.tex, 0.0).rgb, 1.0);
+}
+
+// The picture plus the bloom. The six levels add up to a sum of about 6 at a flat bright
+// area; the intensity is for that sum.
+@fragment fn combine(in: Quad) -> @location(0) vec4f {
+    let scene = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0);
+    let bloom = tent9(in.tex, rcpres() * 2.0) * (intensity / 6.0);
+    return vec4f(scene.rgb + bloom, scene.a);
+}
+";
+
+/// An ambient occlusion of this program, not a port: ground-truth ambient occlusion
+/// (Jimenez and others, SIGGRAPH 2016; the form of XeGTAO), at half size. For each pixel,
+/// four slices through the view direction; in each, the two horizons found with eight steps
+/// each way, and the visible part of the hemisphere of the normal integrated with the cosine
+/// weight. A blur that follows the depth, then the picture darkened by the result.
+const SSAO_G7: &str = "
+// The radius in units of the game, the strength, the slices and the steps of each side.
+const R: f32 = 48.0;
+const strength: f32 = 1.4;
+const SLICES: i32 = 4;
+const STEPS: i32 = 8;
+const PI: f32 = 3.14159265;
+const depth_scale: f32 = 10000.0;
+const sky: f32 = 1e6;
+
+fn invproj() -> vec2f {
+    let fov = u.eyepos.w;
+    return 2.0 * tan(0.5 * radians(fov)) * vec2f(1.0, rcpres().x / rcpres().y);
+}
+
+// The position in the view, with y down as the picture has it.
+fn to_view(tex: vec2f) -> vec3f {
+    let depth = textureSampleLevel(depthframe, point_clamp, tex, 0.0).r;
+    return vec3f(depth * (tex - 0.5) * invproj(), depth);
+}
+
+// A noise without a texture: interleaved gradient noise over the pixels of the target.
+fn noise(pixel: vec2f, seed: f32) -> f32 {
+    let p = pixel + seed * vec2f(47.0, 17.0);
+    return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
+}
+
+@fragment fn ao(in: Quad) -> @location(0) vec4f {
+    let tex = in.tex;
+    let pos = to_view(tex);
+    let xylength = sqrt(1.0 - u.eyevec.z * u.eyevec.z);
+    let water = pos.z * u.eyevec.z - pos.y * xylength + u.eyepos.z;
+    if pos.z <= 0.0 || pos.z > sky || (water - u.suncol.w) < 0.0 {
+        return vec4f(1.0, pos.z / depth_scale, 0.0, 1.0);
+    }
+    // The normal from the depth: the smaller difference on each axis, so that an edge does
+    // not give a wrong one.
+    let rcp = rcpres();
+    let left = pos - to_view(tex + rcp * vec2f(-1.0, 0.0));
+    let right = to_view(tex + rcp * vec2f(1.0, 0.0)) - pos;
+    let up = pos - to_view(tex + rcp * vec2f(0.0, -1.0));
+    let down = to_view(tex + rcp * vec2f(0.0, 1.0)) - pos;
+    let dx = select(right, left, length(left) < length(right));
+    let dy = select(down, up, length(up) < length(down));
+    let view_dir = normalize(-pos);
+    var normal = normalize(cross(dy, dx));
+    if dot(normal, view_dir) < 0.0 {
+        normal = -normal;
+    }
+    // The radius in the picture: in the units of the texture coordinates, by axis.
+    let radius = R / (pos.z * invproj());
+    let pixel = in.position.xy;
+    let turn = noise(pixel, 0.0);
+    let jitter = noise(pixel, 1.0);
+    var visibility = 0.0;
+    for (var s = 0; s < SLICES; s++) {
+        let phi = (f32(s) + turn) * PI / f32(SLICES);
+        let slice = vec2f(cos(phi), sin(phi));
+        // The plane of the slice holds the view direction; the normal projected into it.
+        let direction = vec3f(slice, 0.0);
+        let ortho = direction - dot(direction, view_dir) * view_dir;
+        let axis = normalize(cross(ortho, view_dir));
+        let projected = normal - axis * dot(normal, axis);
+        let projected_length = length(projected);
+        let cos_n = clamp(dot(projected, view_dir) / max(projected_length, 1e-5), -1.0, 1.0);
+        let n = sign(dot(ortho, projected)) * acos(cos_n);
+        // The horizons: the highest sample on each side, as the cosine of its angle to the
+        // view direction; a sample past the radius counts as the floor of the slice. The
+        // steps are denser near the pixel, and the first is one texel of the target at
+        // least: a sample on the texel of the pixel itself has no direction.
+        var horizon0 = cos(n + 0.5 * PI);
+        var horizon1 = cos(n - 0.5 * PI);
+        let texel = min(target_rcpres().x / radius.x, target_rcpres().y / radius.y);
+        for (var i = 0; i < STEPS; i++) {
+            let t = (f32(i) + jitter) / f32(STEPS);
+            let offset = slice * radius * max(t * t, texel);
+            let p0 = to_view(tex + offset) - pos;
+            let p1 = to_view(tex - offset) - pos;
+            let d0 = length(p0);
+            let d1 = length(p1);
+            let w0 = select(saturate(2.0 - 2.0 * d0 / R), 0.0, d0 < 1e-3);
+            let w1 = select(saturate(2.0 - 2.0 * d1 / R), 0.0, d1 < 1e-3);
+            horizon0 = max(horizon0, mix(cos(n + 0.5 * PI), dot(p0, view_dir) / max(d0, 1e-5), w0));
+            horizon1 = max(horizon1, mix(cos(n - 0.5 * PI), dot(p1, view_dir) / max(d1, 1e-5), w1));
+        }
+        var h0 = -acos(clamp(horizon1, -1.0, 1.0));
+        var h1 = acos(clamp(horizon0, -1.0, 1.0));
+        h0 = n + max(h0 - n, -0.5 * PI);
+        h1 = n + min(h1 - n, 0.5 * PI);
+        let arc0 = (cos_n + 2.0 * h0 * sin(n) - cos(2.0 * h0 - n)) * 0.25;
+        let arc1 = (cos_n + 2.0 * h1 * sin(n) - cos(2.0 * h1 - n)) * 0.25;
+        visibility += projected_length * (arc0 + arc1);
+    }
+    visibility = saturate(visibility / f32(SLICES));
+    return vec4f(pow(visibility, strength), pos.z / depth_scale, 0.0, 1.0);
+}
+
+// A blur along one axis that keeps the edges: a tap counts less the more its depth differs.
+fn blur(tex: vec2f, step: vec2f) -> vec4f {
+    let centre = textureSampleLevel(lastpass, point_clamp, tex, 0.0);
+    let depth = centre.g;
+    var weights = array<f32, 5>(0.2270, 0.1945, 0.1216, 0.0540, 0.0162);
+    var total = centre.r * weights[0];
+    var amount = weights[0];
+    for (var i = 1; i < 5; i++) {
+        for (var side = -1.0; side <= 1.0; side += 2.0) {
+            let s = textureSampleLevel(lastpass, point_clamp, tex + step * f32(i) * side, 0.0);
+            let w = weights[i] * exp2(-abs(s.g - depth) / max(depth, 1e-4) / 0.03);
+            total += s.r * w;
+            amount += w;
+        }
+    }
+    return vec4f(total / amount, depth, 0.0, 1.0);
+}
+
+@fragment fn blur_x(in: Quad) -> @location(0) vec4f {
+    return blur(in.tex, vec2f(target_rcpres().x, 0.0));
+}
+
+@fragment fn blur_y(in: Quad) -> @location(0) vec4f {
+    return blur(in.tex, vec2f(0.0, target_rcpres().y));
+}
+
+// The picture darkened by the occlusion; the fog of the near cells takes it away with the
+// distance, as the fog takes the light away.
+@fragment fn combine(in: Quad) -> @location(0) vec4f {
+    let dist = length(to_view(in.tex));
+    let fognearstart = u.fog_near.x;
+    let fognearrange = u.fog_near.y;
+    let fog = saturate((fognearrange - dist) / (fognearrange - fognearstart));
+    let occlusion = textureSampleLevel(lastpass, linear_clamp, in.tex, 0.0).r;
+    let scene = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0);
+    return vec4f(scene.rgb * mix(1.0, occlusion, fog), scene.a);
+}
+";
+
+/// A depth of field of this program, not a port: a thin lens focused where the picture is
+/// looked at (its centre), the circle of confusion of each pixel from its depth, a gather
+/// over a disk at half size that lets a near object spread over what is behind it and keeps
+/// a far object behind what is in front (the near and the far field apart, as Unity's post
+/// processing does), a small filter against the noise of the disk, and the blend into the
+/// picture by the circle of confusion.
+const DOF_G7: &str = "
+// The lens, in units of the game (1 unit is 1.42 cm): the focal length of a 50 mm lens, the
+// diameter of its aperture at f/2, and the width of a full-frame sensor. The largest circle
+// in pixels of the half-size target; the taps of the disk; and the depth below which
+// nothing blurs (the hands of the player).
+const focal: f32 = 3.5;
+const aperture: f32 = 1.76;
+const sensor: f32 = 2.53;
+const max_radius: f32 = 8.0;
+const TAPS: i32 = 48;
+const hands_near: f32 = 40.0;
+const hands_far: f32 = 55.0;
+
+fn depth_at(t: vec2f) -> f32 {
+    return textureSampleLevel(depthframe, point_clamp, t, 0.0).r;
+}
+
+fn noise(pixel: vec2f) -> f32 {
+    return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+}
+
+// The circle of confusion of a depth as the thin lens gives it, over the largest circle:
+// negative in front of the focus, positive behind it. A far focus gives small circles, a
+// near one (a table, a face) large ones, as a camera does.
+fn circle(z: f32) -> f32 {
+    let focus = depth_at(vec2f(0.5, 0.5));
+    let pixels_per_unit = target_size().x / sensor;
+    let scale = pixels_per_unit * aperture * focal / max(focus - focal, 1.0);
+    let c = clamp(scale * (z - focus) / max(z, 1e-3) / max_radius, -1.0, 1.0);
+    return c * smoothstep(hands_near, hands_far, z);
+}
+
+// The picture at half size with its circle in alpha.
+@fragment fn coc(in: Quad) -> @location(0) vec4f {
+    let color = textureSampleLevel(lastshader, linear_clamp, in.tex, 0.0).rgb;
+    return vec4f(color, circle(depth_at(in.tex)));
+}
+
+// The gather over the disk. A tap of the near field counts where its own circle reaches
+// this pixel; a tap of the far field counts where its circle and the circle of this pixel
+// both reach it, so that a sharp near object stays sharp against a blurred far one.
+@fragment fn gather(in: Quad) -> @location(0) vec4f {
+    let rcp = target_rcpres();
+    let centre = textureSampleLevel(lastpass, point_clamp, in.tex, 0.0);
+    let centre_circle = centre.a * max_radius;
+    let turn = noise(in.position.xy) * 6.2831853;
+    var far_sum = vec3f(0.0);
+    var far_weight = 0.0;
+    var near_sum = vec3f(0.0);
+    var near_weight = 0.0;
+    for (var i = 0; i < TAPS; i++) {
+        // A Vogel disk: the taps spread evenly, turned by the noise of the pixel.
+        let r = sqrt((f32(i) + 0.5) / f32(TAPS)) * max_radius;
+        let theta = f32(i) * 2.39996323 + turn;
+        let offset = vec2f(cos(theta), sin(theta)) * r;
+        let s = textureSampleLevel(lastpass, linear_clamp, in.tex + offset * rcp, 0.0);
+        let s_circle = s.a * max_radius;
+        let far_reach = max(min(s_circle, centre_circle), 0.0);
+        let far_w = saturate((far_reach - r + 2.0) / 2.0);
+        let near_w = saturate((-s_circle - r + 2.0) / 2.0);
+        far_sum += s.rgb * far_w;
+        far_weight += far_w;
+        near_sum += s.rgb * near_w;
+        near_weight += near_w;
+    }
+    let far = far_sum / max(far_weight, 1e-4);
+    let near = near_sum / max(near_weight, 1e-4);
+    // The near field covers the pixel in the measure of the taps that reach it.
+    let cover = saturate(near_weight / f32(TAPS) * 2.0);
+    return vec4f(mix(far, near, cover), cover);
+}
+
+// A 3 x 3 tent against the noise of the disk.
+@fragment fn postfilter(in: Quad) -> @location(0) vec4f {
+    let rcp = target_rcpres();
+    var sum = textureSampleLevel(lastpass, linear_clamp, in.tex, 0.0) * 4.0;
+    sum += (textureSampleLevel(lastpass, linear_clamp, in.tex + vec2f(-rcp.x, 0.0), 0.0) + textureSampleLevel(lastpass, linear_clamp, in.tex + vec2f(rcp.x, 0.0), 0.0) + textureSampleLevel(lastpass, linear_clamp, in.tex + vec2f(0.0, -rcp.y), 0.0) + textureSampleLevel(lastpass, linear_clamp, in.tex + vec2f(0.0, rcp.y), 0.0)) * 2.0;
+    sum += textureSampleLevel(lastpass, linear_clamp, in.tex + vec2f(-rcp.x, -rcp.y), 0.0) + textureSampleLevel(lastpass, linear_clamp, in.tex + vec2f(rcp.x, -rcp.y), 0.0) + textureSampleLevel(lastpass, linear_clamp, in.tex + vec2f(-rcp.x, rcp.y), 0.0) + textureSampleLevel(lastpass, linear_clamp, in.tex + vec2f(rcp.x, rcp.y), 0.0);
+    return sum / 16.0;
+}
+
+// The picture and the blurred picture, by the far circle of the pixel and the cover of the
+// near field.
+@fragment fn combine(in: Quad) -> @location(0) vec4f {
+    let scene = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0);
+    let blurred = textureSampleLevel(lastpass, linear_clamp, in.tex, 0.0);
+    let far_circle = max(circle(depth_at(in.tex)), 0.0) * max_radius;
+    let far_w = smoothstep(0.0, 2.0, far_circle);
+    let near_w = blurred.a;
+    let w = far_w + near_w - far_w * near_w;
+    return vec4f(mix(scene.rgb, blurred.rgb, w), scene.a);
+}
+";
+
 /// The shaders that this program has a port of.
 pub const SHADERS: &[Shader] = &[
-    Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &["stretch", "blur_r_half", "rays", "blur_t", "combine"], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, texture: None, requires_hdr: false },
-    Shader { name: "Bloom Fine", source: BLOOM_FINE, passes: &["energy_levels", "blur_vert", "blur_horz_combine"], disable_flags: 0, no_sun_glare: false, priority: 4_000_000, texture: None, requires_hdr: false },
+    Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &[full("stretch"), full("blur_r_half"), full("rays"), full("blur_t"), full("combine")], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, texture: None, requires_hdr: false },
+    Shader { name: "Bloom Fine", source: BLOOM_FINE, passes: &[full("energy_levels"), full("blur_vert"), full("blur_horz_combine")], disable_flags: 0, no_sun_glare: false, priority: 4_000_000, texture: None, requires_hdr: false },
     // `mgeflags` 22: not in a true exterior, not in an interior that behaves as an exterior,
     // not above the water. 17: not in an interior, not above the water.
-    Shader { name: "Underwater Interior Effects", source: UNDERWATER_INTERIOR, passes: &["wobble"], disable_flags: 22, no_sun_glare: false, priority: 1_000_000, texture: None, requires_hdr: false },
-    Shader { name: "Underwater Effects", source: UNDERWATER, passes: &["rays"], disable_flags: 17, no_sun_glare: false, priority: 1_000_000, texture: None, requires_hdr: false },
-    Shader { name: "Eye Adaptation (HDR)", source: EYE_ADAPTATION, passes: &["tone"], disable_flags: 0, no_sun_glare: false, priority: 5_000_000, texture: None, requires_hdr: true },
-    Shader { name: "SSAO Fast", source: SSAO_FAST, passes: &["ssao", "smartblur", "smartblur", "combine"], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: Some("MGE/poisson_nrm.dds"), requires_hdr: false },
+    Shader { name: "Underwater Interior Effects", source: UNDERWATER_INTERIOR, passes: &[full("wobble")], disable_flags: 22, no_sun_glare: false, priority: 1_000_000, texture: None, requires_hdr: false },
+    Shader { name: "Underwater Effects", source: UNDERWATER, passes: &[full("rays")], disable_flags: 17, no_sun_glare: false, priority: 1_000_000, texture: None, requires_hdr: false },
+    Shader { name: "Eye Adaptation (HDR)", source: EYE_ADAPTATION, passes: &[full("tone")], disable_flags: 0, no_sun_glare: false, priority: 5_000_000, texture: None, requires_hdr: true },
+    Shader { name: "SSAO Fast", source: SSAO_FAST, passes: &[full("ssao"), full("smartblur"), full("smartblur"), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: Some("MGE/poisson_nrm.dds"), requires_hdr: false },
+    Shader { name: "SSAO HQ", source: SSAO_HQ, passes: &[full("ssao"), full("smartblur"), full("smartblur"), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: Some("MGE/poisson_nrm.dds"), requires_hdr: false },
+    Shader { name: "Depth of Field", source: DEPTH_OF_FIELD, passes: &[full("dof"), full("smartblur")], disable_flags: 0, no_sun_glare: false, priority: 3_000_000, texture: Some("MGE/noise64.dds"), requires_hdr: false },
+    Shader {
+        name: "Bloom Soft",
+        source: BLOOM_SOFT,
+        passes: &[full("fix_sky"), full("blur_hor_i"), full("blur_vert_i"), full("bright_pass"), full("blur_hor_2"), full("blur_vert_2"), full("recombine_a"), full("blur_hor_3"), full("blur_vert_3"), full("bloom_b")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 4_000_000,
+        texture: None,
+        requires_hdr: false,
+    },
+    Shader {
+        name: "Bloom G7",
+        source: BLOOM_G7,
+        passes: &[scaled("prefilter", 2), scaled("down", 4), scaled("down", 8), scaled("down", 16), scaled("down", 32), scaled("down", 64), scaled("up4", 32), scaled("up3", 16), scaled("up2", 8), scaled("up1", 4), scaled("up0", 2), full("combine")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 4_000_000,
+        texture: None,
+        requires_hdr: false,
+    },
+    Shader { name: "SSAO G7", source: SSAO_G7, passes: &[scaled("ao", 2), scaled("blur_x", 2), scaled("blur_y", 2), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: None, requires_hdr: false },
+    Shader { name: "Depth of Field G7", source: DOF_G7, passes: &[scaled("coc", 2), scaled("gather", 2), scaled("postfilter", 2), full("combine")], disable_flags: 0, no_sun_glare: false, priority: 3_000_000, texture: None, requires_hdr: false },
 ];
 
 /// The linear depth of the game from its depth buffer: `XE Depth.fx` for the native depth,
@@ -853,12 +1622,28 @@ struct Quad {
 }
 ";
 
+/// A pass as it runs: its pipeline, the scale and the format of its target, and the uniform
+/// with the size of the target.
+struct CompiledPass {
+    pipeline: wgpu::RenderPipeline,
+    scale: u32,
+    half_float: bool,
+    info: wgpu::Buffer,
+}
+
 struct Compiled {
     name: String,
     disable_flags: u32,
     priority: i64,
-    pipelines: Vec<wgpu::RenderPipeline>,
+    passes: Vec<CompiledPass>,
     texture: Option<wgpu::TextureView>,
+}
+
+/// A texture of the pool: the scale and the format of its class, and its view.
+struct Pooled {
+    scale: u32,
+    half_float: bool,
+    view: wgpu::TextureView,
 }
 
 pub struct Post {
@@ -868,9 +1653,8 @@ pub struct Post {
     uniforms: wgpu::Buffer,
     samplers: [wgpu::Sampler; 5],
     white: wgpu::TextureView,
-    /// The three textures of the size of the picture, and their size.
-    textures: Vec<wgpu::Texture>,
-    views: Vec<wgpu::TextureView>,
+    /// The targets of the passes, by their class, for the size of the picture.
+    pool: Vec<Pooled>,
     size: (u32, u32),
     /// The linear depth of the game.
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -918,6 +1702,20 @@ impl Post {
                 sampler(8, wgpu::SamplerBindingType::Filtering),
                 sampler(9, wgpu::SamplerBindingType::NonFiltering),
                 texture(10, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                texture(12, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(13, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(14, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(15, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(16, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(17, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(18, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(19, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
@@ -948,11 +1746,12 @@ impl Post {
             // back from the scope and does not stop the program.
             let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(&shader.name), source: wgpu::ShaderSource::Wgsl(source.into()) });
-            let pipelines: Vec<wgpu::RenderPipeline> = shader
+            let passes: Vec<CompiledPass> = shader
                 .passes
                 .iter()
-                .map(|pass| {
-                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                .map(|(entry, scale, half_float)| {
+                    let format = if *half_float { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba8Unorm };
+                    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                         label: Some(&shader.name),
                         layout: Some(&pipeline_layout),
                         vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
@@ -961,13 +1760,15 @@ impl Post {
                         multisample: Default::default(),
                         fragment: Some(wgpu::FragmentState {
                             module: &module,
-                            entry_point: Some(pass.as_str()),
+                            entry_point: Some(entry.as_str()),
                             compilation_options: Default::default(),
-                            targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                         }),
                         multiview_mask: None,
                         cache: None,
-                    })
+                    });
+                    let info = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post pass"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                    CompiledPass { pipeline, scale: *scale, half_float: *half_float, info }
                 })
                 .collect();
             if let Some(error) = pollster::block_on(scope.pop()) {
@@ -992,7 +1793,7 @@ impl Post {
                 }
                 view
             });
-            compiled.push(Compiled { name: shader.name, disable_flags: shader.disable_flags, priority: shader.priority, pipelines, texture });
+            compiled.push(Compiled { name: shader.name, disable_flags: shader.disable_flags, priority: shader.priority, passes, texture });
         }
         // The order of MGE XE: by the category, stable in the order of the chain.
         compiled.sort_by_key(|c| c.priority);
@@ -1068,8 +1869,7 @@ impl Post {
             uniforms,
             samplers,
             white,
-            textures: Vec::new(),
-            views: Vec::new(),
+            pool: Vec::new(),
             size: (0, 0),
             depth: None,
             depth_pipeline,
@@ -1093,30 +1893,28 @@ impl Post {
         self.chain.is_empty()
     }
 
-    /// The textures of the size of the picture.
+    /// The depth texture for the size of the picture; the pool starts again at a new size.
     fn size_textures(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        if self.size == size && !self.textures.is_empty() {
+        if self.size == size && self.depth.is_some() {
             return;
         }
         self.size = size;
-        let make = |format, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("post"),
-                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-        };
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        self.textures = (0..3).map(|_| make(wgpu::TextureFormat::Rgba8Unorm, usage)).collect();
-        self.views = self.textures.iter().map(|t| t.create_view(&Default::default())).collect();
-        let depth = make(wgpu::TextureFormat::R32Float, usage);
+        self.pool.clear();
+        let depth = make_texture(device, size, wgpu::TextureFormat::R32Float);
         let view = depth.create_view(&Default::default());
         self.depth = Some((depth, view));
+    }
+
+    /// The pool texture for a pass: one of its class that is not in use, or a new one.
+    fn pooled(&mut self, device: &wgpu::Device, scale: u32, half_float: bool, in_use: &[usize]) -> usize {
+        if let Some(index) = (0..self.pool.len()).find(|i| self.pool[*i].scale == scale && self.pool[*i].half_float == half_float && !in_use.contains(i)) {
+            return index;
+        }
+        let size = (self.size.0.div_ceil(scale).max(1), self.size.1.div_ceil(scale).max(1));
+        let format = if half_float { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba8Unorm };
+        let view = make_texture(device, size, format).create_view(&Default::default());
+        self.pool.push(Pooled { scale, half_float, view });
+        self.pool.len() - 1
     }
 
     /// Runs the chain on the picture and writes the result into `target`.
@@ -1137,7 +1935,7 @@ impl Post {
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(variables));
         // The linear depth of the game.
         scene.queue.write_buffer(&self.depth_uniform, 0, bytemuck::cast_slice(&[variables.mproj[2][2], variables.mproj[3][2], 0.0, 0.0]));
-        let (_, depth_view) = self.depth.as_ref().unwrap();
+        let depth_view = &self.depth.as_ref().unwrap().1.clone();
         {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("post depth"),
@@ -1149,25 +1947,32 @@ impl Post {
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
-        // The chain. `last` is the texture that holds the input of the shader: `None` is the
-        // picture. A pass writes into a texture that is not `last` and not the pass before.
+        // The chain. `last` is the pool texture that holds the input of the shader: `None` is
+        // the picture. The passes of a shader each get a texture of their class that is not
+        // the input and not an earlier pass of the shader (`pass0` to `pass7` read those).
         let mut last: Option<usize> = None;
-        let mut previous: Option<usize> = None;
-        for compiled in &self.chain {
+        let chain = std::mem::take(&mut self.chain);
+        for compiled in &chain {
             if compiled.disable_flags & environment_flags != 0 {
                 continue;
             }
             self.shaders_run += 1;
-            let lastshader_view = match last {
-                Some(index) => &self.views[index],
-                None => picture,
-            };
-            for pipeline in &compiled.pipelines {
-                let sink = (0..3).find(|i| Some(*i) != last && Some(*i) != previous).unwrap();
-                let lastpass_view = match previous {
-                    Some(index) => &self.views[index],
+            let mut in_use: Vec<usize> = last.into_iter().collect();
+            let mut targets: Vec<usize> = Vec::with_capacity(compiled.passes.len());
+            for pass in &compiled.passes {
+                let sink = self.pooled(device, pass.scale, pass.half_float, &in_use);
+                in_use.push(sink);
+                let size = (self.size.0.div_ceil(pass.scale).max(1) as f32, self.size.1.div_ceil(pass.scale).max(1) as f32);
+                scene.queue.write_buffer(&pass.info, 0, bytemuck::cast_slice(&[size.0, size.1, 1.0 / size.0, 1.0 / size.1]));
+                let lastshader_view = match last {
+                    Some(index) => &self.pool[index].view,
+                    None => picture,
+                };
+                let lastpass_view = match targets.last() {
+                    Some(index) => &self.pool[*index].view,
                     None => lastshader_view,
                 };
+                let earlier = |i: usize| targets.get(i).map_or(&self.white, |index| &self.pool[*index].view);
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some(&compiled.name),
                     layout: &self.layout,
@@ -1183,22 +1988,32 @@ impl Post {
                         wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&self.samplers[3]) },
                         wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&self.samplers[4]) },
                         wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(compiled.texture.as_ref().unwrap_or(&self.white)) },
+                        wgpu::BindGroupEntry { binding: 11, resource: pass.info.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(earlier(0)) },
+                        wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(earlier(1)) },
+                        wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(earlier(2)) },
+                        wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(earlier(3)) },
+                        wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::TextureView(earlier(4)) },
+                        wgpu::BindGroupEntry { binding: 17, resource: wgpu::BindingResource::TextureView(earlier(5)) },
+                        wgpu::BindGroupEntry { binding: 18, resource: wgpu::BindingResource::TextureView(earlier(6)) },
+                        wgpu::BindGroupEntry { binding: 19, resource: wgpu::BindingResource::TextureView(earlier(7)) },
                     ],
                 });
                 // A pass keeps what the texture held where it discards a pixel.
-                let mut pass = full_screen_pass(encoder, &self.views[sink], wgpu::LoadOp::Load);
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &group, &[]);
-                pass.draw(0..3, 0..1);
-                drop(pass);
-                previous = Some(sink);
+                let mut render = full_screen_pass(encoder, &self.pool[sink].view, wgpu::LoadOp::Load);
+                render.set_pipeline(&pass.pipeline);
+                render.set_bind_group(0, &group, &[]);
+                render.draw(0..3, 0..1);
+                drop(render);
+                targets.push(sink);
             }
             // The output of the last pass is the input of the next shader.
-            last = previous;
+            last = targets.last().copied();
         }
+        self.chain = chain;
         // A look at a term, for a test.
         if self.debug > 0.0 {
-            let source = if self.debug == 2.0 { depth_view } else { &self.views[last.unwrap_or(0)] };
+            let source = if self.debug == 2.0 { depth_view } else { &self.pool[last.unwrap_or(0)].view };
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("post debug"),
                 layout: &self.debug_layout,
@@ -1219,7 +2034,7 @@ impl Post {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("post blit"),
                 layout: &self.blit_layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.views[index]) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) }],
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.pool[index].view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) }],
             });
             let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
             pass.set_pipeline(&self.blit_pipeline);
@@ -1227,6 +2042,20 @@ impl Post {
             pass.draw(0..3, 0..1);
         }
     }
+}
+
+/// A texture that a pass draws into and a shader reads.
+fn make_texture(device: &wgpu::Device, size: (u32, u32), format: wgpu::TextureFormat) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("post"),
+        size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
 }
 
 fn texture(binding: u32, sample_type: wgpu::TextureSampleType, dimension: wgpu::TextureViewDimension) -> wgpu::BindGroupLayoutEntry {
