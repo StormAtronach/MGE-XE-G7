@@ -220,6 +220,19 @@ public:
         }
         MGEProxyDirectInput::modifierKeys = modifierKeys;
 
+        // Alt+F4 closes the window, as in each other program. The game has the keyboard in
+        // the exclusive mode of DirectInput, and Windows then sends no key message to the
+        // window: the window never gets the Alt+F4 of Windows. The keys here are those of
+        // the keyboard only, before the keys of a macro. One message for each press.
+        static bool closeAsked = false;
+        const bool closeKeys = (modifierKeys & 4) && bytes[DIK_F4];
+        if (closeKeys && !closeAsked) {
+            if (HWND window = GetActiveWindow()) {
+                PostMessageA(window, WM_CLOSE, 0, 0);
+            }
+        }
+        closeAsked = closeKeys;
+
         // Get any extra key presses
         GlobalHammer = !GlobalHammer;
         const BYTE* hammer = GlobalHammer ? HammerStates : AHammerStates;
