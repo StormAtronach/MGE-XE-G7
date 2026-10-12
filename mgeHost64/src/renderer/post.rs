@@ -1166,7 +1166,7 @@ fn spread_of(color: vec4f) -> f32 {
 /// knee, a chain of six half-size levels with a 13-tap downsample that has no ringing, an
 /// upsample with a tent filter that adds each level back, and one add into the picture.
 /// The levels are 16-bit floats, so the sum of the levels keeps its range.
-const BLOOM_G7: &str = "
+const BLOOM_S_A: &str = "
 // The brightness where the bloom starts, the width of its soft start, and its strength.
 // The picture has 8-bit colours: a flame or a lamp is near 1, a lit wall near 0.5.
 const threshold: f32 = 0.5;
@@ -1271,7 +1271,7 @@ fn bright(color: vec3f) -> vec3f {
 /// four slices through the view direction; in each, the two horizons found with eight steps
 /// each way, and the visible part of the hemisphere of the normal integrated with the cosine
 /// weight. A blur that follows the depth, then the picture darkened by the result.
-const SSAO_G7: &str = "
+const SSAO_S_A: &str = "
 // The radius in units of the game, the strength, the slices and the steps of each side.
 const R: f32 = 48.0;
 const strength: f32 = 1.4;
@@ -1413,7 +1413,7 @@ fn blur(tex: vec2f, step: vec2f) -> vec4f {
 /// a far object behind what is in front (the near and the far field apart, as Unity's post
 /// processing does), a small filter against the noise of the disk, and the blend into the
 /// picture by the circle of confusion.
-const DOF_G7: &str = "
+const DOF_S_A: &str = "
 // The lens, in units of the game (1 unit is 1.42 cm): the focal length of a 50 mm lens, the
 // diameter of its aperture at f/2, and the width of a full-frame sensor. The largest circle
 // in pixels of the half-size target; the taps of the disk; and the depth below which
@@ -1530,8 +1530,8 @@ pub const SHADERS: &[Shader] = &[
         requires_hdr: false,
     },
     Shader {
-        name: "Bloom G7",
-        source: BLOOM_G7,
+        name: "Bloom S_A",
+        source: BLOOM_S_A,
         passes: &[scaled("prefilter", 2), scaled("down", 4), scaled("down", 8), scaled("down", 16), scaled("down", 32), scaled("down", 64), scaled("up4", 32), scaled("up3", 16), scaled("up2", 8), scaled("up1", 4), scaled("up0", 2), full("combine")],
         disable_flags: 0,
         no_sun_glare: false,
@@ -1539,8 +1539,8 @@ pub const SHADERS: &[Shader] = &[
         texture: None,
         requires_hdr: false,
     },
-    Shader { name: "SSAO G7", source: SSAO_G7, passes: &[scaled("ao", 2), scaled("blur_x", 2), scaled("blur_y", 2), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: None, requires_hdr: false },
-    Shader { name: "Depth of Field G7", source: DOF_G7, passes: &[scaled("coc", 2), scaled("gather", 2), scaled("postfilter", 2), full("combine")], disable_flags: 0, no_sun_glare: false, priority: 3_000_000, texture: None, requires_hdr: false },
+    Shader { name: "SSAO S_A", source: SSAO_S_A, passes: &[scaled("ao", 2), scaled("blur_x", 2), scaled("blur_y", 2), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: None, requires_hdr: false },
+    Shader { name: "Depth of Field S_A", source: DOF_S_A, passes: &[scaled("coc", 2), scaled("gather", 2), scaled("postfilter", 2), full("combine")], disable_flags: 0, no_sun_glare: false, priority: 3_000_000, texture: None, requires_hdr: false },
 ];
 
 /// The linear depth of the game from its depth buffer: `XE Depth.fx` for the native depth,

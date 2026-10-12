@@ -13,9 +13,9 @@ Bloom Soft, Eye Adaptation (HDR), Underwater Effects, Underwater Interior Effect
 the switches of the file as it ships (for example the quality 3 of Bloom Soft).
 
 The renderer also has three shaders of its own, with methods that the pass model of
-Direct3D 9 did not allow: `Bloom G7` (a chain of half-size levels, after Jimenez 2014),
-`SSAO G7` (ground-truth ambient occlusion at half size, after Jimenez 2016) and
-`Depth of Field G7` (a thin lens with the near and the far field apart, at half size). A
+Direct3D 9 did not allow: `Bloom S_A` (a chain of half-size levels, after Jimenez 2014),
+`SSAO S_A` (ground-truth ambient occlusion at half size, after Jimenez 2016) and
+`Depth of Field S_A` (a thin lens with the near and the far field apart, at half size). A
 chain names them like any other; MGE XE on Direct3D 9 has no file of these names and skips
 them.
 
