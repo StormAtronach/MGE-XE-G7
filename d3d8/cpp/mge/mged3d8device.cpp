@@ -1168,6 +1168,12 @@ namespace Deviceless {
     static float eye[3] = { 0, 0, 0 };
     // The direction that the camera of the world looks in.
     static float look[3] = { 0, 1, 0 };
+    // The fog colour that the scattering gives the near cells, from the last environment,
+    // and true when that frame had the scattering. The game writes the fog colour of the
+    // weather into its scene graph before each frame, so the colour goes in when the game
+    // sets the view of the world: after that write and before the draws.
+    static DWORD scatterFogColour = 0;
+    static bool scatterFogValid = false;
 
     // The state of the game that the features of MGE XE in the helper need for a frame.
     // mgeHost64/src/renderer.rs has the same layout: 4 bytes for each member.
@@ -1298,6 +1304,7 @@ namespace Deviceless {
         // game, and the game gets it through its scene graph. The shaders of the helper get
         // the values for the same sum in each pixel.
         const bool scatter = (Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER) && exterior && !underwater;
+        scatterFogValid = false;
         e.sunVis = exterior ? mwBridge->GetSunVis() / 255.0f : 0.0f;
         if (exterior) {
             const RGBVECTOR fogCol = *mwBridge->getCurrentWeatherFogCol();
@@ -1358,7 +1365,8 @@ namespace Deviceless {
                     (1.0f - e.niceWeather) * fogCol.r + e.niceWeather * c1[0],
                     (1.0f - e.niceWeather) * fogCol.g + e.niceWeather * c1[1],
                     (1.0f - e.niceWeather) * fogCol.b + e.niceWeather * c1[2]);
-                mwBridge->setScenegraphFogCol((DWORD)nearFogCol);
+                scatterFogColour = (DWORD)nearFogCol;
+                scatterFogValid = true;
             }
         }
 
@@ -1453,6 +1461,12 @@ namespace Deviceless {
                 D3DXMATRIX view = *matrix;
                 view *= camEffectsMatrix;
                 *matrix = view;
+                // The fog colour of the scattering for the draws of this view, as
+                // DistantLand::adjustFog gives it to the game at the start of a scene.
+                auto mwBridge = MWBridge::get();
+                if (scatterFogValid && mwBridge->IsLoaded()) {
+                    mwBridge->setScenegraphFogCol(scatterFogColour);
+                }
             }
         } else if (state == D3DTS_PROJECTION && mainView && (Configuration.MGEFlags & ZOOM_ASPECT)) {
             matrix->_11 *= Configuration.CameraEffects.zoom;
