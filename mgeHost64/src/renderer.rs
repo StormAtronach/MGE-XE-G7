@@ -896,7 +896,14 @@ fn extension_shade(in: VertexOut) -> vec4f {
     for (var i = 0u; i < count; i++) {
         var at = first + i;
         if clustered {
-            at = cluster_indexes[at];
+            // The slot of the light in the masks of the draws, and its index: the pixel
+            // takes the light only when the draw has it (the lights of its effect state).
+            let entry = cluster_indexes[at];
+            let slot = entry >> 16u;
+            if (draw.light_mask[slot >> 7u][(slot >> 5u) & 3u] & (1u << (slot & 31u))) == 0u {
+                continue;
+            }
+            at = entry & 0xFFFFu;
         }
         let light = lights[at];
         if light.position.w == 3.0 {
