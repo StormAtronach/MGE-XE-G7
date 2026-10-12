@@ -30,9 +30,13 @@
 //! without its shadows: the wind, the grass that the player pushes away, and the light of
 //! the sun from the two sides.
 //!
-//! Not here yet: the grass of interior cells, interior cells, statics with a water flag, the groups of statics that the
-//! game shows or hides (all of them are shown), the quadtree and the horizon culling of the
-//! IPC host mode, and a limit of the memory on the GPU.
+//! An interior cell with statics in `usage.data` is a world space of its own, with its
+//! places and its grass; the renderer selects it by the name of the cell, and draws it in a
+//! cell that behaves as an exterior. Not here yet: a plain interior cell (the Direct3D 9
+//! path draws its statics with the fog of the game, `StaticInteriorVS`), statics with a
+//! water flag, the groups of statics that the game shows or hides (all of them are shown),
+//! the quadtree and the horizon culling of the IPC host mode, and a limit of the memory on
+//! the GPU.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -135,20 +139,28 @@ struct GrassPlace {
     radius: f32,
 }
 
+/// The places of one world space: the exterior, or one interior cell.
+#[derive(Default)]
+struct World {
+    /// The instances by the cell of their centre.
+    cells: HashMap<(i32, i32), Vec<u32>>,
+    /// The grass places by the cell of their position.
+    grass_cells: HashMap<(i32, i32), Vec<u32>>,
+}
+
 /// All that the files say without their vertices and indexes.
 struct Catalog {
     folder: PathBuf,
     subsets: Vec<Subset>,
     instances: Vec<Instance>,
-    /// The instances by the exterior cell of their centre.
-    cells: HashMap<(i32, i32), Vec<u32>>,
+    /// The world spaces by their name: the exterior has the empty name, an interior cell has
+    /// its name as the game has it.
+    worlds: HashMap<Vec<u8>, World>,
     textures: Vec<String>,
     palettes: Vec<[f32; 4]>,
     /// The one place of each merged subset.
     merged_place: HashMap<u32, u32>,
     grass: Vec<GrassPlace>,
-    /// The grass places by the exterior cell of their position.
-    grass_cells: HashMap<(i32, i32), Vec<u32>>,
     ordinary_bytes: u64,
     merged_bytes: u64,
 }
@@ -316,54 +328,64 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
         return Err(format!("usage.data is for {} statics and the files have {}", usage.num_meshes, statics.len()));
     }
     let mut instances: Vec<Instance> = Vec::new();
-    let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+    let mut worlds: HashMap<Vec<u8>, World> = HashMap::new();
     let mut merged_place: HashMap<u32, u32> = HashMap::new();
     let mut grass: Vec<GrassPlace> = Vec::new();
-    let mut grass_cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
-    for place in &usage.exterior {
-        let Some(model) = statics.get(place.id as usize) else { continue };
-        if model.kind == 4 {
-            // Grass: one record for the place. Its world matrix is made when it is drawn.
-            if settings.grass {
-                let center = (model.center[0].powi(2) + model.center[1].powi(2) + model.center[2].powi(2)).sqrt();
-                let cell = ((place.location.x / CELL).floor() as i32, (place.location.y / CELL).floor() as i32);
-                grass_cells.entry(cell).or_default().push(grass.len() as u32);
-                grass.push(GrassPlace {
-                    first_subset: model.first_subset,
-                    subset_count: model.subset_count,
-                    position: [place.location.x, place.location.y, place.location.z],
-                    rotation: [place.rotation.x, place.rotation.y, place.rotation.z],
-                    scale: place.scale,
-                    radius: (center + model.radius) * place.scale,
-                });
-            }
-            continue;
-        }
-        if !settings.statics {
-            continue;
-        }
-        // A building counts as one object: each of its subsets has the bounds of the model.
-        let Some(tier) = tier_of(model.kind, model.radius * place.scale, settings) else { continue };
-        let world = world_matrix([place.location.x, place.location.y, place.location.z], [place.rotation.x, place.rotation.y, place.rotation.z], place.scale);
-        for subset in model.first_subset..model.first_subset + model.subset_count {
-            let Some(s) = subsets.get(subset as usize) else { continue };
-            if s.water || s.vertex_count == 0 || s.triangle_count == 0 {
+    // The places of the exterior, then those of each interior cell that has statics.
+    let exterior = (&[][..], &usage.exterior);
+    let interiors = usage.interiors.iter().map(|interior| (unpadded(&interior.name), &interior.references));
+    for (name, places) in core::iter::once(exterior).chain(interiors) {
+        let world_space = worlds.entry(name.to_vec()).or_default();
+        for place in places {
+            let Some(model) = statics.get(place.id as usize) else { continue };
+            if model.kind == 4 {
+                // Grass: one record for the place. Its world matrix is made when it is drawn.
+                if settings.grass {
+                    let center = (model.center[0].powi(2) + model.center[1].powi(2) + model.center[2].powi(2)).sqrt();
+                    let cell = ((place.location.x / CELL).floor() as i32, (place.location.y / CELL).floor() as i32);
+                    world_space.grass_cells.entry(cell).or_default().push(grass.len() as u32);
+                    grass.push(GrassPlace {
+                        first_subset: model.first_subset,
+                        subset_count: model.subset_count,
+                        position: [place.location.x, place.location.y, place.location.z],
+                        rotation: [place.rotation.x, place.rotation.y, place.rotation.z],
+                        scale: place.scale,
+                        radius: (center + model.radius) * place.scale,
+                    });
+                }
                 continue;
             }
-            let (center, radius) = if model.kind == 6 {
-                (transform(&world, model.center), model.radius * place.scale)
-            } else {
-                (transform(&world, [s.sphere[0], s.sphere[1], s.sphere[2]]), s.sphere[3] * place.scale)
-            };
-            let cell = ((center[0] / CELL).floor() as i32, (center[1] / CELL).floor() as i32);
-            cells.entry(cell).or_default().push(instances.len() as u32);
-            if !s.components.is_empty() {
-                merged_place.insert(subset, instances.len() as u32);
+            if !settings.statics {
+                continue;
             }
-            instances.push(Instance { subset, world, center, radius, tier });
+            // A building counts as one object: each of its subsets has the bounds of the model.
+            let Some(tier) = tier_of(model.kind, model.radius * place.scale, settings) else { continue };
+            let world = world_matrix([place.location.x, place.location.y, place.location.z], [place.rotation.x, place.rotation.y, place.rotation.z], place.scale);
+            for subset in model.first_subset..model.first_subset + model.subset_count {
+                let Some(s) = subsets.get(subset as usize) else { continue };
+                if s.water || s.vertex_count == 0 || s.triangle_count == 0 {
+                    continue;
+                }
+                let (center, radius) = if model.kind == 6 {
+                    (transform(&world, model.center), model.radius * place.scale)
+                } else {
+                    (transform(&world, [s.sphere[0], s.sphere[1], s.sphere[2]]), s.sphere[3] * place.scale)
+                };
+                let cell = ((center[0] / CELL).floor() as i32, (center[1] / CELL).floor() as i32);
+                world_space.cells.entry(cell).or_default().push(instances.len() as u32);
+                if !s.components.is_empty() {
+                    merged_place.insert(subset, instances.len() as u32);
+                }
+                instances.push(Instance { subset, world, center, radius, tier });
+            }
         }
     }
-    Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, cells, textures, palettes, merged_place, grass, grass_cells, ordinary_bytes, merged_bytes })
+    Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, worlds, textures, palettes, merged_place, grass, ordinary_bytes, merged_bytes })
+}
+
+/// A name of `usage.data` or of the environment without the zeros that pad it.
+pub fn unpadded(name: &[u8]) -> &[u8] {
+    &name[..name.iter().rposition(|&byte| byte != 0).map_or(0, |last| last + 1)]
 }
 
 /// The bytes of a subset, from the reader thread.
@@ -827,6 +849,8 @@ pub struct Statics {
     failed: bool,
     /// The loads complete before a frame, and all arrivals go to the GPU in the frame.
     pub synchronous: bool,
+    /// The name of the world space of the frame: empty for the exterior.
+    world: Vec<u8>,
 }
 
 impl Statics {
@@ -871,6 +895,39 @@ impl Statics {
             most_bytes: 0,
             failed: false,
             synchronous: false,
+            world: Vec::new(),
+        }
+    }
+
+    /// Sets the world space of the frame: the exterior with an empty name, or an interior
+    /// cell with its name as the game has it. Returns true when the catalog has it; false
+    /// before the catalog is read.
+    pub fn set_world(&mut self, name: &[u8]) -> bool {
+        if self.world != name {
+            self.world = name.to_vec();
+            self.request_world();
+        }
+        self.catalog.as_ref().is_some_and(|catalog| catalog.worlds.contains_key(name))
+    }
+
+    /// Asks the reader thread for the ordinary subsets of the places of the world space of
+    /// the frame that are not on the GPU. A merged subset comes when the camera is near it.
+    fn request_world(&mut self) {
+        let Some(catalog) = self.catalog.clone() else { return };
+        let Some(requests) = self.requests.as_ref() else { return };
+        let Some(world) = catalog.worlds.get(&self.world) else { return };
+        let mut wanted: Vec<u32> = world.cells.values().flatten().map(|i| catalog.instances[*i as usize].subset).filter(|s| catalog.subsets[*s as usize].components.is_empty()).collect();
+        // The subsets of the grass too: they are never merged.
+        wanted.extend(world.grass_cells.values().flatten().flat_map(|i| {
+            let place = &catalog.grass[*i as usize];
+            place.first_subset..place.first_subset + place.subset_count
+        }));
+        wanted.sort_unstable();
+        wanted.dedup();
+        for subset in wanted {
+            if !self.resident.contains_key(&subset) && self.requested.insert(subset) {
+                let _ = requests.send(subset);
+            }
         }
     }
 
@@ -889,9 +946,10 @@ impl Statics {
         };
         let catalog = loaded.catalog.clone();
         println!(
-            "distant statics: {} subsets, {} places in the exterior, {} grass places, {} textures; {:.0} MB ordinary, {:.0} MB merged",
+            "distant statics: {} subsets, {} places in the exterior and {} interior cells, {} grass places, {} textures; {:.0} MB ordinary, {:.0} MB merged",
             catalog.subsets.len(),
             catalog.instances.len(),
+            catalog.worlds.len() - 1,
             catalog.grass.len(),
             catalog.textures.len(),
             catalog.ordinary_bytes as f64 / 1e6,
@@ -902,20 +960,11 @@ impl Statics {
         let (arrival_sender, arrival_receiver) = channel();
         let for_reader = catalog.clone();
         thread::spawn(move || reader(for_reader, request_receiver, arrival_sender));
-        // All ordinary subsets that a place uses go to the GPU now.
-        let mut wanted: Vec<u32> = catalog.instances.iter().map(|i| i.subset).filter(|s| catalog.subsets[*s as usize].components.is_empty()).collect();
-        // The subsets of the grass too: they are never merged.
-        wanted.extend(catalog.grass.iter().flat_map(|place| place.first_subset..place.first_subset + place.subset_count));
-        wanted.sort_unstable();
-        wanted.dedup();
-        for subset in wanted {
-            if self.requested.insert(subset) {
-                let _ = request_sender.send(subset);
-            }
-        }
         self.requests = Some(request_sender);
         self.arrivals = Some(arrival_receiver);
         self.catalog = Some(catalog);
+        // All ordinary subsets that a place of the world space uses go to the GPU now.
+        self.request_world();
     }
 
     /// Makes the buffers of the subsets that the reader thread has ready, for a part of a frame.
@@ -962,6 +1011,7 @@ impl Statics {
             return;
         }
         let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else { return };
+        let Some(world) = catalog.worlds.get(&self.world) else { return };
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
         self.grass_draws.clear();
@@ -970,7 +1020,7 @@ impl Statics {
         let mut cut = false;
         'cells: for y in cell_y - cells..=cell_y + cells {
             for x in cell_x - cells..=cell_x + cells {
-                let Some(list) = catalog.grass_cells.get(&(x, y)) else { continue };
+                let Some(list) = world.grass_cells.get(&(x, y)) else { continue };
                 for index in list {
                     let place = &catalog.grass[*index as usize];
                     let to = [place.position[0] - eye[0], place.position[1] - eye[1], place.position[2] - eye[2]];
@@ -1049,6 +1099,7 @@ impl Statics {
         self.finish_load(scene);
         self.take_arrivals(scene);
         let (Some(catalog), Some(requests)) = (self.catalog.clone(), self.requests.as_ref()) else { return 0 };
+        let Some(world) = catalog.worlds.get(&self.world) else { return 0 };
         let settings = self.settings;
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
@@ -1064,7 +1115,7 @@ impl Statics {
         let cells = (reach / CELL).ceil() as i32;
         for y in cell_y - cells..=cell_y + cells {
             for x in cell_x - cells..=cell_x + cells {
-                let Some(list) = catalog.cells.get(&(x, y)) else { continue };
+                let Some(list) = world.cells.get(&(x, y)) else { continue };
                 for index in list {
                     let instance = &catalog.instances[*index as usize];
                     let subset = &catalog.subsets[instance.subset as usize];

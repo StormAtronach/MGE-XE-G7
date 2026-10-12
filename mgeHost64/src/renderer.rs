@@ -64,7 +64,8 @@ pub fn run(arguments: Vec<String>) {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Environment {
     version: u32,
-    /// 1: exponential fog. 2: the camera is under water. 4: an exterior.
+    /// 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior that
+    /// is like one (`IntLikeExterior` of MGE XE).
     flags: u32,
     near_view_range: f32,
     fog_start: f32,
@@ -78,7 +79,9 @@ struct Environment {
     light_amb_mult: f32,
     wind_scaling: f32,
     eye: [f32; 3],
-    /// Version 2. Flag 8: the scattering of the atmosphere is on for this frame.
+    /// Version 2. Flag 8: the scattering of the atmosphere is on for this frame. The
+    /// direction to the sun, turned at the horizon when the sun is not visible, as `sunPos`
+    /// of the shaders of the Direct3D 9 path is (`DistantLand::setView`).
     sun_pos: [f32; 3],
     sky_col: [f32; 3],
     /// The fog colour of the weather, before the scattering changed it.
@@ -97,6 +100,9 @@ struct Environment {
     water_level: f32,
     sun_vis: f32,
     has_water: u32,
+    /// Version 5: the name of the interior cell as the game has it, padded with zeros (the
+    /// key of its world space in `usage.data`); all zeros in an exterior.
+    interior_name: [u8; 64],
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -154,6 +160,14 @@ pub struct DistantLand {
     per_pixel: (bool, bool, f32),
     /// The world of the frame is in an interior cell.
     interior: bool,
+    /// The cell of the frame is an exterior, or an interior that is like one: the fact of the
+    /// environment, and an exterior without it. The sky with the scattering, the shadow map
+    /// and the distant statics are for such a cell, as `IntLikeExterior(true)` of the
+    /// Direct3D 9 path has them.
+    like_exterior: bool,
+    /// The cell of the frame has a world space of the distant land: an exterior, or an
+    /// interior cell with statics in `usage.data` (`isDistantCell` of the Direct3D 9 path).
+    distant_cell: bool,
     /// The light for each pixel of this frame, or `None`.
     shade: Option<PerPixel>,
     /// The loads complete before a frame: a capture file, where each frame must be the same.
@@ -440,6 +454,8 @@ impl DistantLand {
                 if settings.per_pixel_light_fade { settings.per_pixel_light_fade_radius } else { 0.0 },
             ),
             interior: false,
+            like_exterior: true,
+            distant_cell: true,
             shade: None,
             synchronous: false,
             blend: None,
@@ -1026,9 +1042,14 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
-        self.interior = scene.interior;
         self.finish_load(scene);
+        self.cell_facts(scene);
+        // The terrain and the water are for an exterior. The statics, the shadow map, the
+        // fog distances and the blend are for a cell with a world space that is like an
+        // exterior, as the Direct3D 9 path has them (`isDistantCell` with
+        // `IntLikeExterior(true)`); a plain interior cell with a world space is not here yet.
         let land = self.enabled && !scene.interior && self.gpu.is_some();
+        let distant = self.enabled && self.distant_cell && self.like_exterior && self.gpu.is_some();
         if land && self.water_enabled && self.water.is_none() {
             match Water::new(scene, &self.waves) {
                 Ok(water) => self.water = Some(water),
@@ -1059,7 +1080,7 @@ impl Extension for DistantLand {
         let mut values = [[0.0f32; 4]; 32];
         let mut texture = None;
         self.shadow_in_frame = false;
-        if land && self.shadows_enabled {
+        if distant && self.shadows_enabled {
             if self.shadow.is_none() {
                 self.shadow = Some(Shadow::new(scene, self.shadow_resolution));
             }
@@ -1067,11 +1088,8 @@ impl Extension for DistantLand {
                 let eye = eye_of(&scene.view);
                 let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
                 // lightVec: against the sun when it is up; the sun light of the game when
-                // it is not (the direction of the sun is turned when it is not visible).
-                let mut sun_pos = e.sun_pos;
-                if e.sun_vis == 0.0 {
-                    sun_pos[2] = -sun_pos[2];
-                }
+                // it is not.
+                let sun_pos = e.sun_pos;
                 let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.unwrap_or(sun_pos.map(|v| -v)) };
                 shadow.set_frame(eye, eye_vec, light_vec);
                 values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > -1.0);
@@ -1081,10 +1099,10 @@ impl Extension for DistantLand {
         }
         self.shade = self.per_pixel();
         FrameParameters {
-            fog_range: land.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
+            fog_range: distant.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
             shade: self.shade.is_some() || self.shadow_in_frame,
             sky: self.sky(),
-            blend: land,
+            blend: distant,
             // The water plane of the game is class 10; the glare of the sun is class 8.
             watched: (if water { 1 << 10 } else { 0 }) | (if no_glare { 1 << 8 } else { 0 }),
             values,
@@ -1196,9 +1214,15 @@ impl Extension for DistantLand {
 
 
     fn data(&mut self, id: u32, bytes: &[u8]) {
-        if id == ENVIRONMENT_ID && bytes.len() >= size_of::<Environment>() {
-            let environment: Environment = bytemuck::pod_read_unaligned(&bytes[..size_of::<Environment>()]);
-            if environment.version == 4 {
+        // Version 4 (a capture from before the name of the cell) is the same without the
+        // name: the bytes that are not there stay zero.
+        const VERSION_4: usize = size_of::<Environment>() - 64;
+        if id == ENVIRONMENT_ID && bytes.len() >= VERSION_4 {
+            let mut raw = [0u8; size_of::<Environment>()];
+            let length = bytes.len().min(raw.len());
+            raw[..length].copy_from_slice(&bytes[..length]);
+            let environment: Environment = bytemuck::pod_read_unaligned(&raw);
+            if environment.version == 4 || environment.version == 5 {
                 self.environment = Some(environment);
             }
         }
@@ -1206,8 +1230,8 @@ impl Extension for DistantLand {
 
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
         self.near_fog = None;
-        self.interior = scene.interior;
-        if !self.enabled || scene.interior {
+        self.cell_facts(scene);
+        if !self.enabled || !self.distant_cell || !self.like_exterior {
             return false;
         }
         self.finish_load(scene);
@@ -1287,18 +1311,22 @@ impl Extension for DistantLand {
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         let planes = planes(&view_projection);
-        pass.set_pipeline(gpu.pipeline_for(scene));
-        pass.set_bind_group(0, &gpu.group, &[]);
         let mut drawn = 0;
-        for mesh in &gpu.meshes {
-            let inside = planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
-            if !inside {
-                continue;
+        // The terrain is for an exterior; an interior cell has the statics of its own world
+        // space over the clear colour.
+        if !scene.interior {
+            pass.set_pipeline(gpu.pipeline_for(scene));
+            pass.set_bind_group(0, &gpu.group, &[]);
+            for mesh in &gpu.meshes {
+                let inside = planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
+                if !inside {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indexes.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+                drawn += 1;
             }
-            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-            pass.set_index_buffer(mesh.indexes.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-            drawn += 1;
         }
         self.meshes_drawn += drawn;
         self.frames += 1;
@@ -1317,7 +1345,9 @@ impl Extension for DistantLand {
                 layer_uniforms.flags[1] = 0.0;
                 scene.queue.write_buffer(&gpu.shadow_uniforms[layer], 0, bytemuck::bytes_of(&layer_uniforms));
                 let layer_planes = crate::renderer::planes(&viewproj);
-                if self.environment.is_some_and(|e| e.flags & 4 != 0) {
+                // The terrain casts a shadow in an exterior, as `renderShadowLayerGeneric`
+                // of the Direct3D 9 path has it.
+                if !scene.interior {
                     pass.set_pipeline(&gpu.shadow_pipeline);
                     pass.set_bind_group(0, &gpu.shadow_groups[layer], &[]);
                     for mesh in &gpu.meshes {
@@ -1423,7 +1453,7 @@ impl Extension for DistantLand {
     /// The grass, at the end of the world scene of the game: with the projection and the
     /// depth of the game, as `renderStage1` of the Direct3D 9 path draws it.
     fn after_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
-        if !self.enabled || scene.interior {
+        if !self.enabled || !self.distant_cell || !self.like_exterior {
             return;
         }
         let Some(statics) = self.statics.as_mut() else { return };
@@ -1525,6 +1555,21 @@ impl Extension for DistantLand {
 }
 
 impl DistantLand {
+    /// The facts of the cell of the frame, from the scene and from the environment. The
+    /// world space of the statics is that of the cell: the exterior, or the interior cell
+    /// by its name.
+    fn cell_facts(&mut self, scene: &SceneView) {
+        self.interior = scene.interior;
+        let environment = self.environment;
+        self.like_exterior = environment.map_or(!scene.interior, |e| e.flags & 4 != 0);
+        let name: &[u8] = match environment.as_ref() {
+            Some(e) if scene.interior => statics::unpadded(&e.interior_name),
+            _ => &[],
+        };
+        let has_world = self.statics.as_mut().is_some_and(|statics| statics.set_world(name));
+        self.distant_cell = !scene.interior || has_world;
+    }
+
     /// What the water needs from the environment of the frame, or `None` without water in
     /// the cell, without the land, or without the environment.
     fn water_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
@@ -1532,11 +1577,7 @@ impl DistantLand {
         if self.interior || self.gpu.is_none() {
             return None;
         }
-        // The sun: z is negated when the sun is not visible, as the Direct3D 9 path has it.
-        let mut sun_pos = e.sun_pos;
-        if e.sun_vis == 0.0 {
-            sun_pos[2] = -sun_pos[2];
-        }
+        let sun_pos = e.sun_pos;
         let scattering = (e.flags & 12 == 12).then(|| {
             let far = e.sky_scatter_far;
             let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
@@ -1571,10 +1612,11 @@ impl DistantLand {
         })
     }
 
-    /// The sky of MGE XE is for an exterior with the scattering on and the distant land in
-    /// the frame, as `renderStage0` of the Direct3D 9 path has it.
+    /// The sky of MGE XE is for a cell with a world space that is like an exterior, with the
+    /// scattering on and the distant land in the frame, as `renderStage0` of the Direct3D 9
+    /// path has it.
     fn sky(&mut self) -> Option<[[f32; 4]; 8]> {
-        if !self.enabled || self.interior || self.gpu.is_none() {
+        if !self.enabled || !self.distant_cell || !self.like_exterior || self.gpu.is_none() {
             return None;
         }
         let e = self.environment.filter(|e| e.flags & 12 == 12)?;

@@ -1184,7 +1184,9 @@ namespace Deviceless {
         float lightSunMult, lightAmbMult;
         float windScaling;
         float eye[3];
-        // Version 2. Flag 8: the scattering of the atmosphere is on for this frame.
+        // Version 2. Flag 8: the scattering of the atmosphere is on for this frame. The
+        // direction to the sun, turned at the horizon when the sun is not visible, as the
+        // sunPos of the shaders of the Direct3D 9 path is.
         float sunPos[3];
         float skyCol[3];
         // The fog colour of the weather, before the scattering changed it.
@@ -1205,6 +1207,9 @@ namespace Deviceless {
         float waterLevel;
         float sunVis;
         UINT hasWater;
+        // Version 5: the name of the interior cell as the game has it, padded with zeros
+        // (the key of its world space in usage.data); all zeros in an exterior.
+        char interiorName[64];
     };
     static const UINT EnvironmentId = 1;
 
@@ -1216,7 +1221,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 4;
+        e.version = 5;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1293,6 +1298,7 @@ namespace Deviceless {
         // game, and the game gets it through its scene graph. The shaders of the helper get
         // the values for the same sum in each pixel.
         const bool scatter = (Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER) && exterior && !underwater;
+        e.sunVis = exterior ? mwBridge->GetSunVis() / 255.0f : 0.0f;
         if (exterior) {
             const RGBVECTOR fogCol = *mwBridge->getCurrentWeatherFogCol();
             const RGBVECTOR* skyCol = mwBridge->getCurrentWeatherSkyCol();
@@ -1301,6 +1307,11 @@ namespace Deviceless {
             const float sunLength = sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
             for (int i = 0; i < 3; ++i) {
                 e.sunPos[i] = sunLength > 0 ? sun[i] / sunLength : 0.0f;
+            }
+            // The sun "bounces" at the horizon when it is not visible, as DistantLand::setView
+            // has it: the light of the night comes from the turned direction.
+            if (e.sunVis == 0) {
+                e.sunPos[2] = -e.sunPos[2];
             }
             e.skyCol[0] = skyCol->r; e.skyCol[1] = skyCol->g; e.skyCol[2] = skyCol->b;
             e.fogColFar[0] = fogCol.r; e.fogColFar[1] = fogCol.g; e.fogColFar[2] = fogCol.b;
@@ -1377,8 +1388,12 @@ namespace Deviceless {
         }
         e.time = mwBridge->simulationTime();
         e.waterLevel = mwBridge->WaterLevel();
-        e.sunVis = exterior ? mwBridge->GetSunVis() / 255.0f : 0.0f;
         e.hasWater = mwBridge->CellHasWater() ? 1u : 0u;
+        if (!mwBridge->IsExterior()) {
+            if (const char* name = mwBridge->getInteriorName()) {
+                std::strncpy(e.interiorName, name, sizeof(e.interiorName));
+            }
+        }
         sendToRenderer(EnvironmentId, &e, sizeof(e));
     }
 
