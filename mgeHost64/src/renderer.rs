@@ -1512,11 +1512,15 @@ impl Extension for DistantLand {
         let (Some(post), Some(e)) = (self.post.as_mut(), self.environment) else { return };
         let eye = eye_of(&scene.view);
         let rows = |m: &[f32; 16]| -> [[f32; 4]; 4] { core::array::from_fn(|r| [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]]) };
-        let mut sun_pos = e.sun_pos;
+        // `sun_pos` of the environment is the `sunPos` of the Direct3D 9 path: the game side
+        // turned it at the horizon when the sun is not visible. The direction of the light is
+        // the opposite of the direction before that turn.
+        let sun_pos = e.sun_pos;
+        let mut light_source = sun_pos;
         if e.sun_vis == 0.0 {
-            sun_pos[2] = -sun_pos[2];
+            light_source[2] = -light_source[2];
         }
-        let sunvec = scene.sun_direction.unwrap_or(sun_pos.map(|v| -v));
+        let sunvec = scene.sun_direction.unwrap_or(light_source.map(|v| -v));
         let exponential = e.flags & 1 != 0;
         let underwater = e.flags & 2 != 0;
         // An exterior, or an interior cell with the flag "behaves like exterior" of the game
