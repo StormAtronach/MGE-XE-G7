@@ -450,10 +450,105 @@ fn unpack2(f: vec2f) -> f32 {
 }
 ";
 
+/// The part that the two underwater shaders share: the ray of a pixel in the world for a
+/// depth of 1 (`toWorld`), the samplers as the effect declares them (linear or point, with
+/// the wrap addressing that Direct3D 9 has without a declaration), and the wobble of the
+/// picture from the wave texture. `pow(x, 32)` of the effect is repeated squaring: its base
+/// is negative on a half of the screen.
+macro_rules! underwater_common {
+    () => {
+        "
+fn to_world(tex: vec2f) -> vec3f {
+    var v = vec3f(mview(0, 2), mview(1, 2), mview(2, 2));
+    v += (1.0 / mproj(0, 0) * (2.0 * tex.x - 1.0)) * vec3f(mview(0, 0), mview(1, 0), mview(2, 0));
+    v += (-1.0 / mproj(1, 1) * (2.0 * tex.y - 1.0)) * vec3f(mview(0, 1), mview(1, 1), mview(2, 1));
+    return v;
+}
+fn water_at(t: vec3f) -> vec4f {
+    return textureSampleLevel(watertexture, linear_wrap, t, 0.0);
+}
+fn wobbled(tex: vec2f) -> vec2f {
+    let time = u.sunvec.w;
+    var wobble = 0.01 * (2.0 * water_at(vec3f(0.25 * tex, 0.2 * time)).rg - vec2f(1.0));
+    let x = 2.0 * tex - vec2f(1.0);
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    let x8 = x4 * x4;
+    let x16 = x8 * x8;
+    wobble *= vec2f(1.0) - x16 * x16;
+    return tex + wobble;
+}
+"
+    };
+}
+
+/// Underwater Interior Effects by Hrnchamd, v1, as `Underwater Interior Effects.fx` has it:
+/// the wobble of the picture, and caustics near the surface of the water.
+const UNDERWATER_INTERIOR: &str = concat!(underwater_common!(), "
+@fragment fn wobble(in: Quad) -> @location(0) vec4f {
+    let time = u.sunvec.w;
+    let waterlevel = u.suncol.w;
+    let tex = wobbled(in.tex);
+    let c = textureSampleLevel(lastshader, linear_wrap, tex, 0.0);
+    let d = textureSampleLevel(depthframe, point_wrap, tex, 0.0).r;
+    let v = u.eyepos.xyz + d * to_world(tex);
+    let k = 1.0 - water_at(vec3f(v.xy / 1783.0, 0.4 * time)).b;
+    return c * (1.0 - 0.2 * step(v.z, waterlevel - 1.0) * saturate(exp((v.z - waterlevel) / 100.0)) * k);
+}
+");
+
+/// Underwater Effects by Hrnchamd, v2, as `Underwater Effects.fx` has it: the wobble of the
+/// picture, and the rays of the light from three shells of the wave texture. The effect
+/// takes the water of an exterior at the height 0.
+const UNDERWATER: &str = concat!(underwater_common!(), "
+const lightcolour: vec4f = vec4f(0.6, 0.91, 1.0, 0.0);
+
+fn fetch(tex: vec3f, uw: f32) -> f32 {
+    let time = u.sunvec.w;
+    let c = water_at(vec3f(tex.xy / 3308.0, 0.22 * time)).b;
+    return pow(c, 0.25) * saturate(exp(tex.z / 90.0)) * saturate(1.0 + tex.z / uw);
+}
+
+@fragment fn rays(in: Quad) -> @location(0) vec4f {
+    let sunvis = u.eyevec.w;
+    let suncol = u.suncol.xyz;
+    let sunpos = u.sunpos.xyz;
+    let eyepos = u.eyepos.xyz;
+    let lf = (0.2 + 0.8 * sunvis) * (0.32 * suncol.r + 0.47 * suncol.g + 0.21 * suncol.b);
+    let tex = wobbled(in.tex);
+    let c = textureSampleLevel(lastshader, linear_wrap, tex, 0.0);
+    var d = textureSampleLevel(depthframe, point_wrap, tex, 0.0).r;
+    var v = to_world(tex);
+    let e = vec3f(0.1, 0.1, 1.0) * eyepos;
+
+    d = min(d, -eyepos.z / max(1e-5, v.z));
+    v = v / length(v.xy);
+    let r = -sunpos.xy - v.xy * dot(-sunpos.xy, v.xy);
+
+    var shellpos = e + 800.0 * v;
+    shellpos = vec3f(shellpos.xy + 0.8 * r * shellpos.z, shellpos.z);
+    var rayz = fetch(shellpos, min(eyepos.z, 400.0)) * saturate(d / 800.0) * 0.294;
+
+    var shellpos2 = e + 1400.0 * v;
+    shellpos2 = vec3f(shellpos2.xy + 1.0 * r * shellpos2.z, shellpos2.z);
+    rayz += fetch(shellpos2, 2.0 * eyepos.z) * saturate(d / 800.0 - 1.0) * 0.132;
+
+    var shellpos3 = e + 2000.0 * v;
+    shellpos3 = vec3f(shellpos3.xy + 1.2 * r * shellpos3.z, shellpos3.z);
+    rayz += fetch(shellpos3, 3.0 * eyepos.z) * saturate(d / 800.0 - 2.0) * 0.065;
+
+    return c + rayz * lf * lightcolour;
+}
+");
+
 /// The shaders that this program has a port of.
 pub const SHADERS: &[Shader] = &[
     Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &["stretch", "blur_r_half", "rays", "blur_t", "combine"], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, texture: None },
     Shader { name: "Bloom Fine", source: BLOOM_FINE, passes: &["energy_levels", "blur_vert", "blur_horz_combine"], disable_flags: 0, no_sun_glare: false, priority: 4_000_000, texture: None },
+    // `mgeflags` 22: not in a true exterior, not in an interior that behaves as an exterior,
+    // not above the water. 17: not in an interior, not above the water.
+    Shader { name: "Underwater Interior Effects", source: UNDERWATER_INTERIOR, passes: &["wobble"], disable_flags: 22, no_sun_glare: false, priority: 1_000_000, texture: None },
+    Shader { name: "Underwater Effects", source: UNDERWATER, passes: &["rays"], disable_flags: 17, no_sun_glare: false, priority: 1_000_000, texture: None },
     Shader { name: "SSAO Fast", source: SSAO_FAST, passes: &["ssao", "smartblur", "smartblur", "combine"], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: Some("MGE/poisson_nrm.dds") },
 ];
 
