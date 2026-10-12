@@ -50,7 +50,8 @@ and maximum-performance builds are never routine verification steps.
 cargo xtask build --release      # all four binaries plus assets into bin\MSVC-Release\
 cargo xtask deploy --release     # build and install into a live Morrowind directory
 cargo xtask build --max-perf     # slow maximum-performance build into bin\MSVC-MaxPerf\
-cargo xtask dist                 # max-perf build packed into dist\MGE-XE-G7-v<version>.7z
+cargo xtask dist                 # release build packed into dist\MGE-XE-G7-v<version>-test.7z
+cargo xtask dist --max-perf      # max-perf build packed into dist\MGE-XE-G7-v<version>.7z
 cargo clean --workspace          # clean workspace packages without wiping unrelated outputs
 cargo xtask compdb               # regenerate compile_commands.json for clangd/Serena
 ```
@@ -150,9 +151,20 @@ and disables stripping so `d3d8.pdb` remains available for crash diagnosis.
 
 ## Release Archive
 
-`cargo xtask dist` produces the archive users download. It ignores the build-mode flags and
-always builds `--max-perf`: there is no way to tell a slower build from a faster one once the
-archive leaves the machine. It needs `7z` on `PATH`.
+`cargo xtask dist` produces the archive users download. It needs `7z` on `PATH` or at its
+usual place.
+
+It has two modes, and the name of the archive tells them apart, because there is no other
+way to tell a slower build from a faster one once the archive leaves the machine:
+
+- `cargo xtask dist` builds `--release` and packs `MGE-XE-G7-v<version>-test.7z`. This is
+  the archive for a test build: it takes much less time, and it has the same binaries as
+  `bin\MSVC-Release\`, which the tests run.
+- `cargo xtask dist --max-perf` builds `--max-perf` and packs `MGE-XE-G7-v<version>.7z`.
+  This is the archive for a final release. The release workflow uses it.
+
+`xtask` gives rustc a path remap for each build, so the binaries do not have the folders of
+the build machine in them (the folder of the user becomes `~`).
 
 The four binaries go in without their PDBs, alongside the `assets/` tree and `README.md`
 renamed to `MGE XE Readme.md`. Entries sit at the archive root with no wrapping folder, so it

@@ -25,7 +25,9 @@ fn main() {
 
     match command {
         "build" => cmd_build(&root, mode),
-        "dist" => cmd_dist(&root),
+        // The archive is a release build, as the builds of each day: it packs fast, and it
+        // has the same binaries that the tests ran. `--max-perf` is for a final release.
+        "dist" => cmd_dist(&root, if matches!(mode, BuildMode::MaxPerf) { BuildMode::MaxPerf } else { BuildMode::Release }),
         "deploy" => cmd_deploy(&root, mode, morrowind_dir),
         "compdb" => cmd_compdb(&root),
         _ => print_usage(),
@@ -37,7 +39,7 @@ fn print_usage() {
         "Usage: cargo xtask <command> [--release | --max-perf] [--morrowind-dir <path>]\n\n",
         "Commands:\n",
         "  build     Build all artifacts and mirror assets/ into bin/MSVC-<config>/\n",
-        "  dist      Build --max-perf and pack a release archive into dist/\n",
+        "  dist      Build --release (or --max-perf) and pack a release archive into dist/\n",
         "  deploy    Copy binaries, PDBs, and assets into the Morrowind directory\n",
         "  compdb    Generate compile_commands.json for clangd/Serena\n\n",
         "Formatting and linting are plain cargo; the 32-bit crates carry their own\n",
@@ -48,7 +50,8 @@ fn print_usage() {
         "  (default)   dev profile\n",
         "  --release   release / release-dll profiles\n",
         "  --max-perf  max-perf / max-perf-dll profiles (codegen-units=1 + fat LTO; slow)\n",
-        "`dist` ignores these and always builds --max-perf."
+        "`dist` builds --release into MGE-XE-G7-v<version>-test.7z; with --max-perf it\n",
+        "builds a final release into MGE-XE-G7-v<version>.7z (slow)."
     ));
 }
 
@@ -245,6 +248,23 @@ fn run(cmd: &mut Command) {
     }
 }
 
+/// A `--config` value for cargo that keeps the folders of this machine out of the binaries.
+/// rustc writes the path of each source file into a binary, for the messages of a panic.
+/// The registry of cargo and the toolchain are in the folder of the user, so each binary
+/// had the Windows user name in it. The value adds two `--remap-path-prefix` flags to the
+/// rustflags of `triple`: the folder of the user becomes `~`, and the workspace becomes
+/// `mge-xe`. Cargo joins the list to the one of `.cargo/config.toml`; the environment
+/// variable RUSTFLAGS would replace that list.
+fn remap_config(root: &Path, triple: &str) -> String {
+    let mut flags = Vec::new();
+    if let Ok(home) = env::var("USERPROFILE") {
+        flags.push(format!("'--remap-path-prefix={home}=~'"));
+    }
+    // After the folder of the user: rustc uses the last prefix that fits a path.
+    flags.push(format!("'--remap-path-prefix={}=mge-xe'", root.display()));
+    format!("target.{triple}.rustflags=[{}]", flags.join(", "))
+}
+
 fn cmd_build(root: &Path, mode: BuildMode) {
     let dll_profile = mode.dll_profile();
     let exe_profile = mode.exe_profile();
@@ -252,6 +272,8 @@ fn cmd_build(root: &Path, mode: BuildMode) {
     let mut dll_cmd = cargo();
     dll_cmd
         .arg("build")
+        .arg("--config")
+        .arg(remap_config(root, "i686-pc-windows-msvc"))
         .arg("-p")
         .arg("d3d8")
         .arg("-p")
@@ -271,6 +293,8 @@ fn cmd_build(root: &Path, mode: BuildMode) {
     let mut exe_cmd = cargo();
     exe_cmd
         .arg("build")
+        .arg("--config")
+        .arg(remap_config(root, "x86_64-pc-windows-msvc"))
         .arg("-p")
         .arg("MGEXEgui")
         .arg("-p")
@@ -355,12 +379,12 @@ fn seven_zip() -> PathBuf {
     if usual.exists() { usual } else { PathBuf::from("7z") }
 }
 
-/// The release archive: `--max-perf` binaries plus assets, packed flat so it
+/// The release archive: the binaries of `mode` plus assets, packed flat so it
 /// extracts straight into a Morrowind directory.
 ///
-/// Always `--max-perf`; the build-mode flags are ignored.
-fn cmd_dist(root: &Path) {
-    let mode = BuildMode::MaxPerf;
+/// `mode` is `Release` or `MaxPerf`. `MaxPerf` (fat LTO, one codegen unit) takes some
+/// minutes more for each archive and is for a final release.
+fn cmd_dist(root: &Path, mode: BuildMode) {
     cmd_build(root, mode);
 
     // Stage into a directory rebuilt from scratch rather than packing bin\MSVC-*
@@ -399,7 +423,10 @@ fn cmd_dist(root: &Path) {
 
     let out_dir = root.join("dist");
     fs::create_dir_all(&out_dir).unwrap();
-    let archive = out_dir.join(format!("MGE-XE-G7-v{}.7z", env!("CARGO_PKG_VERSION")));
+    // The name tells a release build from a max-perf build: nothing else does, when the
+    // archive is not on this machine.
+    let kind = if matches!(mode, BuildMode::MaxPerf) { "" } else { "-test" };
+    let archive = out_dir.join(format!("MGE-XE-G7-v{}{kind}.7z", env!("CARGO_PKG_VERSION")));
     // 7-Zip refuses to overwrite entries in an existing archive the way `a` implies,
     // so a stale file would silently merge with the new one.
     if archive.exists() {
