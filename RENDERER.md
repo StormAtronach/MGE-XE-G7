@@ -50,15 +50,16 @@ same files; the plugin stays idle. That is the way back.
 
 ## Known issues
 
-- Exteriors are a little lighter than on Direct3D 9 as a whole (a mean of 3 to 6 of 255).
-  The cause is not known; it is not a missing shader.
+- The shadow on an object that has a scale (a tree at two times its size) is lighter than
+  on Direct3D 9. This is intended: the Direct3D 9 path makes that shadow deeper with the
+  scale of the object, and the wgpu renderer does not.
 - An interior that behaves as an exterior (the Mournhold plazas and some mod cells) is
   drawn with its distant statics, shadows and sky. A plain interior cell that has distant
   statics in the generated data does not get them yet.
 - The water of an interior cell is not drawn by the renderer's water (the game's own water
   plane shows).
 - No caustics under the water; no water volumes (the surfaces that mods add); the
-  reflection at Narsis is lighter than on Direct3D 9.
+  reflection in the water is lighter than on Direct3D 9 (7 to 12 %).
 - The grass does not receive shadows.
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
   `Morrowind.ini` names under `[Inventory]`; Direct3D 9 draws it wrong.
