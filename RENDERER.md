@@ -82,6 +82,8 @@ adapter and the one in use.
   `MGE XE Post Shaders Readme.md`). Three shaders of this build are new: `Bloom S_A`,
   `SSAO S_A` and `Depth of Field S_A`; name them in the chain like the others.
 - The frame rate of the game thread goes up where the Direct3D 9 driver was the limit.
+- While the game sends no picture for more than half a second (at its start, when it loads),
+  a small line turns in the lower right corner of the window. The game is not stopped.
 
 ## Known issues
 
@@ -99,6 +101,9 @@ adapter and the one in use.
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
   `Morrowind.ini` names under `[Inventory]`; Direct3D 9 draws it wrong.
 - The three new shaders have first settings and no keys in `mgeXE.toml` yet.
+- After a capture with F11, the picture of the character in the inventory is empty until
+  the inventory changes (put an item on or off).
+- With `renderer_backend = "dx12"` the mouse pointer of the menus can follow the hand late.
 - Only tested at 1920 x 1080 on one machine (NVIDIA, Vulkan). Other GPU vendors, other
   resolutions, windowed modes and long sessions are not tested.
 
