@@ -199,6 +199,11 @@
 #define MGE_LINK_SCENE_HAS_CAMERA_ORIGIN 0x00000001u
 // The player is in an interior cell. A renderer draws no distant land then.
 #define MGE_LINK_SCENE_INTERIOR 0x00000002u
+// The game hides the sky: the application culled the sky root (`WeatherController`
+// 0x440870: an interior cell that does not behave like an exterior, or the console command
+// ToggleSky), or there is no sky root. The world scene has no sky draw then. An interior
+// cell can show the sky and an exterior can hide it, so this is not the interior flag.
+#define MGE_LINK_SCENE_SKY_HIDDEN 0x00000004u
 
 // Flags of a texture description.
 // The game can change the pixels of the texture later.
