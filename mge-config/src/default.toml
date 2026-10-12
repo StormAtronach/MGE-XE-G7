@@ -73,8 +73,8 @@ mwse_disabled = false
 proxy_only = false
 # Draw with the wgpu renderer of the helper process. MGE XE then makes no Direct3D device:
 # the nirender plugin gives the game its Direct3D 8, and mgeHost64.exe draws the picture.
-# Set this to false to use MGE XE on Direct3D 9. MGE XE also uses Direct3D 9 when a part
-# of the wgpu renderer is missing (mgeHost64.exe, MWSE, the nirender plugin).
+# Set this to false to use MGE XE on Direct3D 9. MGE XE also uses Direct3D 9 when
+# mgeHost64.exe or MWSE.dll is not in the folder of the game.
 renderer_wgpu = true
 # The graphics API of the wgpu renderer: auto (the first choice for the machine), vulkan,
 # or dx12. Read by mgeHost64.exe when it starts; nirender-host.log names the one in use.

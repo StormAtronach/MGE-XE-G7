@@ -67,11 +67,15 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             // Direct3D 9. A program that is missing was taken away (a virus scanner) or was
             // not installed. The decision is made here, before the plugin asks, so the
             // plugin stays idle.
+            //
+            // Only the files in the folder of the game are examined. This code runs when
+            // the game loads d3d8.dll. At that time a mod manager with a virtual file
+            // system (Mod Organizer) does not show the files of its mods: a file below
+            // `Data Files` that is there looks missing. The plugin below `Data Files` is
+            // examined later, when the game asks for its Direct3D 8.
             static const char* const parts[] = {
                 "mgeHost64.exe",
                 "MWSE.dll",
-                "Data Files\\MWSE\\lib\\nirender.dll",
-                "Data Files\\MWSE\\mods\\nirender\\main.lua",
             };
             const char* missing = nullptr;
             for (const char* part : parts) {

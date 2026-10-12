@@ -64,10 +64,12 @@ adapter and the one in use.
   `renderer_wgpu = false` to get MGE XE with its distant land back until the cause is
   known.
 - Another mod that changes the renderer code of the game (not its Lua) has the same effect.
-- When a part of the new renderer is missing, MGE XE runs on Direct3D 9 as without the
-  switch, and `mgeXE.log` names the part. The parts are `mgeHost64.exe`, `MWSE.dll`,
-  `Data Files/MWSE/lib/nirender.dll` and `Data Files/MWSE/mods/nirender/main.lua`. A virus
-  scanner can take a program away, and an archive can be extracted in part.
+- When `mgeHost64.exe` or `MWSE.dll` is not in the Morrowind folder, MGE XE runs on
+  Direct3D 9 as without the switch, and `mgeXE.log` names the file. A virus scanner can
+  take a program away, and an archive can be extracted in part.
+- When the plugin `Data Files/MWSE/lib/nirender.dll` is missing, the game runs on
+  Direct3D 9 through the proxy for that session, without the distant land, and `mgeXE.log`
+  says so.
 - The same fallback applies when the Lua side of the plugin does not run (the Lua of MWSE
   failed to start, or `Data Files/MWSE/mods/nirender/main.lua` is missing): the game runs
   on Direct3D 9 through the proxy for that session, and `nirender.log` says why.
