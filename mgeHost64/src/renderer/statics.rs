@@ -449,12 +449,17 @@ struct Gpu {
     /// The same with the other side culled: for the reflection, where the mirror turns the
     /// winding of each triangle.
     mirror_pipeline: wgpu::RenderPipeline,
+    /// The two as lines, when the device has the line mode: for a frame in which the game
+    /// draws in wireframe (`SceneView::wireframe`).
+    pipeline_lines: Option<wgpu::RenderPipeline>,
+    mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
     /// The depth from the sun into the shadow map.
     shadow_pipeline: wgpu::RenderPipeline,
     /// The main view, the reflection, and the two layers of the shadow map.
     sets: [BufferSet; 4],
     textures: Vec<wgpu::BindGroup>,
     grass_pipeline: wgpu::RenderPipeline,
+    grass_pipeline_lines: Option<wgpu::RenderPipeline>,
     grass_group: wgpu::BindGroup,
     grass_uniforms: wgpu::Buffer,
     grass_records: wgpu::Buffer,
@@ -1012,7 +1017,7 @@ impl Statics {
         };
         scene.queue.write_buffer(&gpu.grass_uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        pass.set_pipeline(&gpu.grass_pipeline);
+        pass.set_pipeline(if scene.wireframe { gpu.grass_pipeline_lines.as_ref().unwrap_or(&gpu.grass_pipeline) } else { &gpu.grass_pipeline });
         pass.set_bind_group(0, &gpu.grass_group, &[]);
         pass.set_vertex_buffer(1, gpu.grass_records.slice(..));
         // One draw for each run of places with the same subset.
@@ -1162,7 +1167,10 @@ impl Statics {
         };
         scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        pass.set_pipeline(if shadow { &gpu.shadow_pipeline } else if set == 1 { &gpu.mirror_pipeline } else { &gpu.pipeline });
+        // Lines when the game draws in wireframe (see `SceneView::wireframe`), as MGE XE on
+        // Direct3D 9 draws with the fill mode the engine left; the shadow map stays filled.
+        let (fill, lines) = if set == 1 { (&gpu.mirror_pipeline, &gpu.mirror_pipeline_lines) } else { (&gpu.pipeline, &gpu.pipeline_lines) };
+        pass.set_pipeline(if shadow { &gpu.shadow_pipeline } else if scene.wireframe { lines.as_ref().unwrap_or(fill) } else { fill });
         pass.set_bind_group(0, &buffers.group, &[]);
         pass.set_vertex_buffer(1, buffers.instances.slice(..));
         let (mut texture, mut bound) = (u32::MAX, u32::MAX);
@@ -1369,7 +1377,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
     // half floats, the normal, the colour, and the texture coordinate as two half floats.
     let vertex = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4, 3 => Float16x2];
     let place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
-    let make_pipeline = |cull: wgpu::Face| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let make_pipeline = |cull: wgpu::Face, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant statics"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -1383,7 +1391,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         },
         // `CullMode = CW` of the pass of MGE XE: a triangle with its corners clockwise on
         // the screen is not drawn.
-        primitive: wgpu::PrimitiveState { front_face: wgpu::FrontFace::Ccw, cull_mode: Some(cull), ..Default::default() },
+        primitive: wgpu::PrimitiveState { front_face: wgpu::FrontFace::Ccw, cull_mode: Some(cull), polygon_mode, ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
@@ -1401,8 +1409,13 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         multiview_mask: None,
         cache: None,
     });
-    let pipeline = make_pipeline(wgpu::Face::Back);
-    let mirror_pipeline = make_pipeline(wgpu::Face::Front);
+    let pipeline = make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Fill);
+    let mirror_pipeline = make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Fill);
+    // The same as lines, for a frame in which the game draws in wireframe (see
+    // `SceneView::wireframe`); a device without the line mode draws them filled then.
+    let lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
+    let pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Line));
+    let mirror_pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Line));
     // The casters of the shadow map: the same vertices and places, the depth from the sun.
     let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics shadow"), source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER.into()) });
     let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1483,7 +1496,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
     let grass_pipeline_layout =
         device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&grass_layout), Some(&texture_layout)], immediate_size: 0 });
     let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4];
-    let grass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("grass"),
         layout: Some(&grass_pipeline_layout),
         vertex: wgpu::VertexState {
@@ -1496,7 +1509,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
             ],
         },
         // `CullMode = none` of the grass pass: the two sides of a blade.
-        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        primitive: wgpu::PrimitiveState { cull_mode: None, polygon_mode, ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
@@ -1514,11 +1527,13 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         multiview_mask: None,
         cache: None,
     });
+    let grass_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill);
+    let grass_pipeline_lines = lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line));
     let grass_records = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("grass, the places of a frame"),
         size: (GRASS_RECORDS * GRASS_RECORD) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    Gpu { pipeline, mirror_pipeline, shadow_pipeline, sets, textures, grass_pipeline, grass_group, grass_uniforms, grass_records }
+    Gpu { pipeline, mirror_pipeline, pipeline_lines, mirror_pipeline_lines, shadow_pipeline, sets, textures, grass_pipeline, grass_pipeline_lines, grass_group, grass_uniforms, grass_records }
 }

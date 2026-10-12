@@ -236,6 +236,9 @@ pub struct WaterFrame {
 
 pub struct Water {
     pipeline: wgpu::RenderPipeline,
+    /// The same as lines, when the device has the line mode: for a frame in which the game
+    /// draws in wireframe (`SceneView::wireframe`).
+    pipeline_lines: Option<wgpu::RenderPipeline>,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     vertices: wgpu::Buffer,
@@ -313,7 +316,7 @@ impl Water {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let make_pipeline = |polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -322,7 +325,7 @@ impl Water {
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
             },
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState { cull_mode: None, polygon_mode, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: scene.depth_format,
                 depth_write_enabled: Some(true),
@@ -340,6 +343,8 @@ impl Water {
             multiview_mask: None,
             cache: None,
         });
+        let pipeline = make_pipeline(wgpu::PolygonMode::Fill);
+        let pipeline_lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE).then(|| make_pipeline(wgpu::PolygonMode::Line));
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -372,6 +377,7 @@ impl Water {
         let reflection_depth = target(scene.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
         Ok(Water {
             pipeline,
+            pipeline_lines,
             layout,
             uniforms,
             vertices: vertex_buffer,
@@ -511,7 +517,7 @@ impl Water {
                 wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(depth) },
             ],
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline });
         pass.set_bind_group(0, &group, &[]);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_index_buffer(self.indexes.slice(..), wgpu::IndexFormat::Uint16);

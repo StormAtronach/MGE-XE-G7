@@ -120,6 +120,8 @@ struct Mesh {
 
 struct Gpu {
     pipeline: wgpu::RenderPipeline,
+    /// The same as lines, when the device has the line mode.
+    pipeline_lines: Option<wgpu::RenderPipeline>,
     group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     /// The same with other uniforms: for the reflection of the land in the water.
@@ -659,7 +661,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let make_pipeline = |polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant land"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -669,7 +671,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
             buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 20, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
         },
         // The two sides: the winding of the file is not checked yet.
-        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        primitive: wgpu::PrimitiveState { cull_mode: None, polygon_mode, ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
@@ -687,6 +689,10 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
         multiview_mask: None,
         cache: None,
     });
+    let pipeline = make_pipeline(wgpu::PolygonMode::Fill);
+    // The same as lines, for a frame in which the game draws in wireframe (see
+    // `SceneView::wireframe`); a device without the line mode draws the land filled then.
+    let pipeline_lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE).then(|| make_pipeline(wgpu::PolygonMode::Line));
 
     // The casters of the shadow map: the land with the depth from the sun.
     let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land shadow"), source: wgpu::ShaderSource::Wgsl(LAND_SHADOW_SHADER.into()) });
@@ -746,6 +752,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
     let material = terrain.material_size_xy;
     Ok(Gpu {
         pipeline,
+        pipeline_lines,
         group,
         uniforms,
         mirror_group,
@@ -779,6 +786,14 @@ fn multiply(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 
 /// The six planes of the view of a matrix of Direct3D, each with a normal of length 1 that
 /// goes into the view.
+impl Gpu {
+    /// The pipeline of the land for the frame: lines when the game draws in wireframe and
+    /// the device has the line mode, filled otherwise.
+    fn pipeline_for(&self, scene: &SceneView) -> &wgpu::RenderPipeline {
+        if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline }
+    }
+}
+
 fn planes(m: &[f32; 16]) -> [[f32; 4]; 6] {
     let column = |j: usize| [m[j], m[4 + j], m[8 + j], m[12 + j]];
     let add = |a: [f32; 4], b: [f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
@@ -1262,7 +1277,7 @@ impl Extension for DistantLand {
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         let planes = planes(&view_projection);
-        pass.set_pipeline(&gpu.pipeline);
+        pass.set_pipeline(gpu.pipeline_for(scene));
         pass.set_bind_group(0, &gpu.group, &[]);
         let mut drawn = 0;
         for mesh in &gpu.meshes {
@@ -1341,7 +1356,7 @@ impl Extension for DistantLand {
             mirror_uniforms.flags[2] = frame.water_level - 1.0;
             scene.queue.write_buffer(&gpu.mirror_uniforms, 0, bytemuck::bytes_of(&mirror_uniforms));
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
-            mirror_pass.set_pipeline(&gpu.pipeline);
+            mirror_pass.set_pipeline(gpu.pipeline_for(scene));
             mirror_pass.set_bind_group(0, &gpu.mirror_group, &[]);
             for mesh in &gpu.meshes {
                 let inside = mirror_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
