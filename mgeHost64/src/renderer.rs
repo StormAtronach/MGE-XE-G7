@@ -180,6 +180,8 @@ pub struct DistantLand {
     shadow_in_frame: bool,
     shadows_enabled: bool,
     shadow_resolution: u32,
+    /// The anisotropic filter of the settings (`graphics.anisotropy`): 1 is none.
+    anisotropy: u16,
     /// The post-processing chain, when the settings have shaders; `None` before the first
     /// frame with the water (it needs the wave texture).
     post: Option<Post>,
@@ -464,6 +466,7 @@ impl DistantLand {
             shadow_in_frame: false,
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
+            anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
             post: None,
             root: root.to_path_buf(),
             post_enabled: document.settings().render.enable_shaders,
@@ -1034,6 +1037,10 @@ fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
 impl Extension for DistantLand {
     fn name(&self) -> String {
         format!("mgeHost64 v{}", env!("CARGO_PKG_VERSION"))
+    }
+
+    fn anisotropy(&self) -> u16 {
+        self.anisotropy
     }
 
     fn offline(&mut self) {
