@@ -1470,6 +1470,10 @@ impl Extension for DistantLand {
         let sunvec = scene.sun_direction.unwrap_or(sun_pos.map(|v| -v));
         let exponential = e.flags & 1 != 0;
         let underwater = e.flags & 2 != 0;
+        // An exterior, or an interior cell with the flag "behaves like exterior" of the game
+        // (`Cell::isExteriorInterior`): `IntLikeExterior(true)` of MGE XE. `isInterior` of
+        // a shader is its opposite.
+        let like_exterior = e.flags & 4 != 0;
         let sunvis = e.sun_vis + (1.0 - e.sun_vis) * 0.333 * e.nice_weather;
         let fov = 2.0 * (1.0 / scene.projection[0].max(1e-6)).atan().to_degrees();
         let variables = Variables {
@@ -1479,16 +1483,21 @@ impl Extension for DistantLand {
             eyepos: [eye[0], eye[1], eye[2], fov],
             sunvec: [sunvec[0], sunvec[1], sunvec[2], e.time],
             suncol: [scene.sun_color[0], scene.sun_color[1], scene.sun_color[2], if e.has_water != 0 { e.water_level } else { -1.0e9 }],
-            sunamb: [scene.sun_ambient[0] + scene.ambient[0], scene.sun_ambient[1] + scene.ambient[1], scene.sun_ambient[2] + scene.ambient[2], if scene.interior { 1.0 } else { 0.0 }],
+            sunamb: [scene.sun_ambient[0] + scene.ambient[0], scene.sun_ambient[1] + scene.ambient[1], scene.sun_ambient[2] + scene.ambient[2], if like_exterior { 0.0 } else { 1.0 }],
             sunpos: [sun_pos[0], sun_pos[1], sun_pos[2], if underwater { 1.0 } else { 0.0 }],
             hdr: [1.0; 4],
             fogcol: [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], if exponential { e.fog_exp_start } else { e.fog_start }],
             fognearcol: [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2], if exponential { e.fog_exp_divisor } else { e.fog_end }],
             fog_near: [e.fog_near_start, e.fog_near_end, 1.0 / scene.target_size.0.max(1) as f32, 1.0 / scene.target_size.1.max(1) as f32],
         };
-        // The flags of the environment: 1 interior, 2 exterior, 4 an interior that behaves as
-        // an exterior (not known here), 8 under water, 16 above, 32 the sun visible, 64 not.
-        let flags = (if scene.interior { 1 } else { 2 }) | (if underwater { 8 } else { 16 }) | (if e.sun_vis >= 0.001 { 32 } else { 64 });
+        // The flags of the environment, as `postProcess` of the Direct3D 9 path sets them: 1
+        // an interior that is not like an exterior, 2 an exterior, 4 an interior that
+        // behaves as an exterior, 8 under water, 16 above, 32 the sun visible, 64 not.
+        let flags = (if like_exterior { 0 } else { 1 })
+            | (if scene.interior { 0 } else { 2 })
+            | (if scene.interior && like_exterior { 4 } else { 0 })
+            | (if underwater { 8 } else { 16 })
+            | (if e.sun_vis >= 0.001 { 32 } else { 64 });
         post.run(scene, encoder, target, &variables, flags);
     }
 
@@ -1596,8 +1605,10 @@ impl DistantLand {
         if !on || (interiors_only && !self.interior) {
             return None;
         }
-        // In an interior the numbers are 1, as `adjustFog` of the Direct3D 9 path has them.
-        let (sun, ambient) = self.environment.filter(|_| !self.interior).map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
+        // The numbers of the environment packet: those of the weather in an exterior and in
+        // an interior that is like one, and 1 in each other interior, as `adjustFog` of the
+        // Direct3D 9 path has them.
+        let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade })
     }
 }
