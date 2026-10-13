@@ -1,6 +1,7 @@
 #pragma once
 
 #include "doublesurface.h"
+#include "shadervalues.h"
 
 #include <memory>
 #include <string>
@@ -24,6 +25,8 @@ struct MGEShader {
     DWORD timestamp;
     std::string name;
     D3DXHANDLE ehVars[32];
+    // The variables of the shader in the wgpu renderer mode, where `effect` is null.
+    std::unique_ptr<ShaderValues> values;
 
     void SetTexture(EffectVariableID id, LPDIRECT3DBASETEXTURE9 tex);
     void SetMatrix(EffectVariableID id, const D3DXMATRIX* m);
@@ -58,6 +61,8 @@ public:
     static void initShader(MGEShader* shader);
     static void loadShaderDependencies(MGEShader* shader);
     static void orderShaders();
+    // The wgpu renderer mode: sends the state of each shader that changed to the renderer.
+    static void sendShaderStates();
     static bool initBuffers();
     static void release();
     static bool initShaderChainThreaded();

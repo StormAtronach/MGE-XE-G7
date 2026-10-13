@@ -425,6 +425,9 @@ namespace api {
     void MGEAPIv1::shaderSetEnabled(ShaderHandle handle, bool enable) {
         auto shader = static_cast<MGEShader*>(handle);
         shader->enabled = enable;
+        if (shader->values) {
+            shader->values->changed = true;
+        }
     }
 
     int MGEAPIv1::shaderGetPriority(ShaderHandle handle) {
@@ -435,14 +438,25 @@ namespace api {
     void MGEAPIv1::shaderSetPriority(ShaderHandle handle, int value) {
         auto shader = static_cast<MGEShader*>(handle);
         shader->priority = value;
+        if (shader->values) {
+            shader->values->prioritySet = true;
+            shader->values->changed = true;
+        }
         PostShaders::orderShaders();
     }
 
     bool MGEAPIv1::shaderGetVariableInfo(ShaderHandle handle, size_t index, ShaderVariableInfo* out_info) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            if (!shader->values || index >= shader->values->variables.size()) {
+                return false;
+            }
+            const ShaderVariable& variable = shader->values->variables[index];
+            std::snprintf(out_info->name, sizeof(out_info->name), "%s", variable.name.c_str());
+            // A string has no value in the store: the type that a caller skips.
+            out_info->valueType = (variable.type == 's') ? 'x' : variable.type;
+            return true;
         }
         auto param_handle = shader->effect->GetParameter(0, index);
 
@@ -518,8 +532,13 @@ namespace api {
     bool MGEAPIv1::shaderGetBool(ShaderHandle handle, const char* variableName, bool* out_value) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            float value = 0;
+            if (!shader->values || shader->values->get(variableName, &value, 1) == 0) {
+                return false;
+            }
+            *out_value = value != 0;
+            return true;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -537,8 +556,13 @@ namespace api {
     bool MGEAPIv1::shaderGetFloat(ShaderHandle handle, const char* variableName, float* out_value) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            float value = 0;
+            if (!shader->values || shader->values->get(variableName, &value, 1) == 0) {
+                return false;
+            }
+            *out_value = value;
+            return true;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -551,8 +575,13 @@ namespace api {
     bool MGEAPIv1::shaderGetInt(ShaderHandle handle, const char* variableName, int* out_value) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            float value = 0;
+            if (!shader->values || shader->values->get(variableName, &value, 1) == 0) {
+                return false;
+            }
+            *out_value = static_cast<int>(value);
+            return true;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -565,8 +594,8 @@ namespace api {
     bool MGEAPIv1::shaderGetString(ShaderHandle handle, const char* variableName, const char** out_value) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            return false;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -579,8 +608,14 @@ namespace api {
     bool MGEAPIv1::shaderGetFloatArray(ShaderHandle handle, const char* variableName, float* out_values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            const size_t size = shader->values ? shader->values->get(variableName, nullptr, 0) : 0;
+            if (size == 0 || size > *count) {
+                return false;
+            }
+            *count = size;
+            shader->values->get(variableName, out_values, size);
+            return true;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -600,8 +635,8 @@ namespace api {
     bool MGEAPIv1::shaderGetVector(ShaderHandle handle, const char* variableName, float* out_values, size_t count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            return shader->values && shader->values->get(variableName, out_values, count) != 0;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -614,8 +649,8 @@ namespace api {
     bool MGEAPIv1::shaderGetMatrix(ShaderHandle handle, const char* variableName, float* out_values) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            return shader->values && shader->values->get(variableName, out_values, 16) != 0;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -628,8 +663,18 @@ namespace api {
     bool MGEAPIv3::shaderGetBoolArray(ShaderHandle handle, const char* variableName, int* out_values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            const size_t size = shader->values ? shader->values->get(variableName, nullptr, 0) : 0;
+            if (size == 0 || size > *count) {
+                return false;
+            }
+            std::vector<float> floats(size);
+            shader->values->get(variableName, floats.data(), size);
+            for (size_t n = 0; n < size; ++n) {
+                out_values[n] = floats[n] != 0;
+            }
+            *count = size;
+            return true;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -649,8 +694,18 @@ namespace api {
     bool MGEAPIv3::shaderGetIntArray(ShaderHandle handle, const char* variableName, int* out_values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            const size_t size = shader->values ? shader->values->get(variableName, nullptr, 0) : 0;
+            if (size == 0 || size > *count) {
+                return false;
+            }
+            std::vector<float> floats(size);
+            shader->values->get(variableName, floats.data(), size);
+            for (size_t n = 0; n < size; ++n) {
+                out_values[n] = static_cast<int>(floats[n]);
+            }
+            *count = size;
+            return true;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -670,8 +725,15 @@ namespace api {
     bool MGEAPIv3::shaderGetVectorArray(ShaderHandle handle, const char* variableName, float* out_values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            // A vector of the array has 4 values.
+            const size_t size = shader->values ? shader->values->get(variableName, nullptr, 0) : 0;
+            if (size == 0 || size / 4 > *count) {
+                return false;
+            }
+            *count = size / 4;
+            shader->values->get(variableName, out_values, size);
+            return true;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -691,8 +753,9 @@ namespace api {
     bool MGEAPIv1::shaderSetBool(ShaderHandle handle, const char* variableName, bool value) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            const float number = value ? 1.0f : 0.0f;
+            return shader->values && shader->values->set(variableName, &number, 1);
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -705,8 +768,8 @@ namespace api {
     bool MGEAPIv1::shaderSetFloat(ShaderHandle handle, const char* variableName, float value) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            return shader->values && shader->values->set(variableName, &value, 1);
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -719,8 +782,9 @@ namespace api {
     bool MGEAPIv1::shaderSetInt(ShaderHandle handle, const char* variableName, int value) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            const float number = static_cast<float>(value);
+            return shader->values && shader->values->set(variableName, &number, 1);
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -733,8 +797,8 @@ namespace api {
     bool MGEAPIv1::shaderSetString(ShaderHandle handle, const char* variableName, const char* value) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            return false;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -747,8 +811,8 @@ namespace api {
     bool MGEAPIv1::shaderSetFloatArray(ShaderHandle handle, const char* variableName, const float* values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            return shader->values && shader->values->set(variableName, values, *count);
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -761,8 +825,8 @@ namespace api {
     bool MGEAPIv1::shaderSetVector(ShaderHandle handle, const char* variableName, const float* values, size_t count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            return shader->values && shader->values->set(variableName, values, count);
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -775,8 +839,8 @@ namespace api {
     bool MGEAPIv1::shaderSetMatrix(ShaderHandle handle, const char* variableName, const float* values) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            return shader->values && shader->values->set(variableName, values, 16);
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -789,8 +853,9 @@ namespace api {
     bool MGEAPIv3::shaderSetBoolArray(ShaderHandle handle, const char* variableName, const int* values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            std::vector<float> floats(values, values + *count);
+            return shader->values && shader->values->set(variableName, floats.data(), floats.size());
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -803,8 +868,9 @@ namespace api {
     bool MGEAPIv3::shaderSetIntArray(ShaderHandle handle, const char* variableName, const int* values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            std::vector<float> floats(values, values + *count);
+            return shader->values && shader->values->set(variableName, floats.data(), floats.size());
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -817,8 +883,9 @@ namespace api {
     bool MGEAPIv3::shaderSetVectorArray(ShaderHandle handle, const char* variableName, const float* values, size_t* count) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
-            // A placeholder: the wgpu renderer mode has no post-processing yet.
-            return {};
+            // The wgpu renderer mode: the variable is in the store of the shader.
+            // A vector of the array has 4 values.
+            return shader->values && shader->values->set(variableName, values, *count * 4);
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 

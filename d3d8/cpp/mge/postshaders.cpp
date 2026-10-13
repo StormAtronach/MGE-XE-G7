@@ -161,9 +161,9 @@ void PostShaders::waitForShaderLoading() {
 
 bool PostShaders::loadNewShader(const char* name) {
     if (!device) {
-        // No device: the wgpu renderer mode, which has no post-processing yet. A mod that
-        // loads a shader gets a placeholder with the name of the file. The calls of the mod
-        // on it do nothing, and the mod runs as it does with the shader.
+        // No device: the wgpu renderer mode. The renderer in the helper has the shader, as a
+        // port in WGSL. A mod that loads a shader gets an object with the variables of the
+        // effect file; what the mod sets goes to the renderer (see sendShaderStates).
         char placeholderPath[MAX_PATH];
         std::snprintf(placeholderPath, sizeof(placeholderPath), "Data Files\\shaders\\XEshaders\\%s.fx", name);
         if (GetFileAttributesA(placeholderPath) == INVALID_FILE_ATTRIBUTES) {
@@ -171,7 +171,9 @@ bool PostShaders::loadNewShader(const char* name) {
         }
         auto placeholder = std::make_unique<MGEShader>();
         placeholder->effect = nullptr;
-        placeholder->enabled = false;
+        // A shader that a mod loads is on, as with a device.
+        placeholder->enabled = true;
+        placeholder->values = std::make_unique<ShaderValues>(ShaderValues::parse(placeholderPath));
         placeholder->disableFlags = 0;
         placeholder->priority = 0;
         placeholder->timestamp = 0;
@@ -409,6 +411,56 @@ void PostShaders::loadShaderDependencies(MGEShader* shader) {
 
 static bool shaderComparator(const std::unique_ptr<MGEShader>& a, const std::unique_ptr<MGEShader>& b) {
     return a->priority < b->priority;
+}
+
+// In main.cpp: sends data to the wgpu renderer in the helper.
+void sendToRenderer(UINT id, const void* data, UINT length);
+
+// The state of a shader that a mod loaded, for the wgpu renderer: the record 2 of the
+// data that MGE XE puts into the stream. The head, then for each variable that the mod
+// set: its name (64 bytes), its type letter, the number of its values, the values as floats.
+void PostShaders::sendShaderStates() {
+    struct Head {
+        UINT version;
+        // 1: the shader is on. 2: `priority` is one that a mod set.
+        UINT flags;
+        int priority;
+        UINT variables;
+        char name[64];
+    };
+    static const UINT ShaderStateId = 2;
+
+    for (auto& s : shaders) {
+        if (!s->values || !s->values->changed) {
+            continue;
+        }
+        s->values->changed = false;
+
+        Head head = {};
+        head.version = 1;
+        head.flags = (s->enabled ? 1u : 0u) | (s->values->prioritySet ? 2u : 0u);
+        head.priority = s->priority;
+        std::snprintf(head.name, sizeof(head.name), "%s", s->name.c_str());
+
+        std::vector<unsigned char> record(sizeof(head));
+        for (const auto& variable : s->values->variables) {
+            if (!variable.set) {
+                continue;
+            }
+            char name[64] = {};
+            std::snprintf(name, sizeof(name), "%s", variable.name.c_str());
+            const UINT type = static_cast<unsigned char>(variable.type);
+            const UINT count = static_cast<UINT>(variable.values.size());
+            const auto* bytes = reinterpret_cast<const unsigned char*>(variable.values.data());
+            record.insert(record.end(), name, name + sizeof(name));
+            record.insert(record.end(), reinterpret_cast<const unsigned char*>(&type), reinterpret_cast<const unsigned char*>(&type) + sizeof(type));
+            record.insert(record.end(), reinterpret_cast<const unsigned char*>(&count), reinterpret_cast<const unsigned char*>(&count) + sizeof(count));
+            record.insert(record.end(), bytes, bytes + count * sizeof(float));
+            ++head.variables;
+        }
+        std::memcpy(record.data(), &head, sizeof(head));
+        sendToRenderer(ShaderStateId, record.data(), static_cast<UINT>(record.size()));
+    }
 }
 
 void PostShaders::orderShaders() {

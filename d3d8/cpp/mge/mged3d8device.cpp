@@ -12,6 +12,7 @@
 #include "distantland.h"
 #include "morrowindskinning.h"
 #include "mwbridge.h"
+#include "postshaders.h"
 #include "waterlook.h"
 #include "mwpatches.h"
 #include "renderlink.h"
@@ -1435,6 +1436,7 @@ namespace Deviceless {
                 mwBridge->SetFOV(Configuration.ScreenFOV);
             }
             sendEnvironment(mwBridge);
+            PostShaders::sendShaderStates();
         }
     }
 
