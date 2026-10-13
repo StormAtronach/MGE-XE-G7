@@ -31,6 +31,7 @@ use std::time::Instant;
 mod blend;
 mod caustics;
 mod post;
+mod post_jop;
 mod shadow;
 mod statics;
 mod water;

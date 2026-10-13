@@ -16,7 +16,12 @@ Shaders of mods with a port: MGG SSAO and MGG darker interiors (Morrowind Graphi
 Shaders), ColorMood (STEP Shaders Compilation), heathaze (Heat Haze), Special Process,
 oj_me_fog_box (Magicka Expanded), tew_fogbox (Vapourmist), skoomaesthesia (Skoomaesthesia),
 Disorient (Kogoruhn Expanded), Invisibility (MM - Enhanced Invisibility), InspectIt/Bokeh
-(Inspect It).
+(Inspect It), ashfall (Ashfall), Lens Effects and Cinematic Bokeh DoF (Outlander
+Configuration), film, deband_fogaware, Bloom Soft Sky and alternatebloom, gammavtdt (STEP
+Shaders Compilation), and the 23 shaders of Joy of Painting (`jop_*`). Files with the name
+of a stock shader and other code have a port of their own, found by the code of the file:
+Eye Adaptation (HDR), SSAO HQ and Sunshafts of the STEP Shaders Compilation, Sunshafts of
+Watch the Skies, Underwater Effects of Krokantor's Enhanced Water Shader.
 
 ## A port and the effect file of a mod
 
@@ -75,7 +80,7 @@ has in its annotations. The rest of the file is WGSL.
 | `mgeflags` | no | the shader does not run in a frame that has one of these bits: 1 interior, 2 exterior, 4 interior that behaves as an exterior, 8 under the water, 16 above the water, 32 the sun is visible, 64 the sun is not visible |
 | `requires_hdr` | no | `true` turns the HDR measure on; the shader reads it as `u.hdr` |
 | `disable_sunglare` | no | `true` takes the sun glare of the game out of the frame |
-| `texture` | no | a file under `Data Files/textures`, bound as `tex1`: a DDS file, or a TGA file (true colour, 24 or 32 bits) |
+| `texture` | no | up to ten files under `Data Files/textures`, with commas, bound as `tex1` to `tex10` in their order: DDS files, or TGA files (true colour, 24 or 32 bits). A file that is not found reads black |
 | `variables` | no | the variables that a mod sets from Lua: see "A shader that a mod drives from Lua" |
 
 ## What a shader has
@@ -90,7 +95,7 @@ The renderer puts a common part before the file. A shader does not declare these
   first eight passes of this shader, white before they are drawn), `depthframe` (the
   distance of the pixel from the camera along the view axis in its red part, in units of
   the game; `1e38` where the game drew nothing), `watertexture` (the wave texture of the
-  water, 3D), `tex1` (the texture of the shader, white without one).
+  water, 3D), `tex1` to `tex10` (the textures of the shader, white without one).
 - The samplers: `point_clamp`, `linear_clamp`, `linear_wrap`, `linear_mirror`,
   `point_wrap`, `point_mirror`. Read a texture with `textureSampleLevel(texture, sampler, coordinate, 0.0)`.
   `depthframe` takes `point_clamp` or `point_wrap` only (32-bit floats take no filter);
@@ -150,6 +155,9 @@ The WGSL side names the variables that it reads, with the header line `variables
     return vec4f(mix(c.rgb, c.rgb * colour(), intensity()), 1.0);
 }
 ```
+
+A variable with the name of a function or a word of WGSL (`distance`, `length`, `step`, ...)
+is read with `_` after its name: `distance_()`.
 
 - A variable is `name type`, with `= numbers` for its values before a mod sets it (0
   without them). The types: `f32`, `vec2`, `vec3`, `vec4`, and an array `type[N]`.

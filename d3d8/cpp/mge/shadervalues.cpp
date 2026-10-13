@@ -105,20 +105,29 @@ namespace {
     }
 }
 
+namespace {
+    // Reads the variables of one file into `result`, and those of the files that it
+    // includes. `constants` has the numbers that a size of an array can name: `#define
+    // NAME 2` and `static const float NAME = 2;`.
+    void parseFile(const std::string& path, ShaderValues& result, std::map<std::string, float>& constants, int depth);
+}
+
 ShaderValues ShaderValues::parse(const char* path) {
     ShaderValues result;
+    std::map<std::string, float> constants;
+    parseFile(path, result, constants, 0);
+    return result;
+}
 
+namespace {
+void parseFile(const std::string& path, ShaderValues& result, std::map<std::string, float>& constants, int includeDepth) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        return result;
+        return;
     }
     std::stringstream buffer;
     buffer << file.rdbuf();
     const std::string text = withoutComments(buffer.str());
-
-    // The numbers that a size of an array can name: `#define NAME 2` and
-    // `static const float NAME = 2;`.
-    std::map<std::string, float> constants;
 
     // The statements outside of a block. A block (a function, a sampler state, a
     // technique) ends a statement without a variable in it.
@@ -133,15 +142,38 @@ ShaderValues ShaderValues::parse(const char* path) {
             if (end == std::string::npos) {
                 end = text.size();
             }
-            const auto words = tokens(text.substr(i + 1, end - i - 1));
+            const std::string line = text.substr(i + 1, end - i - 1);
+            const auto words = tokens(line);
             float value;
             if (words.size() == 3 && words[0] == "define" && number(words[2], &value)) {
                 constants[words[1]] = value;
             }
+            // A file that this one includes, beside it: `#include "name.fx"`.
+            const size_t open = line.find('"');
+            const size_t close = line.rfind('"');
+            if (!words.empty() && words[0] == "include" && open != std::string::npos && close > open && includeDepth < 8) {
+                const size_t slash = path.find_last_of("\\/");
+                const std::string folder = (slash == std::string::npos) ? std::string() : path.substr(0, slash + 1);
+                parseFile(folder + line.substr(open + 1, close - open - 1), result, constants, includeDepth + 1);
+            }
             i = end;
             continue;
         }
-        if (c == '{') {
+        const size_t last = statement.find_last_not_of(" \t\r\n");
+        if (c == '{' && depth == 0 && last != std::string::npos && statement[last] == '=') {
+            // The start value of a variable in braces, `float3 name = {1, 2, 3};`: a part
+            // of the statement, not a block.
+            int inner = 0;
+            while (i < text.size()) {
+                statement += text[i];
+                if (text[i] == '{') {
+                    ++inner;
+                } else if (text[i] == '}' && --inner == 0) {
+                    break;
+                }
+                ++i;
+            }
+        } else if (c == '{') {
             ++depth;
         } else if (c == '}') {
             if (depth > 0 && --depth == 0) {
@@ -257,7 +289,10 @@ ShaderValues ShaderValues::parse(const char* path) {
                 for (size_t n = 0; n < start.size() && n < variable.values.size(); ++n) {
                     variable.values[n] = start[n];
                 }
-                result.variables.push_back(variable);
+                // A name comes one time: a file and a file that it includes can have it.
+                if (!result.find(variable.name.c_str())) {
+                    result.variables.push_back(variable);
+                }
             }
             continue;
         } else if (depth == 0) {
@@ -265,7 +300,7 @@ ShaderValues ShaderValues::parse(const char* path) {
         }
         ++i;
     }
-    return result;
+}
 }
 
 ShaderVariable* ShaderValues::find(const char* name) {
