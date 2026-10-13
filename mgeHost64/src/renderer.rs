@@ -34,6 +34,7 @@ mod post;
 mod post_jop;
 mod shadow;
 mod statics;
+mod ripples;
 mod water;
 
 use distantland::mge_xe::distant_terrain::{
@@ -41,7 +42,7 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
-use crate::abi::constants::{USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
+use crate::abi::constants::{DYNAMIC_RIPPLES, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, Replay, SceneView};
@@ -96,7 +97,7 @@ impl Settings {
 
     /// The names of the flags that differ between two records, each with its new state.
     pub fn changed_flags(before: Option<Settings>, now: Settings) -> Vec<String> {
-        const NAMES: [(u32, &str); 7] = [
+        const NAMES: [(u32, &str); 8] = [
             (USE_DISTANT_LAND, "distant land"),
             (USE_DISTANT_STATICS, "distant statics"),
             (USE_GRASS, "grass"),
@@ -104,6 +105,7 @@ impl Settings {
             (USE_HW_SHADER, "post shaders"),
             (USE_FFESHADER, "light for each pixel"),
             (USE_HDR, "HDR measure"),
+            (DYNAMIC_RIPPLES, "dynamic waves"),
         ];
         let before = before.map_or(!now.flags, |b| b.flags);
         NAMES.iter().filter(|(flag, _)| (before ^ now.flags) & flag != 0).map(|(flag, name)| format!("{name} {}", if now.flags & flag != 0 { "on" } else { "off" })).collect()
@@ -171,6 +173,11 @@ struct Environment {
     /// Version 5: the name of the interior cell as the game has it, padded with zeros (the
     /// key of its world space in `usage.data`); all zeros in an exterior.
     interior_name: [u8; 64],
+    /// Version 6, for the dynamic waves: the rain of the weather (1 for rain and snow, 1.5
+    /// for a thunderstorm, below 0 for none, mixed between the two weathers of a change),
+    /// and the height of the player.
+    precipitation: f32,
+    player_height: f32,
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -196,6 +203,9 @@ struct Gpu {
     pipeline: wgpu::RenderPipeline,
     /// The same as lines, when the device has the line mode.
     pipeline_lines: Option<wgpu::RenderPipeline>,
+    /// The land in the mirror of the water: one side only.
+    mirror_pipeline: wgpu::RenderPipeline,
+    mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
     group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     /// The same with other uniforms: for the reflection of the land in the water.
@@ -282,6 +292,12 @@ pub struct DistantLand {
     /// The water, when its wave texture was found; `None` before the first frame.
     water: Option<Water>,
     water_enabled: bool,
+    /// The dynamic waves (`distant_land.water.dynamic_ripples`), their wave height
+    /// (`wave_height`, 0 to 250), and their simulation; `None` before the first frame
+    /// with them.
+    ripples_enabled: bool,
+    wave_height: f32,
+    ripples: Option<ripples::Ripples>,
     waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
@@ -571,6 +587,9 @@ impl DistantLand {
             hdr_reaction: document.settings().render.hdr_reaction_time,
             water: None,
             water_enabled: true,
+            ripples_enabled: settings.water.dynamic_ripples,
+            wave_height: settings.water.wave_height as f32,
+            ripples: None,
             waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
@@ -641,6 +660,9 @@ impl Drop for DistantLand {
             self.water.as_ref().map_or(0, |w| w.reflections),
             self.caustics.as_ref().map_or(0, |c| c.frames)
         );
+        if let Some(ripples) = self.ripples.as_ref() {
+            println!("dynamic waves: {} frames, {} steps, {} drops", ripples.frames, ripples.steps, ripples.drops_made);
+        }
         println!("shadow map: {} frames", self.shadow.as_ref().map_or(0, |s| s.frames));
         println!("post: {} frames, {} shaders run", self.post.as_ref().map_or(0, |p| p.frames), self.post.as_ref().map_or(0, |p| p.shaders_run));
     }
@@ -858,7 +880,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
-    let make_pipeline = |polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let make_pipeline = |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant land"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -867,8 +889,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
             compilation_options: Default::default(),
             buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 20, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
         },
-        // The two sides: the winding of the file is not checked yet.
-        primitive: wgpu::PrimitiveState { cull_mode: None, polygon_mode, ..Default::default() },
+        // The frame has the two sides of the land. The mirror of the water has one side,
+        // as the Direct3D 9 path has it (`CullMode` of the pass of the land reflection):
+        // the land under the water, which the lower cut of the dynamic waves lets in, is
+        // then seen from its back and is not drawn over the reflection.
+        primitive: wgpu::PrimitiveState { front_face: wgpu::FrontFace::Ccw, cull_mode, polygon_mode, ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
@@ -886,10 +911,15 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
         multiview_mask: None,
         cache: None,
     });
-    let pipeline = make_pipeline(wgpu::PolygonMode::Fill);
+    let pipeline = make_pipeline(None, wgpu::PolygonMode::Fill);
     // The same as lines, for a frame in which the game draws in wireframe (see
     // `SceneView::wireframe`); a device without the line mode draws the land filled then.
-    let pipeline_lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE).then(|| make_pipeline(wgpu::PolygonMode::Line));
+    let lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
+    let pipeline_lines = lines.then(|| make_pipeline(None, wgpu::PolygonMode::Line));
+    // The mirror turns the winding: the front of the land is the other face there, as
+    // the statics have it.
+    let mirror_pipeline = make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Fill);
+    let mirror_pipeline_lines = lines.then(|| make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Line));
 
     // The casters of the shadow map: the land with the depth from the sun.
     let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land shadow"), source: wgpu::ShaderSource::Wgsl(LAND_SHADOW_SHADER.into()) });
@@ -950,6 +980,8 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
     Ok(Gpu {
         pipeline,
         pipeline_lines,
+        mirror_pipeline,
+        mirror_pipeline_lines,
         group,
         uniforms,
         mirror_group,
@@ -988,6 +1020,11 @@ impl Gpu {
     /// the device has the line mode, filled otherwise.
     fn pipeline_for(&self, scene: &SceneView) -> &wgpu::RenderPipeline {
         if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline }
+    }
+
+    /// The same for the land in the mirror of the water.
+    fn mirror_pipeline_for(&self, scene: &SceneView) -> &wgpu::RenderPipeline {
+        if scene.wireframe { self.mirror_pipeline_lines.as_ref().unwrap_or(&self.mirror_pipeline) } else { &self.mirror_pipeline }
     }
 }
 
@@ -1251,6 +1288,24 @@ impl Extension for DistantLand {
             }
         }
         let water = water_cell && self.water.is_some();
+        // The dynamic waves: the simulation of the frame, before a water surface reads it.
+        // It runs in a cell without water too, as on the Direct3D 9 path.
+        if self.enabled && self.ripples_enabled {
+            if let Some(e) = self.environment {
+                let ripples = self.ripples.get_or_insert_with(|| ripples::Ripples::new(scene));
+                ripples.simulate(
+                    scene,
+                    &ripples::Inputs {
+                        time: e.time,
+                        like_exterior: e.flags & 4 != 0,
+                        precipitation: e.precipitation,
+                        foot: (e.foot_valid != 0).then_some(e.foot_pos),
+                        water_level: e.water_level,
+                        player_height: e.player_height,
+                    },
+                );
+            }
+        }
         // The chain of post shaders runs in an interior too, as it does with MGE XE on
         // Direct3D 9: its wave texture is that of the water, or one of its own when the
         // frame has no water object (the first frame is in an interior).
@@ -1452,13 +1507,14 @@ impl Extension for DistantLand {
             }
             return;
         }
-        const VERSION_4: usize = size_of::<Environment>() - 64;
+        // Version 4 ends before the name of the interior cell and the values of version 6.
+        const VERSION_4: usize = size_of::<Environment>() - 64 - 8;
         if id == ENVIRONMENT_ID && bytes.len() >= VERSION_4 {
             let mut raw = [0u8; size_of::<Environment>()];
             let length = bytes.len().min(raw.len());
             raw[..length].copy_from_slice(&bytes[..length]);
             let environment: Environment = bytemuck::pod_read_unaligned(&raw);
-            if environment.version == 4 || environment.version == 5 {
+            if (4..=6).contains(&environment.version) {
                 self.environment = Some(environment);
             }
         }
@@ -1649,13 +1705,15 @@ impl Extension for DistantLand {
             mirror_uniforms.view_projection = multiply(&mirrored_view, &far_projection);
             // Only the side of the water plane that the mirror shows.
             mirror_uniforms.flags[1] = if frame.underwater { -1.0 } else { 1.0 };
-            mirror_uniforms.flags[2] = frame.water_level - 1.0;
+            // With the dynamic waves the plane can be lower by half of the wave height:
+            // the cut moves to the side that the mirror does not show.
+            mirror_uniforms.flags[2] = frame.water_level - 1.0 - mirror_uniforms.flags[1] * 0.5 * frame.wave_height.unwrap_or(0.0);
             scene.queue.write_buffer(&gpu.mirror_uniforms, 0, bytemuck::bytes_of(&mirror_uniforms));
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
             // path); an interior cell reflects its statics only.
             if !scene.interior {
-                mirror_pass.set_pipeline(gpu.pipeline_for(scene));
+                mirror_pass.set_pipeline(gpu.mirror_pipeline_for(scene));
                 mirror_pass.set_bind_group(0, &gpu.mirror_group, &[]);
                 for mesh in &gpu.meshes {
                     let inside = mirror_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
@@ -1810,7 +1868,7 @@ impl Extension for DistantLand {
         }
         let frame = self.water_frame(scene);
         if let (Some(water), Some(frame)) = (self.water.as_mut(), frame.as_ref()) {
-            water.draw(scene, pass, frame);
+            water.draw(scene, pass, frame, self.ripples.as_ref());
         }
         // The debug view of the shadow map again: the water is drawn over that corner.
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
@@ -1889,6 +1947,7 @@ impl DistantLand {
                 fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
                 draw_distance: self.draw_distance,
                 view_end,
+                wave_height: self.wave_height_of_frame(),
             });
         }
         self.gpu.as_ref()?;
@@ -1925,7 +1984,13 @@ impl DistantLand {
             fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
             draw_distance: self.draw_distance,
             view_end,
+            wave_height: self.wave_height_of_frame(),
         })
+    }
+
+    /// The wave height for the water of the frame, when the dynamic waves run.
+    fn wave_height_of_frame(&self) -> Option<f32> {
+        (self.ripples_enabled && self.ripples.is_some()).then_some(self.wave_height)
     }
 
     /// The sky of MGE XE is for a cell with a world space that is like an exterior, with the
@@ -1962,8 +2027,9 @@ impl DistantLand {
     /// feature flags, the lighting mode, the HDR reaction speed, the draw distance and the
     /// ends of the static tiers. The distant land stays off when its data was not loaded
     /// at the start. The sizes of the static tiers are for the load only, as on Direct3D 9
-    /// (`classifyStaticComponent` runs when the statics load). The water numbers and the
-    /// interior fog end of the record are not followed yet.
+    /// (`classifyStaticComponent` runs when the statics load). The dynamic waves and
+    /// their wave height are followed too. The caustics and the interior fog end of the
+    /// record are not followed yet.
     fn apply_settings(&mut self) {
         let Some(settings) = self.settings else { return };
         if self.settings_applied == Some(settings) {
@@ -1978,6 +2044,10 @@ impl DistantLand {
         self.per_pixel.0 = on(USE_FFESHADER);
         self.per_pixel.1 = settings.per_pixel_mode == 1;
         self.hdr_reaction = settings.hdr_reaction_speed;
+        self.ripples_enabled = on(DYNAMIC_RIPPLES);
+        if settings.water_wave_height.is_finite() {
+            self.wave_height = settings.water_wave_height.clamp(0.0, 250.0);
+        }
         if let Some(post) = self.post.as_mut() {
             post.set_hdr(on(USE_HDR), settings.hdr_reaction_speed);
         }
@@ -2051,6 +2121,6 @@ mod settings_tests {
         let a = Settings { version: 1, flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
         let b = Settings { flags: USE_DISTANT_LAND | USE_GRASS | USE_HDR, ..a };
         assert_eq!(Settings::changed_flags(Some(a), b), vec!["shadows off".to_string(), "HDR measure on".to_string()]);
-        assert_eq!(Settings::changed_flags(None, a).len(), 7);
+        assert_eq!(Settings::changed_flags(None, a).len(), 8);
     }
 }

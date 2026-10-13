@@ -1217,6 +1217,10 @@ namespace Deviceless {
         // Version 5: the name of the interior cell as the game has it, padded with zeros
         // (the key of its world space in usage.data); all zeros in an exterior.
         char interiorName[64];
+        // Version 6, for the dynamic waves: the rain of the weather (1 for rain and snow,
+        // 1.5 for a thunderstorm, below 0 for none), and the height of the player.
+        float precipitation;
+        float playerHeight;
     };
     static const UINT EnvironmentId = 1;
 
@@ -1228,7 +1232,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 5;
+        e.version = 6;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1398,6 +1402,17 @@ namespace Deviceless {
         e.time = mwBridge->simulationTime();
         e.waterLevel = mwBridge->WaterLevel();
         e.hasWater = mwBridge->CellHasWater() ? 1u : 0u;
+        if (exterior) {
+            // As DistantLand::simulateDynamicWaves: rain = 4; thunderstorm = 5; snow = 8;
+            // blizzard = 9. A thunderstorm has 50% more drops.
+            const int w0 = mwBridge->GetCurrentWeather(), w1 = mwBridge->GetNextWeather();
+            float p0 = (w0 == 4 || w0 == 5 || w0 == 8 || w0 == 9) ? 1.0f : -1.5f;
+            float p1 = (w1 == 4 || w1 == 5 || w1 == 8 || w1 == 9) ? 1.0f : -1.5f;
+            p0 += (w0 == 5) ? 0.5f : 0;
+            p1 += (w1 == 5) ? 0.5f : 0;
+            e.precipitation = mix(p0, p1, mwBridge->GetWeatherRatio());
+        }
+        e.playerHeight = mwBridge->PlayerHeight();
         if (!mwBridge->IsExterior()) {
             if (const char* name = mwBridge->getInteriorName()) {
                 std::strncpy(e.interiorName, name, sizeof(e.interiorName));
@@ -1482,6 +1497,15 @@ namespace Deviceless {
         s.waterCaustics = Configuration.DL.WaterCaustics;
         s.waterWaveHeight = Configuration.DL.WaterWaveHeight;
         s.interiorFogEnd = Configuration.DL.InteriorFogEnd;
+        // The ripples of the game go off while the dynamic waves are on, as the Direct3D 9
+        // path has it at its start. The code of the game is written only when the flag
+        // changes: a game without the dynamic waves is never written.
+        static bool gameRipplesOff = false;
+        const bool wavesOn = (Configuration.MGEFlags & DYNAMIC_RIPPLES) != 0;
+        if (wavesOn != gameRipplesOff) {
+            MWBridge::get()->toggleRipples(!wavesOn);
+            gameRipplesOff = wavesOn;
+        }
         if (settingsSent && std::memcmp(&s, &lastSettings, sizeof(s)) == 0) {
             return;
         }

@@ -1,7 +1,10 @@
 //! The water of MGE XE: the plane in place of the water plane of the game, with a reflection
 //! of the sky and the distant land, the refraction of the picture so far, and the depth of
-//! the game for the shore. `XE Mod Water.fx` without the ripples; the port specification is
-//! in `moreFPS/docs/plans/mge-xe-water-port-spec.md`.
+//! the game for the shore. `XE Mod Water.fx`; the port specification is in
+//! `moreFPS/docs/plans/mge-xe-water-port-spec.md`. With the dynamic waves
+//! (`DYNAMIC_RIPPLES` of the effect file, a setting that a mod can change here while the
+//! game runs): a finer plane that the waves move, and the ripples of `ripples.rs` in its
+//! normal.
 
 use nirender_wgpu::{Replay, ReplayView, SceneView, wgpu};
 
@@ -43,6 +46,9 @@ struct Uniforms {
     outscatter: [f32; 4],
     inscatter: [f32; 4],
     sun_altitude: [f32; 4],
+    /// The dynamic waves: the world position of the corner of the texture of the ripples
+    /// of the player, the wave height, and 1 when the dynamic waves are on.
+    wave: [f32; 4],
 }
 
 const SHADER: &str = "
@@ -62,6 +68,7 @@ struct Uniforms {
     outscatter: vec4f,
     inscatter: vec4f,
     sun_altitude: vec4f,
+    wave: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var reflection: texture_2d<f32>;
@@ -70,23 +77,47 @@ struct Uniforms {
 @group(0) @binding(4) var wave_sampler: sampler;
 @group(0) @binding(5) var picture: texture_2d<f32>;
 @group(0) @binding(6) var depth: texture_depth_2d;
+// The ripples of the rain and of the player (ripples.rs); flat without the dynamic waves.
+@group(0) @binding(7) var rain: texture_2d<f32>;
+@group(0) @binding(8) var player_waves: texture_2d<f32>;
 
 struct Out {
     @builtin(position) position: vec4f,
     @location(0) world: vec3f,
     @location(1) texcoords: vec4f,
     @location(2) clip_w: f32,
+    // With the dynamic waves: the clip x, y and w of the point at or under the plane, for
+    // the place of the reflection (screenposclamp).
+    @location(3) clamped: vec3f,
+    // For a test (MGE_XE_WATER_DEBUG 9): the height that the vertex read in the wave texture.
+    @location(4) probe: f32,
 }
 
 @vertex fn vs(@location(0) local: vec3f) -> Out {
     var out: Out;
-    // The plane lies at the water level less 1, a little under the ripples of the game.
     var world = local + u.world.xyz;
-    world.z -= 0.1;
+    var lowered = 0.0;
+    if u.wave.w > 0.5 {
+        // WaterVS with DYNAMIC_RIPPLES: the waves move the plane, most between 200 and
+        // 6400 units from the camera.
+        let t = 0.4 * u.eye.w;
+        let height = textureSampleLevel(waves, wave_sampler, vec3f(world.xy / 1104.0, t), 0.0).a;
+        let height2 = textureSampleLevel(waves, wave_sampler, vec3f(world.xy / 3900.0, t), 0.0).a;
+        let dist = length(u.eye.xyz - world);
+        let add = u.wave.z * (mix(height, height2, clamp(dist / 8000.0, 0.0, 1.0)) - 0.5) * clamp(1.0 - dist / 6400.0, 0.0, 1.0) * clamp(dist / 200.0, 0.0, 1.0);
+        world.z += add;
+        lowered = abs(add);
+        out.probe = height;
+    } else {
+        // The plane lies at the water level less 1, a little under the ripples of the game.
+        world.z -= 0.1;
+    }
     out.world = world;
     out.texcoords = vec4f(world.xy / 3900.0, world.xy / 527.0);
     out.position = u.view_projection * vec4f(world, 1.0);
     out.clip_w = out.position.w;
+    // The point of the reflection is not above the plane.
+    out.clamped = (u.view_projection * vec4f(world.xy, world.z - lowered, 1.0)).xyw;
     return out;
 }
 
@@ -112,10 +143,19 @@ fn fog_water(direction: vec3f, distance: f32) -> vec4f {
 }
 
 // getFinalWaterNormal: two reads of the wave texture, the far one past 8000 units.
-fn water_normal(texcoords: vec4f, distance: f32) -> vec3f {
+fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     let t = 0.4 * u.eye.w;
     let far = textureSample(waves, wave_sampler, vec3f(texcoords.xy, t)).rg;
-    let close = textureSample(waves, wave_sampler, vec3f(texcoords.zw, t)).rg;
+    var close = textureSample(waves, wave_sampler, vec3f(texcoords.zw, t)).rg;
+    if u.wave.w > 0.5 {
+        // The ripples of the rain repeat over the water. Those of the player are in the
+        // world around the player, and nothing outside of their texture (a border of 0).
+        close += textureSampleLevel(rain, wave_sampler, texcoords.zw, 0.0).ba;
+        let at = (world_xy - u.wave.xy) / 1280.0;
+        if all(at >= vec2f(0.0)) && all(at <= vec2f(1.0)) {
+            close += textureSampleLevel(player_waves, clamp_sampler, at, 0.0).ba;
+        }
+    }
     let n = 2.0 * mix(close, far, clamp(distance / 8000.0, 0.0, 1.0)) - 1.0;
     return normalize(vec3f(n, 1.0));
 }
@@ -135,7 +175,7 @@ fn distance_at(uv: vec2f) -> f32 {
 // UnderwaterPS: the plane seen from below.
 fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
     let fog = clamp(exp(-dist / 4096.0), 0.0, 1.0);
-    let normal = -water_normal(in.texcoords, dist);
+    let normal = -water_normal(in.texcoords, dist, in.world.xy);
     let reffactor = 2.0 * (u.sun_col.w * dist + 0.1) * normal.xy;
     let uv = in.position.xy / u.size.xy;
     let w = in.clip_w;
@@ -165,7 +205,7 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
     let sun_col_adjusted = u.sun_col.rgb;
     let depth_base = sun_col_adjusted * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
     let depth_color = fog.a * depth_base + fog.rgb;
-    let normal = water_normal(in.texcoords, dist);
+    let normal = water_normal(in.texcoords, dist, in.world.xy);
     let reffactor = (u.sun_col.w * dist + 0.1) * normal.xy;
     // The position of the pixel in the picture. The offsets of the shader are in the
     // projected space: here they are divided by the clip w of the pixel.
@@ -187,7 +227,14 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
         shorefactor = pow(depthscale, 90.0);
         refracted = mix(depth_color, refracted, 0.8 * depthscale + 0.2 * shorefactor);
     }
-    var reflected = textureSample(reflection, clamp_sampler, uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w).rgb;
+    // With the dynamic waves the reflection is read at the point that is not above the plane.
+    var reflect_uv = uv;
+    var reflect_w = w;
+    if u.wave.w > 0.5 {
+        reflect_w = in.clamped.z;
+        reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / reflect_w, 0.5 - 0.5 * in.clamped.y / reflect_w);
+    }
+    var reflected = textureSample(reflection, clamp_sampler, reflect_uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / reflect_w).rgb;
     reflected = mix(fog.rgb, reflected, fog.a);
     var adjust = mix(vec3f(0.0, 0.0, 0.1), normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
     adjust = mix(adjust, vec3f(0.0, 0.0, 1.0), (1.0 + eye_vec.z) * (1.0 - clamp(1.0 / (dist / 1000.0 + 1.0), 0.0, 1.0)));
@@ -213,6 +260,10 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
         return vec4f(normal * 0.5 + 0.5, 1.0);
     } else if u.fog.z == 8.0 {
         return vec4f(vec3f(w / 10000.0), 1.0);
+    } else if u.fog.z == 9.0 {
+        // Red: the height that the vertices read. Green: the same read for the pixel.
+        let here = textureSampleLevel(waves, wave_sampler, vec3f(in.world.xy / 1104.0, 0.4 * u.eye.w), 0.0).a;
+        return vec4f(in.probe, here, 0.0, 1.0);
     }
     return vec4f(result, 1.0);
 }
@@ -239,6 +290,53 @@ pub struct WaterFrame {
     /// The view depth where the plane ends, in an interior and under the water (the clip
     /// plane of `renderStageWater`); `None` for no end.
     pub view_end: Option<f32>,
+    /// The wave height of the settings (0 to 250), with the dynamic waves; `None` without.
+    pub wave_height: Option<f32>,
+}
+
+/// A disc of triangles around the camera: a centre, then rings of `segments` vertices at
+/// the radius that `radius` gives for each ring. The local z is -1 (the plane lies at the
+/// water level less 1).
+fn disc(segments: usize, rings: usize, radius: impl Fn(usize) -> f32) -> (Vec<[f32; 3]>, Vec<u16>) {
+    let mut vertices: Vec<[f32; 3]> = vec![[0.0, 0.0, -1.0]];
+    for t in 0..rings {
+        let r = radius(t);
+        for s in 0..segments {
+            let angle = 2.0 * std::f32::consts::PI * s as f32 / segments as f32;
+            vertices.push([r * angle.cos(), r * angle.sin(), -1.0]);
+        }
+    }
+    let mut indexes: Vec<u16> = Vec::new();
+    for s in 0..segments {
+        indexes.extend_from_slice(&[0, (1 + s) as u16, (1 + (s + 1) % segments) as u16]);
+    }
+    for t in 1..rings {
+        let base = 1 + segments * (t - 1);
+        for s in 0..segments {
+            let s2 = (s + 1) % segments;
+            indexes.extend_from_slice(&[(base + s) as u16, (segments + base + s) as u16, (base + s2) as u16]);
+            indexes.extend_from_slice(&[(segments + base + s) as u16, (segments + base + s2) as u16, (base + s2) as u16]);
+        }
+    }
+    (vertices, indexes)
+}
+
+/// The disc without the dynamic waves: 15 rings of 16 vertices, the rings further apart.
+fn coarse_disc() -> (Vec<[f32; 3]>, Vec<u16>) {
+    disc(16, 15, |t| 4096.0 * (1.0 + (t * t) as f32))
+}
+
+/// The disc with the dynamic waves: 120 rings of 150 vertices, dense near the camera (the
+/// waves move its vertices), and the last ring past the horizon.
+fn fine_disc() -> (Vec<[f32; 3]>, Vec<u16>) {
+    const RINGS: usize = 120;
+    disc(150, RINGS, |t| {
+        if t + 1 == RINGS {
+            return 500_000.0;
+        }
+        let r = t as f32 / RINGS as f32;
+        9600.0 * (0.9 * r.powi(3) + 0.1 * r)
+    })
 }
 
 pub struct Water {
@@ -251,6 +349,12 @@ pub struct Water {
     vertices: wgpu::Buffer,
     indexes: wgpu::Buffer,
     index_count: u32,
+    /// The finer disc of the dynamic waves.
+    fine_vertices: wgpu::Buffer,
+    fine_indexes: wgpu::Buffer,
+    fine_index_count: u32,
+    /// One pixel of zeros, in the place of the ripples without the dynamic waves.
+    flat: wgpu::TextureView,
     waves: wgpu::TextureView,
     clamp_sampler: wgpu::Sampler,
     wave_sampler: wgpu::Sampler,
@@ -270,31 +374,30 @@ impl Water {
     pub fn new(scene: &SceneView, waves: &[u8]) -> Result<Water, String> {
         let device = scene.device;
         let waves = wave_texture(scene, waves)?;
-        // The disc: a centre, then 15 rings of 16 vertices, the rings further apart.
-        let (segments, rings) = (16usize, 15usize);
-        let mut vertices: Vec<[f32; 3]> = vec![[0.0, 0.0, -1.0]];
-        for t in 0..rings {
-            let r = 4096.0 * (1.0 + (t * t) as f32);
-            for s in 0..segments {
-                let angle = 2.0 * std::f32::consts::PI * s as f32 / segments as f32;
-                vertices.push([r * angle.cos(), r * angle.sin(), -1.0]);
-            }
-        }
-        let mut indexes: Vec<u16> = Vec::new();
-        for s in 0..segments {
-            indexes.extend_from_slice(&[0, (1 + s) as u16, (1 + (s + 1) % segments) as u16]);
-        }
-        for t in 1..rings {
-            let base = 1 + segments * (t - 1);
-            for s in 0..segments {
-                let s2 = (s + 1) % segments;
-                indexes.extend_from_slice(&[(base + s) as u16, (segments + base + s) as u16, (base + s2) as u16]);
-                indexes.extend_from_slice(&[(segments + base + s) as u16, (segments + base + s2) as u16, (base + s2) as u16]);
-            }
-        }
+        let (vertices, indexes) = coarse_disc();
+        let (fine_vertices, fine_indexes) = fine_disc();
         use wgpu::util::DeviceExt;
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("water"), contents: bytemuck::cast_slice(&vertices), usage: wgpu::BufferUsages::VERTEX });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("water"), contents: bytemuck::cast_slice(&indexes), usage: wgpu::BufferUsages::INDEX });
+        let fine_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("water fine"), contents: bytemuck::cast_slice(&fine_vertices), usage: wgpu::BufferUsages::VERTEX });
+        let fine_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("water fine"), contents: bytemuck::cast_slice(&fine_indexes), usage: wgpu::BufferUsages::INDEX });
+        let flat = device
+            .create_texture_with_data(
+                scene.queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("water flat ripples"),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::MipMajor,
+                &[0u8; 8],
+            )
+            .create_view(&Default::default());
 
         let texture = |binding, sample_type, dimension| wgpu::BindGroupLayoutEntry {
             binding,
@@ -314,10 +417,13 @@ impl Water {
                 },
                 texture(1, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
                 sampler(2, wgpu::SamplerBindingType::Filtering),
-                texture(3, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3),
-                sampler(4, wgpu::SamplerBindingType::Filtering),
+                // The vertices read the wave texture too, with the dynamic waves.
+                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..texture(3, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3) },
+                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..sampler(4, wgpu::SamplerBindingType::Filtering) },
                 texture(5, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
                 texture(6, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
+                texture(7, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(8, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
@@ -390,6 +496,10 @@ impl Water {
             vertices: vertex_buffer,
             indexes: index_buffer,
             index_count: indexes.len() as u32,
+            fine_vertices: fine_vertex_buffer,
+            fine_indexes: fine_index_buffer,
+            fine_index_count: fine_indexes.len() as u32,
+            flat,
             waves,
             clamp_sampler,
             wave_sampler,
@@ -489,7 +599,8 @@ impl Water {
                 projection: Some(Self::far_projection(scene, frame.draw_distance)),
                 target_size: (REFLECTION_SIZE, REFLECTION_SIZE),
                 flip_cull: true,
-                clip_plane: Some([0.0, 0.0, 1.0, -(frame.water_level as f64 - 1.0)]),
+                // With the dynamic waves the plane can be lower by half of the wave height.
+                clip_plane: Some([0.0, 0.0, 1.0, -(frame.water_level as f64 - 1.0) + 0.5 * frame.wave_height.unwrap_or(0.0) as f64]),
                 opaque_only: false,
                 force_depth_test: true,
                 classes: ReplayView::SKY,
@@ -507,9 +618,11 @@ impl Water {
         planes(&multiply(mirrored_view, projection))
     }
 
-    /// Draws the plane in place of the water plane of the game.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame) {
+    /// Draws the plane in place of the water plane of the game. `ripples` has the
+    /// textures of the dynamic waves; they count when the frame has a wave height.
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>) {
         let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return };
+        let dynamic = frame.wave_height.zip(ripples);
         let eye = super::eye_of(&scene.view);
         let sunlight = 1.0 - (1.0 - frame.sun_vis).powi(2);
         let wind_factor = ((frame.wind[0] * frame.wind[0] + frame.wind[1] * frame.wind[1]).sqrt() + 1.5) / 140.0;
@@ -530,6 +643,7 @@ impl Water {
             outscatter: scattering[2],
             inscatter: scattering[3],
             sun_altitude: scattering[4],
+            wave: dynamic.map_or([0.0; 4], |(height, ripples)| [ripples.origin[0], ripples.origin[1], height, 1.0]),
         };
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -543,13 +657,17 @@ impl Water {
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.wave_sampler) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(picture) },
                 wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(depth) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.rain_view())) },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.player_view())) },
             ],
         });
         pass.set_pipeline(if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline });
         pass.set_bind_group(0, &group, &[]);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
-        pass.set_index_buffer(self.indexes.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
+        // The finer disc with the dynamic waves: the waves move its vertices.
+        let (vertices, indexes, index_count) = if dynamic.is_some() { (&self.fine_vertices, &self.fine_indexes, self.fine_index_count) } else { (&self.vertices, &self.indexes, self.index_count) };
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..index_count, 0, 0..1);
         self.frames += 1;
         self.reflected = false;
     }
@@ -587,4 +705,38 @@ pub(super) fn wave_texture(scene: &SceneView, dds: &[u8]) -> Result<wgpu::Textur
         &dds[128..128 + bytes],
     );
     Ok(texture.create_view(&Default::default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_discs_have_the_sizes_of_the_direct3d_9_path() {
+        // numWaterVerts = resS * resT + 1; numWaterTris = 2 * resS * resT - resS.
+        let (vertices, indexes) = coarse_disc();
+        assert_eq!((vertices.len(), indexes.len()), (16 * 15 + 1, 3 * (2 * 16 * 15 - 16)));
+        assert_eq!(vertices[1], [4096.0, 0.0, -1.0]);
+        let (vertices, indexes) = fine_disc();
+        assert_eq!((vertices.len(), indexes.len()), (150 * 120 + 1, 3 * (2 * 150 * 120 - 150)));
+        // The first ring is at the centre, the last one past the horizon; each index is
+        // one of the vertices.
+        assert_eq!(vertices[1], [0.0, 0.0, -1.0]);
+        assert_eq!(vertices[vertices.len() - 150][0], 500_000.0);
+        assert!(indexes.iter().all(|i| (*i as usize) < vertices.len()));
+        // The ring before the last is within the view range of the game times 1.2.
+        let before = vertices[vertices.len() - 300][0];
+        assert!(before > 8192.0 && before < 9600.0, "{before}");
+    }
+
+    /// The shader compiles: the WGSL is read and checked as the device does it.
+    #[test]
+    fn the_shader_is_valid() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|error| panic!("{}", error.emit_to_string(SHADER)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
+        for entry in ["vs", "fs"] {
+            assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
+        }
+    }
 }
