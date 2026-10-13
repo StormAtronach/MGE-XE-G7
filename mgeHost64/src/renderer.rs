@@ -257,6 +257,10 @@ pub struct DistantLand {
     /// The last settings record of MGE XE, and the one that the renderer follows.
     settings: Option<Settings>,
     settings_applied: Option<Settings>,
+    /// The draw distance and the end of the last static tier of the last log line, in
+    /// cells: a mod can change them in each frame (a zoom), and the log tells a change of
+    /// a quarter of a cell or more.
+    settings_told_distance: (f32, f32),
     statics: Option<statics::Statics>,
     /// The shadow map, when the settings have shadows; `None` before the first frame. True
     /// when the map is made in this frame.
@@ -553,6 +557,7 @@ impl DistantLand {
             pictures: Vec::new(),
             settings: None,
             settings_applied: None,
+            settings_told_distance: (settings.draw_distance, settings.very_far_static_end),
             statics: None,
             shadow: None,
             shadow_in_frame: false,
@@ -1954,9 +1959,11 @@ impl DistantLand {
     /// The light for each pixel, by the setting `distant_land.per_pixel_lighting` and its
     /// mode, with the numbers of the weather for the sun and the ambient light.
     /// Takes the settings record over the values of mgeXE.toml when a new one came: the
-    /// feature flags, the lighting mode, the HDR reaction speed. The distant land stays
-    /// off when its data was not loaded at the start. The distances, the water numbers
-    /// and the interior fog end of the record are not followed yet.
+    /// feature flags, the lighting mode, the HDR reaction speed, the draw distance and the
+    /// ends of the static tiers. The distant land stays off when its data was not loaded
+    /// at the start. The sizes of the static tiers are for the load only, as on Direct3D 9
+    /// (`classifyStaticComponent` runs when the statics load). The water numbers and the
+    /// interior fog end of the record are not followed yet.
     fn apply_settings(&mut self) {
         let Some(settings) = self.settings else { return };
         if self.settings_applied == Some(settings) {
@@ -1977,12 +1984,24 @@ impl DistantLand {
         if let Some(statics) = self.statics.as_mut() {
             statics.set_enabled(on(USE_DISTANT_STATICS), on(USE_GRASS));
         }
+        // The distances, in cells in the record. A number that is not a distance (not
+        // finite, or not above 0) keeps the value before.
+        let distance = |cells: f32, before: f32| if cells.is_finite() && cells > 0.0 { cells * CELL } else { before };
+        self.draw_distance = distance(settings.draw_distance, self.draw_distance);
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_distances(self.draw_distance, [settings.near_static_end, settings.far_static_end, settings.very_far_static_end].map(|cells| (cells.is_finite() && cells > 0.0).then_some(cells * CELL)));
+        }
         let mut changes = Settings::changed_flags(before, settings);
         if before.map_or(true, |b| b.per_pixel_mode != settings.per_pixel_mode) {
             changes.push(format!("light for each pixel in {}", if settings.per_pixel_mode == 1 { "the interiors only" } else { "each cell" }));
         }
         if before.map_or(true, |b| b.hdr_reaction_speed != settings.hdr_reaction_speed) {
             changes.push(format!("HDR reaction {} s", settings.hdr_reaction_speed));
+        }
+        let told = self.settings_told_distance;
+        if (settings.draw_distance - told.0).abs() >= 0.25 || (settings.very_far_static_end - told.1).abs() >= 0.25 {
+            self.settings_told_distance = (settings.draw_distance, settings.very_far_static_end);
+            changes.push(format!("draw distance {:.2} cells, static ends {:.2} {:.2} {:.2}", settings.draw_distance, settings.near_static_end, settings.far_static_end, settings.very_far_static_end));
         }
         if !changes.is_empty() {
             println!("settings: {}", changes.join(", "));

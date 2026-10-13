@@ -1106,6 +1106,19 @@ impl Statics {
         self.settings.grass = grass;
     }
 
+    /// The draw distance and the ends of the three tiers, in units, from the settings
+    /// record of MGE XE; `None` keeps an end. The draw of a frame reads them, as the
+    /// Direct3D 9 path reads them in each frame. The tier of a place stays the one of the
+    /// load (the sizes of the tiers are for the load only).
+    pub fn set_distances(&mut self, draw_distance: f32, band_ends: [Option<f32>; 3]) {
+        self.settings.draw_distance = draw_distance;
+        for (end, new) in self.settings.band_ends.iter_mut().zip(band_ends) {
+            if let Some(new) = new {
+                *end = new;
+            }
+        }
+    }
+
     /// Draws the statics of the frame into the pass. Returns the number of draws.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
         // The sets 2 and 3 are the layers of the shadow map.
