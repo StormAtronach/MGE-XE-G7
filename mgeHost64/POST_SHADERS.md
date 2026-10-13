@@ -13,7 +13,10 @@ Bloom Soft, Eye Adaptation (HDR), Underwater Effects, Underwater Interior Effect
 the switches of the file as it ships (for example the quality 3 of Bloom Soft).
 
 Shaders of mods with a port: MGG SSAO and MGG darker interiors (Morrowind Graphics Guide
-Shaders), ColorMood (STEP Shaders Compilation), heathaze (Heat Haze), Special Process.
+Shaders), ColorMood (STEP Shaders Compilation), heathaze (Heat Haze), Special Process,
+oj_me_fog_box (Magicka Expanded), tew_fogbox (Vapourmist), skoomaesthesia (Skoomaesthesia),
+Disorient (Kogoruhn Expanded), Invisibility (MM - Enhanced Invisibility), InspectIt/Bokeh
+(Inspect It).
 
 ## A port and the effect file of a mod
 
@@ -72,7 +75,8 @@ has in its annotations. The rest of the file is WGSL.
 | `mgeflags` | no | the shader does not run in a frame that has one of these bits: 1 interior, 2 exterior, 4 interior that behaves as an exterior, 8 under the water, 16 above the water, 32 the sun is visible, 64 the sun is not visible |
 | `requires_hdr` | no | `true` turns the HDR measure on; the shader reads it as `u.hdr` |
 | `disable_sunglare` | no | `true` takes the sun glare of the game out of the frame |
-| `texture` | no | a file under `Data Files/textures`, bound as `tex1` |
+| `texture` | no | a file under `Data Files/textures`, bound as `tex1`: a DDS file, or a TGA file (true colour, 24 or 32 bits) |
+| `variables` | no | the variables that a mod sets from Lua: see "A shader that a mod drives from Lua" |
 
 ## What a shader has
 
@@ -88,7 +92,7 @@ The renderer puts a common part before the file. A shader does not declare these
   the game; `1e38` where the game drew nothing), `watertexture` (the wave texture of the
   water, 3D), `tex1` (the texture of the shader, white without one).
 - The samplers: `point_clamp`, `linear_clamp`, `linear_wrap`, `linear_mirror`,
-  `point_wrap`. Read a texture with `textureSampleLevel(texture, sampler, coordinate, 0.0)`.
+  `point_wrap`, `point_mirror`. Read a texture with `textureSampleLevel(texture, sampler, coordinate, 0.0)`.
   `depthframe` takes `point_clamp` or `point_wrap` only (32-bit floats take no filter);
   `textureLoad(depthframe, vec2i, 0)` reads one texel.
 - `target_size()` and `target_rcpres()`: the size of the target of this pass and 1 over it
@@ -116,6 +120,45 @@ The renderer puts a common part before the file. A shader does not declare these
 Each pass draws the whole of its target. A pass that uses `discard` keeps what the texture
 held at that pixel. The output of the last pass is what the next shader gets, whatever its
 size and format.
+
+## A shader that a mod drives from Lua
+
+A mod can load a shader and set its variables with the MWSE functions of MGE XE:
+
+```lua
+local shader = mge.shaders.load({ name = "my_shader" })
+shader.intensity = 0.5
+shader.enabled = true
+```
+
+This works with the wgpu renderer too. MGE XE reads the variables of the effect file
+`my_shader.fx` (its names and types are what the Lua object has, as on Direct3D 9), keeps
+what the mod sets, and sends it to the renderer. The renderer loads the shader of that name
+when a mod loads it: the file `my_shader.wgsl`, or its port. A shader that a mod loaded is
+on until the mod turns it off, and has its place in the chain by its category, as on
+Direct3D 9.
+
+The WGSL side names the variables that it reads, with the header line `variables`:
+
+```wgsl
+//! interface: mge-xe-wgsl 1
+//! passes: tint
+//! variables: intensity f32 = 0, colour vec3 = 1 0.5 0, weights f32[8]
+
+@fragment fn tint(in: Quad) -> @location(0) vec4f {
+    let c = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0);
+    return vec4f(mix(c.rgb, c.rgb * colour(), intensity()), 1.0);
+}
+```
+
+- A variable is `name type`, with `= numbers` for its values before a mod sets it (0
+  without them). The types: `f32`, `vec2`, `vec3`, `vec4`, and an array `type[N]`.
+- The WGSL reads a variable with a function of its name: `intensity()`, `colour()`,
+  `weights(i)` for an array.
+- The names are those of the effect file. `float name[N][3]` of an effect file (N groups of
+  3 numbers, set from Lua as one list) is `name vec3[N]`.
+- A shader has room for 256 values or vectors in all. A variable that the WGSL side does
+  not name is not read; the log says so one time.
 
 ## From HLSL to WGSL
 

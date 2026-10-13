@@ -53,6 +53,8 @@ const CELL: f32 = 8192.0;
 const NEAR: f32 = 64.0;
 /// The number of the environment data in the stream. `Deviceless::EnvironmentId` of MGE XE.
 const ENVIRONMENT_ID: u32 = 1;
+/// The state of a post shader that a mod loaded: see `post::ShaderState`.
+const SHADER_STATE_ID: u32 = 2;
 
 /// Runs the renderer with the distant land of MGE XE.
 pub fn run(mut arguments: Vec<String>) {
@@ -189,6 +191,10 @@ pub struct DistantLand {
     /// The setting `distant_land.fog.interior_end`, in units: where the draws of the game
     /// end in an interior and under the water.
     interior_fog_end: f32,
+    /// The last state of each post shader that a mod loaded, and the names whose state the
+    /// post chain does not have yet.
+    shader_states: Vec<post::ShaderState>,
+    shader_states_new: Vec<String>,
     statics: Option<statics::Statics>,
     /// The shadow map, when the settings have shadows; `None` before the first frame. True
     /// when the map is made in this frame.
@@ -480,6 +486,8 @@ impl DistantLand {
             caustics: None,
             caustics_intensity: settings.water.caustics_intensity as f32,
             interior_fog_end: settings.fog.interior_end * CELL,
+            shader_states: Vec::new(),
+            shader_states_new: Vec::new(),
             statics: None,
             shadow: None,
             shadow_in_frame: false,
@@ -631,6 +639,79 @@ fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::Textur
         },
         wgpu::util::TextureDataOrder::MipMajor,
         &dds[128..],
+    );
+    Ok(texture.create_view(&Default::default()))
+}
+
+/// The pixels of a TGA file as red, green, blue, alpha, the top row first: a true-colour
+/// file of 24 or 32 bits, with or without run lengths. A mod can name such a file as the
+/// texture of its post shader.
+fn tga_pixels(name: &str, tga: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    if tga.len() < 18 {
+        return Err(format!("{name} is not a TGA file"));
+    }
+    let (kind, depth, top_first) = (tga[2], tga[16] as usize / 8, tga[17] & 0x20 != 0);
+    let (width, height) = (u16::from_le_bytes([tga[12], tga[13]]) as usize, u16::from_le_bytes([tga[14], tga[15]]) as usize);
+    if !matches!(kind, 2 | 10) || !matches!(depth, 3 | 4) || width == 0 || height == 0 {
+        return Err(format!("{name} is a TGA file of a kind that this program does not read (type {kind}, {} bits)", tga[16]));
+    }
+    // The pixels start after the head, the identification and the colour map.
+    let map = if tga[1] != 0 { u16::from_le_bytes([tga[5], tga[6]]) as usize * (tga[7] as usize).div_ceil(8) } else { 0 };
+    let mut at = 18 + tga[0] as usize + map;
+    let short = || format!("{name} ends before its pixels");
+    let mut pixels: Vec<u8> = Vec::with_capacity(width * height * 4);
+    let pixel = |bytes: &[u8]| [bytes[2], bytes[1], bytes[0], if depth == 4 { bytes[3] } else { 255 }];
+    while pixels.len() < width * height * 4 {
+        if kind == 2 {
+            pixels.extend(pixel(tga.get(at..at + depth).ok_or_else(short)?));
+            at += depth;
+        } else {
+            // A packet: one pixel that repeats, or a count of plain pixels.
+            let head = *tga.get(at).ok_or_else(short)?;
+            let count = (head & 0x7F) as usize + 1;
+            at += 1;
+            if head & 0x80 != 0 {
+                let one = pixel(tga.get(at..at + depth).ok_or_else(short)?);
+                at += depth;
+                for _ in 0..count {
+                    pixels.extend(one);
+                }
+            } else {
+                for _ in 0..count {
+                    pixels.extend(pixel(tga.get(at..at + depth).ok_or_else(short)?));
+                    at += depth;
+                }
+            }
+        }
+    }
+    pixels.truncate(width * height * 4);
+    if !top_first {
+        let rows: Vec<&[u8]> = pixels.chunks_exact(width * 4).rev().collect();
+        pixels = rows.concat();
+    }
+    Ok((width as u32, height as u32, pixels))
+}
+
+/// The texture of a post shader: a DDS file, or a TGA file by its name.
+fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::TextureView, String> {
+    if !name.to_ascii_lowercase().ends_with(".tga") {
+        return dds_texture(scene, name, bytes);
+    }
+    let (width, height, pixels) = tga_pixels(name, bytes)?;
+    let texture = scene.device.create_texture_with_data(
+        scene.queue,
+        &wgpu::TextureDescriptor {
+            label: Some(name),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::MipMajor,
+        &pixels,
     );
     Ok(texture.create_view(&Default::default()))
 }
@@ -1112,6 +1193,15 @@ impl Extension for DistantLand {
                 self.post = Some(Post::new(scene, &self.post_chain, waves, &|name| data_file(&root, name), self.hdr_reaction));
             }
         }
+        // The shaders that a mod loaded or changed since the last frame.
+        if let Some(post) = self.post.as_mut() {
+            for name in std::mem::take(&mut self.shader_states_new) {
+                if let Some(state) = self.shader_states.iter().find(|state| state.name == name) {
+                    let root = self.root.clone();
+                    post.set_state(scene, state, &|name| data_file(&root, name));
+                }
+            }
+        }
         let post = self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty());
         // The glare of the sun of the game (class 8) goes when a shader draws its own sun.
         let no_glare = post && self.post.as_ref().is_some_and(|post| post.no_sun_glare);
@@ -1255,6 +1345,16 @@ impl Extension for DistantLand {
     fn data(&mut self, id: u32, bytes: &[u8]) {
         // Version 4 (a capture from before the name of the cell) is the same without the
         // name: the bytes that are not there stay zero.
+        if id == SHADER_STATE_ID {
+            if let Some(state) = post::ShaderState::read(bytes) {
+                if !self.shader_states_new.contains(&state.name) {
+                    self.shader_states_new.push(state.name.clone());
+                }
+                self.shader_states.retain(|known| known.name != state.name);
+                self.shader_states.push(state);
+            }
+            return;
+        }
         const VERSION_4: usize = size_of::<Environment>() - 64;
         if id == ENVIRONMENT_ID && bytes.len() >= VERSION_4 {
             let mut raw = [0u8; size_of::<Environment>()];
@@ -1662,9 +1762,7 @@ impl DistantLand {
     /// the cell, without the land, or without the environment.
     fn water_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
         let e = self.environment.filter(|e| e.has_water != 0)?;
-        if self.water.is_none() {
-            return None;
-        }
+        self.water.as_ref()?;
         // The draws of the game end at the fog end of an interior, and under the water: the
         // plane ends there too (the clip plane of `renderStageWater`).
         let underwater = e.flags & 2 != 0;
@@ -1691,9 +1789,7 @@ impl DistantLand {
                 view_end,
             });
         }
-        if self.gpu.is_none() {
-            return None;
-        }
+        self.gpu.as_ref()?;
         let sun_pos = e.sun_pos;
         let scattering = (e.flags & 12 == 12).then(|| {
             let far = e.sky_scatter_far;
