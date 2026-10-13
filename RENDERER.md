@@ -93,7 +93,7 @@ adapter and the one in use.
   scale of the object, and the wgpu renderer does not.
 - An interior that behaves as an exterior (the Mournhold plazas and some mod cells) is
   drawn with its distant statics, shadows and sky. A plain interior cell that has distant
-  statics in the generated data does not get them yet.
+  statics in the generated data gets its statics and grass, with the fog of the game.
 - No water volumes (the surfaces that mods add). The caustics under the water are drawn
   (`caustics_intensity` of `mgeXE.toml`), without the dry spaces of a boat's hold.
 - The grass does not receive shadows.

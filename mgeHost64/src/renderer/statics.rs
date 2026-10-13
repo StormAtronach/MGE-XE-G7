@@ -31,12 +31,11 @@
 //! the sun from the two sides.
 //!
 //! An interior cell with statics in `usage.data` is a world space of its own, with its
-//! places and its grass; the renderer selects it by the name of the cell, and draws it in a
-//! cell that behaves as an exterior. Not here yet: a plain interior cell (the Direct3D 9
-//! path draws its statics with the fog of the game, `StaticInteriorVS`), statics with a
-//! water flag, the groups of statics that the game shows or hides (all of them are shown),
-//! the quadtree and the horizon culling of the IPC host mode, and a limit of the memory on
-//! the GPU.
+//! places and its grass; the renderer selects it by the name of the cell. In a plain
+//! interior cell the statics have the linear fog of the game (`StaticInteriorVS`), given
+//! by the flags of the frame. Not here yet: statics with a water flag, the groups of
+//! statics that the game shows or hides (all of them are shown), the quadtree and the
+//! horizon culling of the IPC host mode, and a limit of the memory on the GPU.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -955,6 +954,15 @@ impl Statics {
             catalog.ordinary_bytes as f64 / 1e6,
             catalog.merged_bytes as f64 / 1e6
         );
+        // The interior cells with a world space, for a test that needs one: the first few,
+        // or all of them with MGE_XE_LIST_WORLDS=1.
+        let mut interiors: Vec<&[u8]> = catalog.worlds.keys().map(|name| name.as_slice()).filter(|name| !name.is_empty()).collect();
+        interiors.sort();
+        if !interiors.is_empty() {
+            let shown = if std::env::var_os("MGE_XE_LIST_WORLDS").is_some() { interiors.len() } else { 12 };
+            let names: Vec<String> = interiors.iter().take(shown).map(|name| String::from_utf8_lossy(name).into_owned()).collect();
+            println!("distant statics: interior cells with statics: {}{}", names.join("; "), if interiors.len() > shown { "; ..." } else { "" });
+        }
         self.gpu = Some(make_gpu(scene, &loaded));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();

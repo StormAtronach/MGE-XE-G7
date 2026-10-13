@@ -1079,12 +1079,13 @@ impl Extension for DistantLand {
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
         self.finish_load(scene);
         self.cell_facts(scene);
-        // The terrain and the water are for an exterior. The statics, the shadow map, the
-        // fog distances and the blend are for a cell with a world space that is like an
-        // exterior, as the Direct3D 9 path has them (`isDistantCell` with
-        // `IntLikeExterior(true)`); a plain interior cell with a world space is not here yet.
+        // The terrain and the water are for an exterior. The statics, the fog distances and
+        // the blend are for a cell with a world space (`isDistantCell` of the Direct3D 9
+        // path): an exterior, an interior that is like one, or a plain interior cell with
+        // statics in the distant land data. The shadow map and the sky are for a cell that
+        // is like an exterior.
         let land = self.enabled && !scene.interior && self.gpu.is_some();
-        let distant = self.enabled && self.distant_cell && self.like_exterior && self.gpu.is_some();
+        let distant = self.enabled && self.distant_cell && self.gpu.is_some();
         // The water: an exterior with its land, or an interior cell with water (`CellHasWater`
         // of MGE XE, which draws its water there too, with a flat reflection).
         let water_cell = self.enabled && self.environment.is_some_and(|e| e.has_water != 0) && (land || scene.interior);
@@ -1118,7 +1119,7 @@ impl Extension for DistantLand {
         let mut values = [[0.0f32; 4]; 32];
         let mut texture = None;
         self.shadow_in_frame = false;
-        if distant && self.shadows_enabled {
+        if distant && self.like_exterior && self.shadows_enabled {
             if self.shadow.is_none() {
                 self.shadow = Some(Shadow::new(scene, self.shadow_resolution));
             }
@@ -1269,7 +1270,7 @@ impl Extension for DistantLand {
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
         self.near_fog = None;
         self.cell_facts(scene);
-        if !self.enabled || !self.distant_cell || !self.like_exterior {
+        if !self.enabled || !self.distant_cell {
             // A cell without the distant land: the reflection of the water is one colour,
             // as `clearReflection` of the Direct3D 9 path has it. Under the water, the
             // colour of the horizon (the fog colour); above it, the sun and the ambient
@@ -1291,19 +1292,25 @@ impl Extension for DistantLand {
 
         // The projection of the game with a far plane at the draw distance of the distant
         // land. In a projection of Direct3D the two numbers of the depth are at 10 and 14.
+        // The near plane is a little before that of the game, as `renderStage0` of the
+        // Direct3D 9 path has it: a draw of the game then wins the depth test against the
+        // same geometry among the statics (a static of the cell itself, in an interior).
         let mut projection = scene.projection;
+        let near = NEAR - 1e-2;
         let far = self.draw_distance.max(NEAR * 2.0);
-        projection[10] = far / (far - NEAR);
-        projection[14] = -NEAR * far / (far - NEAR);
+        projection[10] = far / (far - near);
+        projection[14] = -near * far / (far - near);
         let view_projection = multiply(&scene.view, &projection);
         let eye = eye_of(&scene.view);
 
         // The fog: from the game with this frame, or the linear fog of the settings.
+        // A plain interior cell has the linear fog of the game on the statics
+        // (`StaticInteriorVS`), not the exponential curve.
         let (view_range, fog, exponential, near_fog, sun_mult, ambient_mult) = match self.environment {
             Some(e) => (
                 e.near_view_range,
                 [e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end],
-                e.flags & 1 != 0 && e.flags & 2 == 0,
+                e.flags & 1 != 0 && e.flags & 2 == 0 && self.like_exterior,
                 (e.fog_near_start, e.fog_near_end),
                 e.light_sun_mult,
                 e.light_amb_mult,
@@ -1448,16 +1455,20 @@ impl Extension for DistantLand {
             mirror_uniforms.flags[2] = frame.water_level - 1.0;
             scene.queue.write_buffer(&gpu.mirror_uniforms, 0, bytemuck::bytes_of(&mirror_uniforms));
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
-            mirror_pass.set_pipeline(gpu.pipeline_for(scene));
-            mirror_pass.set_bind_group(0, &gpu.mirror_group, &[]);
-            for mesh in &gpu.meshes {
-                let inside = mirror_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
-                if !inside {
-                    continue;
+            // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
+            // path); an interior cell reflects its statics only.
+            if !scene.interior {
+                mirror_pass.set_pipeline(gpu.pipeline_for(scene));
+                mirror_pass.set_bind_group(0, &gpu.mirror_group, &[]);
+                for mesh in &gpu.meshes {
+                    let inside = mirror_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
+                    if !inside {
+                        continue;
+                    }
+                    mirror_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    mirror_pass.set_index_buffer(mesh.indexes.slice(..), wgpu::IndexFormat::Uint32);
+                    mirror_pass.draw_indexed(0..mesh.index_count, 0, 0..1);
                 }
-                mirror_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                mirror_pass.set_index_buffer(mesh.indexes.slice(..), wgpu::IndexFormat::Uint32);
-                mirror_pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
             // The statics, all of them: the game draws nothing in the reflection, so there is
             // no handoff (a view range of 0, as the Direct3D 9 path has it).
@@ -1505,7 +1516,9 @@ impl Extension for DistantLand {
     /// The grass, at the end of the world scene of the game: with the projection and the
     /// depth of the game, as `renderStage1` of the Direct3D 9 path draws it.
     fn after_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
-        if !self.enabled || !self.distant_cell || !self.like_exterior {
+        // The grass of a cell with a world space, a plain interior cell among them, as
+        // `renderStage1` of the Direct3D 9 path has it.
+        if !self.enabled || !self.distant_cell {
             return;
         }
         let Some(statics) = self.statics.as_mut() else { return };
