@@ -84,6 +84,7 @@ adapter and the one in use.
 - The frame rate of the game thread goes up where the Direct3D 9 driver was the limit.
 - While the game sends no picture for more than half a second (at its start, when it loads),
   a small line turns in the lower right corner of the window. The game is not stopped.
+- Alt+F4 closes the game, with either renderer. The game does not ask and does not save.
 
 ## Known issues
 
@@ -115,6 +116,12 @@ frames as a graph with the long frames in red, the memory of the renderer and of
 and the memory of the game with its address space and the largest free block of it. The
 game is a 32-bit program: when the address space is near 4096 MB, or the largest free block
 is small, the game is near a crash for lack of memory. The panel is not in screenshots.
+
+The line `picture` tells how old the picture is when the renderer gives it to the window,
+in ms, and where the time goes: the frame of the game, the wait between the game and the
+renderer, and the renderer. The numbers are those of a usual frame (the median of the last
+half second). The time that the GPU and Windows use after that is not in the number. If the
+mouse pointer of the menus follows your hand late, send us this line.
 
 ## When something is wrong
 
