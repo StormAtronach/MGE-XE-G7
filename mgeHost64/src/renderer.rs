@@ -1699,7 +1699,12 @@ impl Extension for DistantLand {
             | (if scene.interior && like_exterior { 4 } else { 0 })
             | (if underwater { 8 } else { 16 })
             | (if e.sun_vis >= 0.001 { 32 } else { 64 });
-        post.run(scene, encoder, target, &variables, flags);
+        // The depth of the distant land and the distant statics is a part of the depth frame
+        // above the water only, as `DistantLand::renderDepth` of the Direct3D 9 path has
+        // it. The numbers are those of the projection of `before_world`.
+        let (near, far) = (NEAR - 1e-2, self.draw_distance.max(NEAR * 2.0));
+        let distant = (!underwater).then_some([far / (far - near), -near * far / (far - near)]);
+        post.run(scene, encoder, target, &variables, flags, distant);
     }
 
     /// The water plane of MGE XE in place of the water plane of the game.

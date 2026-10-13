@@ -4288,11 +4288,14 @@ pub const SHADERS: &[Shader] = &[
     Shader { name: "Eye Adaptation (HDR) of STEP", source: EYE_ADAPTATION_STEP, passes: &[full("tone")], disable_flags: 5, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: true, variables: &[] },
 ];
 
-/// The linear depth of the game from its depth buffer: `XE Depth.fx` for the native depth,
-/// `1e38` where the game drew nothing.
+/// The linear depth of the frame, as the depth frame of the Direct3D 9 path has it
+/// (`DistantLand::renderDepth`): the depth of the game where the game drew, else the depth
+/// of the distant land and the distant statics, else `1e38`. `p` has the two depth numbers
+/// of the projection of the game, then those of the projection of the distant stage.
 const DEPTH_SHADER: &str = "
 @group(0) @binding(0) var<uniform> p: vec4f;
 @group(0) @binding(1) var depth: texture_depth_2d;
+@group(0) @binding(2) var distant: texture_depth_2d;
 
 struct Quad {
     @builtin(position) position: vec4f,
@@ -4306,10 +4309,14 @@ struct Quad {
 
 @fragment fn fs(in: Quad) -> @location(0) vec4f {
     let d = textureLoad(depth, vec2i(in.position.xy), 0);
-    if d >= 1.0 {
-        return vec4f(1.0e38, 0.0, 0.0, 1.0);
+    if d < 1.0 {
+        return vec4f(p.y / (d - p.x), 0.0, 0.0, 1.0);
     }
-    return vec4f(p.y / (d - p.x), 0.0, 0.0, 1.0);
+    let far = textureLoad(distant, vec2i(in.position.xy), 0);
+    if far < 1.0 {
+        return vec4f(p.w / (far - p.z), 0.0, 0.0, 1.0);
+    }
+    return vec4f(1.0e38, 0.0, 0.0, 1.0);
 }
 ";
 
@@ -4436,6 +4443,8 @@ pub struct Post {
     debug_layout: wgpu::BindGroupLayout,
     debug_uniform: wgpu::Buffer,
     waves: wgpu::TextureView,
+    /// The sun glare of the game is off: a shader of the chain at the start has
+    /// `disableSunglare`.
     pub no_sun_glare: bool,
     /// The HDR measure, when a shader of the chain needs it.
     hdr: Option<Hdr>,
@@ -4562,6 +4571,7 @@ impl Post {
                     count: None,
                 },
                 texture(1, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
+                texture(2, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
             ],
         });
         let depth_pipeline = full_screen_pipeline(device, "post depth", DEPTH_SHADER, &depth_layout, wgpu::TextureFormat::R32Float);
@@ -4620,6 +4630,11 @@ impl Post {
             post.load(scene, name, read);
         }
         post.order();
+        // The sun glare of the game is off when a shader of the chain has
+        // `disableSunglare`: MGE XE on Direct3D 9 decides it one time, after it loads the
+        // chain (`MWPatches::disableSunglare`). A shader that a mod loads or turns off
+        // later does not change it.
+        post.no_sun_glare = post.chain.iter().any(|c| c.no_sun_glare);
         println!("post: {} of {} shaders of the chain run: {} ports, {} files of mods", post.chain.len(), chain.len(), post.counts.0, post.counts.1);
         post
     }
@@ -4773,7 +4788,6 @@ impl Post {
             }
         }
         self.chain.sort_by_key(|c| c.priority);
-        self.no_sun_glare = self.chain.iter().any(|c| c.enabled && c.no_sun_glare);
         println!("post: the order: {}", self.chain.iter().map(|c| if c.enabled { c.name.clone() } else { format!("{} (off)", c.name) }).collect::<Vec<_>>().join(", "));
     }
 
@@ -4834,7 +4848,10 @@ impl Post {
     }
 
     /// Runs the chain on the picture and writes the result into `target`.
-    pub fn run(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, variables: &Variables, environment_flags: u32) {
+    /// `distant` has the two depth numbers of the projection of the distant stage (the
+    /// places 10 and 14 of a projection of Direct3D), when its depth is a part of the depth
+    /// frame.
+    pub fn run(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, variables: &Variables, environment_flags: u32, distant: Option<[f32; 2]>) {
         let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return };
         if self.is_empty() {
             return;
@@ -4850,13 +4867,23 @@ impl Post {
         let variables = &variables;
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(variables));
         // The linear depth of the game.
-        scene.queue.write_buffer(&self.depth_uniform, 0, bytemuck::cast_slice(&[variables.mproj[2][2], variables.mproj[3][2], 0.0, 0.0]));
+        // Without a depth of the distant stage, the depth of the game stands in for it:
+        // it is 1 where the first read was 1.
+        let (distant_depth, distant) = match (scene.before_depth, distant) {
+            (Some(view), Some(numbers)) => (view, numbers),
+            _ => (depth, [0.0, 0.0]),
+        };
+        scene.queue.write_buffer(&self.depth_uniform, 0, bytemuck::cast_slice(&[variables.mproj[2][2], variables.mproj[3][2], distant[0], distant[1]]));
         let depth_view = &self.depth.as_ref().unwrap().1.clone();
         {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("post depth"),
                 layout: &self.depth_layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.depth_uniform.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) }],
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.depth_uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(distant_depth) },
+                ],
             });
             let mut pass = full_screen_pass(encoder, depth_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
             pass.set_pipeline(&self.depth_pipeline);

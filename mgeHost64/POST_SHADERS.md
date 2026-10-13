@@ -79,7 +79,7 @@ has in its annotations. The rest of the file is WGSL.
 | `priority_adjust` | no | a number added to the place of the category |
 | `mgeflags` | no | the shader does not run in a frame that has one of these bits: 1 interior, 2 exterior, 4 interior that behaves as an exterior, 8 under the water, 16 above the water, 32 the sun is visible, 64 the sun is not visible |
 | `requires_hdr` | no | `true` turns the HDR measure on; the shader reads it as `u.hdr` |
-| `disable_sunglare` | no | `true` takes the sun glare of the game out of the frame |
+| `disable_sunglare` | no | `true` takes the sun glare of the game out of the frame, when the shader is in the chain at the start of the game (as MGE XE on Direct3D 9: a shader that a mod loads later does not change the sun glare) |
 | `texture` | no | up to ten files under `Data Files/textures`, with commas, bound as `tex1` to `tex10` in their order: DDS files, or TGA files (true colour, 24 or 32 bits). A file that is not found reads black |
 | `variables` | no | the variables that a mod sets from Lua: see "A shader that a mod drives from Lua" |
 
