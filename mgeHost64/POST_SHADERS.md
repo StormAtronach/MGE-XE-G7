@@ -12,6 +12,31 @@ The stock shaders with a port: SSAO Fast, SSAO HQ, Sunshafts, Depth of Field, Bl
 Bloom Soft, Eye Adaptation (HDR), Underwater Effects, Underwater Interior Effects. A port has
 the switches of the file as it ships (for example the quality 3 of Bloom Soft).
 
+Shaders of mods with a port: MGG SSAO and MGG darker interiors (Morrowind Graphics Guide
+Shaders), ColorMood (STEP Shaders Compilation), heathaze (Heat Haze), Special Process.
+
+## A port and the effect file of a mod
+
+A mod does not have to change for its Direct3D 9 shader to run. For a name of the chain the
+renderer reads the file `Data Files/shaders/XEshaders/<name>.fx` that MGE XE on Direct3D 9
+would load (the file of MGE XE, or the file of a mod that replaces it), and compares its
+code with the code of the file that the port was made from. The comments, the space, the
+values of the numbers and the annotations of the technique do not count as code.
+
+- The same code, the same numbers: the port runs.
+- The same code, other numbers (a line `#define NAME value`, or `static const float NAME =
+  value;`): the port takes the numbers of the file, and the log names them. A number that
+  the port cannot take (a sample count that a table of the port goes with) is named too.
+- The same code, another category in the technique (an older copy of a stock file has
+  none): the port takes the place of the file in the chain.
+- Other code: the port of that name runs as it is, and the log says that the file needs a
+  port of its own. A file with the name of a stock shader and other code (an older version,
+  a rewrite) is this case.
+- No port of the name: the shader is skipped, and the log says so.
+
+The log lines start with `post:`. A shader without a category stays where the chain has
+it, as on Direct3D 9: it takes the place of the shader with a category before it.
+
 The renderer also has three shaders of its own, with methods that the pass model of
 Direct3D 9 did not allow: `Bloom S_A` (a chain of half-size levels, after Jimenez 2014),
 `SSAO S_A` (ground-truth ambient occlusion at half size, after Jimenez 2016) and
@@ -83,6 +108,7 @@ The renderer puts a common part before the file. A shader does not declare these
 | `fogcol`, `fogstart` | `u.fogcol.xyz`, `u.fogcol.w` |
 | `fognearcol`, `fogrange` | `u.fognearcol.xyz`, `u.fognearcol.w` |
 | `fognearstart`, `fognearrange` | `u.fog_near.x`, `u.fog_near.y` |
+| `#ifdef USE_EXPFOG` | `if use_expfog() { ... }` |
 | `rcpres` | `rcpres()` |
 
 - The helpers `saturate(x)` for a number and `saturate3(x)` for a `vec3f`.

@@ -40,6 +40,8 @@ pub struct Variables {
     pub fognearcol: [f32; 4],
     /// `fognearstart`, `fognearrange`, and `rcpres`.
     pub fog_near: [f32; 4],
+    /// x: 1 with the exponential fog (the macro `USE_EXPFOG` of an effect file).
+    pub switches: [f32; 4],
 }
 
 /// The part of each shader module that every shader has: the variables, the textures, the
@@ -58,6 +60,7 @@ struct Variables {
     fogcol: vec4f,
     fognearcol: vec4f,
     fog_near: vec4f,
+    switches: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: Variables;
 @group(0) @binding(1) var lastshader: texture_2d<f32>;
@@ -91,6 +94,11 @@ fn mproj(row: u32, col: u32) -> f32 {
     return u.mproj[row][col];
 }
 // 1 over the size of the picture.
+// The macro USE_EXPFOG of an effect file: the distant land has the exponential fog.
+fn use_expfog() -> bool {
+    return u.switches.x > 0.5;
+}
+
 fn rcpres() -> vec2f {
     return u.fog_near.zw;
 }
@@ -171,6 +179,222 @@ struct Definition {
     priority: i64,
     texture: Option<String>,
     requires_hdr: bool,
+}
+
+/// The effect files of MGE XE that the stock ports were made from. A chain name resolves to
+/// one file, of MGE XE or of a mod that ships a file with the same name: `port_for_file`
+/// compares that file with the one here.
+const STOCK_FILES: &[(&str, &str)] = &[
+    ("Bloom Fine", include_str!("../../../assets/Data Files/shaders/XEshaders/Bloom Fine.fx")),
+    ("Bloom Soft", include_str!("../../../assets/Data Files/shaders/XEshaders/Bloom Soft.fx")),
+    ("Depth of Field", include_str!("../../../assets/Data Files/shaders/XEshaders/Depth of Field.fx")),
+    ("Eye Adaptation (HDR)", include_str!("../../../assets/Data Files/shaders/XEshaders/Eye Adaptation (HDR).fx")),
+    ("SSAO Fast", include_str!("../../../assets/Data Files/shaders/XEshaders/SSAO Fast.fx")),
+    ("SSAO HQ", include_str!("../../../assets/Data Files/shaders/XEshaders/SSAO HQ.fx")),
+    ("Sunshafts", include_str!("../../../assets/Data Files/shaders/XEshaders/Sunshafts.fx")),
+    ("Underwater Effects", include_str!("../../../assets/Data Files/shaders/XEshaders/Underwater Effects.fx")),
+    ("Underwater Interior Effects", include_str!("../../../assets/Data Files/shaders/XEshaders/Underwater Interior Effects.fx")),
+];
+
+/// The effect files of mods that have a port here, by the key of their code (`code_key`):
+/// the file of a mod is not a part of this program.
+const MOD_FILES: &[(&str, u64)] = &[
+    // Morrowind Graphics Guide Shaders.
+    ("MGG SSAO", 0x38f5e7deb7bb6c1d),
+    ("MGG darker interiors", 0xdceef7333b83188a),
+    // STEP Shaders Compilation.
+    ("ColorMood", 0xc75101063b24e812),
+    // Heat Haze.
+    ("heathaze", 0x1fbb2d0629a058db),
+    // Outlander Configuration.
+    ("Special Process", 0x575527aede8d99ae),
+];
+
+/// A line of an effect file that gives a name one number: `#define NAME value`, or
+/// `static const float NAME = value;` (with `static`, `const` or `extern` before the type
+/// `float`, `int` or `bool`). A mod that ships a shader with other numbers changes such
+/// lines only.
+fn number_line(line: &str) -> Option<(&str, f64)> {
+    let line = line.split("//").next().unwrap_or("").trim();
+    let (name, value) = if let Some(rest) = line.strip_prefix("#define ") {
+        let mut words = rest.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (Some(name), Some(value), None) => (name, value),
+            _ => return None,
+        }
+    } else {
+        let mut rest = line;
+        while let Some(after) = ["static ", "const ", "extern "].iter().find_map(|word| rest.strip_prefix(word)) {
+            rest = after.trim_start();
+        }
+        if rest.len() == line.len() {
+            return None;
+        }
+        let (left, right) = rest.split_once('=')?;
+        let mut left = left.split_whitespace();
+        match (left.next(), left.next(), left.next()) {
+            (Some("float" | "int" | "bool"), Some(name), None) => (name, right.trim().trim_end_matches(';').trim()),
+            _ => return None,
+        }
+    };
+    let value = match value {
+        "true" => 1.0,
+        "false" => 0.0,
+        other => other.trim_end_matches(['f', 'F']).parse::<f64>().ok()?,
+    };
+    Some((name, value))
+}
+
+/// The numbers of an effect file (see `number_line`).
+fn file_numbers(text: &str) -> Vec<(String, f64)> {
+    text.lines().filter_map(number_line).map(|(name, value)| (name.to_string(), value)).collect()
+}
+
+/// The key of the code of an effect file: FNV-1a 64 of its lines without the comments, the
+/// space and the values of its numbers. Two files with the same key are the same shader,
+/// with the same numbers or not.
+fn code_key(text: &str) -> u64 {
+    let mut key = 0xcbf2_9ce4_8422_2325u64;
+    let mut add = |bytes: &[u8]| {
+        for &byte in bytes {
+            key ^= byte as u64;
+            key = key.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for line in text.lines() {
+        // The line of the technique has the annotations (the category and the like), which
+        // are not code: see `file_priority`.
+        if line.trim_start().starts_with("technique") {
+            add(b"technique\n");
+            continue;
+        }
+        match number_line(line) {
+            Some((name, _)) => add(name.as_bytes()),
+            None => {
+                let code = line.split("//").next().unwrap_or("");
+                for word in code.split_whitespace() {
+                    add(word.as_bytes());
+                    add(b" ");
+                }
+            }
+        }
+        add(b"\n");
+    }
+    key
+}
+
+/// The place of an effect file in the order of the chain, from the annotations of its
+/// technique: the category (`getShaderPriority` of the Direct3D 9 path) plus
+/// `priorityAdjust`. A file without a category has the default, 6000000.
+fn file_priority(text: &str) -> i64 {
+    let Some(line) = text.lines().find(|line| line.trim_start().starts_with("technique")) else { return 6_000_000 };
+    let value_of = |key: &str| line.split_once(key).and_then(|(_, rest)| rest.split_once('=')).map(|(_, rest)| rest.trim_start());
+    let category = match value_of("category").and_then(|rest| rest.strip_prefix('"')).and_then(|rest| rest.split('"').next()) {
+        Some("scene") => 1_000_000,
+        Some("atmosphere") => 2_000_000,
+        Some("lens") => 3_000_000,
+        Some("sensor") => 4_000_000,
+        Some("tone") => 5_000_000,
+        Some("final") => 9_000_000,
+        _ => 6_000_000,
+    };
+    let adjust = value_of("priorityAdjust").and_then(|rest| rest.split([';', ' ', '>']).next()).and_then(|number| number.trim().parse::<i64>().ok()).unwrap_or(0);
+    category + adjust
+}
+
+/// How the effect file of a chain name stands to the port of that name.
+enum FileOfPort {
+    /// The file the port was made from, with the same numbers or with other ones.
+    Same,
+    /// Other code: the port of the name is not a port of this file.
+    Other,
+}
+
+/// Puts numbers of an effect file into the WGSL of a port. A line of the port
+/// `const NAME: TYPE = VALUE; // file` takes the value of NAME when `numbers` has it.
+/// Returns the source and the names that it took.
+fn with_file_numbers(source: &str, numbers: &[(String, f64)]) -> (String, Vec<String>) {
+    let mut taken = Vec::new();
+    let mut out = String::with_capacity(source.len());
+    for line in source.lines() {
+        let mut written = false;
+        if let Some((left, _)) = line.trim_end().strip_suffix("// file").and_then(|code| code.trim_start().strip_prefix("const ")).and_then(|rest| rest.split_once('=')) {
+            let (name, kind) = left.split_once(':').map_or((left.trim(), "f32"), |(name, kind)| (name.trim(), kind.trim()));
+            if let Some((_, value)) = numbers.iter().find(|(n, _)| n == name) {
+                let text = match kind {
+                    "i32" | "u32" => format!("{}", *value as i64),
+                    _ => {
+                        let text = format!("{value}");
+                        if text.contains(['.', 'e']) { text } else { format!("{text}.0") }
+                    }
+                };
+                let indent = &line[..line.len() - line.trim_start().len()];
+                out.push_str(&format!("{indent}const {name}: {kind} = {text}; // file\n"));
+                taken.push(name.to_string());
+                written = true;
+            }
+        }
+        if !written {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    (out, taken)
+}
+
+/// Fits the port of a chain name to the effect file that the name resolves to, and tells
+/// the log what it did. A copy of the file of the port with other numbers: the port takes
+/// the numbers that it can (a number that a table of the port goes with, for example a
+/// sample count, stays). A file with other code: the port runs as it is, and the log says
+/// that the shader of the mod needs a port of its own.
+fn port_for_file(definition: &mut Definition, file: &str) {
+    let name = definition.name.clone();
+    let name = name.as_str();
+    let source = definition.source.clone();
+    let source = source.as_str();
+    let key = code_key(file);
+    let stock = STOCK_FILES.iter().find(|(stock_name, _)| *stock_name == name).map(|(_, text)| *text);
+    let relation = match stock {
+        Some(text) if code_key(text) == key => FileOfPort::Same,
+        _ if MOD_FILES.iter().any(|(mod_name, mod_key)| *mod_name == name && *mod_key == key) => FileOfPort::Same,
+        _ => FileOfPort::Other,
+    };
+    match relation {
+        FileOfPort::Same => {
+            // The same code has the same number lines in the same order: the numbers that
+            // differ from those of the file of the port. A port of a file of a mod has no
+            // file to compare with, and takes each number of its marked constants.
+            let numbers = file_numbers(file);
+            let other: Vec<(String, f64)> = match stock {
+                Some(text) => numbers.into_iter().zip(file_numbers(text)).filter(|((_, a), (_, b))| (a - b).abs() > 1e-9 * b.abs().max(1.0)).map(|(number, _)| number).collect(),
+                None => numbers,
+            };
+            let (fitted, taken) = with_file_numbers(source, &other);
+            definition.source = fitted;
+            // An older copy of a stock file has no category: its place in the chain is
+            // that of the file, as on Direct3D 9.
+            if let Some(text) = stock.filter(|text| file_priority(text) != file_priority(file)) {
+                println!("post: {name}: the file {name}.fx has another category than the stock file (place {} and not {}); the port takes it", file_priority(file), file_priority(text));
+                definition.priority = file_priority(file);
+            }
+            if stock.is_none() {
+                definition.priority = file_priority(file);
+            }
+            if stock.is_some() {
+                let say = |numbers: Vec<&(String, f64)>| numbers.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ");
+                let (took, kept): (Vec<_>, Vec<_>) = other.iter().partition(|(n, _)| taken.contains(n));
+                if !took.is_empty() {
+                    println!("post: {name}: the file {name}.fx is the stock shader with other numbers; the port takes them: {}", say(took));
+                }
+                if !kept.is_empty() {
+                    println!("post: {name}: numbers of the file {name}.fx that the port cannot take: {}", say(kept));
+                }
+            }
+        }
+        FileOfPort::Other => {
+            println!("post: {name}: the file {name}.fx is another shader than the port of this name (code key {key:#018x}); the port runs as it is, and the file needs a port of its own");
+        }
+    }
 }
 
 /// A pass of the `passes` line of a file: `name`, `name /N` for a target of the picture size
@@ -382,23 +606,23 @@ impl Hdr {
 /// sky at a quarter of the size, a radial blur, the rays toward the sun, a tangential blur,
 /// and the sum with a sun disc.
 const SUNSHAFTS: &str = "
-const N: i32 = 20;
-const raysunradius: f32 = 0.25;
-const raystrength: f32 = 1.7;
-const rayfalloff: f32 = 1.10;
-const rayfalloffconst: f32 = 0.125;
-const raysunfalloff: f32 = 1.5;
-const centervis: f32 = 0.3;
-const sunrayocclude: f32 = 0.75;
-const brightnessadd: f32 = 1.25;
-const offscreenrange: f32 = 0.5;
-const sundiscradius: f32 = 0.025;
-const sundiscbrightness: f32 = 1.9;
-const sundiscdesaturate: f32 = 0.5;
-const sundiscocclude: f32 = 0.75;
-const rscale: f32 = 0.5;
-const scale: f32 = 2.0;
-const threshold: f32 = 1e7;
+const N: i32 = 20; // file
+const raysunradius: f32 = 0.25; // file
+const raystrength: f32 = 1.7; // file
+const rayfalloff: f32 = 1.10; // file
+const rayfalloffconst: f32 = 0.125; // file
+const raysunfalloff: f32 = 1.5; // file
+const centervis: f32 = 0.3; // file
+const sunrayocclude: f32 = 0.75; // file
+const brightnessadd: f32 = 1.25; // file
+const offscreenrange: f32 = 0.5; // file
+const sundiscradius: f32 = 0.025; // file
+const sundiscbrightness: f32 = 1.9; // file
+const sundiscdesaturate: f32 = 0.5; // file
+const sundiscocclude: f32 = 0.75; // file
+const rscale: f32 = 0.5; // file
+const scale: f32 = 2.0; // file
+const threshold: f32 = 1e7; // file
 
 // The values that the effect computes from the variables (its static consts).
 struct Statics {
@@ -551,10 +775,10 @@ fn to_world(tex: vec2f) -> vec3f {
 /// Bloom, fine, by Hrnchamd, v2, as `Bloom Fine.fx` has it: the energy over a threshold,
 /// a vertical and a horizontal blur, the sum in a linear space.
 const BLOOM_FINE: &str = "
-const bloomThreshold: f32 = 0.48;
-const bloomLevel: f32 = 0.23;
-const bloomColourSens: f32 = 0.39;
-const bloomGamma: f32 = 2.45;
+const bloomThreshold: f32 = 0.48; // file
+const bloomLevel: f32 = 0.23; // file
+const bloomColourSens: f32 = 0.39; // file
+const bloomGamma: f32 = 2.45; // file
 
 fn shader_at(t: vec2f) -> vec4f {
     return textureSampleLevel(lastshader, point_clamp, t, 0.0);
@@ -604,11 +828,11 @@ fn pass_at(t: vec2f) -> vec4f {
 /// `SSAO Fast.fx` has it with BLUR and ROTATE: the occlusion, two smart blurs, the sum.
 const SSAO_FAST: &str = "
 const N: i32 = 8;
-const R: f32 = 15.0;
-const multiplier: f32 = 1.8;
-const occlusion_falloff: f32 = 20.0;
-const blur_falloff: f32 = 0.1;
-const blur_radius: f32 = 5.0;
+const R: f32 = 15.0; // file
+const multiplier: f32 = 1.8; // file
+const occlusion_falloff: f32 = 20.0; // file
+const blur_falloff: f32 = 0.1; // file
+const blur_radius: f32 = 5.0; // file
 const depth_scale: f32 = 10000.0;
 const eps: f32 = 1e-6;
 const sky: f32 = 1e6;
@@ -805,9 +1029,9 @@ fn fetch(tex: vec3f, uw: f32) -> f32 {
 /// Eye Adaptation (HDR) by Hrnchamd, v4, as `Eye Adaptation (HDR).fx` has it: the exposure
 /// from the adaptation point, a film response curve, and less colour in low light.
 const EYE_ADAPTATION: &str = "
-const neutral_point: f32 = 0.335;
-const sensitivity: f32 = 0.11;
-const max_exposure: f32 = 3.2;
+const neutral_point: f32 = 0.335; // file
+const sensitivity: f32 = 0.11; // file
+const max_exposure: f32 = 3.2; // file
 
 @fragment fn tone(in: Quad) -> @location(0) vec4f {
     let exposure = clamp(mix(1.0, neutral_point / u.hdr.x, sensitivity), 0.5, max_exposure) * sqrt(u.hdr.y / u.hdr.x);
@@ -828,11 +1052,11 @@ const max_exposure: f32 = 3.2;
 /// smart blurs, the sum.
 const SSAO_HQ: &str = "
 const N: i32 = 16;
-const R: f32 = 15.0;
-const multiplier: f32 = 1.8;
-const occlusion_falloff: f32 = 15.0;
-const blur_falloff: f32 = 0.06;
-const blur_radius: f32 = 4.0;
+const R: f32 = 15.0; // file
+const multiplier: f32 = 1.8; // file
+const occlusion_falloff: f32 = 15.0; // file
+const blur_falloff: f32 = 0.06; // file
+const blur_radius: f32 = 4.0; // file
 const depth_scale: f32 = 10000.0;
 const sky: f32 = 1e6;
 const M: i32 = 12;
@@ -958,14 +1182,14 @@ fn unpack2(f: vec2f) -> f32 {
 /// each pixel from the eye focused on the centre of the picture (into the alpha of the
 /// first pass), then a blur with 12 taps turned by the noise texture.
 const DEPTH_OF_FIELD: &str = "
-const fr: f32 = 60.0;
-const fp: f32 = 60.0;
-const fpa: f32 = 10.0;
-const pupil: f32 = 0.006;
-const blur_radius: f32 = 0.273;
-const blur_falloff: f32 = 2.0;
-const R: f32 = 6.0;
-const k: f32 = 0.00001;
+const fr: f32 = 60.0; // file
+const fp: f32 = 60.0; // file
+const fpa: f32 = 10.0; // file
+const pupil: f32 = 0.006; // file
+const blur_radius: f32 = 0.273; // file
+const blur_falloff: f32 = 2.0; // file
+const R: f32 = 6.0; // file
+const k: f32 = 0.00001; // file
 const unit2m: f32 = 0.0142;
 const M: i32 = 12;
 
@@ -1027,12 +1251,12 @@ fn depth_at(t: vec2f) -> f32 {
 /// pass, a blur that spreads with the brightness, the second combination and blur, and the
 /// sum. The quirk of `blurHor3` with `rcpres.y` for its two outer taps is kept.
 const BLOOM_SOFT: &str = "
-const bloom_mult_global: f32 = 0.22;
-const bloom_mult_uwater: f32 = 1.2;
-const bloom_mult_inside: f32 = 1.1;
-const bloom_mult_outside: f32 = 0.8;
-const bloom_cutoff: f32 = 0.72;
-const bloom_power: f32 = 1.1;
+const bloom_mult_global: f32 = 0.22; // file
+const bloom_mult_uwater: f32 = 1.2; // file
+const bloom_mult_inside: f32 = 1.1; // file
+const bloom_mult_outside: f32 = 0.8; // file
+const bloom_cutoff: f32 = 0.72; // file
+const bloom_power: f32 = 1.1; // file
 
 fn shader_at(t: vec2f) -> vec4f {
     return textureSampleLevel(lastshader, linear_mirror, t, 0.0);
@@ -1507,6 +1731,410 @@ fn circle(z: f32) -> f32 {
 }
 ";
 
+/// Screen space ambient occlusion, ssao v09 by Knu, as `MGG SSAO.fx` of the Morrowind
+/// Graphics Guide has it with BLUR and without ROTATE: the occlusion, one smart blur, the
+/// sum. The file reads the depth with a point filter, and has no texture.
+const MGG_SSAO: &str = "
+const N: i32 = 16;
+const R: f32 = 15.0; // Max ray radius, world units // file
+const multiplier: f32 = 1.8; // Overall strength. 1.0 is the correct physical value // file
+const occlusion_falloff: f32 = 15.0; // More means less precision, and more strength // file
+const blur_falloff: f32 = 5.0; // Same for blur // file
+const blur_radius: f32 = 4.0; // In pixels // file
+const depth_scale: f32 = 10000.0;
+const eps: f32 = 1e-6;
+const sky: f32 = 1e6;
+const M: i32 = 12;
+
+// The `t` of the effect: a value from the field of view.
+fn t() -> f32 {
+    let fov = u.eyepos.w;
+    return 2.0 * tan(0.5 * radians(fov));
+}
+
+fn to_view(tex: vec2f) -> vec3f {
+    let depth = textureSampleLevel(depthframe, point_clamp, tex, 0.0).r;
+    let x = (tex.x - 0.5) * depth * t();
+    let y = (tex.y - 0.5) * depth * t() / rcpres().y * rcpres().x;
+    return vec3f(x, y, depth);
+}
+
+fn from_view(view: vec3f) -> vec2f {
+    let x = (view.x / t() / view.z) + 0.5;
+    let y = (view.y / t() / view.z * rcpres().y / rcpres().x) + 0.5;
+    return vec2f(x, y);
+}
+
+fn pack2(f: f32) -> vec2f {
+    return vec2f(f, fract(f * 255.0 - 0.5));
+}
+
+fn unpack2(f: vec2f) -> f32 {
+    return f.x + ((f.y - 0.5) / 255.0);
+}
+
+@fragment fn ssao(in: Quad) -> @location(0) vec4f {
+    var dirs = array<vec3f, 16>(
+        vec3f(-0.00941, -0.00326, -0.05597), vec3f(0.11686, 0.00831, 0.04915),
+        vec3f(-0.08125, -0.24638, 0.30141), vec3f(0.35193, 0.29639, 0.47544),
+        vec3f(0.32063, -0.70203, -0.40622), vec3f(-0.37344, -0.18112, 0.37140),
+        vec3f(-0.73605, -0.39320, 0.04992), vec3f(0.02274, 0.21583, 0.19429),
+        vec3f(0.00762, -0.01247, 0.03311), vec3f(-0.61057, 0.20510, 0.58876),
+        vec3f(0.55319, 0.67960, -0.19194), vec3f(-0.43533, 0.62404, 0.45133),
+        vec3f(-0.02386, -0.03104, 0.01502), vec3f(-0.20990, 0.10082, 0.03849),
+        vec3f(0.06331, -0.17620, -0.31359), vec3f(-0.12261, 0.00720, -0.12465));
+    let tex = in.tex;
+    let pos = to_view(tex);
+    let waterlevel = u.suncol.w;
+    let water = pos.z * u.eyevec.z - pos.y * sqrt(1.0 - u.eyevec.z * u.eyevec.z) + u.eyepos.z;
+    if pos.z <= 0.0 || pos.z > sky || (water - waterlevel) < 0.0 {
+        return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
+    let rcp = rcpres();
+    let left = pos - to_view(tex + rcp * vec2f(-1.0, 0.0));
+    let right = to_view(tex + rcp * vec2f(1.0, 0.0)) - pos;
+    let up = pos - to_view(tex + rcp * vec2f(0.0, -1.0));
+    let down = to_view(tex + rcp * vec2f(0.0, 1.0)) - pos;
+    var dx = select(right, left, length(left) < length(right));
+    var dy = select(down, up, length(up) < length(down));
+    let normal = normalize(cross(dy, dx));
+    dy = normalize(cross(dx, normal));
+    dx = normalize(dx);
+    var ao = 0.0;
+    var amount = 0.0;
+    for (var j = 0; j < N; j++) {
+        var ray = dirs[j] * R;
+        ray *= sign(ray.z);
+        ray = dx * ray.x + dy * ray.y + normal * ray.z;
+        let weight = dot(normalize(ray), normal);
+        let occ = to_view(from_view(pos + ray)) - pos;
+        let diff = ray.z - occ.z - 1.0; // -1 avoid self-occlusion
+        amount += weight;
+        ao += weight * step(0.0, diff) * exp2(-diff / occlusion_falloff);
+    }
+    return vec4f(ao / amount, pack2(pos.z / depth_scale), 1.0);
+}
+
+@fragment fn smartblur(in: Quad) -> @location(0) vec4f {
+    var taps = array<vec2f, 12>(
+        vec2f(-0.326212, -0.40581), vec2f(-0.840144, -0.07358),
+        vec2f(-0.695914, 0.457137), vec2f(-0.203345, 0.620716),
+        vec2f(0.96234, -0.194983), vec2f(0.473434, -0.480026),
+        vec2f(0.519456, 0.767022), vec2f(0.185461, -0.893124),
+        vec2f(0.507431, 0.064425), vec2f(0.89642, 0.412458),
+        vec2f(-0.32194, -0.932615), vec2f(-0.791559, -0.59771));
+    let data = textureSampleLevel(lastpass, linear_mirror, in.tex, 0.0);
+    var total = data.r;
+    let depth = unpack2(data.gb);
+    let rev = data.a * 2.0 - 1.0;
+    var amount = 1.0;
+    for (var i = 0; i < M; i++) {
+        let s_tex = in.tex + rcpres() * taps[i] * blur_radius * rev;
+        let s_data = textureSampleLevel(lastpass, linear_mirror, s_tex, 0.0).xyz;
+        let s_depth = unpack2(s_data.gb);
+        let weight = exp2(-abs(depth - s_depth) * depth_scale / blur_falloff);
+        amount += weight;
+        total += s_data.r * weight;
+    }
+    return vec4f(total / amount, data.gb, 1.0 - data.a);
+}
+
+@fragment fn combine(in: Quad) -> @location(0) vec4f {
+    let dist = length(to_view(in.tex));
+    let final_ao = multiplier * textureSampleLevel(lastpass, point_clamp, in.tex, 0.0).r;
+    let fogstart = u.fogcol.w;
+    let fogrange = u.fognearcol.w;
+    var fog = saturate((fogrange - dist) / (fogrange - fogstart));
+    if use_expfog() {
+        fog = saturate(exp(-(dist - fogstart) / (fogrange - fogstart)));
+    }
+    let result = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0).rgb * (1.0 - final_ao * pow(fog, 7.0));
+    return vec4f(result, 1.0);
+}
+";
+
+/// Heat haze, as `heathaze.fx` (warp fx 0.1) of the mod "Heat Haze" has it: the picture is
+/// warped with a normal map that scrolls on a cylinder around the camera, where the pixel is
+/// far enough (between `dmaskint1` and `dmaskint2` units) and near the horizon. The depth
+/// of the warped pixel keeps a near object in front of the haze. The depth texture takes a
+/// point sampler here: the file names a linear one, but 32-bit floats take no filter.
+const HEATHAZE: &str = "
+// warp fx 0.1
+
+const warpint: f32 = 0.003; // file
+const dmaskint1: i32 = 5005; // file
+const dmaskint2: i32 = 9000; // file
+const wspeed: f32 = -0.06; // file
+
+const PI: f32 = 3.1415926535897932384626433832795;
+
+const hscale: f32 = 0.19; // file
+
+fn toWorld(tex: vec2f) -> vec3f {
+    var v = vec3f(mview(0, 2), mview(1, 2), mview(2, 2));
+    v += (1.0 / mproj(0, 0) * (2.0 * tex.x - 1.0)) * vec3f(mview(0, 0), mview(1, 0), mview(2, 0));
+    v += (-1.0 / mproj(1, 1) * (2.0 * tex.y - 1.0)) * vec3f(mview(0, 1), mview(1, 1), mview(2, 1));
+    return v;
+}
+
+fn cylindrical(tex: vec2f) -> vec2f {
+    let worldpos = toWorld(tex);
+    let u = -atan2(worldpos.y, worldpos.x) / PI;
+    let v = -worldpos.z / length(worldpos.xy);
+    return vec2f(0.5 * u + 0.5, hscale * v);
+}
+
+@fragment fn warpfx(in: Quad) -> @location(0) vec4f {
+    let tex = in.tex;
+    let time = u.sunvec.w;
+    var depth = textureSampleLevel(depthframe, point_wrap, tex, 0.0).r;
+    let dmask = smoothstep(f32(dmaskint1), f32(dmaskint2), depth);
+    depth -= f32(dmaskint1);
+    //return float4(abs(depth.xxx), 1);
+    let timetick = time * wspeed;
+    let uv = cylindrical(tex);
+
+    //float middle = abs(saturate(abs(uv.g)) - 1);
+    var middle = 1.0 - min(1.0, abs(uv.g));
+    middle = pow(middle, 14.0);
+
+    var warpn = textureSampleLevel(tex1, linear_wrap, uv * vec2f(4.0, -4.0) + vec2f(0.0, timetick), 0.0).xy;
+
+    //return float4(warpn, 0, 1);
+    //warpn = lerp(0.0, lerp(float2(0.0, 0.0), warpn * dmask, warpint), dmask * middle);
+    warpn = warpn * 2.0 - 1.0;
+    warpn = warpn * warpint;
+
+    //return dmask * middle;
+
+    warpn *= saturate(depth);
+
+    var color = vec4f(0.0);
+
+    var wtex = tex + warpn * saturate(dmask * middle);
+    let wtexd = tex + 10.0 * warpn * saturate(dmask * middle);
+    depth = textureSampleLevel(depthframe, point_wrap, wtexd, 0.0).r;
+    depth -= f32(dmaskint1);
+
+    let mask = min(dpdx(depth), dpdy(depth)) * saturate(depth);
+    depth = max(depth, mask);
+    //return depth.xxxx;
+    if (depth < 0.001) {
+        wtex = tex;
+    }
+    //return float4(10000 * (wtex-tex),0,1);
+
+        //return depthm2.rrrr;
+        color = textureSampleLevel(lastshader, linear_mirror, wtex, 0.0);
+
+    //color = lerp(tex2D(s0, tex), color, dmask * middle);
+
+    //return float4(warpn.rg * 100, 0, 1.0);
+    //return float4(wtex.rg,0, 1.0);
+    return vec4f(color.rgb, 1.0);
+}
+";
+
+/// Special Process by vtastek, v1 ("Special Contrast"), as `Special Process.fx` has it: a
+/// bright pass with a threshold that follows the sun colour, a horizontal and a vertical
+/// blur with a radius that follows the exposure, a screen combination with a red halo, and a
+/// contrast and saturation step.
+const SPECIAL_PROCESS: &str = "
+// Special Contrast
+// vtastek
+// v1
+
+// Compatibility: MGE XE 0, fully working
+
+//////////////
+// Settings //
+//////////////
+
+const neutral_point: f32 = 0.25; // file
+const sensitivity: f32 = 0.33; // file
+const max_exposure: f32 = 1.6; // file
+
+// The file computes `exposure` and `radius` as static globals from `HDR`. WGSL has no such
+// globals: `blurx` and `blury` compute them at their start.
+//float radius = 1.66;
+
+const contrast: f32 = 0.3; // file
+const saturation: f32 = 1.0; // file
+
+// `s0` of the file is `lastshader` with `point_clamp`; `s1` is `lastpass` with `linear_clamp`.
+fn sample0(t: texture_2d<f32>, s: sampler, at: vec2f) -> vec4f {
+    return textureSampleLevel(t, s, at, 0.0);
+}
+
+@fragment fn brightpass(in: Quad) -> @location(0) vec4f {
+    let col = sample0(lastshader, point_clamp, in.tex).rgb;
+
+    var lum = dot(col, vec3f(0.33, 0.33, 0.33));
+
+    //return float4(col, 1);
+    let sun = mix(0.75, 0.5, u.suncol.x);
+    lum = smoothstep(sun - 0.05, sun, lum);
+
+    //float3 fringe = abs(fwidth(final));
+    //fringe = saturate(fringe - 0.1);
+
+    //fringe = final +  final * float3(0.2,0.04, 0.0);
+    let halcol = smoothstep(0.9, 1.0, pow(length(col), 1.0 / 4.5));
+    //final += fringe.rgb;
+    return vec4f(pow(col * lum, vec3f(1.5)), halcol);
+}
+
+@fragment fn blurx(in: Quad) -> @location(0) vec4f {
+    let exposure = clamp(mix(1.0, neutral_point / u.hdr.x, sensitivity), 0.5, max_exposure) * sqrt(u.hdr.y / u.hdr.x);
+    let radius = mix(0.1, 1.6, saturate(exposure / max_exposure) - 0.5);
+
+    var rcprcp = 1.0 / rcpres();
+    rcprcp *= radius;
+
+    var blr = vec4f(0.0);
+    blr += pow(0.026109 * sample0(lastpass, linear_clamp, in.tex + vec2f(-15.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.034202 * sample0(lastpass, linear_clamp, in.tex + vec2f(-13.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.043219 * sample0(lastpass, linear_clamp, in.tex + vec2f(-11.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.052683 * sample0(lastpass, linear_clamp, in.tex + vec2f(-9.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.061948 * sample0(lastpass, linear_clamp, in.tex + vec2f(-7.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.070266 * sample0(lastpass, linear_clamp, in.tex + vec2f(-5.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.076883 * sample0(lastpass, linear_clamp, in.tex + vec2f(-3.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.081149 * sample0(lastpass, linear_clamp, in.tex + vec2f(-1.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.041312 * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.081149 * sample0(lastpass, linear_clamp, in.tex + vec2f(1.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.076883 * sample0(lastpass, linear_clamp, in.tex + vec2f(3.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.070266 * sample0(lastpass, linear_clamp, in.tex + vec2f(5.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.061948 * sample0(lastpass, linear_clamp, in.tex + vec2f(7.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.052683 * sample0(lastpass, linear_clamp, in.tex + vec2f(9.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.043219 * sample0(lastpass, linear_clamp, in.tex + vec2f(11.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.034202 * sample0(lastpass, linear_clamp, in.tex + vec2f(13.5, 0.0) / rcprcp), vec4f(2.0));
+    blr += pow(0.026109 * sample0(lastpass, linear_clamp, in.tex + vec2f(15.5, 0.0) / rcprcp), vec4f(2.0));
+    //blr += 0.019227*samplePremul( s0, (TexD+float2( 17.5,0.0)/rcprcp.xy) ).xyz;
+    //blr += 0.013658*samplePremul( s0, (TexD+float2( 19.5,0.0)/rcprcp.xy) ).xyz;
+
+    blr /= pow(0.93423, 2.0); // renormalize to compensate for the 4 taps I skipped
+
+    return blr * 16.0;
+}
+
+@fragment fn blury(in: Quad) -> @location(0) vec4f {
+    let exposure = clamp(mix(1.0, neutral_point / u.hdr.x, sensitivity), 0.5, max_exposure) * sqrt(u.hdr.y / u.hdr.x);
+    let radius = mix(0.1, 1.6, saturate(exposure / max_exposure) - 0.5);
+
+    var rcprcp = 1.0 / rcpres();
+
+    rcprcp *= radius;
+    var blr = vec4f(0.0);
+    //blr += 0.013658*sample0( s1, (TexD+float2(0.0,-19.5)/rcprcp.xy) ).xyz;
+    //blr += 0.019227*sample0( s1, (TexD+float2(0.0,-17.5)/rcprcp.xy) ).xyz;
+    blr += pow(0.026109, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, -15.5) / rcprcp);
+    blr += pow(0.034202, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, -13.5) / rcprcp);
+    blr += pow(0.043219, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, -11.5) / rcprcp);
+    blr += pow(0.052683, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, -9.5) / rcprcp);
+    blr += pow(0.061948, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, -7.5) / rcprcp);
+    blr += pow(0.070266, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, -5.5) / rcprcp);
+    blr += pow(0.076883, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, -3.5) / rcprcp);
+    blr += pow(0.081149, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, -1.5) / rcprcp);
+    blr += pow(0.041312, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 0.0) / rcprcp);
+    blr += pow(0.081149, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 1.5) / rcprcp);
+    blr += pow(0.076883, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 3.5) / rcprcp);
+    blr += pow(0.070266, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 5.5) / rcprcp);
+    blr += pow(0.061948, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 7.5) / rcprcp);
+    blr += pow(0.052683, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 9.5) / rcprcp);
+    blr += pow(0.043219, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 11.5) / rcprcp);
+    blr += pow(0.034202, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 13.5) / rcprcp);
+    blr += pow(0.026109, 2.0) * sample0(lastpass, linear_clamp, in.tex + vec2f(0.0, 15.5) / rcprcp);
+    //blr += 0.019227*sample0( s1, (TexD+float2(0.0, 17.5)/rcprcp.xy) ).xyz;
+    //blr += 0.013658*sample0( s1, (TexD+float2(0.0, 19.5)/rcprcp.xy) ).xyz;
+
+    blr /= pow(0.93423, 2.0); // renormalize to compensate for the 4 taps I skipped
+    blr *= 16.0;
+    let org = sample0(lastshader, point_clamp, in.tex).rgb;
+
+    var col = pow(org, vec3f(2.0));
+    blr *= mix(0.0, 1.0, saturate(exposure / max_exposure) - 0.5);
+    blr = clamp(blr, vec4f(0.0), vec4f(1.0));
+    // The file adds a float4 to a float3: HLSL drops the alpha part.
+    col = col + blr.rgb - col * blr.rgb;
+
+    let halcol = blr.rgb * blr.a * 0.1 * vec3f(0.6, 0.0091, 0.0);
+    col += saturate3(halcol * 30.0 - col);
+    //col += halcol;
+
+    //col = col / (1.0 + col);
+    col = pow(col, vec3f(1.0 / 2.0));
+
+    return vec4f(col, 1.0);
+}
+
+@fragment fn specialcontrast(in: Quad) -> @location(0) vec4f {
+    /*float3 mag = sample0(s1, Tex * 0.1);
+    return float4(mag, 1);
+    */
+
+    var x = sample0(lastpass, linear_clamp, in.tex);
+    let contrasted = (x * x * x * (x * (x * 6.0 - 15.0) + 10.0)).rgb;
+    // WGSL does not assign to `x.rgb`: the whole vector is built again.
+    x = vec4f(mix(x.rgb, contrasted, contrast), x.a);
+    let sat = mix(vec3f(dot(vec3f(0.2125, 0.7154, 0.0721), x.rgb)), x.rgb, saturation);
+
+    var col = x.rgb;
+
+    col = mix(x.rgb, sat, 0.33 * (x.r + x.g + x.b));
+
+    return vec4f(col, 1.0);
+}
+";
+
+/// Color Mood by shadeMe, v0.2, as `ColorMood.fx` has it: a tint that goes from black to
+/// white with the luminance of the pixel, mixed into the picture by the luminance.
+const COLOR_MOOD: &str = "
+// color mood settings
+const fRatio: f32 = 0.4; // 0..1 // file
+const moodR: f32 = 0.35; // file
+const moodG: f32 = 0.30; // file
+const moodB: f32 = 0.25; // file
+
+@fragment fn colorMood(in: Quad) -> @location(0) vec4f {
+    let colInput = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0);
+    var colMood = vec4f(moodR, moodG, moodB, 1.0);
+
+    // The sum of the four parts of the pixel, the alpha too, over 3, as the file has it.
+    let fLum = dot(colInput, vec4f(1.0)) / 3.0;
+
+    colMood = mix(vec4f(0.0), colMood, saturate(fLum * 2.0));
+    colMood = mix(colMood, vec4f(1.0), saturate(fLum - 0.5) * 2.0);
+
+    let colOutput = mix(colInput, colMood, saturate(fLum * fRatio));
+
+    return vec4f(colOutput.rgb, 1.0);
+}
+";
+
+/// Apel's gamma correction shader, as `MGG darker interiors.fx` has it: more saturation, a
+/// gamma, and less luminance. Its `mgeflags` 6 keeps it to interiors.
+const MGG_DARKER_INTERIORS: &str = "
+//tweakables
+const gamma: f32 = 1.1; // file
+const saturation: f32 = 1.1; // file
+const luminance: f32 = 0.9; // file
+//tweakables
+
+fn grayscale(col: vec3f) -> vec3f {
+    return vec3f(dot(col.rgb, vec3f(0.3, 0.59, 0.11)));
+}
+
+@fragment fn gammatoo(in: Quad) -> @location(0) vec4f {
+    var c = textureSampleLevel(lastshader, point_wrap, in.tex, 0.0).rgb;
+    c = mix(grayscale(c), c, saturation); // Apply saturation
+    // The saturation can make a part of `c` negative. `pow` of a negative base has no
+    // defined result in WGSL: the base is 0 there.
+    c = pow(max(c, vec3f(0.0)), vec3f(gamma)); // Apply gamma
+
+    return vec4f(saturate3(c * luminance), 1.0);
+}
+";
+
 /// The shaders that this program has a port of.
 pub const SHADERS: &[Shader] = &[
     Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &[full("stretch"), full("blur_r_half"), full("rays"), full("blur_t"), full("combine")], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, texture: None, requires_hdr: false },
@@ -1541,6 +2169,17 @@ pub const SHADERS: &[Shader] = &[
     },
     Shader { name: "SSAO S_A", source: SSAO_S_A, passes: &[scaled("ao", 2), scaled("blur_x", 2), scaled("blur_y", 2), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, texture: None, requires_hdr: false },
     Shader { name: "Depth of Field S_A", source: DOF_S_A, passes: &[scaled("coc", 2), scaled("gather", 2), scaled("postfilter", 2), full("combine")], disable_flags: 0, no_sun_glare: false, priority: 3_000_000, texture: None, requires_hdr: false },
+    // The technique of `MGG SSAO.fx` has no category. MGE XE gives such a shader the
+    // priority of the nearest shader of the chain with a category; the chain of the
+    // Morrowind Graphics Guide puts it first, before the underwater shaders (scene).
+    Shader { name: "MGG SSAO", source: MGG_SSAO, passes: &[full("ssao"), full("smartblur"), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 6_000_000, texture: None, requires_hdr: false },
+    // The technique of the file has no category: the place of `none`.
+    Shader { name: "heathaze", source: HEATHAZE, passes: &[full("warpfx")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, texture: Some("heathaze_nm.dds"), requires_hdr: false },
+    // The technique of the file has no category: the place of `none`.
+    Shader { name: "Special Process", source: SPECIAL_PROCESS, passes: &[full("brightpass"), full("blurx"), full("blury"), full("specialcontrast")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, texture: None, requires_hdr: true },
+    // The two files have no category: the place of `none`.
+    Shader { name: "ColorMood", source: COLOR_MOOD, passes: &[full("colorMood")], disable_flags: 1, no_sun_glare: false, priority: 6_000_000, texture: None, requires_hdr: false },
+    Shader { name: "MGG darker interiors", source: MGG_DARKER_INTERIORS, passes: &[full("gammatoo")], disable_flags: 6, no_sun_glare: false, priority: 6_000_000, texture: None, requires_hdr: false },
 ];
 
 /// The linear depth of the game from its depth buffer: `XE Depth.fx` for the native depth,
@@ -1734,7 +2373,16 @@ impl Post {
                     }
                 },
                 None => match SHADERS.iter().find(|shader| shader.name == name) {
-                    Some(port) => Definition::of_port(port),
+                    Some(port) => {
+                        let mut definition = Definition::of_port(port);
+                        // The effect file that the name resolves to, from a mod or from MGE
+                        // XE: the port takes its numbers, and the log says when it is not
+                        // the file the port was made from.
+                        if let Some(bytes) = read(&format!("shaders/XEshaders/{name}.fx")) {
+                            port_for_file(&mut definition, &String::from_utf8_lossy(&bytes));
+                        }
+                        definition
+                    }
                     None => {
                         println!("post: no file {name}.wgsl and no port of the shader {name}; skipped");
                         continue;
@@ -1795,8 +2443,21 @@ impl Post {
             });
             compiled.push(Compiled { name: shader.name, disable_flags: shader.disable_flags, priority: shader.priority, passes, texture });
         }
-        // The order of MGE XE: by the category, stable in the order of the chain.
+        // The order of MGE XE (`PostShaders::orderShaders`): by the category, stable in the
+        // order of the chain. A shader without a category stays where the chain has it: it
+        // takes the place of the shader with a category before it, or of the first such
+        // shader of the chain.
+        const NO_CATEGORY: i64 = 6_000_000;
+        let mut last = compiled.iter().map(|c| c.priority).find(|priority| *priority != NO_CATEGORY).unwrap_or(NO_CATEGORY);
+        for shader in compiled.iter_mut() {
+            if shader.priority == NO_CATEGORY {
+                shader.priority = last;
+            } else {
+                last = shader.priority;
+            }
+        }
         compiled.sort_by_key(|c| c.priority);
+        println!("post: the order: {}", compiled.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "));
         println!("post: {} of {} shaders of the chain run: {ports} ports, {files} files of mods", compiled.len(), chain.len());
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let make_sampler = |filter: wgpu::FilterMode, address: wgpu::AddressMode| {

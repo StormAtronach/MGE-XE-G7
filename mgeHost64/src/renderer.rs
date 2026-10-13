@@ -1588,6 +1588,7 @@ impl Extension for DistantLand {
             fogcol: [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], if exponential { e.fog_exp_start } else { e.fog_start }],
             fognearcol: [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2], if exponential { e.fog_exp_divisor } else { e.fog_end }],
             fog_near: [e.fog_near_start, e.fog_near_end, 1.0 / scene.target_size.0.max(1) as f32, 1.0 / scene.target_size.1.max(1) as f32],
+            switches: [if exponential { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
         };
         // The flags of the environment, as `postProcess` of the Direct3D 9 path sets them: 1
         // an interior that is not like an exterior, 2 an exterior, 4 an interior that
