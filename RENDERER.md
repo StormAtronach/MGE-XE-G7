@@ -94,8 +94,6 @@ adapter and the one in use.
 - An interior that behaves as an exterior (the Mournhold plazas and some mod cells) is
   drawn with its distant statics, shadows and sky. A plain interior cell that has distant
   statics in the generated data does not get them yet.
-- The water of an interior cell is not drawn by the renderer's water (the game's own water
-  plane shows).
 - No water volumes (the surfaces that mods add). The caustics under the water are drawn
   (`caustics_intensity` of `mgeXE.toml`), without the dry spaces of a boat's hold.
 - The grass does not receive shadows.

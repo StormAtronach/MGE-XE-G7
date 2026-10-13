@@ -186,6 +186,9 @@ pub struct DistantLand {
     caustics: Option<caustics::Caustics>,
     /// The setting `distant_land.water.caustics_intensity`: 0 is none.
     caustics_intensity: f32,
+    /// The setting `distant_land.fog.interior_end`, in units: where the draws of the game
+    /// end in an interior and under the water.
+    interior_fog_end: f32,
     statics: Option<statics::Statics>,
     /// The shadow map, when the settings have shadows; `None` before the first frame. True
     /// when the map is made in this frame.
@@ -476,6 +479,7 @@ impl DistantLand {
             blend: None,
             caustics: None,
             caustics_intensity: settings.water.caustics_intensity as f32,
+            interior_fog_end: settings.fog.interior_end * CELL,
             statics: None,
             shadow: None,
             shadow_in_frame: false,
@@ -1081,7 +1085,10 @@ impl Extension for DistantLand {
         // `IntLikeExterior(true)`); a plain interior cell with a world space is not here yet.
         let land = self.enabled && !scene.interior && self.gpu.is_some();
         let distant = self.enabled && self.distant_cell && self.like_exterior && self.gpu.is_some();
-        if land && self.water_enabled && self.water.is_none() {
+        // The water: an exterior with its land, or an interior cell with water (`CellHasWater`
+        // of MGE XE, which draws its water there too, with a flat reflection).
+        let water_cell = self.enabled && self.environment.is_some_and(|e| e.has_water != 0) && (land || scene.interior);
+        if water_cell && self.water_enabled && self.water.is_none() {
             match Water::new(scene, &self.waves) {
                 Ok(water) => self.water = Some(water),
                 Err(problem) => {
@@ -1090,7 +1097,7 @@ impl Extension for DistantLand {
                 }
             }
         }
-        let water = land && self.water.is_some() && self.environment.is_some_and(|e| e.has_water != 0);
+        let water = water_cell && self.water.is_some();
         // The chain of post shaders runs in an interior too, as it does with MGE XE on
         // Direct3D 9: its wave texture is that of the water, or one of its own when the
         // frame has no water object (the first frame is in an interior).
@@ -1263,6 +1270,20 @@ impl Extension for DistantLand {
         self.near_fog = None;
         self.cell_facts(scene);
         if !self.enabled || !self.distant_cell || !self.like_exterior {
+            // A cell without the distant land: the reflection of the water is one colour,
+            // as `clearReflection` of the Direct3D 9 path has it. Under the water, the
+            // colour of the horizon (the fog colour); above it, the sun and the ambient
+            // light of the cell (Direct3D 9 adds the cell's sun colour to the ambient of the
+            // device; the lights of the first draw of the world stand for them here).
+            let frame = self.water_frame(scene);
+            if let (Some(frame), Some(water)) = (frame, self.water.as_mut()) {
+                let color = if frame.underwater {
+                    [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2]]
+                } else {
+                    core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0))
+                };
+                water.fill_reflection(scene, color);
+            }
             return false;
         }
         self.finish_load(scene);
@@ -1626,8 +1647,37 @@ impl DistantLand {
     /// What the water needs from the environment of the frame, or `None` without water in
     /// the cell, without the land, or without the environment.
     fn water_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
-        let e = self.environment.filter(|e| e.has_water != 0 && e.flags & 4 != 0)?;
-        if self.interior || self.gpu.is_none() {
+        let e = self.environment.filter(|e| e.has_water != 0)?;
+        if self.water.is_none() {
+            return None;
+        }
+        // The draws of the game end at the fog end of an interior, and under the water: the
+        // plane ends there too (the clip plane of `renderStageWater`).
+        let underwater = e.flags & 2 != 0;
+        let view_end = (self.interior || underwater).then_some(self.interior_fog_end);
+        if e.flags & 4 == 0 {
+            // A plain interior cell: no sun on the water (`sunPos` is straight down and
+            // `sunVis` 0 on Direct3D 9), the sky colour and the far fog colour are the
+            // colour of the horizon of the game (its fog colour), no scattering.
+            let fog = [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2]];
+            return Some(WaterFrame {
+                water_level: e.water_level,
+                underwater,
+                time: e.time,
+                sun_pos: [0.0, 0.0, -1.0],
+                sun_vis: 0.0,
+                sun_color: scene.sun_color,
+                sky_color: fog,
+                fog_color_far: fog,
+                nice_weather: 0.0,
+                scattering: None,
+                wind: e.wind,
+                fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
+                draw_distance: self.draw_distance,
+                view_end,
+            });
+        }
+        if self.gpu.is_none() {
             return None;
         }
         let sun_pos = e.sun_pos;
@@ -1650,7 +1700,7 @@ impl DistantLand {
         });
         Some(WaterFrame {
             water_level: e.water_level,
-            underwater: e.flags & 2 != 0,
+            underwater,
             time: e.time,
             sun_pos,
             sun_vis: e.sun_vis,
@@ -1662,6 +1712,7 @@ impl DistantLand {
             wind: e.wind,
             fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
             draw_distance: self.draw_distance,
+            view_end,
         })
     }
 

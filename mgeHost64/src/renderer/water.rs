@@ -36,7 +36,7 @@ struct Uniforms {
     /// The two numbers of the depth of the projection of the game, for the distance of a
     /// pixel from its depth.
     projection: [f32; 4],
-    /// The size of the picture.
+    /// The size of the picture, and the view depth where the plane ends (0 for no end).
     size: [f32; 4],
     /// The scattering: as the terrain has it.
     sky: [f32; 4],
@@ -151,6 +151,10 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
 }
 
 @fragment fn fs(in: Out) -> @location(0) vec4f {
+    // The end of the plane in an interior and under the water.
+    if u.size.z > 0.0 && in.clip_w > u.size.z {
+        discard;
+    }
     var eye_vec = in.world - u.eye.xyz;
     let dist = length(eye_vec);
     eye_vec /= dist;
@@ -232,6 +236,9 @@ pub struct WaterFrame {
     pub fog_exp: (f32, f32),
     /// The draw distance of the distant land, in units.
     pub draw_distance: f32,
+    /// The view depth where the plane ends, in an interior and under the water (the clip
+    /// plane of `renderStageWater`); `None` for no end.
+    pub view_end: Option<f32>,
 }
 
 pub struct Water {
@@ -447,6 +454,27 @@ impl Water {
         (pass, mirrored_view, projection)
     }
 
+    /// Fills the reflection with one colour: a cell without the distant land (`clearReflection`
+    /// of the Direct3D 9 path).
+    pub fn fill_reflection(&mut self, scene: &SceneView, color: [f32; 3]) {
+        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection fill") });
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("water reflection fill"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.reflection_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: color[0] as f64, g: color[1] as f64, b: color[2] as f64, a: 1.0 }), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        scene.queue.submit([encoder.finish()]);
+        self.reflected = true;
+    }
+
     /// The sky of the game in the reflection: its draws again, mirrored, above the water.
     pub fn reflect_sky(&self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay, frame: &WaterFrame) {
         if frame.underwater {
@@ -497,7 +525,7 @@ impl Water {
             fog_col_far: [frame.fog_color_far[0], frame.fog_color_far[1], frame.fog_color_far[2], if frame.scattering.is_some() { 1.0 } else { 0.0 }],
             fog: [frame.fog_exp.0, frame.fog_exp.1, self.debug, if frame.underwater { 1.0 } else { 0.0 }],
             projection: [scene.projection[10], scene.projection[14], 0.0, 0.0],
-            size: [scene.target_size.0 as f32, scene.target_size.1 as f32, 0.0, 0.0],
+            size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), 0.0],
             sky: scattering[1],
             outscatter: scattering[2],
             inscatter: scattering[3],
