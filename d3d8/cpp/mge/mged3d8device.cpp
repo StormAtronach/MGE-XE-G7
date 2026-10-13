@@ -216,7 +216,7 @@ HRESULT _stdcall MGEProxyDevice::GetIndexedSkinningCaps(MgeIndexedSkinningCaps* 
 // sensitivity, screen rotation and shake. The proxy device runs it at each Present. Without
 // a device, the stream of the nirender plugin runs it (Deviceless::present).
 static void updateFrameLogic(MWBridge* mwBridge) {
-    if (Configuration.Force3rdPerson && DistantLand::canRenderDistantLand()) {
+    if (Configuration.Force3rdPerson && (DistantLand::canRenderDistantLand() || Deviceless::active())) {
         // Set 3rd person camera
         D3DXVECTOR3* camera = mwBridge->PCam3Offset();
         if (camera) {
