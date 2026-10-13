@@ -143,6 +143,11 @@ when a mod loads it: the file `my_shader.wgsl`, or its port. A shader that a mod
 on until the mod turns it off, and has its place in the chain by its category, as on
 Direct3D 9.
 
+The shaders of the chain of the settings are there too: `mge.shaders.find` and
+`mge.shaders.list` give them, and the old calls (`mge.enableShader`, `mge.disableShader`,
+`mge.setShaderFloat`, `mge.setShaderLong`) work on them, as the mod Heat Haze uses them. A
+shader of the chain runs as the settings have it until a mod changes it.
+
 `shader:reload()` works too: the renderer reads the files of the shader again (its WGSL
 file or its port, the numbers of its effect file, its textures), and the variables go back
 to the values of the file, as a reload on Direct3D 9 makes the effect again. A mod that
@@ -176,6 +181,9 @@ is read with `_` after its name: `distance_()`.
   3 numbers, set from Lua as one list) is `name vec3[N]`.
 - A shader has room for 256 values or vectors in all. A variable that the WGSL side does
   not name is not read; the log says so one time.
+- A variable of a built-in port with one value takes the number of the effect file as its
+  value before a mod sets it, when the file is a copy of the file of the port with other
+  numbers (as the port takes the other numbers of such a file).
 
 ## From HLSL to WGSL
 

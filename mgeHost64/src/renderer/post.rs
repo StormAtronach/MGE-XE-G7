@@ -571,6 +571,19 @@ fn with_file_numbers(source: &str, numbers: &[(String, f64)]) -> (String, Vec<St
     (out, taken)
 }
 
+/// Gives each variable of a port with one value the number of the file of that name, as its
+/// value before a mod sets it. Returns the names that took a number.
+fn fit_variable_defaults(variables: &mut [VariableDef], numbers: &[(String, f64)]) -> Vec<String> {
+    let mut taken = Vec::new();
+    for variable in variables.iter_mut().filter(|v| v.slots == 1 && v.per == 1) {
+        if let Some((name, value)) = numbers.iter().find(|(n, _)| *n == variable.name) {
+            variable.default = vec![*value as f32];
+            taken.push(name.clone());
+        }
+    }
+    taken
+}
+
 /// Fits the port of a chain name to the effect file that the name resolves to, and tells
 /// the log what it did. A copy of the file of the port with other numbers: the port takes
 /// the numbers that it can (a number that a table of the port goes with, for example a
@@ -601,8 +614,9 @@ fn port_for_file(definition: &mut Definition, file: &str) {
                 Some(text) => numbers.into_iter().zip(file_numbers(text)).filter(|((_, a), (_, b))| (a - b).abs() > 1e-9 * b.abs().max(1.0)).map(|(number, _)| number).collect(),
                 None => numbers,
             };
-            let (fitted, taken) = with_file_numbers(source, &other);
+            let (fitted, mut taken) = with_file_numbers(source, &other);
             definition.source = fitted;
+            taken.extend(fit_variable_defaults(&mut definition.variables, &other));
             // An older copy of a stock file has no category: its place in the chain is
             // that of the file, as on Direct3D 9.
             if let Some(text) = stock.filter(|text| file_priority(text) != file_priority(file)) {
@@ -2704,9 +2718,7 @@ fn unpack2(f: vec2f) -> f32 {
 const HEATHAZE: &str = "
 // warp fx 0.1
 
-const warpint: f32 = 0.003; // file
-const dmaskint1: i32 = 5005; // file
-const dmaskint2: i32 = 9000; // file
+// warpint, dmaskint1 and dmaskint2 are variables: the mod Heat Haze sets them from Lua.
 const wspeed: f32 = -0.06; // file
 
 const PI: f32 = 3.1415926535897932384626433832795;
@@ -2731,8 +2743,8 @@ fn cylindrical(tex: vec2f) -> vec2f {
     let tex = in.tex;
     let time = u.sunvec.w;
     var depth = textureSampleLevel(depthframe, point_wrap, tex, 0.0).r;
-    let dmask = smoothstep(f32(dmaskint1), f32(dmaskint2), depth);
-    depth -= f32(dmaskint1);
+    let dmask = smoothstep(dmaskint1(), dmaskint2(), depth);
+    depth -= dmaskint1();
     //return float4(abs(depth.xxx), 1);
     let timetick = time * wspeed;
     let uv = cylindrical(tex);
@@ -2746,7 +2758,7 @@ fn cylindrical(tex: vec2f) -> vec2f {
     //return float4(warpn, 0, 1);
     //warpn = lerp(0.0, lerp(float2(0.0, 0.0), warpn * dmask, warpint), dmask * middle);
     warpn = warpn * 2.0 - 1.0;
-    warpn = warpn * warpint;
+    warpn = warpn * warpint();
 
     //return dmask * middle;
 
@@ -2757,7 +2769,7 @@ fn cylindrical(tex: vec2f) -> vec2f {
     var wtex = tex + warpn * saturate(dmask * middle);
     let wtexd = tex + 10.0 * warpn * saturate(dmask * middle);
     depth = textureSampleLevel(depthframe, point_wrap, wtexd, 0.0).r;
-    depth -= f32(dmaskint1);
+    depth -= dmaskint1();
 
     let mask = min(dpdx(depth), dpdy(depth)) * saturate(depth);
     depth = max(depth, mask);
@@ -4169,7 +4181,21 @@ pub const SHADERS: &[Shader] = &[
     // Morrowind Graphics Guide puts it first, before the underwater shaders (scene).
     Shader { name: "MGG SSAO", source: MGG_SSAO, passes: &[full("ssao"), full("smartblur"), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
     // The technique of the file has no category: the place of `none`.
-    Shader { name: "heathaze", source: HEATHAZE, passes: &[full("warpfx")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, textures: &["heathaze_nm.dds"], requires_hdr: false, variables: &[] },
+    Shader {
+        name: "heathaze",
+        source: HEATHAZE,
+        passes: &[full("warpfx")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &["heathaze_nm.dds"],
+        requires_hdr: false,
+        variables: &[
+            Variable { name: "warpint", slots: 1, per: 1, default: &[0.003] },
+            Variable { name: "dmaskint1", slots: 1, per: 1, default: &[5005.0] },
+            Variable { name: "dmaskint2", slots: 1, per: 1, default: &[9000.0] },
+        ],
+    },
     // The technique of the file has no category: the place of `none`.
     Shader { name: "Special Process", source: SPECIAL_PROCESS, passes: &[full("brightpass"), full("blurx"), full("blury"), full("specialcontrast")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: true, variables: &[] },
     // The two files have no category: the place of `none`.
@@ -4418,6 +4444,8 @@ pub struct Post {
     chain: Vec<Compiled>,
     /// The names that have no shader here, or one that does not compile: said one time.
     failed: Vec<String>,
+    /// The shaders whose unknown variables were told, one time each.
+    told_unknown: Vec<String>,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     /// The uniform `modv` of a shader without variables.
@@ -4604,6 +4632,7 @@ impl Post {
         let mut post = Post {
             chain: Vec::new(),
             failed: Vec::new(),
+            told_unknown: Vec::new(),
             layout,
             pipeline_layout,
             no_values,
@@ -4829,9 +4858,10 @@ impl Post {
         if let Some(buffer) = shader.values.as_ref() {
             scene.queue.write_buffer(buffer, 0, bytemuck::cast_slice(&values_of(&shader.variables, &state.values)));
         }
-        if !known {
+        if !self.told_unknown.contains(&state.name) {
             let unknown: Vec<&str> = state.values.iter().map(|(name, _, _)| name.as_str()).filter(|name| !shader.variables.iter().any(|v| v.name == *name)).collect();
             if !unknown.is_empty() {
+                self.told_unknown.push(state.name.clone());
                 println!("post: {}: a mod sets variables that the shader does not have here: {}", state.name, unknown.join(", "));
             }
         }
@@ -5100,6 +5130,18 @@ mod tests {
         let (fitted, taken) = with_file_numbers(port, &[("N".to_string(), 32.0), ("strength".to_string(), 1.0)]);
         assert_eq!(fitted, "const N: i32 = 16;\nconst strength: f32 = 1.0; // file\nconst other: f32 = 2.0; // file\n");
         assert_eq!(taken, vec!["strength".to_string()]);
+    }
+
+    #[test]
+    fn a_port_variable_takes_the_number_of_the_file() {
+        let mut variables = vec![
+            VariableDef { name: "warpint".to_string(), slots: 1, per: 1, default: vec![0.003] },
+            VariableDef { name: "fogColors".to_string(), slots: 8, per: 4, default: vec![0.0; 32] },
+        ];
+        let taken = fit_variable_defaults(&mut variables, &[("warpint".to_string(), 0.005), ("fogColors".to_string(), 1.0), ("other".to_string(), 2.0)]);
+        assert_eq!(taken, vec!["warpint".to_string()]);
+        assert_eq!(variables[0].default, vec![0.005f32]);
+        assert_eq!(variables[1].default, vec![0.0; 32]);
     }
 
     #[test]
