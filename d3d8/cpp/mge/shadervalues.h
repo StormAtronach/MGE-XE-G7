@@ -36,6 +36,13 @@ struct ShaderValues {
     // The number of times that a mod reloaded the shader (shader:reload() of MWSE). The
     // renderer reads the files of the shader again when the number changes.
     unsigned reloads = 0;
+    // The annotations of the first technique of the file: its category (empty without one)
+    // and its priority adjustment. They give the place of the shader in the chain.
+    std::string category;
+    int priorityAdjust = 0;
+    // The first technique was read. The annotations of a second one do not count, as with
+    // a device (GetTechnique(0)).
+    bool techniqueRead = false;
 
     // Reads the variables of an effect file. A file that cannot be read gives none.
     static ShaderValues parse(const char* path);

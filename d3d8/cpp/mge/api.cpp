@@ -398,15 +398,8 @@ namespace api {
     bool MGEAPIv1::shaderReload(ShaderHandle handle) {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect && shader->values) {
-            // The wgpu renderer mode: the variables come from the effect file again, as
-            // a new effect has them, and the renderer reads the files of the shader again
-            // (its WGSL file, its textures).
-            char path[MAX_PATH];
-            std::snprintf(path, sizeof(path), "Data Files\\shaders\\XEshaders\\%s.fx", shader->name.c_str());
-            const unsigned reloads = shader->values->reloads + 1;
-            *shader->values = ShaderValues::parse(path);
-            shader->values->reloads = reloads;
-            return true;
+            // The wgpu renderer mode.
+            return PostShaders::reloadPlaceholder(shader);
         }
         shader->timestamp = 0;
         return PostShaders::updateShaderChain();

@@ -1437,6 +1437,8 @@ namespace Deviceless {
     static void prepare() {
         if (!ready) {
             D3DXMatrixIdentity(&camEffectsMatrix);
+            // The shaders of the chain, for the API of the mods.
+            PostShaders::initShaderChainPlaceholders();
             ready = true;
         }
     }

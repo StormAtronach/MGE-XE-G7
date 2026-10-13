@@ -63,6 +63,12 @@ public:
     static void orderShaders();
     // The wgpu renderer mode: sends the state of each shader that changed to the renderer.
     static void sendShaderStates();
+    // The wgpu renderer mode: one object for each shader of the chain of the settings, so
+    // that a mod finds them (mge.shaders.find, the old script calls). The renderer in the
+    // helper runs the chain itself; a record goes to it when a mod changes a shader.
+    static void initShaderChainPlaceholders();
+    // The wgpu renderer mode: reads the file of a shader again (shader:reload() of MWSE).
+    static bool reloadPlaceholder(MGEShader* shader);
     static bool initBuffers();
     static void release();
     static bool initShaderChainThreaded();

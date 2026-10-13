@@ -45,6 +45,10 @@ IDirect3DSurface9* PostShaders::surfReadqueue, *PostShaders::surfReadback;
 D3DXVECTOR4 PostShaders::adaptPoint;
 float PostShaders::rcpRes[2];
 
+// The wgpu renderer mode (see loadNewShader): a shader without an effect.
+static std::unique_ptr<MGEShader> placeholderShader(const char* name);
+static void placeholderFileState(MGEShader& shader);
+
 
 
 bool PostShaders::init(IDirect3DDevice9* realDevice) {
@@ -164,22 +168,18 @@ bool PostShaders::loadNewShader(const char* name) {
         // No device: the wgpu renderer mode. The renderer in the helper has the shader, as a
         // port in WGSL. A mod that loads a shader gets an object with the variables of the
         // effect file; what the mod sets goes to the renderer (see sendShaderStates).
-        char placeholderPath[MAX_PATH];
-        std::snprintf(placeholderPath, sizeof(placeholderPath), "Data Files\\shaders\\XEshaders\\%s.fx", name);
-        if (GetFileAttributesA(placeholderPath) == INVALID_FILE_ATTRIBUTES) {
+        initShaderChainPlaceholders();
+        auto placeholder = placeholderShader(name);
+        if (!placeholder) {
             return false;
         }
-        auto placeholder = std::make_unique<MGEShader>();
-        placeholder->effect = nullptr;
-        // A shader that a mod loads is on, as with a device.
-        placeholder->enabled = true;
-        placeholder->values = std::make_unique<ShaderValues>(ShaderValues::parse(placeholderPath));
-        placeholder->disableFlags = 0;
-        placeholder->priority = 0;
-        placeholder->timestamp = 0;
-        placeholder->name = name;
-        std::memset(placeholder->ehVars, 0, sizeof(placeholder->ehVars));
-        shaders.push_back(std::move(placeholder));
+        // At the sorted position, as with a device.
+        auto p = placeholder->priority;
+        auto it = std::find_if(shaders.begin(), shaders.end(),
+                               [=](const auto& s) {
+                                   return p < s->priority;
+                               });
+        shaders.insert(it, std::move(placeholder));
         return true;
     }
     char path[MAX_PATH];
@@ -329,6 +329,70 @@ static ShaderPriorityValue getShaderPriority(const std::string& s) {
     if(s == "tone") { return ShaderPriorityValue::Tone; }
     if(s == "final") { return ShaderPriorityValue::Final; }
     return ShaderPriorityValue::Default;
+}
+
+// The wgpu renderer mode: the priority and the environment flags of a shader, from its
+// effect file (initShader reads them from the effect).
+static void placeholderFileState(MGEShader& shader) {
+    shader.priority = int(getShaderPriority(shader.values->category)) + shader.values->priorityAdjust;
+    float flags = 0;
+    shader.disableFlags = shader.values->get("mgeflags", &flags, 1) ? int(flags) : 0;
+}
+
+// The wgpu renderer mode: a shader without an effect, with the variables of its effect
+// file. Null for a name without a file.
+static std::unique_ptr<MGEShader> placeholderShader(const char* name) {
+    char path[MAX_PATH];
+    std::snprintf(path, sizeof(path), "Data Files\\shaders\\XEshaders\\%s.fx", name);
+    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+        LOG::logline("!! Post shader %s missing", path);
+        return nullptr;
+    }
+    auto shader = std::make_unique<MGEShader>();
+    shader->effect = nullptr;
+    // A shader that a mod loads is on, as with a device.
+    shader->enabled = true;
+    shader->values = std::make_unique<ShaderValues>(ShaderValues::parse(path));
+    shader->timestamp = 0;
+    shader->name = name;
+    std::memset(shader->ehVars, 0, sizeof(shader->ehVars));
+    placeholderFileState(*shader);
+    return shader;
+}
+
+void PostShaders::initShaderChainPlaceholders() {
+    static bool made = false;
+    if (made || device || !Configuration.RendererWgpu) {
+        return;
+    }
+    made = true;
+    for (const char* p = Configuration.ShaderChain; *p; p += strlen(p) + 1) {
+        auto shader = placeholderShader(p);
+        if (!shader) {
+            continue;
+        }
+        // The helper has the chain already: a record goes when a mod changes the shader.
+        shader->values->changed = false;
+        LOG::logline("-- Post shader %s known to the API, priority %d", p, shader->priority);
+        shaders.push_back(std::move(shader));
+    }
+    orderShaders();
+}
+
+bool PostShaders::reloadPlaceholder(MGEShader* shader) {
+    if (!shader->values) {
+        return false;
+    }
+    // The variables come from the effect file again, as a new effect has them; the
+    // renderer reads the files of the shader again (its WGSL file, its textures).
+    char path[MAX_PATH];
+    std::snprintf(path, sizeof(path), "Data Files\\shaders\\XEshaders\\%s.fx", shader->name.c_str());
+    const unsigned reloads = shader->values->reloads + 1;
+    *shader->values = ShaderValues::parse(path);
+    shader->values->reloads = reloads;
+    placeholderFileState(*shader);
+    orderShaders();
+    return true;
 }
 
 void PostShaders::initShader(MGEShader* shader) {
@@ -801,6 +865,7 @@ void PostShaders::applyBlend() {
 
 // Scripting interface for shaders
 MGEShader* PostShaders::findShader(const char* shaderName) {
+    initShaderChainPlaceholders();
     for (auto& s : shaders) {
         if (s->name == shaderName) {
             return &*s;
@@ -810,13 +875,19 @@ MGEShader* PostShaders::findShader(const char* shaderName) {
 }
 
 const std::vector<std::unique_ptr<MGEShader>>& PostShaders::listShaders() {
+    initShaderChainPlaceholders();
     return shaders;
 }
 
 bool PostShaders::setShaderVar(const char* shaderName, const char* varName, bool b) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader || !shader->effect) {
+    if (!shader) {
         return false;
+    }
+    if (!shader->effect) {
+        // The wgpu renderer mode: the variable is in the store of the shader.
+        const float value = b ? 1.0f : 0.0f;
+        return shader->values && shader->values->set(varName, &value, 1);
     }
 
     D3DXHANDLE ehVar = shader->effect->GetParameterByName(0, varName);
@@ -830,8 +901,13 @@ bool PostShaders::setShaderVar(const char* shaderName, const char* varName, bool
 
 bool PostShaders::setShaderVar(const char* shaderName, const char* varName, int x) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader || !shader->effect) {
+    if (!shader) {
         return false;
+    }
+    if (!shader->effect) {
+        // The wgpu renderer mode: the variable is in the store of the shader.
+        const float value = static_cast<float>(x);
+        return shader->values && shader->values->set(varName, &value, 1);
     }
 
     D3DXHANDLE ehVar = shader->effect->GetParameterByName(0, varName);
@@ -845,8 +921,12 @@ bool PostShaders::setShaderVar(const char* shaderName, const char* varName, int 
 
 bool PostShaders::setShaderVar(const char* shaderName, const char* varName, float x) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader || !shader->effect) {
+    if (!shader) {
         return false;
+    }
+    if (!shader->effect) {
+        // The wgpu renderer mode: the variable is in the store of the shader.
+        return shader->values && shader->values->set(varName, &x, 1);
     }
 
     D3DXHANDLE ehVar = shader->effect->GetParameterByName(0, varName);
@@ -860,8 +940,12 @@ bool PostShaders::setShaderVar(const char* shaderName, const char* varName, floa
 
 bool PostShaders::setShaderVar(const char* shaderName, const char* varName, float* v) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader || !shader->effect) {
+    if (!shader) {
         return false;
+    }
+    if (!shader->effect) {
+        // The wgpu renderer mode: the variable is in the store of the shader.
+        return shader->values && shader->values->set(varName, v, 4);
     }
 
     D3DXHANDLE ehVar = shader->effect->GetParameterByName(0, varName);
@@ -875,8 +959,17 @@ bool PostShaders::setShaderVar(const char* shaderName, const char* varName, floa
 
 bool PostShaders::setShaderEnable(const char* shaderName, bool enable) {
     MGEShader* shader = findShader(shaderName);
-    if (!shader || !shader->effect) {
+    if (!shader) {
         return false;
+    }
+    if (!shader->effect) {
+        // The wgpu renderer mode: the renderer gets the state with the frame.
+        if (!shader->values) {
+            return false;
+        }
+        shader->enabled = enable;
+        shader->values->changed = true;
+        return true;
     }
 
     shader->enabled = enable;

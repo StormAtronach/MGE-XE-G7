@@ -120,6 +120,37 @@ ShaderValues ShaderValues::parse(const char* path) {
 }
 
 namespace {
+// The annotations of a technique: `string category = "scene"; int priorityAdjust = 10;`.
+void readAnnotations(const std::string& block, ShaderValues& result) {
+    size_t start = 0;
+    while (start < block.size()) {
+        size_t end = block.find(';', start);
+        if (end == std::string::npos) {
+            end = block.size();
+        }
+        const auto words = tokens(block.substr(start, end - start));
+        start = end + 1;
+        // The type, the name, `=`, the value.
+        if (words.size() < 4 || words[2] != "=") {
+            continue;
+        }
+        if (words[1] == "category" && words[3] == "\"") {
+            // The words between the quotation marks.
+            std::string value;
+            for (size_t n = 4; n < words.size() && words[n] != "\""; ++n) {
+                value += (value.empty() ? "" : " ") + words[n];
+            }
+            result.category = value;
+        } else if (words[1] == "priorityAdjust") {
+            const bool negative = words[3] == "-";
+            float value = 0;
+            if ((!negative || words.size() > 4) && number(words[negative ? 4 : 3], &value)) {
+                result.priorityAdjust = static_cast<int>(negative ? -value : value);
+            }
+        }
+    }
+}
+
 void parseFile(const std::string& path, ShaderValues& result, std::map<std::string, float>& constants, int includeDepth) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -157,6 +188,29 @@ void parseFile(const std::string& path, ShaderValues& result, std::map<std::stri
                 parseFile(folder + line.substr(open + 1, close - open - 1), result, constants, includeDepth + 1);
             }
             i = end;
+            continue;
+        }
+        if (depth == 0 && c == '<') {
+            // An annotation block, `< string category = "scene"; int priorityAdjust = 10; >`:
+            // not a part of the statement. The block of the first technique gives the place
+            // of the shader in the chain.
+            size_t end = i + 1;
+            while (end < text.size() && text[end] != '>') {
+                if (text[end] == '"') {
+                    end = text.find('"', end + 1);
+                    if (end == std::string::npos) {
+                        end = text.size();
+                        break;
+                    }
+                }
+                ++end;
+            }
+            const auto head = tokens(statement);
+            if (!head.empty() && head[0] == "technique" && !result.techniqueRead) {
+                result.techniqueRead = true;
+                readAnnotations(text.substr(i + 1, end - i - 1), result);
+            }
+            i = (end < text.size()) ? end + 1 : end;
             continue;
         }
         const size_t last = statement.find_last_not_of(" \t\r\n");
