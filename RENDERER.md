@@ -96,8 +96,8 @@ adapter and the one in use.
   statics in the generated data does not get them yet.
 - The water of an interior cell is not drawn by the renderer's water (the game's own water
   plane shows).
-- No caustics under the water; no water volumes (the surfaces that mods add); the
-  reflection in the water is lighter than on Direct3D 9 (7 to 12 %).
+- No water volumes (the surfaces that mods add). The caustics under the water are drawn
+  (`caustics_intensity` of `mgeXE.toml`), without the dry spaces of a boat's hold.
 - The grass does not receive shadows.
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
   `Morrowind.ini` names under `[Inventory]`; Direct3D 9 draws it wrong.

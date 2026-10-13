@@ -29,6 +29,7 @@ use std::thread;
 use std::time::Instant;
 
 mod blend;
+mod caustics;
 mod post;
 mod shadow;
 mod statics;
@@ -181,6 +182,10 @@ pub struct DistantLand {
     /// The loads complete before a frame: a capture file, where each frame must be the same.
     synchronous: bool,
     blend: Option<blend::Blend>,
+    /// The caustics under the water; `None` before the first frame with them.
+    caustics: Option<caustics::Caustics>,
+    /// The setting `distant_land.water.caustics_intensity`: 0 is none.
+    caustics_intensity: f32,
     statics: Option<statics::Statics>,
     /// The shadow map, when the settings have shadows; `None` before the first frame. True
     /// when the map is made in this frame.
@@ -469,6 +474,8 @@ impl DistantLand {
             shade: None,
             synchronous: false,
             blend: None,
+            caustics: None,
+            caustics_intensity: settings.water.caustics_intensity as f32,
             statics: None,
             shadow: None,
             shadow_in_frame: false,
@@ -546,7 +553,12 @@ impl Drop for DistantLand {
             if self.environment.is_some() { "from the game with each frame" } else { "from mgeXE.toml" }
         );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
-        println!("water: {} frames, {} reflections", self.water.as_ref().map_or(0, |w| w.frames), self.water.as_ref().map_or(0, |w| w.reflections));
+        println!(
+            "water: {} frames, {} reflections, {} frames with caustics",
+            self.water.as_ref().map_or(0, |w| w.frames),
+            self.water.as_ref().map_or(0, |w| w.reflections),
+            self.caustics.as_ref().map_or(0, |c| c.frames)
+        );
         println!("shadow map: {} frames", self.shadow.as_ref().map_or(0, |s| s.frames));
         println!("post: {} frames, {} shaders run", self.post.as_ref().map_or(0, |p| p.frames), self.post.as_ref().map_or(0, |p| p.shaders_run));
     }
@@ -1570,6 +1582,24 @@ impl Extension for DistantLand {
     }
 
     fn blend(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView) {
+        // The caustics first, so that the blend takes them out at the view range, as
+        // renderStageBlend of the Direct3D 9 path has it: in an exterior, on the picture of
+        // the game, with the waves of the water.
+        if !scene.interior && self.caustics_intensity > 0.0 {
+            let frame = self.water_frame(scene).map(|w| caustics::CausticsFrame {
+                water_level: w.water_level,
+                time: w.time,
+                sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
+                sun_vis: w.sun_vis,
+                fog_color_far: w.fog_color_far,
+                near_view_range: self.environment.map_or(7168.0, |e| e.near_view_range),
+                fog_near: self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end)),
+            });
+            if let (Some(picture), Some(waves), Some(frame)) = (scene.picture, self.water.as_ref().map(|w| w.waves()), frame) {
+                let intensity = self.caustics_intensity;
+                self.caustics.get_or_insert_with(|| caustics::Caustics::new(scene, intensity)).draw(scene, pass, picture, depth, &waves, &frame);
+            }
+        }
         // Without the view range from the game, the default of the game with distant land.
         let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
         self.blend.get_or_insert_with(|| blend::Blend::new(scene)).draw(scene, pass, before, depth, near_view_range);
