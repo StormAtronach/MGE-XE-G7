@@ -373,10 +373,20 @@ void PostShaders::initShaderChainPlaceholders() {
         }
         // The helper has the chain already: a record goes when a mod changes the shader.
         shader->values->changed = false;
+        // The flags of the chain, as initShader sets them from the effect: the API reads
+        // them, and the settings record carries them. The helper applies the sun glare
+        // rule itself (it skips the draw of the glare).
+        if (shader->values->requiresHDR) {
+            Configuration.MGEFlags |= USE_HDR;
+        }
+        if (shader->values->disableSunglare) {
+            Configuration.MGEFlags |= NO_MW_SUNGLARE;
+        }
         LOG::logline("-- Post shader %s known to the API, priority %d", p, shader->priority);
         shaders.push_back(std::move(shader));
     }
     orderShaders();
+    LOG::logline("-- Shader chain indicates HDR %s", (Configuration.MGEFlags & USE_HDR) ? "On" : "Off");
 }
 
 bool PostShaders::reloadPlaceholder(MGEShader* shader) {

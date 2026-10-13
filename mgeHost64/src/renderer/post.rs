@@ -4479,8 +4479,11 @@ pub struct Post {
     pub no_sun_glare: bool,
     /// The number of reloads of each shader that a mod reloaded, as the last state had it.
     reloads: std::collections::HashMap<String, u32>,
-    /// The HDR measure, when a shader of the chain needs it.
+    /// The HDR measure, when a shader of the chain needs it. `hdr_on` is the flag of MGE
+    /// XE (`mge.render.updateHDR`): off, the measure stops and the shaders keep its last
+    /// point, as `evalAdaptHDR` is skipped on Direct3D 9.
     hdr: Option<Hdr>,
+    hdr_on: bool,
     pub frames: u64,
     pub shaders_run: u64,
 }
@@ -4658,6 +4661,7 @@ impl Post {
             waves,
             no_sun_glare: false,
             hdr: None,
+            hdr_on: true,
             frames: 0,
             shaders_run: 0,
         };
@@ -4870,6 +4874,15 @@ impl Post {
         }
     }
 
+    /// The HDR flag and the reaction speed of the settings record of MGE XE.
+    pub fn set_hdr(&mut self, on: bool, reaction: f32) {
+        self.hdr_on = on;
+        self.hdr_reaction = reaction;
+        if let Some(hdr) = self.hdr.as_mut() {
+            hdr.reaction = reaction.clamp(0.01, 30.0);
+        }
+    }
+
     /// No shader is on.
     pub fn is_empty(&self) -> bool {
         !self.chain.iter().any(|c| c.enabled)
@@ -4914,7 +4927,7 @@ impl Post {
         // The adaptation point of the frame, from the picture before the chain.
         let mut variables = *variables;
         if let Some(hdr) = self.hdr.as_mut() {
-            variables.hdr = hdr.frame(device, encoder, picture, &self.blit_layout, &self.samplers[1], environment_flags);
+            variables.hdr = if self.hdr_on { hdr.frame(device, encoder, picture, &self.blit_layout, &self.samplers[1], environment_flags) } else { hdr.point };
         }
         let variables = &variables;
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(variables));

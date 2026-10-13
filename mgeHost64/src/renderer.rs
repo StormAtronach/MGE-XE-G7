@@ -41,6 +41,7 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
+use crate::abi::constants::{USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, Replay, SceneView};
@@ -56,6 +57,58 @@ const NEAR: f32 = 64.0;
 const ENVIRONMENT_ID: u32 = 1;
 /// The state of a post shader that a mod loaded: see `post::ShaderState`.
 const SHADER_STATE_ID: u32 = 2;
+/// The settings that a mod can change while the game runs: see `Settings`.
+const SETTINGS_ID: u32 = 4;
+
+/// The settings record of MGE XE (`Deviceless::sendSettings`): the feature flags
+/// (`Configuration.MGEFlags`), the lighting mode, the HDR reaction speed, the distances of
+/// the distant land, the water numbers and the interior fog end, as a mod can change them
+/// while the game runs. The renderer starts with the values of mgeXE.toml and takes the
+/// record over them. 4 bytes for each member, as in mged3d8device.cpp.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Settings {
+    pub version: u32,
+    pub flags: u32,
+    /// 0 for each cell, 1 for the interiors only.
+    pub per_pixel_mode: u32,
+    pub hdr_reaction_speed: f32,
+    /// In cells.
+    pub draw_distance: f32,
+    pub near_static_end: f32,
+    pub far_static_end: f32,
+    pub very_far_static_end: f32,
+    pub far_static_min_size: f32,
+    pub very_far_static_min_size: f32,
+    /// As the settings file has them, 0 to 100.
+    pub water_caustics: f32,
+    pub water_wave_height: f32,
+    /// In cells.
+    pub interior_fog_end: f32,
+}
+
+impl Settings {
+    /// Reads the record; `None` for another version or a short record.
+    pub fn read(bytes: &[u8]) -> Option<Settings> {
+        let settings: Settings = bytemuck::pod_read_unaligned(bytes.get(..size_of::<Settings>())?);
+        (settings.version == 1).then_some(settings)
+    }
+
+    /// The names of the flags that differ between two records, each with its new state.
+    pub fn changed_flags(before: Option<Settings>, now: Settings) -> Vec<String> {
+        const NAMES: [(u32, &str); 7] = [
+            (USE_DISTANT_LAND, "distant land"),
+            (USE_DISTANT_STATICS, "distant statics"),
+            (USE_GRASS, "grass"),
+            (USE_SHADOWS, "shadows"),
+            (USE_HW_SHADER, "post shaders"),
+            (USE_FFESHADER, "light for each pixel"),
+            (USE_HDR, "HDR measure"),
+        ];
+        let before = before.map_or(!now.flags, |b| b.flags);
+        NAMES.iter().filter(|(flag, _)| (before ^ now.flags) & flag != 0).map(|(flag, name)| format!("{name} {}", if now.flags & flag != 0 { "on" } else { "off" })).collect()
+    }
+}
 /// The record of MGE XE for a picture file that a mod asked for (`mge.saveScreenshot`): the
 /// version 1, 1 for a picture with the interface of the game, the path.
 const PICTURE_ID: u32 = 3;
@@ -201,6 +254,9 @@ pub struct DistantLand {
     shader_states_new: Vec<String>,
     /// The picture files that a mod asked for and that the renderer did not take yet.
     pictures: Vec<PictureRequest>,
+    /// The last settings record of MGE XE, and the one that the renderer follows.
+    settings: Option<Settings>,
+    settings_applied: Option<Settings>,
     statics: Option<statics::Statics>,
     /// The shadow map, when the settings have shadows; `None` before the first frame. True
     /// when the map is made in this frame.
@@ -495,6 +551,8 @@ impl DistantLand {
             shader_states: Vec::new(),
             shader_states_new: Vec::new(),
             pictures: Vec::new(),
+            settings: None,
+            settings_applied: None,
             statics: None,
             shadow: None,
             shadow_in_frame: false,
@@ -1166,6 +1224,7 @@ impl Extension for DistantLand {
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
         self.finish_load(scene);
+        self.apply_settings();
         self.cell_facts(scene);
         // The terrain and the water are for an exterior. The statics, the fog distances and
         // the blend are for a cell with a world space (`isDistantCell` of the Direct3D 9
@@ -1369,6 +1428,12 @@ impl Extension for DistantLand {
                 } else {
                     self.pictures.push(PictureRequest { path, with_ui: with_ui != 0 });
                 }
+            }
+            return;
+        }
+        if id == SETTINGS_ID {
+            if let Some(settings) = Settings::read(bytes) {
+                self.settings = Some(settings);
             }
             return;
         }
@@ -1888,6 +1953,42 @@ impl DistantLand {
 
     /// The light for each pixel, by the setting `distant_land.per_pixel_lighting` and its
     /// mode, with the numbers of the weather for the sun and the ambient light.
+    /// Takes the settings record over the values of mgeXE.toml when a new one came: the
+    /// feature flags, the lighting mode, the HDR reaction speed. The distant land stays
+    /// off when its data was not loaded at the start. The distances, the water numbers
+    /// and the interior fog end of the record are not followed yet.
+    fn apply_settings(&mut self) {
+        let Some(settings) = self.settings else { return };
+        if self.settings_applied == Some(settings) {
+            return;
+        }
+        let before = self.settings_applied;
+        self.settings_applied = Some(settings);
+        let on = |flag: u32| settings.flags & flag != 0;
+        self.enabled = on(USE_DISTANT_LAND) && (self.gpu.is_some() || self.loading.is_some());
+        self.shadows_enabled = on(USE_SHADOWS);
+        self.post_enabled = on(USE_HW_SHADER);
+        self.per_pixel.0 = on(USE_FFESHADER);
+        self.per_pixel.1 = settings.per_pixel_mode == 1;
+        self.hdr_reaction = settings.hdr_reaction_speed;
+        if let Some(post) = self.post.as_mut() {
+            post.set_hdr(on(USE_HDR), settings.hdr_reaction_speed);
+        }
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_enabled(on(USE_DISTANT_STATICS), on(USE_GRASS));
+        }
+        let mut changes = Settings::changed_flags(before, settings);
+        if before.map_or(true, |b| b.per_pixel_mode != settings.per_pixel_mode) {
+            changes.push(format!("light for each pixel in {}", if settings.per_pixel_mode == 1 { "the interiors only" } else { "each cell" }));
+        }
+        if before.map_or(true, |b| b.hdr_reaction_speed != settings.hdr_reaction_speed) {
+            changes.push(format!("HDR reaction {} s", settings.hdr_reaction_speed));
+        }
+        if !changes.is_empty() {
+            println!("settings: {}", changes.join(", "));
+        }
+    }
+
     fn per_pixel(&self) -> Option<PerPixel> {
         let (on, interiors_only, fade) = self.per_pixel;
         if !on || (interiors_only && !self.interior) {
@@ -1898,5 +1999,39 @@ impl DistantLand {
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade })
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn the_settings_record_is_read() {
+        let mut bytes = Vec::new();
+        for word in [1u32, USE_DISTANT_LAND | USE_SHADOWS, 1] {
+            bytes.extend(word.to_le_bytes());
+        }
+        for number in [0.5f32, 5.0, 1.0, 2.0, 3.0, 150.0, 400.0, 50.0, 30.0, 0.8] {
+            bytes.extend(number.to_le_bytes());
+        }
+        assert_eq!(bytes.len(), size_of::<Settings>());
+        let settings = Settings::read(&bytes).unwrap();
+        assert_eq!(settings.flags, USE_DISTANT_LAND | USE_SHADOWS);
+        assert_eq!(settings.per_pixel_mode, 1);
+        assert_eq!(settings.hdr_reaction_speed, 0.5);
+        assert_eq!(settings.draw_distance, 5.0);
+        assert_eq!(settings.interior_fog_end, 0.8);
+        assert!(Settings::read(&bytes[..40]).is_none());
+        bytes[0] = 2;
+        assert!(Settings::read(&bytes).is_none());
+    }
+
+    #[test]
+    fn the_changed_flags_are_named() {
+        let a = Settings { version: 1, flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
+        let b = Settings { flags: USE_DISTANT_LAND | USE_GRASS | USE_HDR, ..a };
+        assert_eq!(Settings::changed_flags(Some(a), b), vec!["shadows off".to_string(), "HDR measure on".to_string()]);
+        assert_eq!(Settings::changed_flags(None, a).len(), 7);
     }
 }

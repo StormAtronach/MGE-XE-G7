@@ -40,6 +40,9 @@ struct ShaderValues {
     // and its priority adjustment. They give the place of the shader in the chain.
     std::string category;
     int priorityAdjust = 0;
+    // The annotations `requiresHDR` and `disableSunglare` of the technique.
+    bool requiresHDR = false;
+    bool disableSunglare = false;
     // The first technique was read. The annotations of a second one do not count, as with
     // a device (GetTechnique(0)).
     bool techniqueRead = false;

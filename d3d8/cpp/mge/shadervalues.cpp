@@ -147,6 +147,12 @@ void readAnnotations(const std::string& block, ShaderValues& result) {
             if ((!negative || words.size() > 4) && number(words[negative ? 4 : 3], &value)) {
                 result.priorityAdjust = static_cast<int>(negative ? -value : value);
             }
+        } else if (words[1] == "requiresHDR" || words[1] == "disableSunglare") {
+            // `bool name = true;` or a number that is not 0, as GetAnnotationByName finds
+            // the annotation whatever its value (initShader tests that it is there).
+            float value = 0;
+            const bool set = words[3] == "true" || (number(words[3], &value) && value != 0);
+            (words[1] == "requiresHDR" ? result.requiresHDR : result.disableSunglare) = set;
         }
     }
 }

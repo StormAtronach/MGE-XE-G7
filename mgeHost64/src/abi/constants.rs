@@ -25,6 +25,15 @@ pub const VIS_STATIC: Dword = VIS_NEAR | VIS_FAR | VIS_VERY_FAR;
 
 /// Bit in `mge_flags` that enables distant-land rendering.
 pub const USE_DISTANT_LAND: Dword = 1 << 17;
+/// The other bits of `mge_flags` (`Configuration.MGEFlags` of MGE XE) that the settings
+/// record carries and that the renderer follows: the post shaders (`render.enable_shaders`),
+/// the light for each pixel, the HDR measure, the distant statics, the grass, the shadows.
+pub const USE_HW_SHADER: Dword = 1 << 4;
+pub const USE_FFESHADER: Dword = 1 << 10;
+pub const USE_HDR: Dword = 1 << 12;
+pub const USE_DISTANT_STATICS: Dword = 1 << 18;
+pub const USE_GRASS: Dword = 1 << 30;
+pub const USE_SHADOWS: Dword = 1 << 31;
 /// On-disk distant-land asset version expected by this host build.
 pub const MGE_DL_VERSION: u8 = 21;
 /// Terrain file magic for `terrain.bin`.

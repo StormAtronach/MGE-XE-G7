@@ -1443,6 +1443,53 @@ namespace Deviceless {
         }
     }
 
+    // The settings that a mod can change while the game runs: the record 4 of the data.
+    // The helper starts with the values of mgeXE.toml and takes this record over them.
+    // mgeHost64/src/renderer.rs has the same layout: 4 bytes for each member.
+    struct Settings {
+        UINT version;
+        // Configuration.MGEFlags.
+        UINT flags;
+        // Configuration.PerPixelLightFlags: 0 for each cell, 1 for the interiors only.
+        UINT perPixelMode;
+        float hdrReactionSpeed;
+        // In cells.
+        float drawDistance;
+        float nearStaticEnd, farStaticEnd, veryFarStaticEnd;
+        float farStaticMinSize, veryFarStaticMinSize;
+        // As the settings file has them, 0 to 100.
+        float waterCaustics, waterWaveHeight;
+        // In cells.
+        float interiorFogEnd;
+    };
+    static const UINT SettingsId = 4;
+    static Settings lastSettings;
+    static bool settingsSent = false;
+
+    // Sends the settings when one of them changed since the last record.
+    static void sendSettings() {
+        Settings s = {};
+        s.version = 1;
+        s.flags = Configuration.MGEFlags;
+        s.perPixelMode = Configuration.PerPixelLightFlags;
+        s.hdrReactionSpeed = Configuration.HDRReactionSpeed;
+        s.drawDistance = Configuration.DL.DrawDist;
+        s.nearStaticEnd = Configuration.DL.NearStaticEnd;
+        s.farStaticEnd = Configuration.DL.FarStaticEnd;
+        s.veryFarStaticEnd = Configuration.DL.VeryFarStaticEnd;
+        s.farStaticMinSize = Configuration.DL.FarStaticMinSize;
+        s.veryFarStaticMinSize = Configuration.DL.VeryFarStaticMinSize;
+        s.waterCaustics = Configuration.DL.WaterCaustics;
+        s.waterWaveHeight = Configuration.DL.WaterWaveHeight;
+        s.interiorFogEnd = Configuration.DL.InteriorFogEnd;
+        if (settingsSent && std::memcmp(&s, &lastSettings, sizeof(s)) == 0) {
+            return;
+        }
+        lastSettings = s;
+        settingsSent = true;
+        sendToRenderer(SettingsId, &s, sizeof(s));
+    }
+
     // The game showed a frame. The size is that of its back buffer.
     void present(unsigned width, unsigned height) {
         prepare();
@@ -1468,6 +1515,7 @@ namespace Deviceless {
             sendEnvironment(mwBridge);
             PostShaders::sendShaderStates();
         }
+        sendSettings();
         sendPictureRequests();
     }
 

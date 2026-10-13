@@ -1097,11 +1097,20 @@ impl Statics {
         self.grass_drawn += self.grass_draws.len() as u64;
     }
 
+    /// The statics and the grass on or off, from the settings record of MGE XE. A kind
+    /// that the settings had off at the start is not in the catalog, and stays off. The
+    /// statics stay in the shadow map when they are off, as on Direct3D 9 (the shadow pass
+    /// has no test of the flag).
+    pub fn set_enabled(&mut self, statics: bool, grass: bool) {
+        self.settings.statics = statics;
+        self.settings.grass = grass;
+    }
+
     /// Draws the statics of the frame into the pass. Returns the number of draws.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
         // The sets 2 and 3 are the layers of the shadow map.
         let shadow = set >= 2;
-        if self.failed {
+        if self.failed || (!self.settings.statics && !shadow) {
             return 0;
         }
         self.finish_load(scene);
