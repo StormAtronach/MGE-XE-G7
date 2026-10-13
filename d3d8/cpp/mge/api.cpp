@@ -1,4 +1,5 @@
 
+#include "mged3d8device.h"
 #include "api.h"
 
 #include "configuration.h"
@@ -136,6 +137,7 @@ namespace api {
             auto flag = featureToFlagMap[i];
             if (flag == USE_DISTANT_LAND
                 && enable
+                && !Deviceless::active()
                 && !DistantLand::isDistantLandLoaded) {
                 LOG::logline("-- Ignoring runtime distant-land enable: distant-land resources were not loaded at startup");
                 return;
@@ -395,6 +397,17 @@ namespace api {
 
     bool MGEAPIv1::shaderReload(ShaderHandle handle) {
         auto shader = static_cast<MGEShader*>(handle);
+        if (!shader->effect && shader->values) {
+            // The wgpu renderer mode: the variables come from the effect file again, as
+            // a new effect has them, and the renderer reads the files of the shader again
+            // (its WGSL file, its textures).
+            char path[MAX_PATH];
+            std::snprintf(path, sizeof(path), "Data Files\\shaders\\XEshaders\\%s.fx", shader->name.c_str());
+            const unsigned reloads = shader->values->reloads + 1;
+            *shader->values = ShaderValues::parse(path);
+            shader->values->reloads = reloads;
+            return true;
+        }
         shader->timestamp = 0;
         return PostShaders::updateShaderChain();
     }
@@ -941,6 +954,16 @@ namespace api {
     static void saveScreenshotCallback(IDirect3DSurface9* surface);
 
     void MGEAPIv2::saveScreenshot(const char* path, bool captureWithUI) {
+        if (path && Deviceless::active()) {
+            // The wgpu renderer mode: the renderer in the helper writes the file. A file
+            // that is there stays, as with a device.
+            if (GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES) {
+                LOG::logline("mge.saveScreenshot failed - %s already exists", path);
+                return;
+            }
+            Deviceless::requestPicture(path, captureWithUI);
+            return;
+        }
         // Requires distant land to be loaded
         if (!DistantLand::canRenderDistantLand()) {
             return;

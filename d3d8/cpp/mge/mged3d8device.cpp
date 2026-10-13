@@ -1406,6 +1406,34 @@ namespace Deviceless {
         sendToRenderer(EnvironmentId, &e, sizeof(e));
     }
 
+    bool active() {
+        return ready;
+    }
+
+    // The pictures that a mod asked for since the last frame.
+    static std::vector<std::pair<std::string, bool>> pictureRequests;
+
+    void requestPicture(const char* path, bool withUI) {
+        // The renderer is another program: it gets the whole path.
+        char full[MAX_PATH] = {};
+        if (GetFullPathNameA(path, sizeof(full), full, nullptr) == 0) {
+            return;
+        }
+        pictureRequests.emplace_back(full, withUI);
+    }
+
+    static void sendPictureRequests() {
+        static const UINT PictureId = 3;
+        for (const auto& request : pictureRequests) {
+            std::vector<unsigned char> record(8 + request.first.size() + 1, 0);
+            const UINT head[2] = { 1, request.second ? 1u : 0u };
+            std::memcpy(record.data(), head, sizeof(head));
+            std::memcpy(record.data() + 8, request.first.data(), request.first.size());
+            sendToRenderer(PictureId, record.data(), static_cast<UINT>(record.size()));
+        }
+        pictureRequests.clear();
+    }
+
     static void prepare() {
         if (!ready) {
             D3DXMatrixIdentity(&camEffectsMatrix);
@@ -1438,6 +1466,7 @@ namespace Deviceless {
             sendEnvironment(mwBridge);
             PostShaders::sendShaderStates();
         }
+        sendPictureRequests();
     }
 
     // The game sets its view or its projection. The matrix is changed in place, as the

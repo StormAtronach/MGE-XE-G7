@@ -143,6 +143,15 @@ when a mod loads it: the file `my_shader.wgsl`, or its port. A shader that a mod
 on until the mod turns it off, and has its place in the chain by its category, as on
 Direct3D 9.
 
+`shader:reload()` works too: the renderer reads the files of the shader again (its WGSL
+file or its port, the numbers of its effect file, its textures), and the variables go back
+to the values of the file, as a reload on Direct3D 9 makes the effect again. A mod that
+writes a texture while the game runs (a canvas, a colour table, a mask) calls it to show
+the new texture; an author of a shader calls it after a change of the `.wgsl` file, and a
+shader that did not compile gets a new try. `mge.saveScreenshot` writes its file in this
+mode too (`.png`, `.bmp`, `.tga`, `.dds`, `.jpg`), with the post shaders in it, with or
+without the interface of the game.
+
 The WGSL side names the variables that it reads, with the header line `variables`:
 
 ```wgsl

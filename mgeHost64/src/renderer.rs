@@ -43,7 +43,7 @@ use distantland::mge_xe::distant_terrain::{
 use mge_config::{ConfigDocument, FILE_NAME};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, Replay, SceneView};
+use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, Replay, SceneView};
 use water::{Water, WaterFrame};
 use post::{Post, Variables};
 use shadow::Shadow;
@@ -56,6 +56,9 @@ const NEAR: f32 = 64.0;
 const ENVIRONMENT_ID: u32 = 1;
 /// The state of a post shader that a mod loaded: see `post::ShaderState`.
 const SHADER_STATE_ID: u32 = 2;
+/// The record of MGE XE for a picture file that a mod asked for (`mge.saveScreenshot`): the
+/// version 1, 1 for a picture with the interface of the game, the path.
+const PICTURE_ID: u32 = 3;
 
 /// Runs the renderer with the distant land of MGE XE.
 pub fn run(mut arguments: Vec<String>) {
@@ -196,6 +199,8 @@ pub struct DistantLand {
     /// post chain does not have yet.
     shader_states: Vec<post::ShaderState>,
     shader_states_new: Vec<String>,
+    /// The picture files that a mod asked for and that the renderer did not take yet.
+    pictures: Vec<PictureRequest>,
     statics: Option<statics::Statics>,
     /// The shadow map, when the settings have shadows; `None` before the first frame. True
     /// when the map is made in this frame.
@@ -489,6 +494,7 @@ impl DistantLand {
             interior_fog_end: settings.fog.interior_end * CELL,
             shader_states: Vec::new(),
             shader_states_new: Vec::new(),
+            pictures: Vec::new(),
             statics: None,
             shadow: None,
             shadow_in_frame: false,
@@ -1343,9 +1349,29 @@ impl Extension for DistantLand {
     }
 
 
+    fn pictures(&mut self) -> Vec<PictureRequest> {
+        std::mem::take(&mut self.pictures)
+    }
+
     fn data(&mut self, id: u32, bytes: &[u8]) {
         // Version 4 (a capture from before the name of the cell) is the same without the
         // name: the bytes that are not there stay zero.
+        if id == PICTURE_ID {
+            let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+            if let (Some(1), Some(with_ui), Some(path)) = (word(0), word(4), bytes.get(8..)) {
+                let path = String::from_utf8_lossy(&path[..path.iter().position(|c| *c == 0).unwrap_or(path.len())]).into_owned();
+                // A replay of a capture writes no file of a mod, and a file that is there
+                // stays, as MGE XE on Direct3D 9 has it.
+                if self.synchronous {
+                    println!("picture: {path} is not written in a replay");
+                } else if Path::new(&path).exists() {
+                    println!("picture: {path} is there already; not written");
+                } else {
+                    self.pictures.push(PictureRequest { path, with_ui: with_ui != 0 });
+                }
+            }
+            return;
+        }
         if id == SHADER_STATE_ID {
             if let Some(state) = post::ShaderState::read(bytes) {
                 if !self.shader_states_new.contains(&state.name) {

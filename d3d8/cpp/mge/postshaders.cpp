@@ -422,7 +422,8 @@ void sendToRenderer(UINT id, const void* data, UINT length);
 void PostShaders::sendShaderStates() {
     struct Head {
         UINT version;
-        // 1: the shader is on. 2: `priority` is one that a mod set.
+        // 1: the shader is on. 2: `priority` is one that a mod set. From the bit 8: the
+        // number of times that a mod reloaded the shader.
         UINT flags;
         int priority;
         UINT variables;
@@ -438,7 +439,7 @@ void PostShaders::sendShaderStates() {
 
         Head head = {};
         head.version = 1;
-        head.flags = (s->enabled ? 1u : 0u) | (s->values->prioritySet ? 2u : 0u);
+        head.flags = (s->enabled ? 1u : 0u) | (s->values->prioritySet ? 2u : 0u) | ((s->values->reloads & 0xFFFFFFu) << 8);
         head.priority = s->priority;
         std::snprintf(head.name, sizeof(head.name), "%s", s->name.c_str());
 

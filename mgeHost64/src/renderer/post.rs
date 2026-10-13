@@ -203,13 +203,16 @@ pub struct ShaderState {
     pub enabled: bool,
     /// The priority, when a mod set one.
     pub priority: Option<i64>,
+    /// The number of times that a mod reloaded the shader (`shader:reload()` of MWSE).
+    pub reloads: u32,
     /// The variables that the mod set: the name, the type letter of the API of MGE XE
     /// (`V` is an array of vectors with 4 floats each), the values.
     pub values: Vec<(String, u8, Vec<f32>)>,
 }
 
 impl ShaderState {
-    /// Reads the record: the head (version, flags, priority, number of variables, name),
+    /// Reads the record: the head (version, flags with the number of reloads from the bit
+    /// 8, priority, number of variables, name),
     /// then for each variable its name, its type, the number of its values, the values.
     pub fn read(bytes: &[u8]) -> Option<ShaderState> {
         let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
@@ -218,7 +221,7 @@ impl ShaderState {
             return None;
         }
         let flags = word(4)?;
-        let mut state = ShaderState { name: name(16)?, enabled: flags & 1 != 0, priority: (flags & 2 != 0).then_some(word(8)? as i32 as i64), values: Vec::new() };
+        let mut state = ShaderState { name: name(16)?, enabled: flags & 1 != 0, priority: (flags & 2 != 0).then_some(word(8)? as i32 as i64), reloads: flags >> 8, values: Vec::new() };
         let mut at = 80;
         for _ in 0..word(12)? {
             let (variable, kind, count) = (name(at)?, word(at + 64)?, word(at + 68)? as usize);
@@ -4446,6 +4449,8 @@ pub struct Post {
     /// The sun glare of the game is off: a shader of the chain at the start has
     /// `disableSunglare`.
     pub no_sun_glare: bool,
+    /// The number of reloads of each shader that a mod reloaded, as the last state had it.
+    reloads: std::collections::HashMap<String, u32>,
     /// The HDR measure, when a shader of the chain needs it.
     hdr: Option<Hdr>,
     pub frames: u64,
@@ -4604,6 +4609,7 @@ impl Post {
             no_values,
             hdr_reaction,
             counts: (0, 0),
+            reloads: std::collections::HashMap::new(),
             uniforms,
             samplers,
             white,
@@ -4794,11 +4800,27 @@ impl Post {
     /// Takes the state of a shader that a mod loaded: the shader comes into the chain when
     /// it is not there, and gets its on or off state, its priority and its variables.
     pub fn set_state(&mut self, scene: &SceneView, state: &ShaderState, read: &dyn Fn(&str) -> Option<Vec<u8>>) {
+        // A mod reloaded the shader: its WGSL file or its port, the numbers of its effect
+        // file and its textures are read again, as a reload on Direct3D 9 makes the effect
+        // again. A shader that did not compile gets a new try. The shader keeps its place
+        // among the shaders that came in.
+        let mut place = None;
+        if self.reloads.get(&state.name).copied().unwrap_or(0) != state.reloads {
+            self.reloads.insert(state.name.clone(), state.reloads);
+            self.failed.retain(|failed| *failed != state.name);
+            if let Some(at) = self.chain.iter().position(|c| c.name == state.name) {
+                place = Some(self.chain.remove(at).sequence);
+            }
+            println!("post: {}: reloaded by a mod", state.name);
+        }
         let known = self.chain.iter().any(|c| c.name == state.name);
         if !known && !self.load(scene, &state.name, read) {
             return;
         }
         let Some(shader) = self.chain.iter_mut().find(|c| c.name == state.name) else { return };
+        if let Some(sequence) = place {
+            shader.sequence = sequence;
+        }
         let reorder = !known || shader.enabled != state.enabled || state.priority.is_some_and(|priority| priority != shader.own_priority);
         shader.enabled = state.enabled;
         if let Some(priority) = state.priority {
@@ -5125,6 +5147,8 @@ mod tests {
         assert!(ShaderState::read(&record("x", 0, 0, &[])[4..]).is_none());
         let off = ShaderState::read(&record("x", 0, 9, &[])).unwrap();
         assert!(!off.enabled && off.priority.is_none());
+        assert_eq!(off.reloads, 0);
+        assert_eq!(ShaderState::read(&record("x", 1 | (3 << 8), 0, &[])).unwrap().reloads, 3);
     }
 
     #[test]

@@ -33,6 +33,9 @@ struct ShaderValues {
     // A mod set the priority of the shader: without that, its place in the chain is the
     // one that its effect file gives.
     bool prioritySet = false;
+    // The number of times that a mod reloaded the shader (shader:reload() of MWSE). The
+    // renderer reads the files of the shader again when the number changes.
+    unsigned reloads = 0;
 
     // Reads the variables of an effect file. A file that cannot be read gives none.
     static ShaderValues parse(const char* path);
