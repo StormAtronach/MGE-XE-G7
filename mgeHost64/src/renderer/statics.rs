@@ -441,6 +441,29 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
     Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, worlds, textures, palettes, merged_place, grass, groups, ordinary_bytes, merged_bytes })
 }
 
+/// The work of the draws of one set (the main view, the mirror, the two layers of the shadow
+/// map) since the last report, for the measure of step 2.2 of the plan.
+#[derive(Default, Clone, Copy)]
+struct SetStats {
+    calls: u64,
+    seconds: f64,
+    /// The places in the cells within reach.
+    visited: u64,
+    /// Out of the band of their tier, or before the handoff.
+    distance: u64,
+    /// Out of the view.
+    frustum: u64,
+    /// The subset is not on the GPU (yet, or not near enough for a merged one).
+    waiting: u64,
+    drawn: u64,
+    triangles: u64,
+    /// Runs of draws of one subset after the sort: the draws that one draw for a range of
+    /// places would make.
+    runs: u64,
+}
+
+const SET_NAMES: [&str; 4] = ["view", "mirror", "shadow 1", "shadow 2"];
+
 /// True when the place of a group is hidden: `shown` has a byte for each group, 0 for a hidden
 /// one. A place without a group (0) is always shown, and so is each place before the first
 /// record.
@@ -1015,6 +1038,9 @@ pub struct Statics {
     groups_record: Vec<u8>,
     /// The places of hidden groups that a frame did not draw, for the report.
     hidden_skipped: u64,
+    /// The work of each set since the last `report`, and of the grass.
+    set_stats: [SetStats; 4],
+    grass_stats: SetStats,
 }
 
 impl Statics {
@@ -1076,7 +1102,34 @@ impl Statics {
             shown: Vec::new(),
             groups_record: Vec::new(),
             hidden_skipped: 0,
+            set_stats: [SetStats::default(); 4],
+            grass_stats: SetStats::default(),
         }
+    }
+
+    /// Prints the work of the draws for each call of each set since the last report, and
+    /// starts again: the command `statics report <label>` of `nirender.tune`.
+    pub fn report(&mut self, label: &str) {
+        for (name, stats) in SET_NAMES.iter().zip(self.set_stats.iter()).chain(core::iter::once((&"grass", &self.grass_stats))) {
+            if stats.calls == 0 {
+                continue;
+            }
+            let per = |n: u64| n as f64 / stats.calls as f64;
+            println!(
+                "statics report {label}: {name}: {} calls, {:.3} ms a call; places {:.0} visited, {:.0} out of their band, {:.0} out of the view, {:.0} not on the GPU, {:.0} drawn ({:.0} runs of one subset), {:.0} triangles",
+                stats.calls,
+                stats.seconds * 1000.0 / stats.calls as f64,
+                per(stats.visited),
+                per(stats.distance),
+                per(stats.frustum),
+                per(stats.waiting),
+                per(stats.drawn),
+                per(stats.runs),
+                per(stats.triangles)
+            );
+        }
+        self.set_stats = [SetStats::default(); 4];
+        self.grass_stats = SetStats::default();
     }
 
     /// The state of the vis groups, from the record of MGE XE: a byte for each group, with
@@ -1349,6 +1402,14 @@ impl Statics {
         if self.failed || !self.settings.grass {
             return;
         }
+        let started = Instant::now();
+        self.draw_grass_timed(scene, pass, frame);
+        self.grass_stats.calls += 1;
+        self.grass_stats.seconds += started.elapsed().as_secs_f64();
+        self.grass_stats.drawn += self.grass_draws.len() as u64;
+    }
+
+    fn draw_grass_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame) {
         let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else { return };
         let Some(world) = catalog.worlds.get(&self.world) else { return };
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
@@ -1509,6 +1570,16 @@ impl Statics {
 
     /// Draws the statics of the frame into the pass. Returns the number of draws.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
+        let started = Instant::now();
+        let draws = self.draw_timed(scene, pass, frame, set);
+        if let Some(stats) = self.set_stats.get_mut(set) {
+            stats.calls += 1;
+            stats.seconds += started.elapsed().as_secs_f64();
+        }
+        draws
+    }
+
+    fn draw_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
         // The sets 2 and 3 are the layers of the shadow map.
         let shadow = set >= 2;
         if self.failed || (!self.settings.statics && !shadow) {
@@ -1538,6 +1609,7 @@ impl Statics {
         let retain = admit + CELL;
 
         self.draws.clear();
+        let mut stats = SetStats::default();
         let reach = settings.band_ends[2].max(admit) + CELL;
         let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
         let cells = (reach / CELL).ceil() as i32;
@@ -1550,6 +1622,7 @@ impl Statics {
                         self.hidden_skipped += 1;
                         continue;
                     }
+                    stats.visited += 1;
                     let subset = &catalog.subsets[instance.subset as usize];
                     let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
                     let range = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
@@ -1560,13 +1633,18 @@ impl Statics {
                             self.wanted.push(instance.subset);
                         }
                     }
-                    let Some(resident) = self.resident.get(&instance.subset) else { continue };
+                    let Some(resident) = self.resident.get(&instance.subset) else {
+                        stats.waiting += 1;
+                        continue;
+                    };
                     // The band of the tier of the place, and the end of the fog.
                     let band_end = settings.band_ends[instance.tier as usize].min(frame.fog_end);
                     if range > band_end + instance.radius || range + instance.radius < gone_before {
+                        stats.distance += 1;
                         continue;
                     }
                     if !frame.planes.iter().all(|p| p[0] * instance.center[0] + p[1] * instance.center[1] + p[2] * instance.center[2] + p[3] >= -instance.radius) {
+                        stats.frustum += 1;
                         continue;
                     }
                     // The level of detail by the distance.
@@ -1579,6 +1657,7 @@ impl Statics {
                     };
                     if faces != 0 {
                         self.draws.push((subset.texture, instance.subset, *index, faces));
+                        stats.triangles += faces as u64;
                     }
                 }
             }
@@ -1606,10 +1685,25 @@ impl Statics {
             }
         }
         self.frames += 1;
+        self.draws.sort_unstable();
+        stats.drawn = self.draws.len() as u64;
+        stats.runs = self.draws.iter().zip(self.draws.iter().skip(1)).filter(|(a, b)| (a.0, a.1) != (b.0, b.1)).count() as u64 + (!self.draws.is_empty()) as u64;
+        if let Some(total) = self.set_stats.get_mut(set) {
+            for (sum, add) in [
+                (&mut total.visited, stats.visited),
+                (&mut total.distance, stats.distance),
+                (&mut total.frustum, stats.frustum),
+                (&mut total.waiting, stats.waiting),
+                (&mut total.drawn, stats.drawn),
+                (&mut total.triangles, stats.triangles),
+                (&mut total.runs, stats.runs),
+            ] {
+                *sum += add;
+            }
+        }
         if self.draws.is_empty() {
             return 0;
         }
-        self.draws.sort_unstable();
 
         // The data of each draw: the world matrix and the values of the subset.
         self.instance_data.clear();
@@ -1697,6 +1791,7 @@ impl Drop for Statics {
             self.grass_cut
         );
         println!("distant statics: {} places of hidden vis groups not drawn", self.hidden_skipped);
+        self.report("end");
     }
 }
 

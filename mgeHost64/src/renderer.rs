@@ -1763,6 +1763,13 @@ impl Extension for DistantLand {
             return;
         }
         if id == TUNE_ID {
+            // `statics report <label>`: the work of the distant statics since the last report.
+            if let Some(label) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("statics report")) {
+                if let Some(statics) = self.statics.as_mut() {
+                    statics.report(label.trim());
+                }
+                return;
+            }
             // A command for a parameter, as a text. It changes a value of this run only.
             if let Some(line) = core::str::from_utf8(bytes).ok().and_then(|text| self.tunables.command(text)) {
                 println!("tune: {line}");
