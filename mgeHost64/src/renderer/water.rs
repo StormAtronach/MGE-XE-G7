@@ -544,7 +544,7 @@ impl Water {
 
     /// The matrix that mirrors the world in the plane of the water (z = level - 1), with the
     /// layout of Direct3D.
-    fn mirror(water_level: f32) -> [f32; 16] {
+    pub fn mirror(water_level: f32) -> [f32; 16] {
         let mut m = [0.0f32; 16];
         m[0] = 1.0;
         m[5] = 1.0;
@@ -555,7 +555,7 @@ impl Water {
     }
 
     /// The projection of the game with the far plane at the draw distance.
-    fn far_projection(scene: &SceneView, draw_distance: f32) -> [f32; 16] {
+    pub fn far_projection(scene: &SceneView, draw_distance: f32) -> [f32; 16] {
         let mut projection = scene.projection;
         let far = draw_distance.max(NEAR * 2.0);
         projection[10] = far / (far - NEAR);

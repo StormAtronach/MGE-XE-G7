@@ -50,7 +50,12 @@
 //! (`set_groups`); a place of a hidden group is not drawn, not in the shadow map, and not
 //! given to the water. The generator never merges a place of a group.
 //!
-//! Not here yet: the quadtree and the horizon culling of the IPC host mode.
+//! The places of a frame are chosen on the GPU when the device can draw from it (`cull.rs`):
+//! a compute pass tests each place as the loop of the CPU does, and one indirect call for each
+//! texture draws them from pools of geometry. Without the features of the device, or with
+//! `MGE_XE_STATICS_CULL=cpu`, the CPU chooses them and draws each place from the same pools.
+//!
+//! Not here yet: a test against the land that hides a place.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -70,6 +75,8 @@ use nirender_wgpu::SceneView;
 
 use super::water::{FarWater, Look};
 use super::{CELL, dds_texture};
+
+mod cull;
 
 /// `STATIC_MESH_SHARD_COUNT` of the generator.
 const SHARDS: usize = 128;
@@ -135,9 +142,15 @@ struct Subset {
     /// The place of its first palette entry in the palette buffer.
     palette: u32,
     components: Vec<Component>,
+    /// A subset of a grass static: drawn by the grass, from buffers of its own.
+    grass: bool,
 }
 
 impl Subset {
+    /// True for a subset that the draws of the statics use: in the pools of the textures.
+    fn pooled(&self) -> bool {
+        self.water == 0 && !self.grass
+    }
     /// The bytes of its vertices and triangles in the file.
     fn bytes(&self) -> u64 {
         self.vertex_count as u64 * VERTEX as u64 + self.triangle_count as u64 * TRIANGLE as u64
@@ -187,6 +200,8 @@ struct World {
     cells: HashMap<(i32, i32), Vec<u32>>,
     /// The grass places by the cell of their position.
     grass_cells: HashMap<(i32, i32), Vec<u32>>,
+    /// The places of merged subsets in `cells`.
+    merged: Vec<u32>,
 }
 
 /// All that the files say without their vertices and indexes.
@@ -362,6 +377,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                 texture,
                 palette,
                 components,
+                grass: false,
             });
         }
         for i in 0..static_count {
@@ -373,6 +389,12 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                 first_subset: subset_base + word(r, 44),
                 subset_count: word(r, 48),
             });
+        }
+    }
+
+    for model in statics.iter().filter(|model| model.kind == 4) {
+        for subset in subsets.iter_mut().skip(model.first_subset as usize).take(model.subset_count as usize) {
+            subset.grass = true;
         }
     }
 
@@ -432,6 +454,9 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                 list.entry(cell).or_default().push(instances.len() as u32);
                 if !s.components.is_empty() {
                     merged_place.insert(subset, instances.len() as u32);
+                    if s.water == 0 {
+                        world_space.merged.push(instances.len() as u32);
+                    }
                 }
                 instances.push(Instance { subset, world, center, radius, tier, group: place.vis_index });
             }
@@ -597,9 +622,15 @@ fn plan_merged(wanted: &[(f32, u32, u64)], mut on_gpu: Vec<(f32, u32, u64)>, mut
     (admit, evict, false)
 }
 
+/// The geometry of a subset on the GPU: buffers of its own (the grass and the water), or a slot
+/// in the pool of its texture (the statics).
+enum Geometry {
+    Own { vertices: wgpu::Buffer, indexes: wgpu::Buffer },
+    Pool(cull::Slot),
+}
+
 struct Resident {
-    vertices: wgpu::Buffer,
-    indexes: wgpu::Buffer,
+    geometry: Geometry,
     faces: [u32; 3],
     bytes: u64,
 }
@@ -617,8 +648,6 @@ struct Loaded {
 struct BufferSet {
     group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
-    instances: wgpu::Buffer,
-    instance_capacity: usize,
 }
 
 struct Gpu {
@@ -634,6 +663,12 @@ struct Gpu {
     shadow_pipeline: wgpu::RenderPipeline,
     /// The main view, the reflection, and the two layers of the shadow map.
     sets: [BufferSet; 4],
+    /// The values of all places for the draws: the world matrix and the values of the subset.
+    instances: wgpu::Buffer,
+    /// The geometry of the statics, by texture.
+    pools: cull::Pools,
+    /// The choice of the places on the GPU, when the device can do it.
+    culling: Option<cull::Culling>,
     textures: Vec<wgpu::BindGroup>,
     /// The same textures, for a water shader of a mod on far water.
     texture_views: Vec<wgpu::TextureView>,
@@ -1017,7 +1052,17 @@ pub struct Statics {
     capped_frames: u64,
     /// The draws of the frame: texture, subset, instance, triangles.
     draws: Vec<(u32, u32, u32, u32)>,
-    instance_data: Vec<f32>,
+    /// The device and its queue, for the pools and the culling outside a draw.
+    device: Option<wgpu::Device>,
+    queue: Option<wgpu::Queue>,
+    /// The main view drew since the slots that went were last made free: a new frame.
+    frame_ended: bool,
+    /// A pool could not grow for a subset: said once.
+    pool_full: bool,
+    /// The sets that `prepare` chose for this frame.
+    prepared: [bool; 4],
+    prepare_calls: u64,
+    prepare_seconds: f64,
     /// The grass of the frame: texture, subset, record.
     grass_draws: Vec<(u32, u32, [f32; 12])>,
     grass_frames: u64,
@@ -1088,7 +1133,13 @@ impl Statics {
             evicted: 0,
             capped_frames: 0,
             draws: Vec::new(),
-            instance_data: Vec::new(),
+            device: None,
+            queue: None,
+            frame_ended: false,
+            pool_full: false,
+            prepared: [false; 4],
+            prepare_calls: 0,
+            prepare_seconds: 0.0,
             grass_draws: Vec::new(),
             grass_frames: 0,
             grass_drawn: 0,
@@ -1128,6 +1179,36 @@ impl Statics {
                 per(stats.triangles)
             );
         }
+        if self.prepare_calls > 0 {
+            println!(
+                "statics report {label}: prepare: {} calls, {:.3} ms a call (the work of the frame and the culling of its sets)",
+                self.prepare_calls,
+                self.prepare_seconds * 1000.0 / self.prepare_calls as f64
+            );
+        }
+        self.prepare_calls = 0;
+        self.prepare_seconds = 0.0;
+        if let (Some(gpu), Some(device), Some(queue)) = (self.gpu.as_ref(), self.device.as_ref(), self.queue.as_ref()) {
+            if let Some(culling) = gpu.culling.as_ref() {
+                for ((name, stats), counts) in SET_NAMES.iter().zip(self.set_stats.iter()).zip(culling.take_stats(device, queue)) {
+                    if stats.calls == 0 {
+                        continue;
+                    }
+                    let per = |n: u32| n as f64 / stats.calls as f64;
+                    println!(
+                        "statics report {label}: {name} (GPU): places {:.0} visited, {:.0} out of their band, {:.0} out of the view, {:.0} not on the GPU, {:.0} drawn, {:.0} triangles, {:.0} of hidden groups; pools {:.0} MB",
+                        per(counts[0]),
+                        per(counts[1]),
+                        per(counts[2]),
+                        per(counts[3]),
+                        per(counts[4]),
+                        (counts[5] as u64 | (counts[7] as u64) << 32) as f64 / stats.calls as f64,
+                        per(counts[6]),
+                        gpu.pools.bytes as f64 / 1e6
+                    );
+                }
+            }
+        }
         self.set_stats = [SetStats::default(); 4];
         self.grass_stats = SetStats::default();
     }
@@ -1145,6 +1226,11 @@ impl Statics {
         let Some(catalog) = self.catalog.as_ref() else { return };
         if self.groups_record.len() == catalog.groups {
             self.shown = self.groups_record.clone();
+            if let (Some(gpu), Some(device)) = (self.gpu.as_mut(), self.device.as_ref()) {
+                if let Some(culling) = gpu.culling.as_mut() {
+                    culling.set_groups(device, &self.shown);
+                }
+            }
             let hidden = self.shown.iter().skip(1).filter(|shown| **shown == 0).count();
             println!("distant statics: vis groups: {hidden} of {} hidden", catalog.groups - 1);
         } else if !self.groups_record.is_empty() {
@@ -1246,6 +1332,22 @@ impl Statics {
         self.lowered += 1;
     }
 
+    /// Takes a subset off the GPU: its buffers go, or its slot in a pool is free from the next
+    /// frame on, and the culling no longer draws it.
+    fn take_off(&mut self, subset: u32) -> Option<Resident> {
+        let resident = self.resident.remove(&subset)?;
+        self.resident_bytes -= resident.bytes;
+        if let Geometry::Pool(slot) = resident.geometry {
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.pools.remove(slot);
+                if let (Some(culling), Some(queue)) = (gpu.culling.as_ref(), self.queue.as_ref()) {
+                    queue.write_buffer(&culling.subsets, subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&cull::Subset::default()));
+                }
+            }
+        }
+        Some(resident)
+    }
+
     /// Takes the farthest merged subsets off the GPU while their bytes are over the cap: after
     /// the cap went down.
     fn pay_cap_debt(&mut self, catalog: &Catalog, eye: [f32; 3]) {
@@ -1258,8 +1360,7 @@ impl Statics {
             if self.merged_bytes <= self.merged_cap {
                 break;
             }
-            if let Some(resident) = self.resident.remove(&subset) {
-                self.resident_bytes -= resident.bytes;
+            if let Some(resident) = self.take_off(subset) {
                 self.merged_bytes -= resident.bytes;
                 self.evicted += 1;
             }
@@ -1275,7 +1376,7 @@ impl Statics {
         if self.wanted.is_empty() {
             return;
         }
-        let Some(requests) = self.requests.as_ref() else {
+        let Some(requests) = self.requests.clone() else {
             self.wanted.clear();
             return;
         };
@@ -1292,8 +1393,7 @@ impl Statics {
             plan_merged(&wanted, on_gpu, used, self.merged_cap)
         };
         for subset in evict {
-            if let Some(resident) = self.resident.remove(&subset) {
-                self.resident_bytes -= resident.bytes;
+            if let Some(resident) = self.take_off(subset) {
                 self.merged_bytes -= resident.bytes;
                 self.evicted += 1;
             }
@@ -1341,6 +1441,8 @@ impl Statics {
             let names: Vec<String> = interiors.iter().take(shown).map(|name| String::from_utf8_lossy(name).into_owned()).collect();
             println!("distant statics: interior cells with statics: {}{}", names.join("; "), if interiors.len() > shown { "; ..." } else { "" });
         }
+        self.device = Some(scene.device.clone());
+        self.queue = Some(scene.queue.clone());
         self.gpu = Some(make_gpu(scene, &loaded));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();
@@ -1382,9 +1484,28 @@ impl Statics {
                 continue;
             }
             let size = (arrival.vertices.len() + arrival.indexes.len()) as u64;
-            let vertices = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &arrival.vertices, usage: wgpu::BufferUsages::VERTEX });
-            let indexes = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &arrival.indexes, usage: wgpu::BufferUsages::INDEX });
-            self.resident.insert(arrival.subset, Resident { vertices, indexes, faces: arrival.faces, bytes: size });
+            let Some(catalog) = self.catalog.as_ref() else { continue };
+            let s = &catalog.subsets[arrival.subset as usize];
+            let geometry = if s.pooled() {
+                let Some(gpu) = self.gpu.as_mut() else { continue };
+                let Some(slot) = gpu.pools.put(scene.device, scene.queue, s.texture, &arrival.vertices, &arrival.indexes) else {
+                    if !self.pool_full {
+                        self.pool_full = true;
+                        println!("distant statics: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn");
+                    }
+                    continue;
+                };
+                if let Some(culling) = gpu.culling.as_ref() {
+                    let entry = cull::Subset { first_index: slot.first_index, base_vertex: slot.base_vertex, faces: arrival.faces, resident: 1, _pad: [0; 2] };
+                    scene.queue.write_buffer(&culling.subsets, arrival.subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&entry));
+                }
+                Geometry::Pool(slot)
+            } else {
+                let vertices = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &arrival.vertices, usage: wgpu::BufferUsages::VERTEX });
+                let indexes = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &arrival.indexes, usage: wgpu::BufferUsages::INDEX });
+                Geometry::Own { vertices, indexes }
+            };
+            self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size });
             self.resident_bytes += size;
             self.most_bytes = self.most_bytes.max(self.resident_bytes);
             if self.catalog.as_ref().is_some_and(|catalog| catalog.merged_place.contains_key(&arrival.subset)) {
@@ -1481,11 +1602,11 @@ impl Statics {
             while end < self.grass_draws.len() && self.grass_draws[end].1 == subset {
                 end += 1;
             }
-            if let Some(resident) = self.resident.get(&subset) {
+            if let Some(Resident { geometry: Geometry::Own { vertices, indexes }, faces, .. }) = self.resident.get(&subset) {
                 pass.set_bind_group(1, &gpu.textures[texture as usize], &[]);
-                pass.set_vertex_buffer(0, resident.vertices.slice(..));
-                pass.set_index_buffer(resident.indexes.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..resident.faces[0] * 3, 0, start as u32..end as u32);
+                pass.set_vertex_buffer(0, vertices.slice(..));
+                pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..faces[0] * 3, 0, start as u32..end as u32);
             }
             start = end;
         }
@@ -1542,7 +1663,7 @@ impl Statics {
                     if !subset.components.is_empty() && (to[0] * to[0] + to[1] * to[1]).sqrt() <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
                         self.wanted.push(instance.subset);
                     }
-                    let Some(resident) = self.resident.get(&instance.subset) else { continue };
+                    let Some(Resident { geometry: Geometry::Own { vertices, indexes }, faces, .. }) = self.resident.get(&instance.subset) else { continue };
                     let range = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
                     if range > reach + instance.radius {
                         continue;
@@ -1553,9 +1674,9 @@ impl Statics {
                     // The place of the reference is the translation of its world matrix.
                     let (px, py) = (instance.world[12], instance.world[13]);
                     found.push(FarWater {
-                        vertices: resident.vertices.clone(),
-                        indexes: resident.indexes.clone(),
-                        triangles: resident.faces[0],
+                        vertices: vertices.clone(),
+                        indexes: indexes.clone(),
+                        triangles: faces[0],
                         world: instance.world,
                         look,
                         loaded: px >= loaded[0] && py >= loaded[1] && px < loaded[2] && py < loaded[3],
@@ -1565,6 +1686,40 @@ impl Statics {
             }
         }
         found
+    }
+
+    /// Chooses the places of the sets of a frame on the GPU, in one command buffer before the
+    /// passes that draw them, and does the work of the frame for the statics once: the main
+    /// view first. A set chosen here is only drawn by `draw`; a set that is not here is chosen
+    /// in its `draw`, as without this call.
+    pub fn prepare(&mut self, scene: &SceneView, sets: &[CullSet]) {
+        self.prepared = [false; 4];
+        let Some(first) = sets.first() else { return };
+        if self.failed || !self.settings.statics {
+            return;
+        }
+        let started = Instant::now();
+        if self.frame_work(scene, [first.eye[0], first.eye[1], first.eye[2]], true) {
+            let catalog = self.catalog.clone();
+            if let (Some(catalog), Some(gpu)) = (catalog, self.gpu.as_mut()) {
+                if let (Some(culling), Some(world)) = (gpu.culling.as_mut(), catalog.worlds.get(&self.world)) {
+                    if !culling.has_world(&self.world) {
+                        culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
+                    }
+                    let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull") });
+                    for cull_set in sets {
+                        let values = cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end);
+                        culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
+                        if let Some(prepared) = self.prepared.get_mut(cull_set.set) {
+                            *prepared = true;
+                        }
+                    }
+                    scene.queue.submit([encoder.finish()]);
+                }
+            }
+        }
+        self.prepare_calls += 1;
+        self.prepare_seconds += started.elapsed().as_secs_f64();
     }
 
     /// Draws the statics of the frame into the pass. Returns the number of draws.
@@ -1578,34 +1733,127 @@ impl Statics {
         draws
     }
 
-    fn draw_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
-        // The sets 2 and 3 are the layers of the shadow map.
-        let shadow = set >= 2;
-        if self.failed || !self.settings.statics {
-            return 0;
-        }
+    /// The work of a frame before its draws: the load, the slots that are free again, the
+    /// memory budget, the merged subsets that come and go, the arrivals. False when there is
+    /// nothing to draw in the world space of the frame.
+    fn frame_work(&mut self, scene: &SceneView, eye: [f32; 3], main: bool) -> bool {
         self.finish_load(scene);
-        let settings = self.settings;
-        let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
+        // The slots that went in the frame before are free: the draws that read them are done.
+        if self.frame_ended {
+            self.frame_ended = false;
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.pools.next_frame();
+            }
+        }
         // The merged subsets that the draws before wanted are asked for before the arrivals
         // are taken: a subset that the shadow map wants comes in time for the main view of the
         // same frame. The budget is sampled once in a frame, with the main view.
         if let Some(catalog) = self.catalog.clone() {
-            if set == 0 {
+            if main {
                 self.sample_budget(scene.device);
             }
             self.admit_merged(&catalog, eye);
         }
         self.take_arrivals(scene);
+        let Some(catalog) = self.catalog.clone() else { return false };
+        let Some(world) = catalog.worlds.get(&self.world) else { return false };
+        let admit = self.settings.draw_distance + CELL;
+        let retain = admit + CELL;
+        // The merged subsets near enough come to the GPU.
+        for &index in &world.merged {
+            let instance = &catalog.instances[index as usize];
+            if hidden(&self.shown, instance.group) {
+                continue;
+            }
+            if flat_distance(instance, eye) <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
+                self.wanted.push(instance.subset);
+            }
+        }
+        // The merged subsets that are too far go away. The check is for all of them, because
+        // the camera can go a long way in one frame.
+        if self.frames % 30 == 0 {
+            let far: Vec<u32> = self
+                .resident
+                .keys()
+                .copied()
+                .filter(|subset| {
+                    catalog.merged_place.get(subset).is_some_and(|index| {
+                        let instance = &catalog.instances[*index as usize];
+                        flat_distance(instance, eye) > retain + instance.radius
+                    })
+                })
+                .collect();
+            for subset in far {
+                if let Some(resident) = self.take_off(subset) {
+                    self.merged_bytes -= resident.bytes;
+                }
+            }
+        }
+        self.frames += 1;
+        if main {
+            self.frame_ended = true;
+        }
+        true
+    }
+
+    /// Binds what the draws of a set read: its pipeline, its uniforms and the places.
+    fn bind_set(gpu: &Gpu, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) {
+        let buffers = &gpu.sets[set];
+        scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms_of(frame)));
+        // Lines when the game draws in wireframe (see `SceneView::wireframe`), as MGE XE on
+        // Direct3D 9 draws with the fill mode the engine left; the shadow map stays filled.
+        let (fill, lines) = if set == 1 { (&gpu.mirror_pipeline, &gpu.mirror_pipeline_lines) } else { (&gpu.pipeline, &gpu.pipeline_lines) };
+        pass.set_pipeline(if set >= 2 { &gpu.shadow_pipeline } else if scene.wireframe { lines.as_ref().unwrap_or(fill) } else { fill });
+        pass.set_bind_group(0, &buffers.group, &[]);
+        pass.set_vertex_buffer(1, gpu.instances.slice(..));
+    }
+
+    /// The indirect draws of a set that the GPU chose.
+    fn draw_chosen(gpu: &Gpu, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
+        let Some(culling) = gpu.culling.as_ref() else { return 0 };
+        Self::bind_set(gpu, scene, pass, frame, set);
+        let (pools, textures) = (&gpu.pools, &gpu.textures);
+        culling.draw(set, pass, |pass, texture| {
+            let Some((vertices, indexes)) = pools.buffers(texture) else { return false };
+            pass.set_bind_group(1, &textures[texture as usize], &[]);
+            pass.set_vertex_buffer(0, vertices.slice(..));
+            pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
+            true
+        })
+    }
+
+    fn draw_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
+        if self.failed || !self.settings.statics {
+            return 0;
+        }
+        // Chosen in `prepare`: only the draws.
+        if self.prepared.get(set).copied().unwrap_or(false) {
+            self.prepared[set] = false;
+            let Some(gpu) = self.gpu.as_ref() else { return 0 };
+            return Self::draw_chosen(gpu, scene, pass, frame, set);
+        }
+        let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
+        if !self.frame_work(scene, eye, set == 0) {
+            return 0;
+        }
         let Some(catalog) = self.catalog.clone() else { return 0 };
         let Some(world) = catalog.worlds.get(&self.world) else { return 0 };
-        let view_range = frame.eye[3];
-        let complete_at = view_range - HANDOFF;
-        // A static before the band of the handoff is not there: the game draws the real one.
-        let gone_before = complete_at - HANDOFF_BAND - HANDOFF_CULL;
-        let admit = settings.draw_distance + CELL;
-        let retain = admit + CELL;
+        let settings = self.settings;
 
+        // The places chosen on the GPU, in a command buffer of this set.
+        if let Some(gpu) = self.gpu.as_mut() {
+            if let Some(culling) = gpu.culling.as_mut() {
+                if !culling.has_world(&self.world) {
+                    culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
+                }
+                culling.run(scene.device, scene.queue, set, &cull_values(&settings, frame.planes, frame.eye, frame.fog_end));
+                return Self::draw_chosen(gpu, scene, pass, frame, set);
+            }
+        }
+
+        // The places chosen on the CPU.
+        let gone_before = frame.eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL;
+        let admit = settings.draw_distance + CELL;
         self.draws.clear();
         let mut stats = SetStats::default();
         let reach = settings.band_ends[2].max(admit) + CELL;
@@ -1624,13 +1872,6 @@ impl Statics {
                     let subset = &catalog.subsets[instance.subset as usize];
                     let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
                     let range = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
-                    let merged = !subset.components.is_empty();
-                    if merged {
-                        let flat = (to[0] * to[0] + to[1] * to[1]).sqrt();
-                        if flat <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
-                            self.wanted.push(instance.subset);
-                        }
-                    }
                     let Some(resident) = self.resident.get(&instance.subset) else {
                         stats.waiting += 1;
                         continue;
@@ -1660,29 +1901,6 @@ impl Statics {
                 }
             }
         }
-        // The merged subsets that are too far go away. The check is for all of them, because
-        // the camera can go a long way in one frame.
-        if self.frames % 30 == 0 {
-            let far: Vec<u32> = self
-                .resident
-                .keys()
-                .copied()
-                .filter(|subset| {
-                    catalog.merged_place.get(subset).is_some_and(|index| {
-                        let instance = &catalog.instances[*index as usize];
-                        let flat = ((instance.center[0] - eye[0]).powi(2) + (instance.center[1] - eye[1]).powi(2)).sqrt();
-                        flat > retain + instance.radius
-                    })
-                })
-                .collect();
-            for subset in far {
-                if let Some(resident) = self.resident.remove(&subset) {
-                    self.resident_bytes -= resident.bytes;
-                    self.merged_bytes -= resident.bytes;
-                }
-            }
-        }
-        self.frames += 1;
         self.draws.sort_unstable();
         stats.drawn = self.draws.len() as u64;
         stats.runs = self.draws.iter().zip(self.draws.iter().skip(1)).filter(|(a, b)| (a.0, a.1) != (b.0, b.1)).count() as u64 + (!self.draws.is_empty()) as u64;
@@ -1702,68 +1920,81 @@ impl Statics {
         if self.draws.is_empty() {
             return 0;
         }
-
-        // The data of each draw: the world matrix and the values of the subset.
-        self.instance_data.clear();
-        for (_, subset, instance, _) in &self.draws {
-            let s = &catalog.subsets[*subset as usize];
-            self.instance_data.extend_from_slice(&catalog.instances[*instance as usize].world);
-            self.instance_data.extend_from_slice(&[s.palette as f32, s.has_alpha as u32 as f32, s.animate_uv as u32 as f32, 0.0]);
-        }
-        let Some(gpu) = self.gpu.as_mut() else { return 0 };
-        let buffers = &mut gpu.sets[set];
-        let needed = self.draws.len();
-        if needed > buffers.instance_capacity {
-            buffers.instance_capacity = needed.next_power_of_two().max(1024);
-            buffers.instances = scene.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("distant statics, the places of a frame"),
-                size: (buffers.instance_capacity * 80) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        scene.queue.write_buffer(&buffers.instances, 0, bytemuck::cast_slice(&self.instance_data));
-        let uniforms = Uniforms {
-            view_projection: frame.view_projection,
-            eye: frame.eye,
-            fog_color: frame.fog_color,
-            fog: frame.fog,
-            flags: frame.flags,
-            sun_direction: frame.sun_direction,
-            sun_color: frame.sun_color,
-            ambient: frame.ambient,
-            sun_pos: frame.scattering[0],
-            sky: frame.scattering[1],
-            outscatter: frame.scattering[2],
-            inscatter: frame.scattering[3],
-            sun_altitude: frame.scattering[4],
-            handoff: [frame.time, complete_at, HANDOFF_BAND, HANDOFF_CULL],
-        };
-        scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
-
-        // Lines when the game draws in wireframe (see `SceneView::wireframe`), as MGE XE on
-        // Direct3D 9 draws with the fill mode the engine left; the shadow map stays filled.
-        let (fill, lines) = if set == 1 { (&gpu.mirror_pipeline, &gpu.mirror_pipeline_lines) } else { (&gpu.pipeline, &gpu.pipeline_lines) };
-        pass.set_pipeline(if shadow { &gpu.shadow_pipeline } else if scene.wireframe { lines.as_ref().unwrap_or(fill) } else { fill });
-        pass.set_bind_group(0, &buffers.group, &[]);
-        pass.set_vertex_buffer(1, buffers.instances.slice(..));
-        let (mut texture, mut bound) = (u32::MAX, u32::MAX);
-        for (i, (draw_texture, subset, _, faces)) in self.draws.iter().enumerate() {
-            let Some(resident) = self.resident.get(subset) else { continue };
-            if *draw_texture != texture {
-                texture = *draw_texture;
+        let Some(gpu) = self.gpu.as_ref() else { return 0 };
+        Self::bind_set(gpu, scene, pass, frame, set);
+        let mut texture = u32::MAX;
+        for &(draw_texture, subset, instance, faces) in &self.draws {
+            let Some(Resident { geometry: Geometry::Pool(slot), .. }) = self.resident.get(&subset) else { continue };
+            if draw_texture != texture {
+                let Some((vertices, indexes)) = gpu.pools.buffers(draw_texture) else { continue };
+                texture = draw_texture;
                 pass.set_bind_group(1, &gpu.textures[texture as usize], &[]);
+                pass.set_vertex_buffer(0, vertices.slice(..));
+                pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
             }
-            if *subset != bound {
-                bound = *subset;
-                pass.set_vertex_buffer(0, resident.vertices.slice(..));
-                pass.set_index_buffer(resident.indexes.slice(..), wgpu::IndexFormat::Uint16);
-            }
-            pass.draw_indexed(0..faces * 3, 0, i as u32..i as u32 + 1);
+            pass.draw_indexed(slot.first_index..slot.first_index + faces * 3, slot.base_vertex as i32, instance..instance + 1);
         }
         self.drawn += self.draws.len() as u64;
         self.draws.len() as u32
     }
+}
+
+/// The places of the statics of a world space for the culling on the GPU: texture and place,
+/// sorted by texture, subset and place (the order of the draws of the CPU).
+fn world_places(catalog: &Catalog, world: &World) -> Vec<(u32, u32)> {
+    let mut places: Vec<(u32, u32, u32)> = world
+        .cells
+        .values()
+        .flatten()
+        .map(|&index| {
+            let subset = catalog.instances[index as usize].subset;
+            (catalog.subsets[subset as usize].texture, subset, index)
+        })
+        .collect();
+    places.sort_unstable();
+    places.iter().map(|&(texture, _, index)| (texture, index)).collect()
+}
+
+/// The values of the culling of a set: the planes, the eye with the view range of the game in
+/// w, the ends of the tiers and of the fog, and the handoff.
+fn cull_values(settings: &Settings, planes: [[f32; 4]; 6], eye: [f32; 4], fog_end: f32) -> cull::CullUniforms {
+    cull::CullUniforms {
+        planes,
+        eye: [eye[0], eye[1], eye[2], 0.0],
+        bands: [settings.band_ends[0], settings.band_ends[1], settings.band_ends[2], fog_end],
+        limits: [eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL, 0.0, 0.0, 0.0],
+        counts: [0; 4],
+    }
+}
+
+/// The uniforms of the draws of a set.
+fn uniforms_of(frame: &Frame) -> Uniforms {
+    Uniforms {
+        view_projection: frame.view_projection,
+        eye: frame.eye,
+        fog_color: frame.fog_color,
+        fog: frame.fog,
+        flags: frame.flags,
+        sun_direction: frame.sun_direction,
+        sun_color: frame.sun_color,
+        ambient: frame.ambient,
+        sun_pos: frame.scattering[0],
+        sky: frame.scattering[1],
+        outscatter: frame.scattering[2],
+        inscatter: frame.scattering[3],
+        sun_altitude: frame.scattering[4],
+        handoff: [frame.time, frame.eye[3] - HANDOFF, HANDOFF_BAND, HANDOFF_CULL],
+    }
+}
+
+/// A set for `Statics::prepare`: its number (0 the main view, 1 the mirror, 2 and 3 the
+/// layers of the shadow map), the planes of its view, the eye with the view range of the game
+/// in w (0 for a set without the handoff), and the end of its fog.
+pub struct CullSet {
+    pub set: usize,
+    pub planes: [[f32; 4]; 6],
+    pub eye: [f32; 4],
+    pub fog_end: f32,
 }
 
 impl Drop for Statics {
@@ -2034,22 +2265,48 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         multiview_mask: None,
         cache: None,
     });
-    let make_instances = || {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("distant statics, the places of a frame"),
-            size: 1024 * 80,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
-    };
     let [group_main, group_mirror, group_shadow0, group_shadow1] = groups;
     let [uniforms_main, uniforms_mirror, uniforms_shadow0, uniforms_shadow1] = uniform_buffers;
     let sets = [
-        BufferSet { group: group_main, uniforms: uniforms_main, instances: make_instances(), instance_capacity: 1024 },
-        BufferSet { group: group_mirror, uniforms: uniforms_mirror, instances: make_instances(), instance_capacity: 1024 },
-        BufferSet { group: group_shadow0, uniforms: uniforms_shadow0, instances: make_instances(), instance_capacity: 1024 },
-        BufferSet { group: group_shadow1, uniforms: uniforms_shadow1, instances: make_instances(), instance_capacity: 1024 },
+        BufferSet { group: group_main, uniforms: uniforms_main },
+        BufferSet { group: group_mirror, uniforms: uniforms_mirror },
+        BufferSet { group: group_shadow0, uniforms: uniforms_shadow0 },
+        BufferSet { group: group_shadow1, uniforms: uniforms_shadow1 },
     ];
+
+    // The values of every place for the draws, once: the world matrix and the values of the
+    // subset. A draw names its place by its first instance.
+    let mut instance_data: Vec<f32> = Vec::with_capacity(catalog.instances.len().max(1) * 20);
+    for instance in &catalog.instances {
+        let s = &catalog.subsets[instance.subset as usize];
+        instance_data.extend_from_slice(&instance.world);
+        instance_data.extend_from_slice(&[s.palette as f32, s.has_alpha as u32 as f32, s.animate_uv as u32 as f32, 0.0]);
+    }
+    if instance_data.is_empty() {
+        instance_data.resize(20, 0.0);
+    }
+    let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("distant statics, the places"),
+        contents: bytemuck::cast_slice(&instance_data),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let pools = cull::Pools::new(catalog.textures.len(), device);
+    let forced_cpu = std::env::var("MGE_XE_STATICS_CULL").is_ok_and(|value| value == "cpu");
+    let culling = if cull::supported(device) && !forced_cpu {
+        let places: Vec<cull::Place> = catalog
+            .instances
+            .iter()
+            .map(|instance| cull::Place { center: instance.center, radius: instance.radius, subset: instance.subset, tier: instance.tier as u32, group: instance.group as u32, _pad: 0 })
+            .collect();
+        println!("distant statics: the places are chosen on the GPU");
+        Some(cull::Culling::new(device, &places, catalog.subsets.len(), catalog.textures.len()))
+    } else {
+        println!(
+            "distant statics: the places are chosen on the CPU ({})",
+            if forced_cpu { "MGE_XE_STATICS_CULL=cpu" } else { "the device has no first instance or count for indirect draws" }
+        );
+        None
+    };
 
     // The grass: its own uniforms and shader, and the textures of the statics.
     let grass_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -2121,7 +2378,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    Gpu { pipeline, mirror_pipeline, pipeline_lines, mirror_pipeline_lines, shadow_pipeline, sets, textures, texture_views, grass_pipeline, grass_pipeline_lines, grass_group, grass_uniforms, grass_records }
+    Gpu { pipeline, mirror_pipeline, pipeline_lines, mirror_pipeline_lines, shadow_pipeline, sets, textures, texture_views, instances, pools, culling, grass_pipeline, grass_pipeline_lines, grass_group, grass_uniforms, grass_records }
 }
 
 #[cfg(test)]

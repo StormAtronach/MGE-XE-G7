@@ -1942,6 +1942,27 @@ impl Extension for DistantLand {
         self.frames += 1;
         self.near_fog = Some(near_fog);
 
+        // The places of the distant statics for the sets of this frame (the main view, the
+        // layers of the shadow map, the mirror), chosen on the GPU in one command buffer before
+        // the passes that draw them.
+        let water_frame = self.water_frame(scene);
+        if let Some(statics) = self.statics.as_mut() {
+            let eye = [uniforms.eye[0], uniforms.eye[1], uniforms.eye[2], 0.0];
+            let fog_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end);
+            let mut sets = vec![statics::CullSet { set: 0, planes, eye: uniforms.eye, fog_end }];
+            if let Some(shadow) = self.shadow.as_ref().filter(|_| self.shadow_in_frame) {
+                for layer in 0..2 {
+                    sets.push(statics::CullSet { set: 2 + layer, planes: crate::renderer::planes(&shadow.viewproj[layer]), eye, fog_end: 1.0e9 });
+                }
+            }
+            if let (Some(_), Some(frame)) = (self.water.as_ref().filter(|_| self.reflect_statics), water_frame.as_ref()) {
+                let mirrored_view = multiply(&Water::mirror(frame.water_level), &scene.view);
+                let projection = Water::far_projection(scene, frame.draw_distance);
+                sets.push(statics::CullSet { set: 1, planes: Water::reflection_planes(&mirrored_view, &projection), eye, fog_end: fog_end.min(self.near_static_end) });
+            }
+            statics.prepare(scene, &sets);
+        }
+
         // The shadow map: the land and the statics from the sun, in passes of their own
         // that go to the GPU before the frame.
         if let Some(shadow) = self.shadow.as_mut().filter(|_| self.shadow_in_frame) {
@@ -2004,7 +2025,6 @@ impl Extension for DistantLand {
 
         // The reflection in the water: the land and the sky, mirrored, in a pass of their
         // own that goes to the GPU before the frame.
-        let water_frame = self.water_frame(scene);
         if let (Some(water), Some(frame)) = (self.water.as_mut(), water_frame.as_ref()) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection") });
             if let Some(timer) = self.gpu_time.as_ref() {
