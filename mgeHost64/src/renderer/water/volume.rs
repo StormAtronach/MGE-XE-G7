@@ -163,9 +163,17 @@ impl Look {
         look
     }
 
+    /// The name of the water shader of a mod that the look names, in small letters; `None` for
+    /// the standard look.
+    pub fn shader_name(&self) -> Option<String> {
+        let length = self.shader.iter().position(|&b| b == 0).unwrap_or(self.shader.len());
+        let name = String::from_utf8_lossy(&self.shader[..length]).trim().to_ascii_lowercase();
+        (!name.is_empty()).then_some(name)
+    }
+
     /// The look of a marked surface: that of its slot, or the standard look; 99997 reflects
     /// the sky only.
-    fn of(specular_power: f32, table: &HashMap<u32, Look>) -> Look {
+    pub fn of(specular_power: f32, table: &HashMap<u32, Look>) -> Look {
         if specular_power == REFLECTS_SKY {
             return Look { flags: Look::STANDARD.flags & !LOOK_REFLECTS_SCENE, ..Look::STANDARD };
         }
@@ -191,6 +199,8 @@ pub struct FarWater {
     /// The place is in a cell that the game has loaded: the game draws the mesh near the
     /// camera, and this one is left out there.
     pub loaded: bool,
+    /// The base texture of the baked mesh, for a water shader of a mod.
+    pub texture: Option<wgpu::TextureView>,
 }
 
 /// What the frame says about the look of the surfaces.
@@ -248,7 +258,7 @@ struct Surface {
     flow: [f32; 4],
     /// The glow, the opacity and the clarity of the look; then bits: 1 the mesh has normals,
     /// 2 it has vertex colours, 4 the vertex colour tints the water, 8 the vertex alpha is
-    /// the opacity.
+    /// the opacity, 16 the mesh is drawn without the depth test.
     look: [f32; 4],
     /// The view and the projection: those of the game, or those of the distant land for
     /// water among the distant statics.
@@ -256,11 +266,13 @@ struct Surface {
     /// Water among the distant statics: 1; the view depth before which it is left out (the
     /// game draws the mesh there), and how far it reflects what is in the picture.
     far: [f32; 4],
+    /// The free values p0 to p3 of the look, for a water shader.
+    params: [[f32; 4]; 4],
 }
 
 /// The space of one surface in the buffer of the surfaces: a uniform offset is a multiple
 /// of 256 bytes.
-const SLOT: u64 = 256;
+const SLOT: u64 = 512;
 
 /// The entry points of a surface, after the shared shading.
 const VOLUME: &str = "
@@ -273,8 +285,16 @@ struct Surface {
     look: vec4f,
     clip: mat4x4f,
     far: vec4f,
+    params: array<vec4f, 4>,
 }
 @group(1) @binding(0) var<uniform> s: Surface;
+
+// The textures of the mesh, for a water shader: its base texture (white without one), and its
+// second texture (a dark, detail or decal map; transparent black without one, and far away),
+// with mip levels, wrapped.
+@group(3) @binding(0) var mesh0: texture_2d<f32>;
+@group(3) @binding(1) var mesh1: texture_2d<f32>;
+@group(3) @binding(2) var mesh_sampler: sampler;
 
 // The light of the frame on the surfaces (`VolumeLight`): the shadow map of the frame, the
 // lights of the frame with their clusters (`nirender_wgpu::FrameLights`), the caustics.
@@ -400,10 +420,14 @@ struct Out {
     @location(3) color: vec4f,
     // The colour of the water.
     @location(4) tint: vec3f,
+    // The texture coordinates of the mesh: the first set, and the second (the first again
+    // when the mesh has one).
+    @location(5) uv: vec4f,
 }
 
-// The normal and the colour of a vertex that has none come from a buffer of zeros.
-@vertex fn vs(@location(0) local: vec3f, @location(1) normal: vec3f, @location(2) color: vec4f) -> Out {
+// The normal, the colour and the coordinates of a vertex that has none come from a buffer of
+// zeros.
+@vertex fn vs(@location(0) local: vec3f, @location(1) normal: vec3f, @location(2) color: vec4f, @location(3) uv0: vec2f, @location(4) uv1: vec2f) -> Out {
     var out: Out;
     let bits = u32(s.look.w);
     out.world = (s.world * vec4f(local, 1.0)).xyz;
@@ -412,6 +436,7 @@ struct Out {
     // A D3DCOLOR has blue in its first byte.
     out.color = select(vec4f(1.0), color.zyxw, (bits & 2u) != 0u);
     out.tint = s.tint.rgb;
+    out.uv = vec4f(uv0, uv1);
     out.position = s.clip * vec4f(out.world, 1.0);
     out.clip_w = out.position.w;
     return out;
@@ -420,29 +445,135 @@ struct Out {
 // Water among the distant statics (`WaterVolumeDistantVS`): the vertex of a distant static.
 // The generator writes the colour of the water into the vertex colour, and the opacity of the
 // mesh's vertex into its alpha when the look asks for it.
-@vertex fn vs_far(@location(0) position: vec4f, @location(1) normal: vec4f, @location(2) color: vec4f) -> Out {
+@vertex fn vs_far(@location(0) position: vec4f, @location(1) normal: vec4f, @location(2) color: vec4f, @location(3) uv: vec2f) -> Out {
     var out: Out;
     out.world = (s.world * vec4f(position.xyz, 1.0)).xyz;
     out.facing = (s.world * vec4f(normal.xyz * 2.0 - 1.0, 0.0)).xyz;
     out.color = vec4f(1.0, 1.0, 1.0, color.w);
     out.tint = color.zyx;
+    out.uv = vec4f(uv, uv);
     out.position = s.clip * vec4f(out.world, 1.0);
     out.clip_w = out.position.w;
     return out;
 }
 
+// The depth of a surface only, for the count of the dry spaces behind it.
+@fragment fn fs_depth() -> @location(0) vec4f {
+    return vec4f(0.0);
+}
+
+// The surface at a pixel, for a water shader (`docs/water-shaders.md`).
+struct WaterSurface {
+    // The place in the world.
+    world: vec3f,
+    // The way the mesh faces, length 1 (up for a mesh without normals).
+    facing: vec3f,
+    // The colour of the water: the emissive colour of the material; black for the usual.
+    tint: vec3f,
+    // The vertex colour of the mesh (white for a mesh without one; from the distant land,
+    // white with the alpha of the mesh when the look has `opacity=vertex`).
+    color: vec4f,
+    // The texture coordinates of the mesh: the first set in xy, the second in zw.
+    uv: vec4f,
+    // The place in the plane of the ripples: that of the sea for a level surface.
+    flat: vec3f,
+    // The place in the picture (0 to 1), the pixel, and the view depth.
+    screen: vec2f,
+    pixel: vec2f,
+    view_depth: f32,
+}
+
+// The look of a surface (`MGE_WaterLookSet`, the look line of a mesh).
+struct WaterLook {
+    // The drift of the ripples in the world, in units for each second; their speed and their
+    // size (1 is the standard).
+    drift: vec2f,
+    speed: f32,
+    scale: f32,
+    glow: f32,
+    opacity: f32,
+    // Over how many units what is under the surface fades into the colour of deep water.
+    clarity: f32,
+    // The tint of the vertex colour, when the look takes it.
+    tint: vec3f,
+    reflects_scene: bool,
+    distant: bool,
+    no_depth_test: bool,
+    // The free values of the look.
+    p0: vec4f,
+    p1: vec4f,
+    p2: vec4f,
+    p3: vec4f,
+}
+
+// The result of the standard shading, before the glow and the opacity.
+struct WaterShade {
+    colour: vec3f,
+    eye_vec: vec3f,
+    dist: f32,
+    // rgb what the fog adds, a what is left of the colour of the thing.
+    fog: vec4f,
+    // The normal of the ripples as on a level surface, and the way the surface faces (to the
+    // side of the eye).
+    ripple: vec3f,
+    face: vec3f,
+    // How far the view ray goes through the water to what is behind the surface, and how
+    // deep that is under the surface; 4000 or more where the water is deep.
+    ray_depth: f32,
+    water_depth: f32,
+    // How much of the sun reaches the point, 0 to 1.
+    sun: f32,
+}
+
+fn surface_look(surface: WaterSurface) -> WaterLook {
+    var look: WaterLook;
+    let bits = u32(s.look.w);
+    look.drift = s.flow.xy;
+    look.speed = s.flow.z;
+    look.scale = s.flow.w;
+    look.glow = s.look.x;
+    look.opacity = s.look.y * select(1.0, surface.color.a, (bits & 8u) != 0u);
+    look.clarity = max(s.look.z, 1.0);
+    look.tint = select(vec3f(1.0), surface.color.rgb, (bits & 4u) != 0u);
+    look.reflects_scene = s.tint.w > 0.5;
+    look.distant = s.far.x > 0.5;
+    look.no_depth_test = (bits & 16u) != 0u;
+    look.p0 = s.params[0];
+    look.p1 = s.params[1];
+    look.p2 = s.params[2];
+    look.p3 = s.params[3];
+    return look;
+}
+
+// The time of the water, in seconds.
+fn water_time() -> f32 {
+    return u.eye.w;
+}
+
+// A colour with the fog of the shade on it.
+fn fog_apply(colour: vec3f, fog: vec4f) -> vec3f {
+    return fog.a * colour + fog.rgb;
+}
+
+// The colour of the water: a water blue for the usual colour.
+fn glow_colour(tint: vec3f) -> vec3f {
+    return select(vec3f(0.25, 0.5, 0.6), tint, dot(tint, vec3f(1.0)) > 0.0);
+}
+
 // The ripples of the sea with the drift, the speed and the size of the look
-// (`surfaceRipples`). The drift moves the coordinates; it is wrapped, so it keeps its
-// precision over hours.
-fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
-    let t = 0.4 * u.eye.w * s.flow.z;
-    let moved = s.flow.xy * u.eye.w;
-    let scale = max(s.flow.w, 1e-3);
+// (`surfaceRipples`): the normal as on a level surface, z up. The drift moves the
+// coordinates; it is wrapped, so it keeps its precision over hours.
+fn standard_ripple(surface: WaterSurface, look: WaterLook) -> vec3f {
+    let texcoords = vec4f(surface.flat.xy / 3900.0, surface.flat.xy / 527.0);
+    let distance = length(surface.world - u.eye.xyz);
+    let t = 0.4 * u.eye.w * look.speed;
+    let moved = look.drift * u.eye.w;
+    let scale = max(look.scale, 1e-3);
     let far = textureSample(waves, wave_sampler, vec3f(texcoords.xy / scale + fract(moved / 3900.0), t)).rg;
     var close = textureSample(waves, wave_sampler, vec3f(texcoords.zw / scale + fract(moved / 527.0), t)).rg;
     if u.wave.w > 0.5 {
         close += textureSampleLevel(rain, wave_sampler, texcoords.zw, 0.0).ba;
-        let at = (world_xy - u.wave.xy) / 1280.0;
+        let at = (surface.flat.xy - u.wave.xy) / 1280.0;
         if all(at >= vec2f(0.0)) && all(at <= vec2f(1.0)) {
             close += textureSampleLevel(player_waves, clamp_sampler, at, 0.0).ba;
         }
@@ -451,9 +582,97 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     return normalize(vec3f(n, 1.0));
 }
 
-// The depth of a surface only, for the count of the dry spaces behind it.
-@fragment fn fs_depth() -> @location(0) vec4f {
-    return vec4f(0.0);
+// The standard shading, with the standard ripples.
+fn shade_water(surface: WaterSurface, look: WaterLook) -> WaterShade {
+    return shade_water_rippled(surface, look, standard_ripple(surface, look));
+}
+
+// The standard shading up to the look, with the ripples given: `ripple` is the normal of the
+// ripples as on a level surface, z up, of length 1.
+fn shade_water_rippled(surface: WaterSurface, look: WaterLook, ripple: vec3f) -> WaterShade {
+    var eye_vec = surface.world - u.eye.xyz;
+    let dist = length(eye_vec);
+    eye_vec /= dist;
+    let uv = surface.screen;
+    let w = surface.view_depth;
+    // The tests of the branches are of uniforms only: the caustics take a change from pixel
+    // to pixel.
+    let far = s.far.x > 0.5;
+    let no_depth = (u32(s.look.w) & 16u) != 0u;
+    // The way the surface faces, turned to the side of the eye; the ripples tilted to it.
+    let face = select(surface.facing, -surface.facing, dot(surface.facing, eye_vec) > 0.0);
+    let fog = fog_water(eye_vec, dist);
+    let normal = tilt_to(face, ripple);
+    let tint = surface.tint;
+    // In the shadow of a thing the water has no glint of the sun, and its depth has no share
+    // of the sun.
+    let sun = sunlight_at(surface.world);
+    let deep = fog.a * depth_base_sun(tint, sun) * look.tint + fog.rgb;
+    let reffactor = (u.sun_col.w * dist + 0.1) * ripple.xy;
+    // The caustics on what is under a surface that faces up, where the sun reaches it: the
+    // point under the surface is that of the depth along the ray of the eye.
+    // A surface drawn without the depth test (the water of a well, under the ground) has no
+    // depth of what is under it: it shows deep water.
+    var bed_light = 1.0;
+    if lighting.sun.w > 0.0 && !no_depth {
+        let first = max(0.0, ground_at(uv + reffactor.yx / w, far) - w);
+        let ray = first / max(dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z)), 1e-3);
+        let bed = surface.world + eye_vec * ray;
+        let under = vec3f(bed.xy, bed.z - surface.world.z);
+        bed_light = 1.0 + caustic_light(under, lighting.sun.xyz, u.eye.w, dist + ray, lighting.sun.w) * sun * clamp(4.0 * face.z - 3.0, 0.0, 1.0);
+    }
+    var below = Refraction(deep, 0.0, 4000.0);
+    if !no_depth {
+        below = refraction(uv, w, reffactor, eye_vec, ripple, deep, tint, look.clarity, look.tint, far, bed_light);
+    }
+    // Far away and at a flat angle the surface is calm: a ripple is smaller than a pixel.
+    let calm = (1.0 + dot(eye_vec, face)) * (1.0 - clamp(1.0 / (dist / 1000.0 + 1.0), 0.0, 1.0));
+    var adjust = mix(0.1 * face, normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
+    adjust = mix(adjust, face, calm);
+    // The ripples tilt the reflected direction only a little; a direction into the surface
+    // is turned back out of it.
+    var reflect_dir = reflect(eye_vec, normalize(mix(face, normal, 0.35 * (1.0 - calm))));
+    reflect_dir -= 2.0 * min(0.0, dot(reflect_dir, face)) * face;
+    reflect_dir = normalize(reflect_dir);
+    var reflected = mix(sky_color(reflect_dir), s.sky.rgb, s.sky.a);
+    // Far water reflects what is in the picture out to its range, and fades out over the
+    // last quarter of a cell.
+    let scene_weight = select(1.0, clamp((s.far.z - dist) / 2048.0, 0.0, 1.0), far);
+    if s.tint.w > 0.5 && scene_weight > 0.0 {
+        let seen = reflect_scene(surface.world, reflect_dir, far);
+        reflected = mix(reflected, seen.rgb, seen.a * scene_weight);
+    }
+    reflected = mix(fog.rgb, reflected, fog.a);
+    let fresnel = 0.02 + pow(clamp(0.9988 - 0.28 * dot(-eye_vec, adjust), 0.0, 1.0), 16.0);
+    var result = mix(below.color, reflected, fresnel);
+    result += sun_glint(eye_vec, normal, fog.a) * sun;
+    // The lamps and fires near the surface: their glint, and a little of their light in the
+    // body of the water. Not for far water: the lights of the frame are near the camera.
+    if !far {
+        let lit = point_lights(surface.world, eye_vec, normal, face, surface.pixel, w);
+        result += (lit.glint + 0.08 * lit.glow * glow_colour(tint)) * fog.a;
+    }
+    result = mix(result, below.color, below.shore * fog.a);
+    var shade: WaterShade;
+    shade.colour = result;
+    shade.eye_vec = eye_vec;
+    shade.dist = dist;
+    shade.fog = fog;
+    shade.ripple = ripple;
+    shade.face = face;
+    // From the difference of the view depths to the way along the ray.
+    shade.ray_depth = below.depth_first / max(dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z)), 1e-3);
+    shade.water_depth = shade.ray_depth * abs(dot(eye_vec, face));
+    shade.sun = sun;
+    return shade;
+}
+
+// The last steps of the shading, which belong to the look: the light of the surface's own,
+// in the colour of the water, and what is behind a surface that is not all water.
+fn finish_water(surface: WaterSurface, shade: WaterShade, look: WaterLook) -> vec4f {
+    var result = shade.colour + look.glow * glow_colour(surface.tint) * shade.fog.a;
+    result = mix(textureSampleLevel(picture, clamp_sampler, surface.screen, 0.0).rgb, result, look.opacity);
+    return vec4f(result, 1.0);
 }
 
 @fragment fn fs(in: Out) -> @location(0) vec4f {
@@ -479,79 +698,64 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     // sea, so the two agree at a seam.
     let upward = select(facing, -facing, facing.z < 0.0);
     let flat = tilt_to(vec3f(-upward.x, -upward.y, upward.z), in.world - s.anchor.xyz) + s.anchor.xyz;
-    let texcoords = vec4f(flat.xy / 3900.0, flat.xy / 527.0);
     // From under the water each surface has the look from below, as the plane has it.
     if u.fog.w > 0.5 {
-        return underwater(uv, w, texcoords, flat.xy, eye_vec, dist);
+        return underwater(uv, w, vec4f(flat.xy / 3900.0, flat.xy / 527.0), flat.xy, eye_vec, dist);
     }
-    // The way the surface faces, turned to the side of the eye; the ripples tilted to it.
-    let face = select(facing, -facing, dot(facing, eye_vec) > 0.0);
-    let fog = fog_water(eye_vec, dist);
-    let ripple = look_ripples(texcoords, dist, flat.xy);
-    let normal = tilt_to(face, ripple);
-    let tint = in.tint;
-    // The look: the vertex colour tints the water, and its alpha is the opacity, when the
-    // look says so.
-    let bits = u32(s.look.w);
-    let look_tint = select(vec3f(1.0), in.color.rgb, (bits & 4u) != 0u);
-    let opacity = s.look.y * select(1.0, in.color.a, (bits & 8u) != 0u);
-    // In the shadow of a thing the water has no glint of the sun, and its depth has no share
-    // of the sun.
-    let sun = sunlight_at(in.world);
-    let deep = fog.a * depth_base_sun(tint, sun) * look_tint + fog.rgb;
-    let reffactor = (u.sun_col.w * dist + 0.1) * ripple.xy;
-    // The caustics on what is under a surface that faces up, where the sun reaches it: the
-    // point under the surface is that of the depth along the ray of the eye.
-    var bed_light = 1.0;
-    if lighting.sun.w > 0.0 {
-        let first = max(0.0, ground_at(uv + reffactor.yx / w, far) - w);
-        let ray = first / max(dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z)), 1e-3);
-        let bed = in.world + eye_vec * ray;
-        let under = vec3f(bed.xy, bed.z - in.world.z);
-        bed_light = 1.0 + caustic_light(under, lighting.sun.xyz, u.eye.w, dist + ray, lighting.sun.w) * sun * clamp(4.0 * face.z - 3.0, 0.0, 1.0);
-    }
-    let below = refraction(uv, w, reffactor, eye_vec, ripple, deep, tint, max(s.look.z, 1.0), look_tint, far, bed_light);
-    // Far away and at a flat angle the surface is calm: a ripple is smaller than a pixel.
-    let calm = (1.0 + dot(eye_vec, face)) * (1.0 - clamp(1.0 / (dist / 1000.0 + 1.0), 0.0, 1.0));
-    var adjust = mix(0.1 * face, normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
-    adjust = mix(adjust, face, calm);
-    // The ripples tilt the reflected direction only a little; a direction into the surface
-    // is turned back out of it.
-    var reflect_dir = reflect(eye_vec, normalize(mix(face, normal, 0.35 * (1.0 - calm))));
-    reflect_dir -= 2.0 * min(0.0, dot(reflect_dir, face)) * face;
-    reflect_dir = normalize(reflect_dir);
-    var reflected = mix(sky_color(reflect_dir), s.sky.rgb, s.sky.a);
-    // Far water reflects what is in the picture out to its range, and fades out over the
-    // last quarter of a cell.
-    let scene_weight = select(1.0, clamp((s.far.z - dist) / 2048.0, 0.0, 1.0), far);
-    if s.tint.w > 0.5 && scene_weight > 0.0 {
-        let seen = reflect_scene(in.world, reflect_dir, far);
-        reflected = mix(reflected, seen.rgb, seen.a * scene_weight);
-    }
-    reflected = mix(fog.rgb, reflected, fog.a);
-    let fresnel = 0.02 + pow(clamp(0.9988 - 0.28 * dot(-eye_vec, adjust), 0.0, 1.0), 16.0);
-    var result = mix(below.color, reflected, fresnel);
-    result += sun_glint(eye_vec, normal, fog.a) * sun;
-    // The colour of the water: a water blue for the usual colour.
-    let glow_color = select(vec3f(0.25, 0.5, 0.6), tint, dot(tint, vec3f(1.0)) > 0.0);
-    // The lamps and fires near the surface: their glint, and a little of their light in the
-    // body of the water. Not for far water: the lights of the frame are near the camera.
-    if !far {
-        let lit = point_lights(in.world, eye_vec, normal, face, in.position.xy, w);
-        result += (lit.glint + 0.08 * lit.glow * glow_color) * fog.a;
-    }
-    result = mix(result, below.color, below.shore * fog.a);
-    // The light of the surface's own, in the colour of the water. Then what is behind a
-    // surface that is not all water.
-    result += s.look.x * glow_color * fog.a;
-    result = mix(textureSampleLevel(picture, clamp_sampler, uv, 0.0).rgb, result, opacity);
-    return vec4f(result, 1.0);
+    var surface: WaterSurface;
+    surface.world = in.world;
+    surface.facing = facing;
+    surface.tint = in.tint;
+    surface.color = in.color;
+    surface.uv = in.uv;
+    surface.flat = flat;
+    surface.screen = uv;
+    surface.pixel = in.position.xy;
+    surface.view_depth = w;
+    return water_shader(surface);
 }
 ";
 
-/// The shader of the surfaces: the shared shading and the entry points of a surface.
+/// The standard look: the standard shading and nothing more (`XE Mod Water Standard.fx`).
+const STANDARD: &str = "
+fn water_shader(surface: WaterSurface) -> vec4f {
+    let look = surface_look(surface);
+    return finish_water(surface, shade_water(surface, look), look);
+}
+";
+
+/// The shader of the surfaces with the water shader of the look: the shared shading, the
+/// entry points of a surface, and the function `water_shader`.
+fn shader_with(water: &str) -> String {
+    format!("{}{}{}{}", shading::COMMON, shading::CAUSTICS, VOLUME, water).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
+}
+
+/// The shader of the surfaces with the standard look.
 fn shader() -> String {
-    format!("{}{}{}", shading::COMMON, shading::CAUSTICS, VOLUME).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
+    shader_with(STANDARD)
+}
+
+/// The source of a water shader of a mod (`Data Files/shaders/water/<name>.wgsl`), checked as
+/// the device checks it. The file starts with the line `//! interface: mge-xe-water-wgsl 1`;
+/// the rest is WGSL with the function `water_shader` (`docs/water-shaders.md`).
+pub fn water_shader_source(file: &str) -> Result<String, String> {
+    let mut interface = false;
+    for line in file.lines() {
+        let Some(rest) = line.strip_prefix("//!") else { break };
+        let Some((key, value)) = rest.split_once(':') else { return Err(format!("the line `{line}` has no `key: value`")) };
+        match key.trim() {
+            "interface" => interface = value.trim() == "mge-xe-water-wgsl 1",
+            other => return Err(format!("the key `{other}` is not known")),
+        }
+    }
+    if !interface {
+        return Err("no line `//! interface: mge-xe-water-wgsl 1` at its start".to_string());
+    }
+    let source = shader_with(file);
+    use wgpu::naga;
+    let module = naga::front::wgsl::parse_str(&source).map_err(|error| error.emit_to_string(&source))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).map_err(|error| error.emit_to_string(&source))?;
+    Ok(source)
 }
 
 /// What makes the pipelines of two surfaces differ: the vertex layout, the topology and the
@@ -570,16 +774,50 @@ struct Key {
     cut: bool,
     /// The depth only, for the count of the dry spaces behind it.
     depth_only: bool,
+    /// The mesh is drawn with the depth test (and writes its depth); without it, it is drawn
+    /// whatever the depth is, as it asks.
+    depth_test: bool,
+    /// The stencil test of the mesh, when it has one: the function, the mask, and the
+    /// operations on a failed test, a failed depth test and a pass (Direct3D values). The
+    /// reference is set for each draw.
+    stencil: Option<[u32; 5]>,
+    /// The offsets of the two sets of texture coordinates (the first again for a mesh with
+    /// one set); none without coordinates.
+    coordinates: [Option<u64>; 2],
+    /// The water shader: 0 the standard one, else one of a mod (`Volumes::modules`).
+    shader: u16,
+}
+
+/// The tests that a held shape asks for: the depth test, and its own stencil test (see `Key`).
+fn tests_of(held: &HeldDraw) -> (bool, Option<[u32; 5]>) {
+    // D3DCMP_ALWAYS is 8: the game turns the depth test off that way too.
+    let depth_test = held.depth[0] != 0 && held.depth[2] != 8;
+    let s = held.stencil;
+    (depth_test, (s[0] != 0).then_some([s[1], s[3], s[4], s[5], s[6]]))
 }
 
 pub(super) struct Volumes {
-    module: wgpu::ShaderModule,
+    /// The shader with each water shader: the standard one first, then those of mods, by
+    /// their names in `shaders`. A name whose file is missing or fails has the standard one.
+    modules: Vec<wgpu::ShaderModule>,
+    shaders: HashMap<String, u16>,
+    /// The group of the textures of the mesh, its sampler, and a group of white textures for
+    /// the standard look.
+    mesh_layout: wgpu::BindGroupLayout,
+    mesh_sampler: wgpu::Sampler,
+    white: wgpu::TextureView,
+    clear: wgpu::TextureView,
+    plain_mesh: wgpu::BindGroup,
     pipeline_layout: wgpu::PipelineLayout,
     surface_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<Key, wgpu::RenderPipeline>,
     /// The values of the surfaces of a frame, one slot each, and their group.
     surfaces: wgpu::Buffer,
     capacity: u64,
+    /// The slots that the draws of this frame have used: a frame can draw surfaces more than
+    /// once (`draw_held`, and a surface in its place), and each draw writes its own slots, since
+    /// the writes come before the commands of the frame.
+    used: u64,
     group: wgpu::BindGroup,
     /// Zeros for the inputs that a vertex does not have.
     defaults: wgpu::Buffer,
@@ -602,6 +840,23 @@ impl Volumes {
     pub fn new(scene: &SceneView, frame_layout: &wgpu::BindGroupLayout) -> Volumes {
         let device = scene.device;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water volume"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
+        let mesh_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("water volume mesh"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let mesh_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("water volume mesh"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
         let surface_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water volume"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -625,7 +880,7 @@ impl Volumes {
                 entry(5, storage),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water volume"), bind_group_layouts: &[Some(frame_layout), Some(&surface_layout), Some(&light_layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water volume"), bind_group_layouts: &[Some(frame_layout), Some(&surface_layout), Some(&light_layout), Some(&mesh_layout)], immediate_size: 0 });
         let lighting = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume light"), size: size_of::<Lighting>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         use wgpu::util::DeviceExt;
         let no_shadow = device
@@ -653,15 +908,42 @@ impl Volumes {
             zeros("water volume no cluster table", 8, wgpu::BufferUsages::STORAGE),
             zeros("water volume no cluster lights", 4, wgpu::BufferUsages::STORAGE),
         ];
+        let one_texel = |label, texel: [u8; 4]| device
+            .create_texture_with_data(
+                scene.queue,
+                &wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::MipMajor,
+                &texel,
+            )
+            .create_view(&Default::default());
+        let white = one_texel("water volume white", [255; 4]);
+        let clear = one_texel("water volume clear", [0; 4]);
+        let plain_mesh = Self::mesh_group_of(device, &mesh_layout, &mesh_sampler, &white, &clear);
         let (surfaces, group) = Self::slots(device, &surface_layout, 16);
         let defaults = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume defaults"), size: 32, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: false });
         Volumes {
-            module,
+            modules: vec![module],
+            shaders: HashMap::new(),
+            mesh_layout,
+            mesh_sampler,
+            white,
+            clear,
+            plain_mesh,
             pipeline_layout,
             surface_layout,
             pipelines: HashMap::new(),
             surfaces,
             capacity: 16,
+            used: 0,
             group,
             defaults,
             light_layout,
@@ -709,6 +991,57 @@ impl Volumes {
         })
     }
 
+    /// The start of a frame: no slots are used.
+    pub fn start_frame(&mut self) {
+        self.used = 0;
+    }
+
+    /// True when the water shader of this name has been asked for before.
+    pub fn knows_shader(&self, name: &str) -> bool {
+        self.shaders.contains_key(name)
+    }
+
+    /// Adds the water shader of a mod by its name, from its file (`None`: there is none). A
+    /// shader that fails has the standard look, and the reason is returned.
+    pub fn add_shader(&mut self, device: &wgpu::Device, name: &str, file: Option<&str>) -> Result<(), String> {
+        let result = file.ok_or_else(|| "no file shaders/water/<name>.wgsl".to_string()).and_then(water_shader_source);
+        let index = match &result {
+            Ok(source) => {
+                let label = format!("water shader {name}");
+                self.modules.push(device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(&label), source: wgpu::ShaderSource::Wgsl(source.as_str().into()) }));
+                (self.modules.len() - 1) as u16
+            }
+            Err(_) => 0,
+        };
+        self.shaders.insert(name.to_string(), index);
+        result.map(|_| ())
+    }
+
+    /// The water shader of a look.
+    fn shader_of(&self, look: &Look) -> u16 {
+        look.shader_name().and_then(|name| self.shaders.get(&name).copied()).unwrap_or(0)
+    }
+
+    fn mesh_group_of(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, base: &wgpu::TextureView, second: &wgpu::TextureView) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("water volume mesh"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(base) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(second) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        })
+    }
+
+    /// The textures of a held mesh for a water shader: its base map, and the first of its
+    /// other maps (a dark, detail or decal map).
+    fn mesh_group(&self, device: &wgpu::Device, held: &HeldDraw) -> wgpu::BindGroup {
+        let base = held.maps.iter().find(|m| m.map == nirender_wgpu::material::BASE).map_or(&self.white, |m| &*m.texture);
+        let second = held.maps.iter().filter(|m| m.map != nirender_wgpu::material::BASE).min_by_key(|m| m.map).map_or(&self.clear, |m| &*m.texture);
+        Self::mesh_group_of(device, &self.mesh_layout, &self.mesh_sampler, base, second)
+    }
+
     /// A buffer of `count` slots and its group.
     fn slots(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, count: u64) -> (wgpu::Buffer, wgpu::BindGroup) {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume surfaces"), size: count * SLOT, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -724,12 +1057,12 @@ impl Volumes {
     }
 
     fn pipeline(&mut self, device: &wgpu::Device, key: Key) -> &wgpu::RenderPipeline {
-        let (module, layout, target_format, depth_format) = (&self.module, &self.pipeline_layout, self.target_format, self.depth_format);
+        let (module, layout, target_format, depth_format) = (&self.modules[key.shader as usize], &self.pipeline_layout, self.target_format, self.depth_format);
         self.pipelines.entry(key).or_insert_with(|| {
             if key.far {
                 // A distant static: the position with the palette entry, the normal with the
                 // light of the material, the colour, the coordinate (statics.rs).
-                let attributes = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4];
+                let attributes = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4, 3 => Float16x2];
                 return device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("water volume, far"),
                     layout: Some(layout),
@@ -772,6 +1105,12 @@ impl Volumes {
                 Some(color) => attributes.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: color, shader_location: 2 }),
                 None => missing.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 16, shader_location: 2 }),
             }
+            for (set, location) in key.coordinates.iter().zip([3, 4]) {
+                match set {
+                    Some(offset) => attributes.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: *offset, shader_location: location }),
+                    None => missing.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: location }),
+                }
+            }
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("water volume"),
                 layout: Some(layout),
@@ -791,11 +1130,27 @@ impl Volumes {
                     polygon_mode: if key.lines { wgpu::PolygonMode::Line } else { wgpu::PolygonMode::Fill },
                     ..Default::default()
                 },
+                // A mesh drawn whatever the depth is writes no depth: it can lie under the
+                // ground, as the water of a well that only its mask shows.
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth_format,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: if key.cut { super::dry::outside() } else { Default::default() },
+                    depth_write_enabled: Some(key.depth_test),
+                    depth_compare: Some(if key.depth_test { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always }),
+                    stencil: match key.stencil {
+                        // The test of the mesh, without the bit of the dry spaces.
+                        Some([function, mask, fail, depth_fail, pass]) => {
+                            let face = wgpu::StencilFaceState {
+                                compare: nirender_wgpu::d3d_compare(function),
+                                fail_op: nirender_wgpu::d3d_stencil_operation(fail),
+                                depth_fail_op: nirender_wgpu::d3d_stencil_operation(depth_fail),
+                                pass_op: nirender_wgpu::d3d_stencil_operation(pass),
+                            };
+                            let others = 0xFF & !super::dry::DRY_BIT;
+                            wgpu::StencilState { front: face, back: face, read_mask: mask & others, write_mask: others }
+                        }
+                        None if key.cut => super::dry::outside(),
+                        None => Default::default(),
+                    },
                     bias: Default::default(),
                 }),
                 multisample: Default::default(),
@@ -828,10 +1183,14 @@ impl Volumes {
             return 0;
         }
         let count = (far.len() + surfaces.len()) as u64;
-        if count > self.capacity {
-            self.capacity = count.next_power_of_two();
+        if self.used + count > self.capacity {
+            // A new buffer: the draws before in the frame keep the old one.
+            self.capacity = (self.used + count).next_power_of_two();
             (self.surfaces, self.group) = Self::slots(scene.device, &self.surface_layout, self.capacity);
+            self.used = 0;
         }
+        let base = self.used;
+        self.used += count;
         let mut bytes = vec![0u8; (count * SLOT) as usize];
         let game_view_projection = crate::renderer::multiply(&scene.view, &scene.projection);
         for (index, water) in far.iter().enumerate() {
@@ -850,6 +1209,7 @@ impl Volumes {
                 look: [look.glow, look.opacity, look.clarity, bits as f32],
                 clip: frame_look.land_view_projection,
                 far: [1.0, if water.loaded { frame_look.view_range } else { 0.0 }, frame_look.reflect_range, 0.0],
+                params: look.params,
             };
             let at = index * SLOT as usize;
             bytes[at..at + size_of::<Surface>()].copy_from_slice(bytemuck::bytes_of(&surface));
@@ -873,7 +1233,8 @@ impl Volumes {
             let bits = held.layout.normal.is_some() as u32
                 | (has_color as u32) << 1
                 | ((has_color && look.flags & LOOK_TINT_FROM_VERTEX != 0) as u32) << 2
-                | ((has_color && look.flags & LOOK_OPACITY_FROM_VERTEX != 0) as u32) << 3;
+                | ((has_color && look.flags & LOOK_OPACITY_FROM_VERTEX != 0) as u32) << 3
+                | (!tests_of(held).0 as u32) << 4;
             let surface = Surface {
                 world,
                 tint: [emissive[0], emissive[1], emissive[2], if reflects { 1.0 } else { 0.0 }],
@@ -883,20 +1244,28 @@ impl Volumes {
                 look: [look.glow, look.opacity, look.clarity, bits as f32],
                 clip: game_view_projection,
                 far: [0.0; 4],
+                params: look.params,
             };
             let at = index * SLOT as usize;
             bytes[at..at + size_of::<Surface>()].copy_from_slice(bytemuck::bytes_of(&surface));
         }
-        scene.queue.write_buffer(&self.surfaces, 0, &bytes);
+        scene.queue.write_buffer(&self.surfaces, base * SLOT, &bytes);
         let lines = scene.wireframe && scene.device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         let light_group = self.light_group(scene, light);
         pass.set_bind_group(0, frame_group, &[]);
         pass.set_bind_group(2, &light_group, &[]);
         if !far.is_empty() {
-            let key = Key { stride: 20, position: 0, normal: None, color: None, topology: wgpu::PrimitiveTopology::TriangleList, lines, far: true, cut: false, depth_only: false };
-            pass.set_pipeline(self.pipeline(scene.device, key));
             for (index, water) in far.iter().enumerate() {
-                pass.set_bind_group(1, &self.group, &[(index as u64 * SLOT) as u32]);
+                let shader = self.shader_of(&water.look);
+                let key = Key { stride: 20, position: 0, normal: None, color: None, topology: wgpu::PrimitiveTopology::TriangleList, lines, far: true, cut: false, depth_only: false, depth_test: true, stencil: None, coordinates: [None; 2], shader };
+                pass.set_pipeline(self.pipeline(scene.device, key));
+                // A water shader of a mod has the base texture of the baked mesh.
+                let mesh = match (&water.texture, shader) {
+                    (Some(texture), 1..) => Self::mesh_group_of(scene.device, &self.mesh_layout, &self.mesh_sampler, texture, &self.clear),
+                    _ => self.plain_mesh.clone(),
+                };
+                pass.set_bind_group(3, &mesh, &[]);
+                pass.set_bind_group(1, &self.group, &[((base + index as u64) * SLOT) as u32]);
                 pass.set_vertex_buffer(0, water.vertices.slice(..));
                 pass.set_index_buffer(water.indexes.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..water.triangles * 3, 0, 0..1);
@@ -918,10 +1287,22 @@ impl Volumes {
             for (index, held) in surfaces.iter().enumerate() {
                 let index = far.len() + index;
                 let layout = &held.layout;
-                let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines: lines && !cut && !depth_only, far: false, cut, depth_only };
+                // A surface with a stencil test of its own is not cut by the dry spaces, and one
+                // without the depth test has no depth to count behind.
+                let (depth_test, stencil) = tests_of(held);
+                if depth_only && (stencil.is_some() || !depth_test) {
+                    continue;
+                }
+                let cut = cut && stencil.is_none();
+                let shader = if depth_only { 0 } else { self.shader_of(&Look::of(held.facts.specular_power, looks)) };
+                let first = layout.coordinates.first().copied();
+                let coordinates = [first, layout.coordinates.get(1).copied().or(first)];
+                let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines: lines && !cut && !depth_only, far: false, cut, depth_only, depth_test, stencil, coordinates, shader };
                 pass.set_pipeline(self.pipeline(scene.device, key));
-                pass.set_stencil_reference(0);
-                pass.set_bind_group(1, &self.group, &[(index as u64 * SLOT) as u32]);
+                let mesh = if shader == 0 { self.plain_mesh.clone() } else { self.mesh_group(scene.device, held) };
+                pass.set_bind_group(3, &mesh, &[]);
+                pass.set_stencil_reference(if stencil.is_some() { held.stencil[2] } else { 0 });
+                pass.set_bind_group(1, &self.group, &[((base + index as u64) * SLOT) as u32]);
                 pass.set_bind_group(2, &light_group, &[]);
                 pass.set_vertex_buffer(0, held.vertices.slice(..));
                 pass.set_vertex_buffer(1, self.defaults.slice(..));
@@ -963,6 +1344,9 @@ mod tests {
         assert_eq!(look.flags, LOOK_HAS_SKY | LOOK_OPACITY_FROM_VERTEX);
         assert_eq!(look.params[2], [1.0, 2.0, 0.0, 0.0]);
         assert_eq!(&look.shader[..5], b"foam\0");
+        assert_eq!(look.shader_name().as_deref(), Some("foam"));
+        assert_eq!(Look::STANDARD.shader_name(), None);
+        assert_eq!(Look::parse("shader=TW_Lava").shader_name().as_deref(), Some("tw_lava"));
         assert_eq!(look.clarity, 800.0);
         assert_eq!(Look::parse("sky=0.5,0.25,1 opacity=0.4").sky, [0.5, 0.25, 1.0]);
         assert_eq!(Look::of_distant(1, None), Look::STANDARD);
@@ -1004,5 +1388,23 @@ mod tests {
         for entry in ["vs", "vs_far", "fs", "fs_depth"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
+    }
+
+    /// A water shader of a mod: the interface line, the functions it may call, the textures
+    /// of the mesh, and an error for a file that is not one.
+    #[test]
+    fn a_water_shader_of_a_mod() {
+        let file = "//! interface: mge-xe-water-wgsl 1
+fn water_shader(surface: WaterSurface) -> vec4f {
+    let look = surface_look(surface);
+    var shade = shade_water_rippled(surface, look, standard_ripple(surface, look));
+    let base = textureSample(mesh0, mesh_sampler, surface.uv.xy).rgb * look.p0.x;
+    shade.colour = fog_apply(mix(base, textureSample(mesh1, mesh_sampler, surface.uv.zw).rgb, 0.5), shade.fog) + 0.0 * water_time();
+    return finish_water(surface, shade, look);
+}
+";
+        assert!(water_shader_source(file).is_ok(), "{:?}", water_shader_source(file).err());
+        assert!(water_shader_source("fn water_shader(surface: WaterSurface) -> vec4f { return vec4f(1.0); }").unwrap_err().contains("interface"));
+        assert!(water_shader_source("//! interface: mge-xe-water-wgsl 1\nfn water_shader(x: f32) -> f32 { return x; }").is_err());
     }
 }

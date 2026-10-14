@@ -1437,6 +1437,9 @@ impl Extension for DistantLand {
         // The surfaces of water volumes: in any cell, when the water is there. The lights of
         // the frame are binned for them when the last frame drew one near the camera.
         let near_volumes = std::mem::replace(&mut self.volumes_drawn, false);
+        if let Some(water) = self.water.as_mut() {
+            water.start_frame();
+        }
         self.far_water.clear();
         self.volumes_ready = self.enabled && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_some();
         // In a water volume its top is the level of the water of the frame: the sea plane is
@@ -2080,20 +2083,6 @@ impl Extension for DistantLand {
     /// blends goes over them, and they show what is under them.
     fn draw_held(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
         let Some(frame) = self.volume_frame(scene) else { return };
-        // What a surface reflects in place of the sky in an interior: the light of the room,
-        // as the reflection of the water of the cell has it.
-        let sky = if self.like_exterior {
-            [0.0; 4]
-        } else {
-            let light: [f32; 3] = core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0));
-            [light[0], light[1], light[2], 1.0]
-        };
-        let look = water::VolumeLook {
-            reflect_range: self.volume_reflect_cells * CELL,
-            sky,
-            land_view_projection: multiply(&scene.view, &self.land_projection(scene)),
-            view_range: self.environment.map_or(0.0, |e| e.near_view_range),
-        };
         // The caustics under the sea first, on the picture of the game: the surfaces of volumes
         // then go over them.
         if self.sea_caustics() {
@@ -2113,20 +2102,24 @@ impl Extension for DistantLand {
                 water.draw_sea_caustics(scene, pass, &frame, self.ripples.as_ref(), caustics, &caustics_frame);
             }
         }
-        // The light of the frame on the surfaces, each part as its setting says.
-        let shadow = self.shadow.as_ref().filter(|_| self.volume_shadows && self.shadow_in_frame).map(|shadow| (&*shadow.atlas_view, shadow.viewproj, 1.0 / shadow.resolution as f32));
-        let outdoors = self.like_exterior && !scene.interior;
-        let light = water::VolumeLight {
-            shadow,
-            lights: scene.lights.as_ref().filter(|_| self.volume_point_lights),
-            caustics: if self.volume_caustics && outdoors { water::caustic_strength(self.caustics_intensity, frame.sun_vis, frame.fog_color_far) } else { 0.0 },
-            sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
-        };
         let far = std::mem::take(&mut self.far_water);
-        if let Some(water) = self.water.as_mut() {
-            // The flag is for the near surfaces: the sea plane at the top of the volume of
-            // the camera goes when one was drawn.
-            self.volumes_drawn = water.draw_volumes(scene, pass, &frame, self.ripples.as_ref(), held, &far, &look, &self.water_looks, &light) > far.len();
+        // The flag is for the near surfaces: the sea plane at the top of the volume of the
+        // camera goes when one was drawn.
+        self.volumes_drawn = self.draw_surfaces(scene, pass, &frame, held, &far) > far.len();
+    }
+
+    /// A surface that shows through a mask of its mesh (its own stencil test, as the water of
+    /// a well) is drawn in its place in the order of the game: after the mask, which the
+    /// shapes before it in the mesh write, and before the shapes after it that draw over it
+    /// through the same mask (the shaft of a well).
+    fn held_in_place(&self, held: &nirender_wgpu::HeldDraw) -> bool {
+        water::volume_marked(held.facts.specular_power) && held.stencil[0] != 0
+    }
+
+    fn draw_held_in_place(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
+        let Some(frame) = self.volume_frame(scene) else { return };
+        if self.draw_surfaces(scene, pass, &frame, held, &[]) > 0 {
+            self.volumes_drawn = true;
         }
     }
 
@@ -2176,6 +2169,50 @@ impl DistantLand {
     /// setting above 0. The held stage draws them, where the count of the dry spaces is.
     fn sea_caustics(&self) -> bool {
         !self.interior && self.caustics_intensity > 0.0 && self.environment.is_some_and(|e| e.has_water != 0) && self.water.is_some()
+    }
+
+    /// Draws the surfaces of water volumes among `held` and the far water `far`, with the look
+    /// and the light of the frame. Returns the number drawn (`Water::draw_volumes`).
+    fn draw_surfaces(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, held: &[nirender_wgpu::HeldDraw], far: &[water::FarWater]) -> usize {
+        // What a surface reflects in place of the sky in an interior: the light of the room,
+        // as the reflection of the water of the cell has it.
+        let sky = if self.like_exterior {
+            [0.0; 4]
+        } else {
+            let light: [f32; 3] = core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0));
+            [light[0], light[1], light[2], 1.0]
+        };
+        let look = water::VolumeLook {
+            reflect_range: self.volume_reflect_cells * CELL,
+            sky,
+            land_view_projection: multiply(&scene.view, &self.land_projection(scene)),
+            view_range: self.environment.map_or(0.0, |e| e.near_view_range),
+        };
+        // The light of the frame on the surfaces, each part as its setting says.
+        let shadow = self.shadow.as_ref().filter(|_| self.volume_shadows && self.shadow_in_frame).map(|shadow| (&*shadow.atlas_view, shadow.viewproj, 1.0 / shadow.resolution as f32));
+        let outdoors = self.like_exterior && !scene.interior;
+        let light = water::VolumeLight {
+            shadow,
+            lights: scene.lights.as_ref().filter(|_| self.volume_point_lights),
+            caustics: if self.volume_caustics && outdoors { water::caustic_strength(self.caustics_intensity, frame.sun_vis, frame.fog_color_far) } else { 0.0 },
+            sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
+        };
+        let Some(water) = self.water.as_mut() else { return 0 };
+        // The water shaders of mods that the looks name, the first time one is named: from
+        // `Data Files/shaders/water/<name>.wgsl`.
+        let mut names: Vec<String> = far.iter().filter_map(|w| w.look.shader_name()).collect();
+        names.extend(held.iter().filter(|h| water::volume_marked(h.facts.specular_power)).filter_map(|h| water::Look::of(h.facts.specular_power, &self.water_looks).shader_name()));
+        for name in names {
+            if water.knows_water_shader(&name) {
+                continue;
+            }
+            let file = data_file(&self.root, &format!("shaders/water/{name}.wgsl")).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+            match water.add_water_shader(scene.device, &name, file.as_deref()) {
+                Ok(()) => println!("water shader {name}: loaded"),
+                Err(problem) => println!("water shader {name}: the standard look in its place: {problem}"),
+            }
+        }
+        water.draw_volumes(scene, pass, frame, self.ripples.as_ref(), held, far, &look, &self.water_looks, &light)
     }
 
     /// What the water needs from the environment of the frame, or `None` without water in

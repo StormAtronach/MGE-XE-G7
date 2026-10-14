@@ -89,3 +89,59 @@ land; MGE XE gives both the same vertex. Far away:
 - From under the surface every surface has the underwater pass.
 - The cost of a water shader is the cost of its author. The standard pass has about 360
   instruction slots.
+
+## The wgpu renderer
+
+The wgpu renderer (`mgeHost64`) cannot run HLSL. A mod ships the same shader in WGSL beside
+the `.fx` file: `Data Files\shaders\water\<name>.wgsl`. A surface whose look names `<name>`
+uses the `.wgsl` file with the wgpu renderer and the `.fx` file with Direct3D 9. The example
+is `tw_lava.wgsl` of the True Water lava pool.
+
+The file starts with the line `//! interface: mge-xe-water-wgsl 1`. The rest is WGSL with one
+function:
+
+```wgsl
+//! interface: mge-xe-water-wgsl 1
+fn water_shader(surface: WaterSurface) -> vec4f {
+    let look = surface_look(surface);
+    var shade = shade_water(surface, look);
+
+    // Change shade.colour here.
+
+    return finish_water(surface, shade, look);
+}
+```
+
+Each water shader is a shader module of its own, so the names of a file do not meet those of
+another file, and there is no limit of registers: two calls of the standard shading are only
+slower. The renderer checks the file when a look first names it; a file that fails has the
+standard look, and `nirender-host.log` in the game folder has the line `water shader <name>:`
+with the message of the compiler.
+
+| Name | What it is |
+| --- | --- |
+| `surface.world` | The place in the world |
+| `surface.facing` | The way the mesh faces, length 1 (up for a mesh without normals) |
+| `surface.tint` | The colour of the water: the emissive colour of the material |
+| `surface.color` | The vertex colour of the mesh, as `IN.color` |
+| `surface.uv` | The texture coordinates of the mesh, as `IN.uv` |
+| `surface.flat` | The place in the plane of the ripples (that of the sea for a level surface) |
+| `surface.screen`, `surface.pixel`, `surface.view_depth` | The place in the picture (0 to 1), the pixel, the view depth |
+| `mesh0`, `mesh1`, `mesh_sampler` | The base texture of the mesh (white without one) and its second texture (transparent black without one, and far away), with mip levels, wrapped |
+| `surface_look(surface)` | `WaterLook`: `drift`, `speed`, `scale`, `glow`, `opacity`, `clarity`, `tint`, `reflects_scene`, `distant`, `no_depth_test`, `p0` to `p3` |
+| `standard_ripple(surface, look)` | The standard ripples: the normal as on a level surface, z up |
+| `shade_water(surface, look)`, `shade_water_rippled(surface, look, ripple)` | The standard shading up to the look |
+| `WaterShade` | `colour`, `eye_vec`, `dist`, `fog`, `ripple`, `face`, `ray_depth`, `water_depth`, `sun` |
+| `finish_water(surface, shade, look)` | The last steps: glow and opacity |
+| `fog_apply(colour, fog)`, `water_time()` | The fog of the shade on a colour; the time of the water in seconds |
+
+The rest of the shared shading can be used too (`u` for the values of the frame,
+`reflect_scene`, `sky_color`), but it can change; the names above are the interface.
+
+`textureSample` needs uniform control flow in WGSL. Read the textures before a branch that
+depends on the pixel, or use `textureSampleLevel` in it, and use `select` for a choice of
+values.
+
+A surface with a stencil test of its own (the water of a well, behind the mask of its opening)
+is drawn in its place in the order of the game, after the mask, as the engine draws the shapes
+of a mesh in order. That is so for every shader.

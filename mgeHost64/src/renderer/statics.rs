@@ -506,6 +506,8 @@ struct Gpu {
     /// The main view, the reflection, and the two layers of the shadow map.
     sets: [BufferSet; 4],
     textures: Vec<wgpu::BindGroup>,
+    /// The same textures, for a water shader of a mod on far water.
+    texture_views: Vec<wgpu::TextureView>,
     grass_pipeline: wgpu::RenderPipeline,
     grass_pipeline_lines: Option<wgpu::RenderPipeline>,
     grass_group: wgpu::BindGroup,
@@ -1191,6 +1193,7 @@ impl Statics {
                         world: instance.world,
                         look,
                         loaded: px >= loaded[0] && py >= loaded[1] && px < loaded[2] && py < loaded[3],
+                        texture: self.gpu.as_ref().and_then(|gpu| gpu.texture_views.get(subset.texture as usize).cloned()),
                     });
                 }
             }
@@ -1507,6 +1510,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         .create_view(&Default::default());
     let mut missing = Vec::new();
     let mut textures = Vec::with_capacity(catalog.textures.len());
+    let mut texture_views = Vec::with_capacity(catalog.textures.len());
     for (name, bytes) in catalog.textures.iter().zip(&loaded.textures) {
         let view = match bytes.as_ref().map(|bytes| dds_texture(scene, name, bytes)) {
             Some(Ok(view)) => view,
@@ -1524,6 +1528,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
             layout: &texture_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
         }));
+        texture_views.push(view);
     }
     if !missing.is_empty() {
         println!("distant statics: {} textures are white: {}", missing.len(), missing.iter().take(6).cloned().collect::<Vec<_>>().join("; "));
@@ -1695,5 +1700,5 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    Gpu { pipeline, mirror_pipeline, pipeline_lines, mirror_pipeline_lines, shadow_pipeline, sets, textures, grass_pipeline, grass_pipeline_lines, grass_group, grass_uniforms, grass_records }
+    Gpu { pipeline, mirror_pipeline, pipeline_lines, mirror_pipeline_lines, shadow_pipeline, sets, textures, texture_views, grass_pipeline, grass_pipeline_lines, grass_group, grass_uniforms, grass_records }
 }

@@ -826,6 +826,22 @@ impl Water {
         }
     }
 
+    /// The start of a frame, for the surfaces of water volumes.
+    pub fn start_frame(&mut self) {
+        self.volumes.start_frame();
+    }
+
+    /// True when the water shader of a mod of this name has been asked for before.
+    pub fn knows_water_shader(&self, name: &str) -> bool {
+        self.volumes.knows_shader(name)
+    }
+
+    /// Adds the water shader of a mod from its file (`None`: there is none). A shader that
+    /// fails has the standard look, and the reason is returned.
+    pub fn add_water_shader(&mut self, device: &wgpu::Device, name: &str, file: Option<&str>) -> Result<(), String> {
+        self.volumes.add_shader(device, name, file)
+    }
+
     /// The water among the distant statics drawn since the start.
     pub fn far_drawn(&self) -> u64 {
         self.volumes.far_drawn
