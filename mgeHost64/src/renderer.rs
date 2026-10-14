@@ -272,7 +272,7 @@ pub struct DistantLand {
     near_fog: Option<(f32, f32)>,
     /// The settings for the light for each pixel: on, only in interior cells, and the number
     /// that the radius of a light is multiplied with for its end (0: no end).
-    per_pixel: (bool, bool, f32),
+    per_pixel: (bool, bool, f32, bool),
     /// The world of the frame is in an interior cell.
     interior: bool,
     /// The cell of the frame is an exterior, or an interior that is like one: the fact of the
@@ -629,6 +629,7 @@ impl DistantLand {
                 settings.per_pixel_lighting,
                 matches!(settings.per_pixel_mode, mge_config::PerPixelMode::InteriorsOnly),
                 if settings.per_pixel_light_fade { settings.per_pixel_light_fade_radius } else { 0.0 },
+                settings.per_pixel_original_lights,
             ),
             interior: false,
             like_exterior: true,
@@ -1171,13 +1172,20 @@ struct PerPixel {
     ambient: f32,
     /// A point light ends at this number times its radius. 0: a light has no end.
     fade: f32,
+    /// The lights as MGE XE on Direct3D 9 decodes them
+    /// (`distant_land.per_pixel_original_lights`); else the lights of the game.
+    original: bool,
 }
 
-/// The light of a pixel, as the shader of MGE XE for its light for each pixel makes it
-/// (`PerPixelPS` of `XE FixedFuncEmu.fx`), and its curve. `shade` packs the lights of the
-/// draw for it: a directional light is the sun; for a point light `ambient.x` is a part that
-/// does not depend on the normal, `attenuation.z` and `attenuation.x` are the two numbers
-/// of the falloff, and `cone.x` is 1 over the distance where the light ends (0: no end).
+/// The light of a pixel, and the curve of MGE XE for its light for each pixel. A point light
+/// is the light of the game (bit 512 of `counts.w`): its colour, its ambient colour, the
+/// three numbers of its falloff and its range, as the fixed function of Direct3D 8 lights a
+/// vertex, at the pixel. Without bit 512 it is packed as MGE XE on Direct3D 9 has it
+/// (`PerPixelPS` of `XE FixedFuncEmu.fx`, `distant_land.per_pixel_original_lights`):
+/// `ambient.x` is a part that does not depend on the normal, `attenuation.z` and
+/// `attenuation.x` are the two numbers of the falloff. In both, `cone.x` is 1 over the
+/// distance where the light ends (0: no end), the fade of MGE XE, and a directional light
+/// is the sun.
 /// Bit 2 of `counts.w`: the fog makes the colour darker and adds no fog colour (a draw that
 /// adds to the picture). Bit 256 with it: the camera is under water, and the light of the
 /// draw goes to the colour of the water with the distance.
@@ -1271,6 +1279,22 @@ fn extension_shade(in: VertexOut) -> vec4f {
         if light.position.w == 3.0 {
             d += light.diffuse.rgb * clamp(dot(normal, -light.direction.xyz), 0.0, 1.0);
             a += light.ambient.rgb;
+        } else if (draw.counts.w & 512u) != 0u {
+            // The light of the game: the whole falloff, the range, the colour and the ambient
+            // colour of the light, and the fade of MGE XE over the last quarter.
+            let to_light = light.position.xyz - in.world_position;
+            let distance2 = dot(to_light, to_light);
+            let distance = sqrt(distance2);
+            if distance <= light.direction.w {
+                let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
+                let f = light.attenuation;
+                var strength = 1.0 / max(f.x + f.y * distance + f.z * distance2, 0.0001);
+                var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
+                fade = 1.0 - fade * fade;
+                strength *= fade * fade;
+                d += lambert * strength * light.diffuse.rgb;
+                a += strength * light.ambient.rgb;
+            }
         } else {
             let to_light = light.position.xyz - in.world_position;
             let distance2 = dot(to_light, to_light);
@@ -1542,10 +1566,12 @@ impl Extension for DistantLand {
         Some(DRAW_SHADER.to_string())
     }
 
-    /// Packs the lights of a world draw for the light of a pixel, as `buildPplDrawData` and
-    /// `decodeMorrowindPointLight` of MGE XE do (`ffeshader.cpp`). The game gives a point
-    /// light in one of four forms of its three falloff numbers, and each form has its own
-    /// sum; one constant is for all lights of the draw, from the last light that has one.
+    /// Packs the lights of a world draw for the light of a pixel. A point light stays as the
+    /// game gives it, with the fade of MGE XE (bit 512 of `counts.w`). With
+    /// `per_pixel_original_lights`, as `buildPplDrawData` and `decodeMorrowindPointLight` of
+    /// MGE XE do (`ffeshader.cpp`): the shader of Direct3D 9 drops the linear number of the
+    /// falloff, so each of the four forms of the three numbers has its own sum, and one
+    /// constant is for all lights of the draw, from the last light that has one.
     /// All lights of the draw: the game gives at most 8 for each node, or 32 with the patch
     /// of `expanded_light_limit`.
     fn shade(&mut self, draw: &mut DrawData, lights: &mut [LightData], facts: &DrawFacts) {
@@ -1581,6 +1607,9 @@ impl Extension for DistantLand {
             return;
         };
         draw.counts[3] |= 16 | 128;
+        if !p.original {
+            draw.counts[3] |= 512;
+        }
         let mut shared_constant = 0.33f32;
         // The z axis of the camera in the space of the lights: MGE XE moves one form of
         // light 25 units along it.
@@ -1597,6 +1626,13 @@ impl Extension for DistantLand {
                 light.ambient = [light.ambient[0] * amb, light.ambient[1] * amb, light.ambient[2] * amb, 0.0];
                 light.position = [0.0, 0.0, 0.0, 3.0];
                 light.direction = [direction[0] / length, direction[1] / length, direction[2] / length, 0.0];
+            } else if !p.original {
+                // The light of the game as it is: only the fade of MGE XE at a multiple of
+                // its radius.
+                let radius = light.cone[2];
+                let cutoff = if p.fade > 0.0 && radius > 0.0 { (p.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
+                light.position[3] = 1.0;
+                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
             } else {
                 let falloff = light.attenuation;
                 let mut color = [light.diffuse[0], light.diffuse[1], light.diffuse[2]];
@@ -1628,8 +1664,11 @@ impl Extension for DistantLand {
                 light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
             }
         }
-        for light in lights.iter_mut() {
-            light.attenuation[0] = shared_constant;
+        // One constant for all the lights of the draw, as the one register of Direct3D 9.
+        if p.original {
+            for light in lights.iter_mut() {
+                light.attenuation[0] = shared_constant;
+            }
         }
         draw.scene_ambient = if white {
             [1.25, 1.25, 1.25, 1.0]
@@ -2427,7 +2466,7 @@ impl DistantLand {
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {
-        let (on, interiors_only, fade) = self.per_pixel;
+        let (on, interiors_only, fade, original) = self.per_pixel;
         if !on || (interiors_only && !self.interior) {
             return None;
         }
@@ -2435,7 +2474,7 @@ impl DistantLand {
         // an interior that is like one, and 1 in each other interior, as `adjustFog` of the
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
-        Some(PerPixel { sun, ambient, fade })
+        Some(PerPixel { sun, ambient, fade, original })
     }
 }
 

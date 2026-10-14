@@ -501,6 +501,10 @@ pub struct DistantLandSettings {
     pub per_pixel_mode: PerPixelMode,
     pub per_pixel_light_fade: bool,
     pub per_pixel_light_fade_radius: f32,
+    /// The light for each pixel takes the lights of the game as MGE XE on Direct3D 9 decodes
+    /// them (one falloff number of each light dropped, some lights grey): the look before the
+    /// wgpu renderer. Off: each light with its own colour and its whole falloff.
+    pub per_pixel_original_lights: bool,
     pub horizon: HorizonSettings,
     pub weather: WeatherSet,
 }
@@ -530,6 +534,7 @@ impl Default for DistantLandSettings {
             per_pixel_mode: PerPixelMode::Always,
             per_pixel_light_fade: false,
             per_pixel_light_fade_radius: 1.75,
+            per_pixel_original_lights: false,
             horizon: HorizonSettings::default(),
             weather: WeatherSet::default(),
         }
