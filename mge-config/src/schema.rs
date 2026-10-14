@@ -545,6 +545,10 @@ pub struct WaterSettings {
     pub reflect_sky: bool,
     pub dynamic_ripples: bool,
     pub blur_reflections: bool,
+    /// With `blur_reflections`, in the wgpu renderer: a reflection is sharp where the thing
+    /// meets the water, and its blur grows with the distance of the thing from the water.
+    /// Off gives the even blur of the Direct3D 9 path.
+    pub blur_contact_hardening: bool,
     pub wave_height: u8,
     pub caustics_intensity: u8,
     /// How far from the eye, in cells, distant water volumes reflect what is on screen.
@@ -566,6 +570,7 @@ impl Default for WaterSettings {
             reflect_sky: true,
             dynamic_ripples: false,
             blur_reflections: false,
+            blur_contact_hardening: true,
             wave_height: 50,
             caustics_intensity: 50,
             volume_reflection_cells: 8.0,

@@ -140,6 +140,13 @@ fn water_card(ui: &mut Ui, settings: &mut WaterSettings, enablement: DistantEnab
                     ui.checkbox(&mut settings.blur_reflections, t!("distant.water.blur_reflections")),
                     t!("distant.water.blur_reflections_tip"),
                 );
+                tooltip(
+                    ui.add_enabled(
+                        settings.blur_reflections,
+                        egui::Checkbox::new(&mut settings.blur_contact_hardening, t!("distant.water.blur_contact_hardening")),
+                    ),
+                    t!("distant.water.blur_contact_hardening_tip"),
+                );
             },
             |ui| {
                 tooltip(

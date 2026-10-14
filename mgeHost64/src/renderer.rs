@@ -299,8 +299,11 @@ pub struct DistantLand {
     ripples_enabled: bool,
     wave_height: f32,
     ripples: Option<ripples::Ripples>,
-    /// The blur of the reflection in the water (`distant_land.water.blur_reflections`).
+    /// The blur of the reflection in the water (`distant_land.water.blur_reflections`),
+    /// and its kind: sharp at the waterline (`blur_contact_hardening`), or the even blur
+    /// of the Direct3D 9 path.
     blur_reflections: bool,
+    blur_contact: bool,
     waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
@@ -594,6 +597,7 @@ impl DistantLand {
             wave_height: settings.water.wave_height as f32,
             ripples: None,
             blur_reflections: settings.water.blur_reflections,
+            blur_contact: settings.water.blur_contact_hardening,
             waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
@@ -1540,7 +1544,7 @@ impl Extension for DistantLand {
                 } else {
                     core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0))
                 };
-                water.fill_reflection(scene, color);
+                water.fill_reflection(scene, color, &frame);
             }
             return false;
         }
@@ -1750,6 +1754,7 @@ impl Extension for DistantLand {
             }
             water.reflect_sky(scene, &mut mirror_pass, replay, frame);
             drop(mirror_pass);
+            water.finish_reflection(&mut encoder);
             scene.queue.submit([encoder.finish()]);
         }
         if let Some(statics) = self.statics.as_mut() {
@@ -1955,6 +1960,7 @@ impl DistantLand {
                 view_end,
                 wave_height: self.wave_height_of_frame(),
                 blur_reflections: self.blur_reflections,
+                blur_contact: self.blur_contact,
             });
         }
         self.gpu.as_ref()?;
@@ -1993,6 +1999,7 @@ impl DistantLand {
             view_end,
             wave_height: self.wave_height_of_frame(),
             blur_reflections: self.blur_reflections,
+            blur_contact: self.blur_contact,
         })
     }
 

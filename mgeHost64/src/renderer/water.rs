@@ -12,6 +12,24 @@ use super::{multiply, planes};
 
 /// The size of the reflection, as the Direct3D 9 path has it.
 const REFLECTION_SIZE: u32 = 1024;
+/// The levels of the reflection, for the blur that is sharp at the waterline: 1024 to 32.
+const REFLECTION_LEVELS: u32 = 6;
+
+/// Makes a level of the reflection from the level before: the mean of 2 x 2 pixels.
+const LEVEL_SHADER: &str = "
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var source_sampler: sampler;
+
+@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+    return vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0);
+}
+
+@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
+    // The target has half of the size of the source.
+    let size = vec2f(textureDimensions(source)) * 0.5;
+    return textureSampleLevel(source, source_sampler, position.xy / size, 0.0);
+}
+";
 /// The near plane of the distant land, as the Direct3D 9 path has it.
 const NEAR: f32 = 4.0;
 
@@ -40,7 +58,8 @@ struct Uniforms {
     /// pixel from its depth.
     projection: [f32; 4],
     /// The size of the picture, the view depth where the plane ends (0 for no end), and
-    /// the blur of the reflection: 0 for none, 1 for the six reads of MGE XE.
+    /// the blur of the reflection: 0 for none, 1 for the six reads of MGE XE, 2 for the
+    /// blur that is sharp at the waterline.
     size: [f32; 4],
     /// The scattering: as the terrain has it.
     sky: [f32; 4],
@@ -50,6 +69,10 @@ struct Uniforms {
     /// The dynamic waves: the world position of the corner of the texture of the ripples
     /// of the player, the wave height, and 1 when the dynamic waves are on.
     wave: [f32; 4],
+    /// The mirror: the two numbers of the depth of its projection, the first number of the
+    /// projection (the picture width of a view angle), and the widest angle of the blur
+    /// that is sharp at the waterline, in radians.
+    mirror: [f32; 4],
 }
 
 const SHADER: &str = "
@@ -70,6 +93,7 @@ struct Uniforms {
     inscatter: vec4f,
     sun_altitude: vec4f,
     wave: vec4f,
+    mirror: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var reflection: texture_2d<f32>;
@@ -81,6 +105,8 @@ struct Uniforms {
 // The ripples of the rain and of the player (ripples.rs); flat without the dynamic waves.
 @group(0) @binding(7) var rain: texture_2d<f32>;
 @group(0) @binding(8) var player_waves: texture_2d<f32>;
+// The depth of the mirror pass: how far the thing in the reflection is.
+@group(0) @binding(9) var mirror_depth: texture_depth_2d;
 
 struct Out {
     @builtin(position) position: vec4f,
@@ -176,7 +202,47 @@ fn distance_at(uv: vec2f) -> f32 {
 // getProjectedReflection: the reflection at a place of the picture. With the blur
 // (FILTER_WATER_REFLECTION), the mean of six reads in a radius that grows with the view
 // depth `w` of the place.
-fn reflection_at(uv: vec2f, w: f32) -> vec3f {
+// The way from the water at the view depth `w` to the thing that the mirror shows at a
+// place of the picture, along the view: 0 for a thing at the water.
+fn mirror_way(uv: vec2f, w: f32) -> f32 {
+    let size = vec2i(textureDimensions(mirror_depth));
+    let at = clamp(vec2i(uv * vec2f(size)), vec2i(0), size - 1);
+    let d = textureLoad(mirror_depth, at, 0);
+    return max(0.0, u.mirror.y / (d - u.mirror.x) - w);
+}
+
+// The blur that is sharp at the waterline. The water is not flat, so each point of it
+// mirrors a small cone of directions. The cone is as wide as a point where the thing meets
+// the water, and grows with the way from the water to the thing: a post is sharp at its
+// foot and soft at its top. `stretch` makes the blur taller than wide for a flat look at
+// the water, where the ripples smear a reflection along the view.
+fn reflection_soft(uv: vec2f, w: f32, stretch: f32) -> vec3f {
+    // The radius for a thing that is very far, in the picture: the angle of the cone
+    // times the width of an angle.
+    let widest = u.mirror.w * 0.5 * u.mirror.z * vec2f(1.0, stretch * u.size.x / u.size.y);
+    // The nearest thing around the place sets the blur: the sky behind the edge of a tree
+    // must not blur that edge.
+    var way = mirror_way(uv, w);
+    way = min(way, mirror_way(uv + widest * vec2f(1.0, 0.0), w));
+    way = min(way, mirror_way(uv + widest * vec2f(-1.0, 0.0), w));
+    way = min(way, mirror_way(uv + widest * vec2f(0.0, 1.0), w));
+    way = min(way, mirror_way(uv + widest * vec2f(0.0, -1.0), w));
+    let radius = widest * (way / (w + way));
+    // The level of the reflection whose pixels are as wide as the radius, and four reads
+    // around the place at half of the radius: a smooth disc, not a square.
+    let level = clamp(log2(max(radius.x * f32(textureDimensions(reflection).x), 1.0)), 0.0, 5.0);
+    var color = textureSampleLevel(reflection, clamp_sampler, uv, level).rgb * 2.0;
+    color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(0.5, 0.25), level).rgb;
+    color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(-0.5, -0.25), level).rgb;
+    color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(-0.25, 0.5), level).rgb;
+    color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(0.25, -0.5), level).rgb;
+    return color / 6.0;
+}
+
+fn reflection_at(uv: vec2f, w: f32, stretch: f32) -> vec3f {
+    if u.size.w > 1.5 {
+        return reflection_soft(uv, w, stretch);
+    }
     var color = textureSampleLevel(reflection, clamp_sampler, uv, 0.0).rgb;
     if u.size.w > 0.5 {
         let radius = 0.006 * clamp(0.11 + w / 6000.0, 0.0, 1.0) * vec2f(1.0, u.size.x / u.size.y);
@@ -199,7 +265,7 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
     let w = in.clip_w;
     var refracted = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
     refracted = mix(u.fog_col_far.rgb, refracted, exp(-dist / 500.0));
-    let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w);
+    let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w, 1.0);
     // With the total reflection of the inside of the water.
     let fresnel = pow(clamp(1.12 - 0.65 * dot(-eye_vec, normal), 0.0, 1.0), 8.0);
     let result = mix(refracted, reflected, fresnel);
@@ -252,7 +318,9 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
         reflect_w = in.clamped.z;
         reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / reflect_w, 0.5 - 0.5 * in.clamped.y / reflect_w);
     }
-    var reflected = reflection_at(reflect_uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / reflect_w, reflect_w);
+    // A flat look at the water makes the blur taller: 1 from straight above, at most 2.5.
+    let stretch = clamp(1.0 / max(abs(eye_vec.z), 0.05), 1.0, 2.5);
+    var reflected = reflection_at(reflect_uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / reflect_w, reflect_w, stretch);
     reflected = mix(fog.rgb, reflected, fog.a);
     var adjust = mix(vec3f(0.0, 0.0, 0.1), normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
     adjust = mix(adjust, vec3f(0.0, 0.0, 1.0), (1.0 + eye_vec.z) * (1.0 - clamp(1.0 / (dist / 1000.0 + 1.0), 0.0, 1.0)));
@@ -312,6 +380,9 @@ pub struct WaterFrame {
     pub wave_height: Option<f32>,
     /// The blur of the reflection (`distant_land.water.blur_reflections`).
     pub blur_reflections: bool,
+    /// With the blur: the one that is sharp at the waterline
+    /// (`distant_land.water.blur_contact_hardening`), not the six reads of MGE XE.
+    pub blur_contact: bool,
 }
 
 /// A disc of triangles around the camera: a centre, then rings of `segments` vertices at
@@ -378,8 +449,18 @@ pub struct Water {
     waves: wgpu::TextureView,
     clamp_sampler: wgpu::Sampler,
     wave_sampler: wgpu::Sampler,
+    /// The reflection with its levels, for the water shader.
     reflection_view: wgpu::TextureView,
+    /// Each level of the reflection alone: the first is the target of the mirror pass.
+    reflection_levels: Vec<wgpu::TextureView>,
+    /// A level as the source of the next one.
+    level_groups: Vec<wgpu::BindGroup>,
+    level_pipeline: wgpu::RenderPipeline,
+    /// The levels are made in this frame: the blur that is sharp at the waterline is on.
+    levels_wanted: bool,
     reflection_depth: wgpu::TextureView,
+    /// The depth of the mirror pass alone, for the water shader.
+    reflection_depth_read: wgpu::TextureView,
     /// True when the reflection of this frame is made.
     reflected: bool,
     /// MGE_XE_WATER_DEBUG: a look at one term of the shader.
@@ -444,6 +525,7 @@ impl Water {
                 texture(6, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
                 texture(7, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
                 texture(8, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                texture(9, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
@@ -479,11 +561,14 @@ impl Water {
         let pipeline = make_pipeline(wgpu::PolygonMode::Fill);
         let pipeline_lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE).then(|| make_pipeline(wgpu::PolygonMode::Line));
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        // Between two levels too: the blur that is sharp at the waterline reads the levels
+        // of the reflection. Each other read names the first level.
         let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let wave_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -494,20 +579,58 @@ impl Water {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let target = |format, usage| {
+        let target = |format, levels| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("water reflection"),
                 size: wgpu::Extent3d { width: REFLECTION_SIZE, height: REFLECTION_SIZE, depth_or_array_layers: 1 },
-                mip_level_count: 1,
+                mip_level_count: levels,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
         };
-        let reflection_view = target(scene.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING).create_view(&Default::default());
-        let reflection_depth = target(scene.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
+        let reflection = target(scene.target_format, REFLECTION_LEVELS);
+        let reflection_view = reflection.create_view(&Default::default());
+        let reflection_levels: Vec<wgpu::TextureView> =
+            (0..REFLECTION_LEVELS).map(|level| reflection.create_view(&wgpu::TextureViewDescriptor { base_mip_level: level, mip_level_count: Some(1), ..Default::default() })).collect();
+        let depth_texture = target(scene.depth_format, 1);
+        let reflection_depth = depth_texture.create_view(&Default::default());
+        let reflection_depth_read = depth_texture.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+        // The levels of the reflection: each from the level before.
+        let level_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("water reflection level"),
+            entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
+        });
+        let level_groups: Vec<wgpu::BindGroup> = reflection_levels[..reflection_levels.len() - 1]
+            .iter()
+            .map(|source| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("water reflection level"),
+                    layout: &level_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&clamp_sampler) }],
+                })
+            })
+            .collect();
+        let level_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water reflection level"), source: wgpu::ShaderSource::Wgsl(LEVEL_SHADER.into()) });
+        let level_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&level_layout)], immediate_size: 0 });
+        let level_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("water reflection level"),
+            layout: Some(&level_pipeline_layout),
+            vertex: wgpu::VertexState { module: &level_module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &level_module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         Ok(Water {
             pipeline,
             pipeline_lines,
@@ -524,7 +647,12 @@ impl Water {
             clamp_sampler,
             wave_sampler,
             reflection_view,
+            reflection_levels,
+            level_groups,
+            level_pipeline,
+            levels_wanted: false,
             reflection_depth,
+            reflection_depth_read,
             reflected: false,
             debug: std::env::var("MGE_XE_WATER_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
             frames: 0,
@@ -562,7 +690,7 @@ impl Water {
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("water reflection"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.reflection_view,
+                    view: &self.reflection_levels[0],
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: 1.0 }), store: wgpu::StoreOp::Store },
@@ -579,28 +707,58 @@ impl Water {
             .forget_lifetime();
         let mirrored_view = multiply(&Self::mirror(frame.water_level), &scene.view);
         let projection = Self::far_projection(scene, frame.draw_distance);
+        self.levels_wanted = frame.blur_reflections && frame.blur_contact;
         self.reflected = true;
         self.reflections += 1;
         (pass, mirrored_view, projection)
     }
 
+    /// Makes the levels of the reflection after the mirror pass, when the blur that is
+    /// sharp at the waterline reads them. The caller ends the mirror pass first.
+    pub fn finish_reflection(&self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.levels_wanted {
+            return;
+        }
+        for (source, target) in self.level_groups.iter().zip(&self.reflection_levels[1..]) {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("water reflection level"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.level_pipeline);
+            pass.set_bind_group(0, source, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
     /// Fills the reflection with one colour: a cell without the distant land (`clearReflection`
-    /// of the Direct3D 9 path).
-    pub fn fill_reflection(&mut self, scene: &SceneView, color: [f32; 3]) {
+    /// of the Direct3D 9 path). With the blur that is sharp at the waterline, each level
+    /// gets the colour, and the depth of the mirror says that all is far.
+    pub fn fill_reflection(&mut self, scene: &SceneView, color: [f32; 3], frame: &WaterFrame) {
+        let levels = if frame.blur_reflections && frame.blur_contact { self.reflection_levels.len() } else { 1 };
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection fill") });
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("water reflection fill"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.reflection_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: color[0] as f64, g: color[1] as f64, b: color[2] as f64, a: 1.0 }), store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        for (index, level) in self.reflection_levels[..levels].iter().enumerate() {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("water reflection fill"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: level,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: color[0] as f64, g: color[1] as f64, b: color[2] as f64, a: 1.0 }), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: (index == 0 && levels > 1).then(|| wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.reflection_depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
         scene.queue.submit([encoder.finish()]);
         self.reflected = true;
     }
@@ -658,12 +816,21 @@ impl Water {
             fog_col_far: [frame.fog_color_far[0], frame.fog_color_far[1], frame.fog_color_far[2], if frame.scattering.is_some() { 1.0 } else { 0.0 }],
             fog: [frame.fog_exp.0, frame.fog_exp.1, self.debug, if frame.underwater { 1.0 } else { 0.0 }],
             projection: [scene.projection[10], scene.projection[14], 0.0, 0.0],
-            size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), if frame.blur_reflections { 1.0 } else { 0.0 }],
+            size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), match (frame.blur_reflections, frame.blur_contact) {
+                (false, _) => 0.0,
+                (true, false) => 1.0,
+                (true, true) => 2.0,
+            }],
             sky: scattering[1],
             outscatter: scattering[2],
             inscatter: scattering[3],
             sun_altitude: scattering[4],
             wave: dynamic.map_or([0.0; 4], |(height, ripples)| [ripples.origin[0], ripples.origin[1], height, 1.0]),
+            mirror: {
+                let projection = Self::far_projection(scene, frame.draw_distance);
+                // The cone of the mirror: wider with more wind, as the waves are.
+                [projection[10], projection[14], scene.projection[0], 0.008 + 0.35 * wind_factor]
+            },
         };
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -679,6 +846,7 @@ impl Water {
                 wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(depth) },
                 wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.rain_view())) },
                 wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.player_view())) },
+                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&self.reflection_depth_read) },
             ],
         });
         pass.set_pipeline(if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline });
@@ -758,5 +926,7 @@ mod tests {
         for entry in ["vs", "fs"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
+        let level = naga::front::wgsl::parse_str(LEVEL_SHADER).unwrap_or_else(|error| panic!("{}", error.emit_to_string(LEVEL_SHADER)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&level).unwrap_or_else(|error| panic!("{error:?}"));
     }
 }

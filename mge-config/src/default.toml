@@ -144,6 +144,10 @@ reflect_interiors = true
 reflect_sky = true
 dynamic_ripples = false
 blur_reflections = false
+# With blur_reflections, in the wgpu renderer: a reflection is sharp where the thing meets the
+# water, and its blur grows with the distance of the thing from the water. false gives the
+# even blur of the Direct3D 9 renderer.
+blur_contact_hardening = true
 # Wave and caustics percentages, clamped to 0..250 and 0..100.
 wave_height = 50
 caustics_intensity = 50
