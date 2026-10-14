@@ -15,7 +15,6 @@
 #include "postshaders.h"
 #include "waterlook.h"
 #include "mwpatches.h"
-#include "renderlink.h"
 #include "statusoverlay.h"
 #include "support/log.h"
 #include "userhud.h"
@@ -61,7 +60,6 @@ static float calcFPS();
 
 
 MGEProxyDevice::MGEProxyDevice(IDirect3DDevice9* real, ProxyD3D* d3d) : ProxyDevice(real, d3d) {
-    RenderLink::setDevice(this);
     // Initialize state here, as the device is released and recreated on fullscreen Alt-Tab
     sceneCount = -1;
     rendertargetNormal = true;
@@ -311,9 +309,7 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
         // Disable MW screenshot function to allow MGE to use the same key
         MWPatches::disableScreenshotFunc();
         // Mark water material to allow MGEProxyDevice to detect it
-        if (!RenderLink::usesWaterPlaneFact()) {
-            RenderLink::noteWaterMark(mwBridge->markWaterNode(99999.0f));
-        }
+        mwBridge->markWaterNode(99999.0f);
 
         // Raise the engine's per-node light limit, on request and only when the
         // renderer reports it can consume the extra lights. This is one
@@ -427,7 +423,7 @@ HRESULT _stdcall MGEProxyDevice::BeginScene() {
 
         if (isMainView) {
             // Track scene count here in BeginScene; isMainView is not always valid at EndScene if Morrowind draws sunglare
-            sceneCount = RenderLink::resolveSceneCount(sceneCount + 1);
+            sceneCount++;
 
             if (sceneCount == 0) {
                 if (Configuration.ScreenFOV > 0) {
@@ -513,7 +509,6 @@ HRESULT _stdcall MGEProxyDevice::Clear(DWORD a, const D3DRECT* b, DWORD c, D3DCO
 
 HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3DMATRIX* b) {
     worldAlreadyRelative = CameraRelative::takeWorldRelative();
-    RenderLink::noteTransform(a, b, worldAlreadyRelative);
 
     if (a == D3DTS_VIEW) {
         // Decide the space of this scene before the recorder sees the view, so every
@@ -527,7 +522,7 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 
     if (rendertargetNormal) {
         if (a == D3DTS_VIEW) {
-            isMainView = RenderLink::resolveMainView(!detectMenu(b));
+            isMainView = !detectMenu(b);
 
             if (CameraRelative::active()) {
                 // The scene was chosen by camera identity; the device view has to
@@ -575,10 +570,9 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 }
 
 HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
-    RenderLink::noteMaterial(a);
     captureMaterial(a);
     waterMarkSeen = (a->Power == 99999.0f);
-    isWaterMaterial = RenderLink::resolve(MGE_LINK_FACT_WATER_PLANE, waterMarkSeen, RenderLink::drawIsWaterPlane());
+    isWaterMaterial = waterMarkSeen;
     if (isWaterMaterial) {
         DistantLand::waterPlaneTint[0] = a->Emissive.r;
         DistantLand::waterPlaneTint[1] = a->Emissive.g;
@@ -599,11 +593,10 @@ HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
 }
 
 HRESULT _stdcall MGEProxyDevice::SetLight(DWORD a, const D3DLIGHT8* b) {
-    RenderLink::noteLight(a, b);
     captureLight(a, b);
 
     // Exterior sunlight/interior "sun" appears to always be light 6
-    if (RenderLink::resolve(MGE_LINK_FACT_SUN_LIGHT, a == 6, RenderLink::lightIsSun(a)) && DistantLand::canRenderDistantLand()) {
+    if (a == 6 && DistantLand::canRenderDistantLand()) {
         DistantLand::setSunLight(b);
     }
 
@@ -680,7 +673,6 @@ void MGEProxyDevice::refreshActiveLights() {
 }
 
 HRESULT _stdcall MGEProxyDevice::SetRenderState(D3DRENDERSTATETYPE a, DWORD b) {
-    RenderLink::noteRenderState(a, b);
     captureRenderState(a, b);
 
     if (a == D3DRS_FOGVERTEXMODE || a == D3DRS_FOGTABLEMODE) {
@@ -716,7 +708,6 @@ HRESULT _stdcall MGEProxyDevice::SetRenderState(D3DRENDERSTATETYPE a, DWORD b) {
 }
 
 HRESULT _stdcall MGEProxyDevice::SetTextureStageState(DWORD a, D3DTEXTURESTAGESTATETYPE b, DWORD c) {
-    RenderLink::noteStageState(a, b, c);
     captureFragmentRenderState(a, b, c);
 
     // Sampler overrides to ensure trilinear/anisotropic filtering works
@@ -746,10 +737,6 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
         rs.startIndex = d;
         rs.primCount = e;
 
-        RenderLink::observeWorldDraw();
-        RenderLink::observeDrawState(rs, frs, lightrs);
-        RenderLink::applyDrawState(rs, frs, lightrs);
-
         if (!stage0Complete && !isAmbientWhite) {
             // In an exterior this is normally the first world draw after the sky; interiors may
             // have no preceding draw, so stage 0 is guarded here as well as in EndScene.
@@ -757,19 +744,17 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
             stage0Complete = true;
         }
 
-        if (RenderLink::resolve(MGE_LINK_FACT_WATER_PLANE, waterMarkSeen, RenderLink::drawIsWaterPlane())) {
+        if (waterMarkSeen) {
             if (distantWater) {
                 // Replacement water suppresses the original Morrowind grid.
                 if (!waterDrawn) {
                     DistantLand::renderStageWater();
                     waterDrawn = true;
                 }
-                RenderLink::census(RenderLink::CensusWaterReplaced);
                 return D3D_OK;
             }
         } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene, waterVolumeTint, waterVolumeSlot, &lightrs)) {
             // The surface of a water volume was drawn with the water shading.
-            RenderLink::census(RenderLink::CensusWaterReplaced);
             return D3D_OK;
         } else {
             // DistantLand may record the draw for a later pass and signal that the original is
@@ -778,11 +763,6 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
                 return D3D_OK;
             }
         }
-        RenderLink::census(RenderLink::CensusWorldFixed);
-    } else {
-        RenderLink::census(!DistantLand::canRenderDistantLand() ? RenderLink::CensusNotReady
-            : !rendertargetNormal ? RenderLink::CensusOtherTarget
-            : isShadowStencil ? RenderLink::CensusShadowStencil : RenderLink::CensusOtherView);
     }
 
     if (!indexedSkinning) {
@@ -867,7 +847,6 @@ bool detectMenu(const D3DMATRIX* m) {
 // State recording
 
 HRESULT _stdcall MGEProxyDevice::SetTexture(DWORD a, IDirect3DBaseTexture8* b) {
-    RenderLink::noteTexture(a, b);
     if (a < 8) {
         IDirect3DTexture9* tex = b ? static_cast<ProxyTexture*>(b)->realTexture : NULL;
         frs.stage[a].texture = tex;
@@ -879,14 +858,12 @@ HRESULT _stdcall MGEProxyDevice::SetTexture(DWORD a, IDirect3DBaseTexture8* b) {
 }
 
 HRESULT _stdcall MGEProxyDevice::SetVertexShader(DWORD a) {
-    RenderLink::noteVertexFormat(a);
     rs.fvf = a;
     return ProxyDevice::SetVertexShader(a);
 }
 
 HRESULT _stdcall MGEProxyDevice::SetStreamSource(UINT a, IDirect3DVertexBuffer8* b, UINT c) {
     if (a == 0) {
-        RenderLink::noteStreamSource(b, c);
         rs.vb = (IDirect3DVertexBuffer9*)b;
         rs.vbOffset = 0;
         rs.vbStride = c;
@@ -895,13 +872,11 @@ HRESULT _stdcall MGEProxyDevice::SetStreamSource(UINT a, IDirect3DVertexBuffer8*
 }
 
 HRESULT _stdcall MGEProxyDevice::SetIndices(IDirect3DIndexBuffer8* a, UINT b) {
-    RenderLink::noteIndices(a, b);
     rs.ib = (IDirect3DIndexBuffer9*)a;
     return ProxyDevice::SetIndices(a, b);
 }
 
 HRESULT _stdcall MGEProxyDevice::LightEnable(DWORD a, BOOL b) {
-    RenderLink::noteLightEnable(a, b != FALSE);
     if (b) {
         if (std::find(lightrs.active.begin(), lightrs.active.end(), a) == lightrs.active.end()) {
             lightrs.active.push_back(a);
@@ -1101,7 +1076,7 @@ void captureLight(DWORD a, const D3DLIGHT8* b) {
             light->inferredRadius = MWBridge::get()->pointLightRadius(
                 b->Attenuation0, b->Attenuation1, b->Attenuation2);
         }
-        light->radius = RenderLink::resolveLightRadius(a, light->inferredRadius);
+        light->radius = light->inferredRadius;
     } else {
         D3DXVec3Normalize((D3DXVECTOR3*)&light->position, (D3DXVECTOR3*)&b->Direction);
         light->ambient.x = b->Ambient.r;

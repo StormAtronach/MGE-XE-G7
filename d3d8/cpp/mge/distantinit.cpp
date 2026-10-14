@@ -10,7 +10,6 @@
 #include "postshaders.h"
 #include "morrowindbsa.h"
 #include "mwbridge.h"
-#include "renderlink.h"
 #include "mwpatches.h"
 #include "mgeversion.h"
 #include "dxvk_morrowind_interop.h"
@@ -1135,7 +1134,6 @@ bool DistantLand::initShader() {
         const float marks[2] = { kMoonTag, kMoonTag };
         float previous[2] = {};
         MWBridge::get()->markMoonNodes(marks, previous);
-        RenderLink::noteMoonMark(previous);
     }
     else {
         ehOutscatter = 0;

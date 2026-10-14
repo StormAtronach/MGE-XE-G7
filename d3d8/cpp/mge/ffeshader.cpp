@@ -1,6 +1,5 @@
 
 #include "ffeshader.h"
-#include "renderlink.h"
 #include "camerarelative.h"
 #include "configuration.h"
 #include "mwbridge.h"
@@ -428,7 +427,6 @@ int __cdecl FixedFunctionShader::lightAttachRadius(const NI::PointLight* light, 
     }
 
     const int attach = std::max(radius, static_cast<int>(std::ceil(cutoff)) + kLightAttachMargin);
-    RenderLink::noteLightRadius(light, radius, attach);
     return attach;
 }
 
@@ -568,7 +566,6 @@ void FixedFunctionShader::renderMorrowindLegacy(
         shaderLRU.effect = effectFFE;
         shaderLRU.last_sk = data.key;
     }
-    RenderLink::census(effectFFE == effectDefaultPurple ? RenderLink::CensusWorldPurple : RenderLink::CensusWorldShader);
 
     effectFFE->SetVector(ehMaterialDiffuse, &data.materialDiffuse);
     effectFFE->SetVector(ehMaterialAmbient, &data.materialAmbient);
@@ -685,7 +682,6 @@ void FixedFunctionShader::renderMorrowind(
 
     if (useNative) {
         if (renderMorrowindNative(rs, data, packet)) {
-            RenderLink::census(RenderLink::CensusWorldNative);
             return;
         }
 
