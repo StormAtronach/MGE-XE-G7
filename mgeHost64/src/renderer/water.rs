@@ -576,6 +576,7 @@ impl Water {
                 // With the dynamic waves the plane can be lower by half of the wave height.
                 clip_plane: Some([0.0, 0.0, 1.0, -(frame.water_level as f64 - 1.0) + 0.5 * frame.wave_height.unwrap_or(0.0) as f64]),
                 opaque_only: false,
+                translucent_only: false,
                 force_depth_test: true,
                 classes: ReplayView::SKY,
             },

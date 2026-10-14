@@ -1138,7 +1138,8 @@ struct PerPixel {
 /// does not depend on the normal, `attenuation.z` and `attenuation.x` are the two numbers
 /// of the falloff, and `cone.x` is 1 over the distance where the light ends (0: no end).
 /// Bit 2 of `counts.w`: the fog makes the colour darker and adds no fog colour (a draw that
-/// adds to the picture).
+/// adds to the picture). Bit 256 with it: the camera is under water, and the light of the
+/// draw goes to the colour of the water with the distance.
 const DRAW_SHADER: &str = "
 // The shadow of the draw at the pixel: `RenderShadowsPS` of `XE Mod Shadow.fx`. From
 // `extension_shade` for `extension_finish`.
@@ -1252,19 +1253,42 @@ fn extension_shade(in: VertexOut) -> vec4f {
     return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + draw.material_emissive.rgb, draw.material_diffuse.a);
 }
 
+// What the water leaves of a light under water, for each colour: the light goes as the fog
+// comes (`clear` 1 is no fog), and a colour that the water has less of goes first, so the
+// light takes the colour of the water. A grey fog makes it darker only.
+// The parameter water.light.colour (frame.values[11].x) makes the difference of the colours
+// stronger. The way through the water is from the camera: the fog under water starts behind
+// the camera (it is also the haze of the water around it), so its own `clear` is less than
+// 1 at the camera.
+fn water_transmission(clear: f32) -> vec3f {
+    if draw.fog.z == 0.0 {
+        return vec3f(1.0);
+    }
+    let distance = max(draw.fog.y - clear * (draw.fog.y - draw.fog.x), 0.0);
+    let left = clamp(1.0 - distance / max(draw.fog.y, 1.0), 0.0, 1.0);
+    let water = max(draw.fog_color.rgb, vec3f(1e-3));
+    let rate = pow(vec3f(max(water.r, max(water.g, water.b))) / water, vec3f(max(frame.values[11].x, 1.0)));
+    return pow(vec3f(left), min(rate, vec3f(16.0)));
+}
+
 // The curve of MGE XE for a colour with light for each pixel: 0 stays 0, 1 becomes 0.84,
 // and 2.2 becomes 1. Then the shadow, as the overlay of the Direct3D 9 path: the colour
 // times 1 - v * shadecolor, with the light in the fog and the alpha of a draw that blends.
 fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
     var out: vec4f;
+    let under_water = (draw.counts.w & 258u) == 258u;
     if (draw.counts.w & 16u) != 0u {
         let c = clamp(color, vec3f(0.0), vec3f(2.2));
         let lit = (((0.0548303 * c - 0.189786) * c - 0.154732) * c + 1.12969) * c;
-        if (draw.counts.w & 2u) != 0u {
+        if under_water {
+            out = vec4f(lit * water_transmission(clear), alpha);
+        } else if (draw.counts.w & 2u) != 0u {
             out = vec4f(lit * clear, alpha);
         } else {
             out = vec4f(mix(draw.fog_color.rgb, lit, clear), alpha);
         }
+    } else if under_water {
+        out = vec4f(color * water_transmission(clear), alpha);
     } else {
         out = vec4f(mix(draw.fog_color.rgb, color, clear), alpha);
     }
@@ -1434,9 +1458,10 @@ impl Extension for DistantLand {
             }
         }
         self.shade = self.per_pixel();
+        values[11][0] = self.tunables.get(tunables::WATER_LIGHT_COLOUR);
         FrameParameters {
             fog_range: distant.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
-            shade: self.shade.is_some() || self.shadow_in_frame,
+            shade: self.shade.is_some() || self.shadow_in_frame || self.under_water(),
             sky: self.sky(),
             blend: distant,
             // The water plane of the game is class 10; the glare of the sun is class 8.
@@ -1444,6 +1469,13 @@ impl Extension for DistantLand {
             values,
             texture,
             post,
+            // The surface of the water (the plane lies at the level less 1): what blends on
+            // its far side goes into the picture before the water, so the water shows it,
+            // and what blends on the side of the camera goes over the water.
+            class_plane: water.then(|| {
+                let level = self.environment.map_or(0.0, |e| e.water_level) as f64 - 1.0;
+                (10, if self.under_water() { [0.0, 0.0, -1.0, level] } else { [0.0, 0.0, 1.0, -level] })
+            }),
         }
     }
 
@@ -1458,6 +1490,12 @@ impl Extension for DistantLand {
     /// All lights of the draw: the game gives at most 8 for each node, or 32 with the patch
     /// of `expanded_light_limit`.
     fn shade(&mut self, draw: &mut DrawData, lights: &mut [LightData], facts: &DrawFacts) {
+        // A draw that adds to the picture (a glow, a spell, a bug) under water: its light goes
+        // to the colour of the water with the distance, and the fog adds no colour to it.
+        let adds = facts.blend_enable && (facts.source_blend == 2 || facts.destination_blend == 2);
+        if adds && self.under_water() {
+            draw.counts[3] |= 1 | 2 | 256;
+        }
         let shadows = self.shadow.is_some() && self.shadow_in_frame;
         if self.shade.is_none() && !shadows {
             return;
@@ -1538,7 +1576,6 @@ impl Extension for DistantLand {
             [draw.scene_ambient[0] * p.ambient, draw.scene_ambient[1] * p.ambient, draw.scene_ambient[2] * p.ambient, draw.scene_ambient[3]]
         };
         // A draw that adds to the picture gets darker in the fog and no fog colour.
-        let adds = facts.blend_enable && (facts.source_blend == 2 || facts.destination_blend == 2);
         draw.counts[3] |= 1 | if adds { 2 } else { 0 };
         // The fog of this shading is on the distance from the camera.
         draw.fog[3] = 1.0;
@@ -2186,6 +2223,11 @@ impl DistantLand {
         if !changes.is_empty() {
             println!("settings: {}", changes.join(", "));
         }
+    }
+
+    /// The camera is under the water in this frame.
+    fn under_water(&self) -> bool {
+        self.environment.is_some_and(|e| e.flags & 2 != 0)
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {

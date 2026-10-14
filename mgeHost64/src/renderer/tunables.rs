@@ -22,6 +22,9 @@ pub const BLUR_ANGLE: &str = "water.blur.angle";
 pub const BLUR_WIND: &str = "water.blur.wind";
 /// The same: the most that the blur is taller than wide, for a flat look at the water.
 pub const BLUR_STRETCH: &str = "water.blur.stretch";
+/// The light of a glow under water: how much faster it loses the colours that the water has
+/// less of (the power of the ratio of the colours of the fog).
+pub const WATER_LIGHT_COLOUR: &str = "water.light.colour";
 
 #[derive(Default)]
 struct Tunable {
@@ -136,7 +139,7 @@ mod tests {
     #[test]
     fn the_file_has_each_parameter_of_the_code_with_a_range() {
         let tunables = Tunables::new();
-        for name in [BLUR_ANGLE, BLUR_WIND, BLUR_STRETCH] {
+        for name in [BLUR_ANGLE, BLUR_WIND, BLUR_STRETCH, WATER_LIGHT_COLOUR] {
             let tunable = tunables.list.iter().find(|tunable| tunable.name == name).unwrap_or_else(|| panic!("no parameter {name} in the file"));
             assert!(!tunable.label.is_empty(), "{name} has no label");
             assert!(tunable.step > 0.0 && tunable.least < tunable.most, "{name} has no range");
