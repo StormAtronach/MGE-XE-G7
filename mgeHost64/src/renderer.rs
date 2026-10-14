@@ -1476,6 +1476,7 @@ impl Extension for DistantLand {
                 let level = self.environment.map_or(0.0, |e| e.water_level) as f64 - 1.0;
                 (10, if self.under_water() { [0.0, 0.0, -1.0, level] } else { [0.0, 0.0, 1.0, -level] })
             }),
+            hold: false,
         }
     }
 
