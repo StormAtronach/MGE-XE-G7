@@ -4510,6 +4510,9 @@ struct Compiled {
     /// A mod can turn a shader off.
     enabled: bool,
     no_sun_glare: bool,
+    /// The code of the shader reads the depth frame (`depthframe`; the common part only
+    /// declares it).
+    reads_depth: bool,
     passes: Vec<CompiledPass>,
     textures: Vec<wgpu::TextureView>,
     variables: Vec<VariableDef>,
@@ -4574,6 +4577,8 @@ pub struct Post {
     hdr_on: bool,
     pub frames: u64,
     pub shaders_run: u64,
+    /// The frames that made the depth frame (a shader of the chain read it).
+    pub depth_frames: u64,
 }
 
 impl Post {
@@ -4753,6 +4758,7 @@ impl Post {
             hdr_on: true,
             frames: 0,
             shaders_run: 0,
+            depth_frames: 0,
         };
         for name in chain {
             post.load(scene, name, read);
@@ -4898,6 +4904,7 @@ impl Post {
             sequence: self.chain.len() + self.failed.len(),
             enabled: true,
             no_sun_glare: shader.no_sun_glare,
+            reads_depth: shader.source.contains("depthframe"),
             passes,
             textures,
             variables: shader.variables,
@@ -5036,7 +5043,11 @@ impl Post {
         };
         scene.queue.write_buffer(&self.depth_uniform, 0, bytemuck::cast_slice(&[variables.mproj[2][2], variables.mproj[3][2], distant[0], distant[1]]));
         let depth_view = &self.depth.as_ref().unwrap().1.clone();
-        {
+        // The depth frame only when a shader of the chain of this frame reads it, or the
+        // look at it is on.
+        let reads_depth = self.debug == 2.0 || self.chain.iter().any(|c| c.enabled && c.disable_flags & environment_flags == 0 && c.reads_depth);
+        if reads_depth {
+            self.depth_frames += 1;
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("post depth"),
                 layout: &self.depth_layout,

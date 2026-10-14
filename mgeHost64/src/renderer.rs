@@ -799,7 +799,7 @@ impl Drop for DistantLand {
             println!("dynamic waves: {} frames, {} steps, {} drops", ripples.frames, ripples.steps, ripples.drops_made);
         }
         println!("shadow map: {} frames", self.shadow.as_ref().map_or(0, |s| s.frames));
-        println!("post: {} frames, {} shaders run", self.post.as_ref().map_or(0, |p| p.frames), self.post.as_ref().map_or(0, |p| p.shaders_run));
+        println!("post: {} frames, {} shaders run, the depth frame in {} frames", self.post.as_ref().map_or(0, |p| p.frames), self.post.as_ref().map_or(0, |p| p.shaders_run), self.post.as_ref().map_or(0, |p| p.depth_frames));
         if let Some(timer) = self.gpu_time.as_ref() {
             println!("{}", timer.report());
         }
