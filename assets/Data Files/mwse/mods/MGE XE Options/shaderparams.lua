@@ -363,6 +363,10 @@ function this.open(target)
 		local last = shader and hotreload.last[shader.name]
 		if not last then
 			status.visible = false
+		elseif last.unknown then
+			status.visible = true
+			status.text = i18n("ShaderNoAnswer")
+			status.color = tes3ui.getPalette("normal_color")
 		else
 			status.visible = true
 			status.text = last.ok and i18n("ShaderReloaded") or (i18n("ShaderError") .. " " .. i18n("ShaderSeeMessage"))

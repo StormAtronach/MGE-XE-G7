@@ -70,13 +70,17 @@ local function plain(text, lines)
 	return table.concat(out, "\n")
 end
 
--- What the last result was, for a window that shows it: `nil` without a result.
+-- What the last result was, for a window that shows it: `nil` without a result. `unknown`
+-- is true when the renderer gave no answer, which is not an error of the shader.
 this.last = {}
 
-local function report(name, ok, text)
+local function report(name, ok, text, unknown)
 	local i18n = this.i18n
-	this.last[name] = { ok = ok, text = text or "" }
-	if ok then
+	this.last[name] = { ok = ok, unknown = unknown, text = text or "" }
+	if unknown then
+		mwse.log("[MGE XE Options] no answer from the renderer for the reload of the shader %s", name)
+		tes3.messageBox{message = string.format("%s: %s", name, i18n("ShaderNoAnswer"))}
+	elseif ok then
 		mwse.log("[MGE XE Options] the shader %s was reloaded", name)
 		tes3.messageBox{message = string.format("%s: %s", name, i18n("ShaderReloaded"))}
 	else
@@ -115,7 +119,7 @@ function this.reload(shader)
 				e.timer:cancel()
 				report(name, now.ok, now.text)
 			elseif tries == 20 then
-				report(name, false, i18n("ShaderNoAnswer"))
+				report(name, false, nil, true)
 			end
 		end,
 	}

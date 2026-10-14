@@ -14,7 +14,7 @@ return {
 	["ShaderError"] = "le shader ne compile pas.",
 	["ShaderSeeMessage"] = "Le texte complet est dans MWSE.log.",
 	["ShaderSeeLog"] = "Le shader n'a pas été rechargé. Voir mgeXE.log.",
-	["ShaderNoAnswer"] = "Pas de réponse du moteur de rendu.",
+	["ShaderNoAnswer"] = "pas de réponse du moteur de rendu, le résultat n'est pas connu. Un mgeHost64.exe plus ancien que ces options ne répond pas.",
 
     ["MsgLoaded"] = "Configuration chargée.",
     ["MsgSaved"] = "Configuration enregistrée.",
