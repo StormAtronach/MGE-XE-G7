@@ -84,7 +84,7 @@ impl Dry {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water dry spaces"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water dry spaces"), bind_group_layouts: &[Some(frame_layout)], immediate_size: 0 });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
-        let make = |vertex: &str, fragment: &str, depth: wgpu::CompareFunction, operation: wgpu::StencilOperation, with_corners: bool| {
+        let make = |vertex: &str, fragment: &str, depth: wgpu::CompareFunction, operation: wgpu::StencilOperation, with_corners: bool, bias: wgpu::DepthBiasState| {
             let face = wgpu::StencilFaceState { compare: wgpu::CompareFunction::Always, fail_op: operation, depth_fail_op: wgpu::StencilOperation::Keep, pass_op: operation };
             let corners = [Some(wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -97,7 +97,7 @@ impl Dry {
                     depth_write_enabled: Some(false),
                     depth_compare: Some(depth),
                     stencil: wgpu::StencilState { front: face, back: face, read_mask: 0xFF, write_mask: DRY_BIT },
-                    bias: Default::default(),
+                    bias,
                 }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -111,9 +111,13 @@ impl Dry {
             })
         };
         // The zero: the reference of the pass is 0.
-        let zero = make("vs_zero", "fs_none", wgpu::CompareFunction::Always, wgpu::StencilOperation::Replace, false);
-        let count_plane = make("vs_mask_plane", "fs_mask_plane", wgpu::CompareFunction::Always, wgpu::StencilOperation::Invert, true);
-        let count_behind = make("vs_mask", "fs_none", wgpu::CompareFunction::Greater, wgpu::StencilOperation::Invert, true);
+        let zero = make("vs_zero", "fs_none", wgpu::CompareFunction::Always, wgpu::StencilOperation::Replace, false, Default::default());
+        let count_plane = make("vs_mask_plane", "fs_mask_plane", wgpu::CompareFunction::Always, wgpu::StencilOperation::Invert, true, Default::default());
+        // The faces behind the depth and at it: a point on a face of a dry space is in it (the
+        // floor of a hold is often the face of its mask). The bias takes a face a little back,
+        // so that the same surface in two meshes, with other matrices, counts.
+        let at_face = wgpu::DepthBiasState { constant: 4, slope_scale: 2.0, clamp: 0.0 };
+        let count_behind = make("vs_mask", "fs_none", wgpu::CompareFunction::GreaterEqual, wgpu::StencilOperation::Invert, true, at_face);
         Dry { zero, count_plane, count_behind, masks: None }
     }
 
@@ -143,7 +147,8 @@ impl Dry {
         self.count(pass, &self.count_plane);
     }
 
-    /// Counts the faces behind the depth that the surfaces wrote into the bit.
+    /// Counts the faces behind the depth into the bit, and those at it: that of the surfaces of
+    /// volumes, or that of the game for the caustics under the sea.
     pub fn count_behind(&self, pass: &mut wgpu::RenderPass<'static>) {
         self.count(pass, &self.count_behind);
     }

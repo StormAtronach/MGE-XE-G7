@@ -1,10 +1,11 @@
-//! The caustics of the sun under the water: `XE Mod Caustics.fx`.
+//! The caustics of the sun under the sea: `XE Mod Caustics.fx`.
 //!
-//! A pass over the picture of the game at the end of its world scene, before the blend with
-//! the distant land (`renderStageBlend` of the Direct3D 9 path). For a pixel of the game
-//! under the level of the water, the light that the waves send down modulates its colour:
-//! brighter where the waves focus it, and darker in the mean, less with the depth of the
-//! water and with the distance.
+//! A pass over the picture of the game at the end of its world scene, before the surfaces of
+//! water volumes. For a pixel of the game under the level of the water, the light that the
+//! waves send down modulates its colour (`water::CAUSTICS`, the function that the surfaces of
+//! water volumes have too): brighter where the waves focus it, and darker in the mean, less
+//! with the depth of the water and with the distance. Not in a dry space: the pass is drawn
+//! with the count of the dry spaces in the stencil buffer (`water::Water::draw_sea_caustics`).
 
 use nirender_wgpu::{SceneView, wgpu};
 
@@ -14,6 +15,7 @@ struct Uniforms {
     // The two numbers of the projection for the width and the height, and the two that
     // give the depth.
     projection: vec4f,
+    // The size of the picture, and the length of the blend into the distant land.
     size: vec4f,
     // The camera, and the level of the water.
     eye: vec4f,
@@ -56,14 +58,18 @@ struct Uniforms {
         discard;
     }
     let fog = clamp((u.values.w - z) / (u.values.w - u.values.z), 0.0, 1.0);
-    // Where the ray of the sun through the point meets the surface: the waves there.
-    let sunray = under - u.sun.xyz * (under.z / u.sun.z);
-    var caust = u.values.x * textureSample(waves, wave_sampler, vec3f(sunray.xy / 1104.0, 0.4 * u.sun.w)).b;
-    caust *= clamp(125.0 / z * min(fwidth(sunray.x), fwidth(sunray.y)), 0.0, 1.0);
-    let factor = 1.0 + (caust - 0.3) * clamp(exp(under.z / 400.0), 0.0, 1.0) * clamp(under.z / -30.0, 0.0, 1.0) * fog;
+    // The blend takes the picture of the game into the distant land over the last stretch
+    // before the view range (`blend.rs`, drawn before this pass): the caustics go out with it.
+    let bound = u.values.y - u.size.z;
+    let kept = 1.0 - clamp((blend_distance(depth, at, u.projection.zw, u.projection.xy, u.size.xy, bound) - bound) / u.size.z, 0.0, 1.0);
+    let factor = 1.0 + caustic_light(under, u.sun.xyz, u.sun.w, z, u.values.x) * fog * kept;
     return vec4f(textureLoad(picture, at, 0).rgb * factor, 1.0);
 }
 ";
+
+fn shader() -> String {
+    format!("{}{}{}", SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
+}
 
 /// What the caustics need from the frame.
 pub struct CausticsFrame {
@@ -81,6 +87,8 @@ pub struct CausticsFrame {
 
 pub struct Caustics {
     pipeline: wgpu::RenderPipeline,
+    /// The same, outside the dry spaces.
+    pipeline_cut: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     wave_sampler: wgpu::Sampler,
@@ -92,7 +100,8 @@ pub struct Caustics {
 }
 
 impl Caustics {
-    pub fn new(scene: &SceneView, intensity: f32) -> Self {
+    /// `cut` is the stencil test of a pixel outside the dry spaces (`water::Water::dry_cut`).
+    pub fn new(scene: &SceneView, intensity: f32, cut: wgpu::StencilState) -> Self {
         let device = scene.device;
         let texture = |binding, sample_type, dimension| wgpu::BindGroupLayoutEntry {
             binding,
@@ -115,24 +124,36 @@ impl Caustics {
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("caustics"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("caustics"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("caustics"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        // In the pass of the world: no test of the depth and no write, and the stencil of the
+        // dry spaces for the cut.
+        let make_pipeline = |stencil: wgpu::StencilState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("caustics"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: scene.depth_format,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil,
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = make_pipeline(Default::default());
+        let pipeline_cut = make_pipeline(cut);
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("caustics"), size: 64 + 5 * 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let wave_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -142,20 +163,20 @@ impl Caustics {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        Self { pipeline, layout, uniforms, wave_sampler, intensity, frames: 0 }
+        Self { pipeline, pipeline_cut, layout, uniforms, wave_sampler, intensity, frames: 0 }
     }
 
     /// Draws the caustics on the picture. `picture` is a copy of the picture as it is,
     /// `depth` the depth of the draws of the game, `waves` the wave texture of the water.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, picture: &wgpu::TextureView, depth: &wgpu::TextureView, waves: &wgpu::TextureView, frame: &CausticsFrame) {
+    /// With `cut`, only outside the dry spaces: the caller has their count in the stencil.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, picture: &wgpu::TextureView, depth: &wgpu::TextureView, waves: &wgpu::TextureView, frame: &CausticsFrame, cut: bool) {
         let eye = super::eye_of(&scene.view);
-        let sunlight = 1.0 - (1.0 - frame.sun_vis).powi(2);
-        let fog_far = frame.fog_color_far;
-        let strength = 0.05 * self.intensity * (0.75 * sunlight + 0.35 * (fog_far[0] * fog_far[0] + fog_far[1] * fog_far[1] + fog_far[2] * fog_far[2]).sqrt()).clamp(0.0, 1.0);
+        let strength = super::water::caustic_strength(self.intensity, frame.sun_vis, frame.fog_color_far);
         let mut values = [0.0f32; 16 + 20];
         values[..16].copy_from_slice(&scene.view);
         values[16..20].copy_from_slice(&[scene.projection[0], scene.projection[5], scene.projection[10], scene.projection[14]]);
-        values[20..24].copy_from_slice(&[scene.target_size.0 as f32, scene.target_size.1 as f32, 0.0, 0.0]);
+        values[20..24].copy_from_slice(&[scene.target_size.0 as f32, scene.target_size.1 as f32, super::blend::ZONE, 0.0]);
         values[24..28].copy_from_slice(&[eye[0], eye[1], eye[2], frame.water_level]);
         values[28..32].copy_from_slice(&[frame.sun_direction[0], frame.sun_direction[1], frame.sun_direction[2], frame.time]);
         values[32..36].copy_from_slice(&[strength, frame.near_view_range, frame.fog_near.0, frame.fog_near.1]);
@@ -171,9 +192,22 @@ impl Caustics {
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.wave_sampler) },
             ],
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(if cut { &self.pipeline_cut } else { &self.pipeline });
+        pass.set_stencil_reference(0);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
         self.frames += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The shader compiles: the WGSL is read and checked as the device does it.
+    #[test]
+    fn the_shader_is_valid() {
+        use nirender_wgpu::wgpu::naga;
+        let source = super::shader();
+        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
     }
 }

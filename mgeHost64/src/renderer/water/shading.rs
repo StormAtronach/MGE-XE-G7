@@ -51,6 +51,34 @@ pub(in crate::renderer) struct Uniforms {
     pub land: [f32; 4],
 }
 
+/// The caustics: the light that the waves of a surface focus on what is under it. One
+/// function for the sea (`caustics.rs`) and for the surfaces of water volumes; the shader
+/// that has it binds `waves` and `wave_sampler`.
+pub(in crate::renderer) const CAUSTICS: &str = "
+// What the caustics add to 1 for a point under a surface, before the colour of the point is
+// multiplied with it (`XE Mod Caustics.fx`): brighter where the waves focus the light of the
+// sun, and darker in the mean by as much as the light is there, less with the depth of the
+// point under the surface. `under` is the point less the level of the surface over it, `sun`
+// the direction that the light of the sun goes in, `time` that of the waves, `distance` how
+// far the point is from the eye, and `strength` the strength of the caustics.
+fn caustic_light(under: vec3f, sun: vec3f, time: f32, distance: f32, strength: f32) -> f32 {
+    // Where the ray of the sun through the point meets the surface: the waves there. A sun at
+    // the horizon or under it is taken as a little above it.
+    let sunray = under - sun * (under.z / min(sun.z, -0.05));
+    var caust = strength * textureSample(waves, wave_sampler, vec3f(sunray.xy / 1104.0, 0.4 * time)).b;
+    caust *= clamp(125.0 / distance * min(fwidth(sunray.x), fwidth(sunray.y)), 0.0, 1.0);
+    return (caust - 0.3 * clamp(strength, 0.0, 1.0)) * clamp(exp(under.z / 400.0), 0.0, 1.0) * clamp(under.z / -30.0, 0.0, 1.0);
+}
+";
+
+/// The strength of the caustics for the light of the frame: from the setting (0 to 100),
+/// the visibility of the sun and the far fog colour, which has the light of the sky.
+pub(in crate::renderer) fn caustic_strength(intensity: f32, sun_vis: f32, fog_color_far: [f32; 3]) -> f32 {
+    let sunlight = 1.0 - (1.0 - sun_vis).powi(2);
+    let sky = (fog_color_far[0] * fog_color_far[0] + fog_color_far[1] * fog_color_far[1] + fog_color_far[2] * fog_color_far[2]).sqrt();
+    0.05 * intensity * (0.75 * sunlight + 0.35 * sky).clamp(0.0, 1.0)
+}
+
 /// The WGSL of the shared shading: the uniforms and the textures of the frame in group 0,
 /// and the functions.
 pub(super) const COMMON: &str = "
@@ -222,10 +250,15 @@ fn reflection_at(uv: vec2f, w: f32, stretch: f32) -> vec3f {
 // gives the water, then the fog. `tint` is the colour of the water of a surface (the
 // emissive colour of its material, `waterDepthBase`); black for the usual colour.
 fn depth_base(tint: vec3f) -> vec3f {
+    return depth_base_sun(tint, 1.0);
+}
+
+// The same, with the share of the sun in it: 0 in the shadow of a thing, 1 in the sun.
+fn depth_base_sun(tint: vec3f, sun: f32) -> vec3f {
     if max(tint.r, max(tint.g, tint.b)) >= 0.5 / 255.0 {
-        return (0.05 * u.sun_col.rgb + 0.085 * (2.0 * u.sky_col.rgb + u.fog_col_far.rgb)) * tint;
+        return (0.05 * sun * u.sun_col.rgb + 0.085 * (2.0 * u.sky_col.rgb + u.fog_col_far.rgb)) * tint;
     }
-    return u.sun_col.rgb * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
+    return sun * u.sun_col.rgb * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
 }
 
 fn deep_color(fog: vec4f, tint: vec3f) -> vec3f {
@@ -346,7 +379,8 @@ fn reflect_scene(origin: vec3f, direction: vec3f, with_land: bool) -> vec4f {
 // view depth `w`), with the shift of the waves; deep water where the bottom is far. `tint`
 // is the colour of the water, `clarity` over how many units what is under the water fades
 // into the colour of deep water (800 for the sea), `look_tint` the tint of a look; with
-// `with_land` the bottom can be the distant land.
+// `with_land` the bottom can be the distant land. `light` multiplies the colour of the
+// bottom before the water takes it (the caustics); 1 for none.
 struct Refraction {
     color: vec3f,
     // 1 at the shore, where the water is so shallow that it shows the bottom as it is.
@@ -355,7 +389,7 @@ struct Refraction {
     depth_first: f32,
 }
 
-fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f, deep: vec3f, tint: vec3f, clarity: f32, look_tint: vec3f, with_land: bool) -> Refraction {
+fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f, deep: vec3f, tint: vec3f, clarity: f32, look_tint: vec3f, with_land: bool, light: f32) -> Refraction {
     var out: Refraction;
     var new_uv = uv + reffactor.yx / w;
     var depth_of = max(0.0, ground_at(new_uv, with_land) - w);
@@ -364,7 +398,7 @@ fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f
     out.shore = 0.0;
     if depth_of < 4000.0 {
         new_uv = uv + clamp(depth_of / 100.0, 0.0, 1.0) * reffactor.yx / w;
-        var refracted = textureSample(picture, clamp_sampler, new_uv).rgb;
+        var refracted = textureSample(picture, clamp_sampler, new_uv).rgb * light;
         depth_of = max(0.0, ground_at(new_uv, with_land) - w);
         // From a difference of the depth to a distance along the ray.
         depth_of /= dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z));

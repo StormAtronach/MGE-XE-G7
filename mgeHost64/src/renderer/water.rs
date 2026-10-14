@@ -42,7 +42,8 @@ use shading::Uniforms;
 mod volume;
 mod dry;
 pub use dry::read_masks;
-pub use volume::{FarWater, Look, VolumeLook, marked as volume_marked};
+pub use volume::{FarWater, Look, VolumeLight, VolumeLook, marked as volume_marked};
+pub(super) use shading::{CAUSTICS, caustic_strength};
 
 /// The shader of the plane: the shared shading and the entry points of the plane.
 fn shader() -> String {
@@ -133,7 +134,7 @@ fn plane_color(in: Out) -> vec4f {
     let fog = fog_water(eye_vec, dist);
     let normal = water_normal(in.texcoords, dist, in.world.xy);
     let reffactor = (u.sun_col.w * dist + 0.1) * normal.xy;
-    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0), true);
+    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0), true, 1.0);
     let refracted = below.color;
     // With the dynamic waves the reflection is read at the point that is not above the plane.
     var reflect_uv = uv;
@@ -790,14 +791,39 @@ impl Water {
     /// Draws the surfaces of water volumes among the shapes that the renderer held for the
     /// extension, with the picture and the depth of the scene so far. Returns the number
     /// drawn.
-    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], far: &[FarWater], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>) -> usize {
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], far: &[FarWater], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>, light: &VolumeLight) -> usize {
         if far.is_empty() && !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
             return 0;
         }
         let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms) else { return 0 };
         // The dry spaces cut the surfaces near the camera, but not from under the water.
         let dry = (self.dry.any() && !frame.underwater).then_some(&self.dry);
-        self.volumes.draw(scene, pass, &group, held, far, look, looks, dry)
+        self.volumes.draw(scene, pass, &group, held, far, look, looks, light, dry)
+    }
+
+    /// The stencil test of a pixel outside the dry spaces, for a pass that the count cuts.
+    pub fn dry_cut() -> wgpu::StencilState {
+        dry::outside()
+    }
+
+    /// Draws the caustics under the sea on the picture of the game, outside the dry spaces:
+    /// the faces of the dry spaces behind the depth of the game are counted first, so a point
+    /// inside one (the floor of a hold under the level of the sea) has none, wherever the eye
+    /// is.
+    pub fn draw_sea_caustics(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, caustics: &mut super::caustics::Caustics, caustics_frame: &super::caustics::CausticsFrame) {
+        let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return };
+        let group = self.dry.any().then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms)).flatten();
+        if let Some(group) = group.as_ref() {
+            pass.set_bind_group(0, group, &[]);
+            self.dry.zero(pass);
+            self.dry.count_behind(pass);
+        }
+        caustics.draw(scene, pass, picture, depth, &self.waves, caustics_frame, group.is_some());
+        if let Some(group) = group.as_ref() {
+            pass.set_bind_group(0, group, &[]);
+            self.dry.zero(pass);
+        }
     }
 
     /// The water among the distant statics drawn since the start.

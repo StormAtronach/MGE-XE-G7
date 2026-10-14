@@ -24,30 +24,10 @@ struct Uniforms {
     return vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0);
 }
 
-// The distance from the camera, from the depth of a pixel. A pixel that the game did not
-// draw is very far. The original has the distance along the view of the camera; the fog of
-// the draws of the game is on the distance from the camera here, and the blend must start
-// where that fog ends for each direction of the camera.
-fn distance_at(at: vec2i) -> f32 {
-    let size = vec2i(textureDimensions(depth));
-    let d = textureLoad(depth, clamp(at, vec2i(0), size - 1), 0);
-    if d >= 1.0 {
-        return 1e30;
-    }
-    let ndc = (vec2f(at) + 0.5) / u.more.zw * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
-    return u.values.y / (d - u.values.x) * length(vec3f(ndc / u.more.xy, 1.0));
-}
-
 @fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
     let at = vec2i(position.xy);
     let bound = u.values.z;
-    var w = distance_at(at);
-    if w > bound {
-        w = min(w, distance_at(at + vec2i(-1, 0)));
-        w = min(w, distance_at(at + vec2i(0, -1)));
-        w = min(w, distance_at(at + vec2i(1, 0)));
-        w = min(w, distance_at(at + vec2i(0, 1)));
-    }
+    let w = blend_distance(depth, at, u.values.xy, u.more.xy, u.more.zw, bound);
     // Where the game drew nothing, the picture is that of the distant land already.
     if w > 1e29 {
         discard;
@@ -60,8 +40,45 @@ fn distance_at(at: vec2i) -> f32 {
 }
 ";
 
+/// The distance by which the blend takes a pixel of the game into the distant land: for the
+/// blend, and for the caustics, which go out with it (`caustics.rs`).
+pub(super) const DISTANCE: &str = "
+// The distance from the camera at a pixel, from the depth of the game. `depth_of` has the two
+// numbers of the projection that give the depth, `scale` the two for the width and the height,
+// and `size` is the size of the picture. A pixel that the game did not draw is very far. The
+// original has the distance along the view of the camera; the fog of the draws of the game is
+// on the distance from the camera here, and the blend must start where that fog ends for each
+// direction of the camera.
+fn blend_distance_at(depth_texture: texture_depth_2d, at: vec2i, depth_of: vec2f, scale: vec2f, size: vec2f) -> f32 {
+    let limit = vec2i(textureDimensions(depth_texture));
+    let d = textureLoad(depth_texture, clamp(at, vec2i(0), limit - 1), 0);
+    if d >= 1.0 {
+        return 1e30;
+    }
+    let ndc = (vec2f(at) + 0.5) / size * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
+    return depth_of.y / (d - depth_of.x) * length(vec3f(ndc / scale, 1.0));
+}
+
+// The distance of a pixel for the blend: past `bound`, the nearest of the pixel and its four
+// neighbours, so that the edge of a thing goes into the distant land with the thing.
+fn blend_distance(depth_texture: texture_depth_2d, at: vec2i, depth_of: vec2f, scale: vec2f, size: vec2f, bound: f32) -> f32 {
+    var w = blend_distance_at(depth_texture, at, depth_of, scale, size);
+    if w > bound {
+        w = min(w, blend_distance_at(depth_texture, at + vec2i(-1, 0), depth_of, scale, size));
+        w = min(w, blend_distance_at(depth_texture, at + vec2i(0, -1), depth_of, scale, size));
+        w = min(w, blend_distance_at(depth_texture, at + vec2i(1, 0), depth_of, scale, size));
+        w = min(w, blend_distance_at(depth_texture, at + vec2i(0, 1), depth_of, scale, size));
+    }
+    return w;
+}
+";
+
+fn shader() -> String {
+    format!("{}{}", SHADER, DISTANCE)
+}
+
 /// The length of the blend, in the units of the game: `zone` of `MGEBlendPS`.
-const ZONE: f32 = 512.0;
+pub(super) const ZONE: f32 = 512.0;
 
 pub struct Blend {
     pipeline: wgpu::RenderPipeline,
@@ -93,7 +110,7 @@ impl Blend {
                 texture(2, wgpu::TextureSampleType::Depth),
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blend"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blend"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blend"),
@@ -146,5 +163,17 @@ impl Blend {
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
         self.frames += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The shader compiles: the WGSL is read and checked as the device does it.
+    #[test]
+    fn the_shader_is_valid() {
+        use nirender_wgpu::wgpu::naga;
+        let source = super::shader();
+        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
     }
 }

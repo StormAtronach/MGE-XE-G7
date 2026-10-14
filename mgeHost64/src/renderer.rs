@@ -345,6 +345,12 @@ pub struct DistantLand {
     /// How far from the camera the surfaces of water volumes reflect what is in the picture,
     /// in cells (`distant_land.water.volume_reflection_cells`); 0 for the sky only.
     volume_reflect_cells: f32,
+    /// The light of the frame on the surfaces of water volumes (B8): the shadow map, the lights
+    /// of the frame for each pixel, and the caustics under them
+    /// (`distant_land.water.volume_shadows`, `volume_point_lights`, `volume_caustics`).
+    volume_shadows: bool,
+    volume_point_lights: bool,
+    volume_caustics: bool,
     /// The surfaces of water volumes are taken from the renderer in this frame: the water
     /// is there, with the facts of the frame.
     volumes_ready: bool,
@@ -659,6 +665,9 @@ impl DistantLand {
             blur_reflections: settings.water.blur_reflections,
             blur_contact: settings.water.blur_contact_hardening,
             volume_reflect_cells: settings.water.volume_reflection_cells,
+            volume_shadows: settings.water.volume_shadows,
+            volume_point_lights: settings.water.volume_point_lights,
+            volume_caustics: settings.water.volume_caustics,
             volumes_ready: false,
             volumes_wanted: false,
             volumes_drawn: false,
@@ -1425,8 +1434,9 @@ impl Extension for DistantLand {
                 water.set_masks(scene, &corners);
             }
         }
-        // The surfaces of water volumes: in any cell, when the water is there.
-        self.volumes_drawn = false;
+        // The surfaces of water volumes: in any cell, when the water is there. The lights of
+        // the frame are binned for them when the last frame drew one near the camera.
+        let near_volumes = std::mem::replace(&mut self.volumes_drawn, false);
         self.far_water.clear();
         self.volumes_ready = self.enabled && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_some();
         // In a water volume its top is the level of the water of the frame: the sea plane is
@@ -1521,6 +1531,7 @@ impl Extension for DistantLand {
                 (10, if self.under_water() { [0.0, 0.0, -1.0, level] } else { [0.0, 0.0, 1.0, -level] })
             }),
             hold: self.volumes_ready || (self.enabled && self.water_enabled && self.water.is_none()),
+            lights: self.volume_point_lights && near_volumes && self.volumes_ready,
         }
     }
 
@@ -1609,7 +1620,9 @@ impl Extension for DistantLand {
                 light.ambient = [wrap, 0.0, 0.0, 0.0];
                 light.position = [position[0] + bias * camera_z[0], position[1] + bias * camera_z[1], position[2] + bias * camera_z[2], 1.0];
                 light.attenuation = [0.0, 0.0, quadratic, 0.0];
-                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, 0.0, 0.0];
+                // The radius stays: the reach of the light in the clusters of the frame
+                // without a cut-off (`nirender_wgpu::FrameLights`).
+                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
             }
         }
         for light in lights.iter_mut() {
@@ -1954,7 +1967,7 @@ impl Extension for DistantLand {
     }
 
     fn wants_held(&self) -> bool {
-        !self.far_water.is_empty()
+        !self.far_water.is_empty() || self.sea_caustics()
     }
 
     /// The grass, at the end of the world scene of the game: with the projection and the
@@ -2081,11 +2094,39 @@ impl Extension for DistantLand {
             land_view_projection: multiply(&scene.view, &self.land_projection(scene)),
             view_range: self.environment.map_or(0.0, |e| e.near_view_range),
         };
+        // The caustics under the sea first, on the picture of the game: the surfaces of volumes
+        // then go over them.
+        if self.sea_caustics() {
+            let caustics_frame = self.water_frame(scene).map(|w| caustics::CausticsFrame {
+                water_level: w.water_level,
+                time: w.time,
+                sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
+                sun_vis: w.sun_vis,
+                fog_color_far: w.fog_color_far,
+                near_view_range: self.environment.map_or(7168.0, |e| e.near_view_range),
+                fog_near: self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end)),
+            });
+            if let (Some(water), Some(caustics_frame)) = (self.water.as_mut(), caustics_frame) {
+                let intensity = self.caustics_intensity;
+                let caustics = self.caustics.get_or_insert_with(|| caustics::Caustics::new(scene, intensity, Water::dry_cut()));
+                caustics.intensity = intensity;
+                water.draw_sea_caustics(scene, pass, &frame, self.ripples.as_ref(), caustics, &caustics_frame);
+            }
+        }
+        // The light of the frame on the surfaces, each part as its setting says.
+        let shadow = self.shadow.as_ref().filter(|_| self.volume_shadows && self.shadow_in_frame).map(|shadow| (&*shadow.atlas_view, shadow.viewproj, 1.0 / shadow.resolution as f32));
+        let outdoors = self.like_exterior && !scene.interior;
+        let light = water::VolumeLight {
+            shadow,
+            lights: scene.lights.as_ref().filter(|_| self.volume_point_lights),
+            caustics: if self.volume_caustics && outdoors { water::caustic_strength(self.caustics_intensity, frame.sun_vis, frame.fog_color_far) } else { 0.0 },
+            sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
+        };
         let far = std::mem::take(&mut self.far_water);
         if let Some(water) = self.water.as_mut() {
             // The flag is for the near surfaces: the sea plane at the top of the volume of
             // the camera goes when one was drawn.
-            self.volumes_drawn = water.draw_volumes(scene, pass, &frame, self.ripples.as_ref(), held, &far, &look, &self.water_looks) > far.len();
+            self.volumes_drawn = water.draw_volumes(scene, pass, &frame, self.ripples.as_ref(), held, &far, &look, &self.water_looks, &light) > far.len();
         }
     }
 
@@ -2108,26 +2149,6 @@ impl Extension for DistantLand {
     }
 
     fn blend(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView) {
-        // The caustics first, so that the blend takes them out at the view range, as
-        // renderStageBlend of the Direct3D 9 path has it: in an exterior, on the picture of
-        // the game, with the waves of the water.
-        if !scene.interior && self.caustics_intensity > 0.0 {
-            let frame = self.water_frame(scene).map(|w| caustics::CausticsFrame {
-                water_level: w.water_level,
-                time: w.time,
-                sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
-                sun_vis: w.sun_vis,
-                fog_color_far: w.fog_color_far,
-                near_view_range: self.environment.map_or(7168.0, |e| e.near_view_range),
-                fog_near: self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end)),
-            });
-            if let (Some(picture), Some(waves), Some(frame)) = (scene.picture, self.water.as_ref().map(|w| w.waves()), frame) {
-                let intensity = self.caustics_intensity;
-                let caustics = self.caustics.get_or_insert_with(|| caustics::Caustics::new(scene, intensity));
-                caustics.intensity = intensity;
-                caustics.draw(scene, pass, picture, depth, &waves, &frame);
-            }
-        }
         // Without the view range from the game, the default of the game with distant land.
         let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
         self.blend.get_or_insert_with(|| blend::Blend::new(scene)).draw(scene, pass, before, depth, near_view_range);
@@ -2149,6 +2170,12 @@ impl DistantLand {
         };
         let has_world = self.statics.as_mut().is_some_and(|statics| statics.set_world(name));
         self.distant_cell = !scene.interior || has_world;
+    }
+
+    /// The caustics under the sea are drawn in this frame: an exterior with water and the
+    /// setting above 0. The held stage draws them, where the count of the dry spaces is.
+    fn sea_caustics(&self) -> bool {
+        !self.interior && self.caustics_intensity > 0.0 && self.environment.is_some_and(|e| e.has_water != 0) && self.water.is_some()
     }
 
     /// What the water needs from the environment of the frame, or `None` without water in

@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use nirender_wgpu::{HeldDraw, SceneView, wgpu};
+use nirender_wgpu::{FrameLights, HeldDraw, SceneView, wgpu};
 
 use super::shading;
 
@@ -207,6 +207,30 @@ pub struct VolumeLook {
     pub view_range: f32,
 }
 
+/// The light of the frame on the surfaces (B8): each part is on when its setting is, and the
+/// frame has it.
+pub struct VolumeLight<'a> {
+    /// The shadow map of the frame (`shadow.rs`): the atlas, the matrices of its two layers from
+    /// the world (the layout of Direct3D), and 1 over its resolution.
+    pub shadow: Option<(&'a wgpu::TextureView, [[f32; 16]; 2], f32)>,
+    /// The lights of the frame for each pixel.
+    pub lights: Option<&'a FrameLights<'a>>,
+    /// The strength of the caustics under the surfaces (`water::caustic_strength`); 0 for none.
+    pub caustics: f32,
+    /// The direction that the light of the sun goes in.
+    pub sun_direction: [f32; 3],
+}
+
+/// The values of `Lighting` in the shader.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Lighting {
+    shadow: [[f32; 16]; 2],
+    esm: [f32; 4],
+    sun: [f32; 4],
+    origin: [f32; 4],
+}
+
 /// The values of one surface for the shader.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -251,6 +275,122 @@ struct Surface {
     far: vec4f,
 }
 @group(1) @binding(0) var<uniform> s: Surface;
+
+// The light of the frame on the surfaces (`VolumeLight`): the shadow map of the frame, the
+// lights of the frame with their clusters (`nirender_wgpu::FrameLights`), the caustics.
+struct Light {
+    diffuse: vec4f,
+    ambient: vec4f,
+    position: vec4f,
+    direction: vec4f,
+    attenuation: vec4f,
+    cone: vec4f,
+}
+struct Clusters {
+    grid: vec4u,
+    screen: vec4f,
+    depth: vec4f,
+}
+struct Lighting {
+    // From the world to the two layers of the shadow map.
+    shadow0: mat4x4f,
+    shadow1: mat4x4f,
+    // The constants of the shadow: c, the bias, the scale, and 1 over the resolution.
+    esm: vec4f,
+    // The direction that the light of the sun goes in; w the strength of the caustics, 0 for
+    // none.
+    sun: vec4f,
+    // The point that the positions of the lights are relative to; w bits: 1 the shadow, 2 the
+    // lights.
+    origin: vec4f,
+}
+@group(2) @binding(0) var<uniform> lighting: Lighting;
+@group(2) @binding(1) var shadow_atlas: texture_2d<f32>;
+@group(2) @binding(2) var<storage, read> lights: array<Light>;
+@group(2) @binding(3) var<uniform> clusters: Clusters;
+@group(2) @binding(4) var<storage, read> cluster_table: array<vec2u>;
+@group(2) @binding(5) var<storage, read> cluster_indexes: array<u32>;
+
+// How much of the sun reaches a place, 0 to 1: the shadow map of the frame, read as the draws
+// of the game read it (`extension_shade` of the renderer), so the water has the shadow of the
+// shore next to it. All of it outside the map.
+fn sunlight_at(place: vec3f) -> f32 {
+    if (u32(lighting.origin.w) & 1u) == 0u {
+        return 1.0;
+    }
+    let s0 = lighting.shadow0 * vec4f(place, 1.0);
+    let s1 = lighting.shadow1 * vec4f(place, 1.0);
+    let p0 = vec3f(s0.xy, s0.z / s0.w);
+    let p1 = vec3f(s1.xy, s1.z / s1.w);
+    let margin = vec3f(1.0 - 8.0 * lighting.esm.w, 1.0 - 8.0 * lighting.esm.w, 1.0);
+    var dz = 1e-6;
+    if all(abs(p0) < margin) {
+        let uv = vec2f(0.5 + 0.5 * p0.x, 0.5 - 0.5 * p0.y);
+        dz = textureSampleLevel(shadow_atlas, clamp_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r / lighting.esm.z - p0.z;
+    } else if all(abs(p1) < margin) {
+        let uv = vec2f(0.5 + 0.5 * p1.x, 0.5 - 0.5 * p1.y);
+        dz = textureSampleLevel(shadow_atlas, clamp_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r / lighting.esm.z - p1.z;
+    }
+    if dz >= 0.0 {
+        return 1.0;
+    }
+    // shadowESM, and the fade at the edge of the outer layer.
+    let fade = clamp(25.0 * (1.0 - abs(p1.xy)), vec2f(0.0), vec2f(1.0));
+    return 1.0 - (1.0 - clamp(exp(lighting.esm.x * dz + lighting.esm.y), 0.0, 1.0)) * fade.x * fade.y;
+}
+
+// The light of a point or spot light at a distance: the sum of its falloff (the numbers of
+// the game, or those of the light for each pixel, whose middle number is 0), going to zero
+// over the last quarter of its reach (`nirender_wgpu::light_reach`), where its clusters end.
+fn light_strength(light: Light, distance: f32) -> f32 {
+    var reach = light.direction.w;
+    if light.cone.x > 0.0 {
+        reach = 1.0 / light.cone.x;
+    } else if light.cone.z > 0.0 {
+        reach = light.cone.z;
+    }
+    reach = max(min(reach, LIGHT_REACH_MAX), 0.0);
+    if distance >= reach {
+        return 0.0;
+    }
+    let a = light.attenuation;
+    var fade = clamp(4.0 * distance / reach - 3.0, 0.0, 1.0);
+    fade = 1.0 - fade * fade;
+    return fade * fade / max(a.x + a.y * distance + a.z * distance * distance, 1e-4);
+}
+
+// The lamps and fires of the frame on the surface at a pixel: in `glint` the mirror image of
+// each light in the ripples, in `glow` the light that the body of the water takes from them.
+// The lights are those of the cluster of the pixel: each light that reaches it.
+struct Lit {
+    glint: vec3f,
+    glow: vec3f,
+}
+
+fn point_lights(place: vec3f, eye_vec: vec3f, normal: vec3f, face: vec3f, pixel: vec2f, view_z: f32) -> Lit {
+    var lit: Lit;
+    if (u32(lighting.origin.w) & 2u) == 0u || clusters.grid.w == 0u {
+        return lit;
+    }
+    let tile = vec2u(clamp(vec2i(pixel * clusters.screen.xy), vec2i(0), vec2i(clusters.grid.xy) - 1));
+    let slice = u32(clamp(log(max(view_z, clusters.depth.z)) * clusters.depth.x + clusters.depth.y, 0.0, f32(clusters.grid.z) - 1.0));
+    let cell = cluster_table[(slice * clusters.grid.y + tile.y) * clusters.grid.x + tile.x];
+    for (var i = 0u; i < cell.y; i++) {
+        let light = lights[cluster_indexes[cell.x + i]];
+        // The sun has its own glint.
+        if light.position.w == 3.0 {
+            continue;
+        }
+        let to_light = light.position.xyz + lighting.origin.xyz - place;
+        let distance = length(to_light);
+        let direction = to_light / max(distance, 1e-3);
+        let color = light.diffuse.rgb * light_strength(light, distance);
+        let mirrored = clamp(dot(-eye_vec, reflect(-direction, normal)), 0.0, 1.0);
+        lit.glint += color * (pow(mirrored, 90.0) + 0.06 * pow(mirrored, 6.0));
+        lit.glow += color * clamp(dot(direction, face), 0.0, 1.0);
+    }
+    return lit;
+}
 
 struct Out {
     @builtin(position) position: vec4f,
@@ -355,9 +495,22 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     let bits = u32(s.look.w);
     let look_tint = select(vec3f(1.0), in.color.rgb, (bits & 4u) != 0u);
     let opacity = s.look.y * select(1.0, in.color.a, (bits & 8u) != 0u);
-    let deep = fog.a * depth_base(tint) * look_tint + fog.rgb;
+    // In the shadow of a thing the water has no glint of the sun, and its depth has no share
+    // of the sun.
+    let sun = sunlight_at(in.world);
+    let deep = fog.a * depth_base_sun(tint, sun) * look_tint + fog.rgb;
     let reffactor = (u.sun_col.w * dist + 0.1) * ripple.xy;
-    let below = refraction(uv, w, reffactor, eye_vec, ripple, deep, tint, max(s.look.z, 1.0), look_tint, far);
+    // The caustics on what is under a surface that faces up, where the sun reaches it: the
+    // point under the surface is that of the depth along the ray of the eye.
+    var bed_light = 1.0;
+    if lighting.sun.w > 0.0 {
+        let first = max(0.0, ground_at(uv + reffactor.yx / w, far) - w);
+        let ray = first / max(dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z)), 1e-3);
+        let bed = in.world + eye_vec * ray;
+        let under = vec3f(bed.xy, bed.z - in.world.z);
+        bed_light = 1.0 + caustic_light(under, lighting.sun.xyz, u.eye.w, dist + ray, lighting.sun.w) * sun * clamp(4.0 * face.z - 3.0, 0.0, 1.0);
+    }
+    let below = refraction(uv, w, reffactor, eye_vec, ripple, deep, tint, max(s.look.z, 1.0), look_tint, far, bed_light);
     // Far away and at a flat angle the surface is calm: a ripple is smaller than a pixel.
     let calm = (1.0 + dot(eye_vec, face)) * (1.0 - clamp(1.0 / (dist / 1000.0 + 1.0), 0.0, 1.0));
     var adjust = mix(0.1 * face, normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
@@ -378,11 +531,18 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     reflected = mix(fog.rgb, reflected, fog.a);
     let fresnel = 0.02 + pow(clamp(0.9988 - 0.28 * dot(-eye_vec, adjust), 0.0, 1.0), 16.0);
     var result = mix(below.color, reflected, fresnel);
-    result += sun_glint(eye_vec, normal, fog.a);
-    result = mix(result, below.color, below.shore * fog.a);
-    // The light of the surface's own, in the colour of the water: a water blue for the usual
-    // colour. Then what is behind a surface that is not all water.
+    result += sun_glint(eye_vec, normal, fog.a) * sun;
+    // The colour of the water: a water blue for the usual colour.
     let glow_color = select(vec3f(0.25, 0.5, 0.6), tint, dot(tint, vec3f(1.0)) > 0.0);
+    // The lamps and fires near the surface: their glint, and a little of their light in the
+    // body of the water. Not for far water: the lights of the frame are near the camera.
+    if !far {
+        let lit = point_lights(in.world, eye_vec, normal, face, in.position.xy, w);
+        result += (lit.glint + 0.08 * lit.glow * glow_color) * fog.a;
+    }
+    result = mix(result, below.color, below.shore * fog.a);
+    // The light of the surface's own, in the colour of the water. Then what is behind a
+    // surface that is not all water.
     result += s.look.x * glow_color * fog.a;
     result = mix(textureSampleLevel(picture, clamp_sampler, uv, 0.0).rgb, result, opacity);
     return vec4f(result, 1.0);
@@ -391,7 +551,7 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
 
 /// The shader of the surfaces: the shared shading and the entry points of a surface.
 fn shader() -> String {
-    format!("{}{}", shading::COMMON, VOLUME)
+    format!("{}{}{}", shading::COMMON, shading::CAUSTICS, VOLUME).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
 }
 
 /// What makes the pipelines of two surfaces differ: the vertex layout, the topology and the
@@ -423,6 +583,13 @@ pub(super) struct Volumes {
     group: wgpu::BindGroup,
     /// Zeros for the inputs that a vertex does not have.
     defaults: wgpu::Buffer,
+    /// The group of the light of the frame (`VolumeLight`), its values, and what it has in
+    /// place of a part that the frame does not have: a texture of one texel, and empty lights
+    /// and clusters.
+    light_layout: wgpu::BindGroupLayout,
+    lighting: wgpu::Buffer,
+    no_shadow: wgpu::TextureView,
+    no_lights: [wgpu::Buffer; 4],
     target_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
     /// The near surfaces and the far water drawn since the start.
@@ -444,7 +611,48 @@ impl Volumes {
                 count: None,
             }],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water volume"), bind_group_layouts: &[Some(frame_layout), Some(&surface_layout)], immediate_size: 0 });
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty, count: None };
+        let uniform = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None };
+        let storage = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None };
+        let light_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("water volume light"),
+            entries: &[
+                entry(0, uniform),
+                entry(1, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                entry(2, storage),
+                entry(3, uniform),
+                entry(4, storage),
+                entry(5, storage),
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water volume"), bind_group_layouts: &[Some(frame_layout), Some(&surface_layout), Some(&light_layout)], immediate_size: 0 });
+        let lighting = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume light"), size: size_of::<Lighting>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        use wgpu::util::DeviceExt;
+        let no_shadow = device
+            .create_texture_with_data(
+                scene.queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("water volume no shadow"),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R16Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::MipMajor,
+                &[0u8; 2],
+            )
+            .create_view(&Default::default());
+        // A light of zeros, clusters that are off, one empty cluster and one index.
+        let zeros = |label, size: usize, usage| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: &vec![0u8; size], usage });
+        let no_lights = [
+            zeros("water volume no lights", size_of::<nirender_wgpu::LightData>(), wgpu::BufferUsages::STORAGE),
+            zeros("water volume no clusters", 48, wgpu::BufferUsages::UNIFORM),
+            zeros("water volume no cluster table", 8, wgpu::BufferUsages::STORAGE),
+            zeros("water volume no cluster lights", 4, wgpu::BufferUsages::STORAGE),
+        ];
         let (surfaces, group) = Self::slots(device, &surface_layout, 16);
         let defaults = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume defaults"), size: 32, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: false });
         Volumes {
@@ -456,11 +664,49 @@ impl Volumes {
             capacity: 16,
             group,
             defaults,
+            light_layout,
+            lighting,
+            no_shadow,
+            no_lights,
             target_format: scene.target_format,
             depth_format: scene.depth_format,
             drawn: 0,
             far_drawn: 0,
         }
+    }
+
+    /// Writes the values of the light of the frame and makes its group.
+    fn light_group(&self, scene: &SceneView, light: &VolumeLight) -> wgpu::BindGroup {
+        let mut values = <Lighting as bytemuck::Zeroable>::zeroed();
+        let mut bits = 0;
+        if let Some((_, layers, rcp)) = light.shadow {
+            values.shadow = layers;
+            values.esm = [super::super::shadow::ESM_C, super::super::shadow::ESM_BIAS, super::super::shadow::ESM_SCALE, rcp];
+            bits |= 1;
+        }
+        if let Some(lights) = light.lights {
+            values.origin = [lights.origin[0] as f32, lights.origin[1] as f32, lights.origin[2] as f32, 0.0];
+            bits |= 2;
+        }
+        values.origin[3] = bits as f32;
+        let d = light.sun_direction;
+        values.sun = [d[0], d[1], d[2], light.caustics];
+        scene.queue.write_buffer(&self.lighting, 0, bytemuck::bytes_of(&values));
+        let atlas = light.shadow.map_or(&self.no_shadow, |(atlas, ..)| atlas);
+        let [no_lights, no_clusters, no_table, no_indexes] = &self.no_lights;
+        let buffers = light.lights.map_or([no_lights, no_clusters, no_table, no_indexes], |l| [l.lights, l.clusters, l.table, l.indexes]);
+        scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("water volume light"),
+            layout: &self.light_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.lighting.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(atlas) },
+                wgpu::BindGroupEntry { binding: 2, resource: buffers[0].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: buffers[1].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: buffers[2].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: buffers[3].as_entire_binding() },
+            ],
+        })
     }
 
     /// A buffer of `count` slots and its group.
@@ -576,7 +822,7 @@ impl Volumes {
     /// faces of the dry spaces behind it are counted, and then they are drawn outside
     /// (`flushWaterVolumes`). The far water is not cut.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>, dry: Option<&super::dry::Dry>) -> usize {
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>, light: &VolumeLight, dry: Option<&super::dry::Dry>) -> usize {
         let surfaces: Vec<&HeldDraw> = held.iter().filter(|h| marked(h.facts.specular_power)).collect();
         if surfaces.is_empty() && far.is_empty() {
             return 0;
@@ -643,7 +889,9 @@ impl Volumes {
         }
         scene.queue.write_buffer(&self.surfaces, 0, &bytes);
         let lines = scene.wireframe && scene.device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
+        let light_group = self.light_group(scene, light);
         pass.set_bind_group(0, frame_group, &[]);
+        pass.set_bind_group(2, &light_group, &[]);
         if !far.is_empty() {
             let key = Key { stride: 20, position: 0, normal: None, color: None, topology: wgpu::PrimitiveTopology::TriangleList, lines, far: true, cut: false, depth_only: false };
             pass.set_pipeline(self.pipeline(scene.device, key));
@@ -674,6 +922,7 @@ impl Volumes {
                 pass.set_pipeline(self.pipeline(scene.device, key));
                 pass.set_stencil_reference(0);
                 pass.set_bind_group(1, &self.group, &[(index as u64 * SLOT) as u32]);
+                pass.set_bind_group(2, &light_group, &[]);
                 pass.set_vertex_buffer(0, held.vertices.slice(..));
                 pass.set_vertex_buffer(1, self.defaults.slice(..));
                 pass.set_index_buffer(held.indexes.slice(..), wgpu::IndexFormat::Uint16);
