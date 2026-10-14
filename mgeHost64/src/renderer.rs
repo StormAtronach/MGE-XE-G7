@@ -42,7 +42,7 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
-use crate::abi::constants::{DYNAMIC_RIPPLES, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
+use crate::abi::constants::{BLUR_REFLECTIONS, DYNAMIC_RIPPLES, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, Replay, SceneView};
@@ -97,7 +97,7 @@ impl Settings {
 
     /// The names of the flags that differ between two records, each with its new state.
     pub fn changed_flags(before: Option<Settings>, now: Settings) -> Vec<String> {
-        const NAMES: [(u32, &str); 8] = [
+        const NAMES: [(u32, &str); 9] = [
             (USE_DISTANT_LAND, "distant land"),
             (USE_DISTANT_STATICS, "distant statics"),
             (USE_GRASS, "grass"),
@@ -106,6 +106,7 @@ impl Settings {
             (USE_FFESHADER, "light for each pixel"),
             (USE_HDR, "HDR measure"),
             (DYNAMIC_RIPPLES, "dynamic waves"),
+            (BLUR_REFLECTIONS, "blur of the reflections"),
         ];
         let before = before.map_or(!now.flags, |b| b.flags);
         NAMES.iter().filter(|(flag, _)| (before ^ now.flags) & flag != 0).map(|(flag, name)| format!("{name} {}", if now.flags & flag != 0 { "on" } else { "off" })).collect()
@@ -298,6 +299,8 @@ pub struct DistantLand {
     ripples_enabled: bool,
     wave_height: f32,
     ripples: Option<ripples::Ripples>,
+    /// The blur of the reflection in the water (`distant_land.water.blur_reflections`).
+    blur_reflections: bool,
     waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
@@ -590,6 +593,7 @@ impl DistantLand {
             ripples_enabled: settings.water.dynamic_ripples,
             wave_height: settings.water.wave_height as f32,
             ripples: None,
+            blur_reflections: settings.water.blur_reflections,
             waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
@@ -1950,6 +1954,7 @@ impl DistantLand {
                 draw_distance: self.draw_distance,
                 view_end,
                 wave_height: self.wave_height_of_frame(),
+                blur_reflections: self.blur_reflections,
             });
         }
         self.gpu.as_ref()?;
@@ -1987,6 +1992,7 @@ impl DistantLand {
             draw_distance: self.draw_distance,
             view_end,
             wave_height: self.wave_height_of_frame(),
+            blur_reflections: self.blur_reflections,
         })
     }
 
@@ -2047,6 +2053,7 @@ impl DistantLand {
         self.per_pixel.1 = settings.per_pixel_mode == 1;
         self.hdr_reaction = settings.hdr_reaction_speed;
         self.ripples_enabled = on(DYNAMIC_RIPPLES);
+        self.blur_reflections = on(BLUR_REFLECTIONS);
         if settings.water_wave_height.is_finite() {
             self.wave_height = settings.water_wave_height.clamp(0.0, 250.0);
         }
@@ -2135,6 +2142,6 @@ mod settings_tests {
         let a = Settings { version: 1, flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
         let b = Settings { flags: USE_DISTANT_LAND | USE_GRASS | USE_HDR, ..a };
         assert_eq!(Settings::changed_flags(Some(a), b), vec!["shadows off".to_string(), "HDR measure on".to_string()]);
-        assert_eq!(Settings::changed_flags(None, a).len(), 8);
+        assert_eq!(Settings::changed_flags(None, a).len(), 9);
     }
 }

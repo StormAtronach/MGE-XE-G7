@@ -39,7 +39,8 @@ struct Uniforms {
     /// The two numbers of the depth of the projection of the game, for the distance of a
     /// pixel from its depth.
     projection: [f32; 4],
-    /// The size of the picture, and the view depth where the plane ends (0 for no end).
+    /// The size of the picture, the view depth where the plane ends (0 for no end), and
+    /// the blur of the reflection: 0 for none, 1 for the six reads of MGE XE.
     size: [f32; 4],
     /// The scattering: as the terrain has it.
     sky: [f32; 4],
@@ -172,6 +173,23 @@ fn distance_at(uv: vec2f) -> f32 {
     return u.projection.y / (d - u.projection.x);
 }
 
+// getProjectedReflection: the reflection at a place of the picture. With the blur
+// (FILTER_WATER_REFLECTION), the mean of six reads in a radius that grows with the view
+// depth `w` of the place.
+fn reflection_at(uv: vec2f, w: f32) -> vec3f {
+    var color = textureSampleLevel(reflection, clamp_sampler, uv, 0.0).rgb;
+    if u.size.w > 0.5 {
+        let radius = 0.006 * clamp(0.11 + w / 6000.0, 0.0, 1.0) * vec2f(1.0, u.size.x / u.size.y);
+        color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(0.60, 0.10), 0.0).rgb;
+        color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(0.30, -0.21), 0.0).rgb;
+        color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(0.96, -0.03), 0.0).rgb;
+        color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(-0.40, 0.06), 0.0).rgb;
+        color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(-0.70, 0.18), 0.0).rgb;
+        color /= 6.0;
+    }
+    return color;
+}
+
 // UnderwaterPS: the plane seen from below.
 fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
     let fog = clamp(exp(-dist / 4096.0), 0.0, 1.0);
@@ -181,7 +199,7 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
     let w = in.clip_w;
     var refracted = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
     refracted = mix(u.fog_col_far.rgb, refracted, exp(-dist / 500.0));
-    let reflected = textureSample(reflection, clamp_sampler, uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w).rgb;
+    let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w);
     // With the total reflection of the inside of the water.
     let fresnel = pow(clamp(1.12 - 0.65 * dot(-eye_vec, normal), 0.0, 1.0), 8.0);
     let result = mix(refracted, reflected, fresnel);
@@ -234,7 +252,7 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
         reflect_w = in.clamped.z;
         reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / reflect_w, 0.5 - 0.5 * in.clamped.y / reflect_w);
     }
-    var reflected = textureSample(reflection, clamp_sampler, reflect_uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / reflect_w).rgb;
+    var reflected = reflection_at(reflect_uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / reflect_w, reflect_w);
     reflected = mix(fog.rgb, reflected, fog.a);
     var adjust = mix(vec3f(0.0, 0.0, 0.1), normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
     adjust = mix(adjust, vec3f(0.0, 0.0, 1.0), (1.0 + eye_vec.z) * (1.0 - clamp(1.0 / (dist / 1000.0 + 1.0), 0.0, 1.0)));
@@ -292,6 +310,8 @@ pub struct WaterFrame {
     pub view_end: Option<f32>,
     /// The wave height of the settings (0 to 250), with the dynamic waves; `None` without.
     pub wave_height: Option<f32>,
+    /// The blur of the reflection (`distant_land.water.blur_reflections`).
+    pub blur_reflections: bool,
 }
 
 /// A disc of triangles around the camera: a centre, then rings of `segments` vertices at
@@ -638,7 +658,7 @@ impl Water {
             fog_col_far: [frame.fog_color_far[0], frame.fog_color_far[1], frame.fog_color_far[2], if frame.scattering.is_some() { 1.0 } else { 0.0 }],
             fog: [frame.fog_exp.0, frame.fog_exp.1, self.debug, if frame.underwater { 1.0 } else { 0.0 }],
             projection: [scene.projection[10], scene.projection[14], 0.0, 0.0],
-            size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), 0.0],
+            size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), if frame.blur_reflections { 1.0 } else { 0.0 }],
             sky: scattering[1],
             outscatter: scattering[2],
             inscatter: scattering[3],
