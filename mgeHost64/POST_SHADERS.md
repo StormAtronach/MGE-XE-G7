@@ -214,8 +214,9 @@ The MGE XE options (the mod configuration menu, MGE XE, then the button that ope
 settings) have the list of the loaded post shaders on the page Rendering.
 
 - **Reload when the file changes.** With the setting "Reload a shader when its file
-  changes" on (it is on at the start), the options look at the `.fx` and the `.wgsl` file
-  of each loaded shader two times in a second. When you save a file, the shader is loaded
+  changes" on (it is off at the start: switch it on while you work on a shader), the
+  options look at the `.fx` and the `.wgsl` file of each loaded shader two times in a
+  second. When you save a file, the shader is loaded
   again. A shader that compiles shows "shader reloaded"; a shader that does not compile
   shows the error of the compiler with the line of your file, and the full text goes into
   `MWSE.log`. With Direct3D 9, the error is in `mgeXE.log`.

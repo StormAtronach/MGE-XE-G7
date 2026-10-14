@@ -92,8 +92,9 @@ local function onInitialized(mod)
 	gui.i18n = i18n
 	shaderparams.i18n = i18n
 	hotreload.i18n = i18n
-	-- A shader is loaded again when its file changes. The game stops each timer when it
-	-- loads a save: the watch starts again after each load.
+	-- A shader is loaded again when its file changes, when the setting is on (it is off at
+	-- the start). The game stops each timer when it loads a save: the watch starts again
+	-- after each load.
 	hotreload.start()
 	event.register("loaded", hotreload.start)
 end

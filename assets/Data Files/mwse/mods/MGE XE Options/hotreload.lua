@@ -3,8 +3,9 @@
 	an editor beside the game and see the result at once.
 
 	The files: <name>.fx and, with the wgpu renderer, <name>.wgsl in
-	Data Files\shaders\XEshaders. The mod looks at the change time of the files of the
-	loaded shaders two times in a second.
+	Data Files\shaders\XEshaders. While the setting is on, the mod looks at the change time
+	of the files of the loaded shaders two times in a second. The setting is off at the
+	start: then no timer runs.
 
 	The result of a load:
 	- With the wgpu renderer, the renderer writes it into the file mgeXE-shaders.txt in the
@@ -21,7 +22,7 @@ local nirender = include("nirender")
 local statusPath = "mgeXE-shaders.txt"
 local shaderFolder = "Data Files\\shaders\\XEshaders\\"
 
-this.config = mwse.loadConfig("MGE XE Options", { hotReload = true })
+this.config = mwse.loadConfig("MGE XE Options", { hotReload = false })
 
 -- The wgpu renderer draws the game.
 function this.wgpu()
@@ -165,12 +166,14 @@ local function check()
 	end
 end
 
--- The game stops each timer when it loads a save, so the watch starts again then. A watch
--- from before that is still there stops itself.
+-- Starts the watch when the setting is on. The game stops each timer when it loads a
+-- save, so the watch starts again then. A watch from before that is still there stops
+-- itself at its next look: so a call with the setting off stops the watch.
 local started = 0
 function this.start()
 	started = started + 1
 	local mine = started
+	if not this.config.hotReload then return end
 	for _, entry in pairs(watched) do
 		entry.times[1], entry.times[2] = changeTime(entry.paths[1]), changeTime(entry.paths[2])
 	end
@@ -186,6 +189,7 @@ end
 function this.setEnabled(on)
 	this.config.hotReload = on
 	mwse.saveConfig("MGE XE Options", this.config)
+	this.start()
 end
 
 return this
