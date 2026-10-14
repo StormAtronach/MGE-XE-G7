@@ -311,6 +311,11 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     return normalize(vec3f(n, 1.0));
 }
 
+// The depth of a surface only, for the count of the dry spaces behind it.
+@fragment fn fs_depth() -> @location(0) vec4f {
+    return vec4f(0.0);
+}
+
 @fragment fn fs(in: Out) -> @location(0) vec4f {
     var eye_vec = in.world - u.eye.xyz;
     let dist = length(eye_vec);
@@ -401,6 +406,10 @@ struct Key {
     lines: bool,
     /// The vertex of a distant static, and the depth tests in the shader.
     far: bool,
+    /// Drawn only outside the dry spaces (`dry::outside`).
+    cut: bool,
+    /// The depth only, for the count of the dry spaces behind it.
+    depth_only: bool,
 }
 
 pub(super) struct Volumes {
@@ -540,15 +549,19 @@ impl Volumes {
                     format: depth_format,
                     depth_write_enabled: Some(true),
                     depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: Default::default(),
+                    stencil: if key.cut { super::dry::outside() } else { Default::default() },
                     bias: Default::default(),
                 }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module,
-                    entry_point: Some("fs"),
+                    entry_point: Some(if key.depth_only { "fs_depth" } else { "fs" }),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target_format,
+                        blend: None,
+                        write_mask: if key.depth_only { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::COLOR },
+                    })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -559,7 +572,11 @@ impl Volumes {
     /// Draws the water among the distant statics, then the marked surfaces among `held`,
     /// with the group of the shared shading of the frame. The far water writes no depth and
     /// the near surfaces do: they go over it. Returns the number drawn.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>) -> usize {
+    /// With `dry`, the dry spaces cut the near surfaces: they write their depth first, the
+    /// faces of the dry spaces behind it are counted, and then they are drawn outside
+    /// (`flushWaterVolumes`). The far water is not cut.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>, dry: Option<&super::dry::Dry>) -> usize {
         let surfaces: Vec<&HeldDraw> = held.iter().filter(|h| marked(h.facts.specular_power)).collect();
         if surfaces.is_empty() && far.is_empty() {
             return 0;
@@ -628,7 +645,7 @@ impl Volumes {
         let lines = scene.wireframe && scene.device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         pass.set_bind_group(0, frame_group, &[]);
         if !far.is_empty() {
-            let key = Key { stride: 20, position: 0, normal: None, color: None, topology: wgpu::PrimitiveTopology::TriangleList, lines, far: true };
+            let key = Key { stride: 20, position: 0, normal: None, color: None, topology: wgpu::PrimitiveTopology::TriangleList, lines, far: true, cut: false, depth_only: false };
             pass.set_pipeline(self.pipeline(scene.device, key));
             for (index, water) in far.iter().enumerate() {
                 pass.set_bind_group(1, &self.group, &[(index as u64 * SLOT) as u32]);
@@ -638,18 +655,35 @@ impl Volumes {
             }
             self.far_drawn += far.len() as u64;
         }
-        for (index, held) in surfaces.iter().enumerate() {
-            let index = far.len() + index;
-            let layout = &held.layout;
-            let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines, far: false };
-            pass.set_pipeline(self.pipeline(scene.device, key));
-            pass.set_bind_group(1, &self.group, &[(index as u64 * SLOT) as u32]);
-            pass.set_vertex_buffer(0, held.vertices.slice(..));
-            pass.set_vertex_buffer(1, self.defaults.slice(..));
-            pass.set_index_buffer(held.indexes.slice(..), wgpu::IndexFormat::Uint16);
-            for &(first, count) in &held.parts {
-                pass.draw_indexed(first..first + count, 0, 0..1);
+        let dry = dry.filter(|_| !surfaces.is_empty());
+        // The passes over the near surfaces: with the dry spaces, the depth, then the count,
+        // then the surfaces outside them.
+        let passes: &[(bool, bool)] = if dry.is_some() { &[(true, false), (false, true)] } else { &[(false, false)] };
+        for &(depth_only, cut) in passes {
+            if cut {
+                if let Some(dry) = dry {
+                    pass.set_bind_group(0, frame_group, &[]);
+                    dry.zero(pass);
+                    dry.count_behind(pass);
+                }
             }
+            for (index, held) in surfaces.iter().enumerate() {
+                let index = far.len() + index;
+                let layout = &held.layout;
+                let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines: lines && !cut && !depth_only, far: false, cut, depth_only };
+                pass.set_pipeline(self.pipeline(scene.device, key));
+                pass.set_stencil_reference(0);
+                pass.set_bind_group(1, &self.group, &[(index as u64 * SLOT) as u32]);
+                pass.set_vertex_buffer(0, held.vertices.slice(..));
+                pass.set_vertex_buffer(1, self.defaults.slice(..));
+                pass.set_index_buffer(held.indexes.slice(..), wgpu::IndexFormat::Uint16);
+                for &(first, count) in &held.parts {
+                    pass.draw_indexed(first..first + count, 0, 0..1);
+                }
+            }
+        }
+        if let Some(dry) = dry {
+            dry.zero(pass);
         }
         self.drawn += surfaces.len() as u64;
         count as usize
@@ -718,7 +752,7 @@ mod tests {
         let source = shader();
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
-        for entry in ["vs", "vs_far", "fs"] {
+        for entry in ["vs", "vs_far", "fs", "fs_depth"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
     }

@@ -100,6 +100,7 @@ public:
     bool InWaterVolume() const { return m_inWaterVolume; }
     // The camera is in a dry space, which a mod reports: it is not under water there.
     void setCameraDry(bool dry) { m_cameraDry = dry; }
+    bool CameraDry() const { return m_cameraDry; }
 
     const char* getInteriorName();
     const BYTE* getInteriorAmb();

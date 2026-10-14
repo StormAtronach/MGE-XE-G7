@@ -9,6 +9,9 @@
 #include "waterlook.h"
 
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <vector>
 
 
 
@@ -591,6 +594,9 @@ static void takePointLights(const LightState* state, PendingWaterVolume::Lights&
 static std::vector<D3DXVECTOR3> waterMaskCorners;
 bool DistantLand::cameraInDrySpace = false;
 
+// In main.cpp: sends data to the wgpu renderer in the helper.
+void sendToRenderer(unsigned int id, const void* data, unsigned int length);
+
 void DistantLand::setWaterMasks(const float* corners, unsigned int triangles) {
     waterMaskCorners.clear();
     if (corners != nullptr) {
@@ -599,6 +605,17 @@ void DistantLand::setWaterMasks(const float* corners, unsigned int triangles) {
             waterMaskCorners.emplace_back(corners[3 * i], corners[3 * i + 1], corners[3 * i + 2]);
         }
     }
+    // The record 7 of the data that MGE XE puts into the stream, with the bit that makes the
+    // stream keep it: the version, the number of triangles, then three corners of three floats
+    // for each. mgeHost64/src/renderer/water/dry.rs reads it.
+    static const unsigned int WaterMasksId = 7 | 0x80000000u;
+    const std::uint32_t head[2] = { 1, static_cast<std::uint32_t>(waterMaskCorners.size() / 3) };
+    std::vector<unsigned char> record(sizeof(head) + waterMaskCorners.size() * sizeof(D3DXVECTOR3));
+    std::memcpy(record.data(), head, sizeof(head));
+    if (!waterMaskCorners.empty()) {
+        std::memcpy(record.data() + sizeof(head), waterMaskCorners.data(), waterMaskCorners.size() * sizeof(D3DXVECTOR3));
+    }
+    sendToRenderer(WaterMasksId, record.data(), static_cast<unsigned int>(record.size()));
 }
 
 // The bit of the stencil buffer that says "inside a dry space" while the surfaces are drawn.

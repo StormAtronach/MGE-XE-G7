@@ -71,6 +71,8 @@ const TUNE_ID: u32 = 5;
 /// The looks of the slots of water volumes (`WaterLooks::sendToRenderer`): a state that the
 /// stream keeps, so a capture file has it.
 const WATER_LOOKS_ID: u32 = 6;
+/// The triangles of the dry spaces (`MGE_WaterMasksSet`), kept as the looks are.
+const WATER_MASKS_ID: u32 = 7;
 
 /// The settings record of MGE XE (`Deviceless::sendSettings`): the feature flags
 /// (`Configuration.MGEFlags`), the lighting mode, the HDR reaction speed, the distances of
@@ -166,7 +168,7 @@ struct Environment {
     version: u32,
     /// 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior that
     /// is like one (`IntLikeExterior` of MGE XE). 16: the camera is in a water volume; the
-    /// level of the water is the top of the volume.
+    /// level of the water is the top of the volume. 32: the camera is in a dry space.
     flags: u32,
     near_view_range: f32,
     fog_start: f32,
@@ -355,6 +357,8 @@ pub struct DistantLand {
     water_looks: std::collections::HashMap<u32, water::Look>,
     /// The water among the distant statics in view in this frame, from `before_world`.
     far_water: Vec<water::FarWater>,
+    /// The triangles of the dry spaces from the game, until the water takes them.
+    water_masks: Option<Vec<[f32; 3]>>,
     waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
@@ -660,6 +664,7 @@ impl DistantLand {
             volumes_drawn: false,
             water_looks: std::collections::HashMap::new(),
             far_water: Vec::new(),
+            water_masks: None,
             waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
@@ -1415,6 +1420,11 @@ impl Extension for DistantLand {
             }
         }
         let water = water_cell && self.water.is_some();
+        if let Some(water) = self.water.as_mut() {
+            if let Some(corners) = self.water_masks.take() {
+                water.set_masks(scene, &corners);
+            }
+        }
         // The surfaces of water volumes: in any cell, when the water is there.
         self.volumes_drawn = false;
         self.far_water.clear();
@@ -1631,6 +1641,12 @@ impl Extension for DistantLand {
         if id == WATER_LOOKS_ID {
             if let Some(table) = water::Look::read_table(bytes) {
                 self.water_looks = table;
+            }
+            return;
+        }
+        if id == WATER_MASKS_ID {
+            if let Some(corners) = water::read_masks(bytes) {
+                self.water_masks = Some(corners);
             }
             return;
         }
@@ -2187,6 +2203,7 @@ impl DistantLand {
                 fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
                 draw_distance: self.draw_distance,
                 land_projection: self.land_projection(scene),
+                camera_dry: e.flags & 32 != 0,
                 view_end,
                 wave_height: self.wave_height_of_frame(),
                 blur_reflections: self.blur_reflections,
@@ -2228,6 +2245,7 @@ impl DistantLand {
             fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
             draw_distance: self.draw_distance,
             land_projection: self.land_projection(scene),
+            camera_dry: e.flags & 32 != 0,
             view_end,
             wave_height: self.wave_height_of_frame(),
             blur_reflections: self.blur_reflections,

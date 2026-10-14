@@ -1285,6 +1285,10 @@ namespace Deviceless {
         if (mwBridge->InWaterVolume()) {
             e.flags |= 16u;
         }
+        // The camera is in a dry space (MGE_WaterDrySet): it is not under water there.
+        if (mwBridge->CameraDry()) {
+            e.flags |= 32u;
+        }
 
         // The scattering of the atmosphere, as in DistantLand::adjustFog: the fog colour of
         // the near cells becomes the colour that the scattering has at the view range of the

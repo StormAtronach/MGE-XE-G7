@@ -33,10 +33,15 @@ const LEVEL_SHADER: &str = "
 ";
 /// The near plane of the distant land, as the Direct3D 9 path has it.
 const NEAR: f32 = 4.0;
+/// How near the level of the water the eye in a dry space has the plane edge-on
+/// (`kDrySpaceLevelMargin`).
+const DRY_LEVEL_MARGIN: f32 = 40.0;
 
 mod shading;
 use shading::Uniforms;
 mod volume;
+mod dry;
+pub use dry::read_masks;
 pub use volume::{FarWater, Look, VolumeLook, marked as volume_marked};
 
 /// The shader of the plane: the shared shading and the entry points of the plane.
@@ -198,6 +203,8 @@ pub struct WaterFrame {
     /// The view depth where the plane ends, in an interior and under the water (the clip
     /// plane of `renderStageWater`); `None` for no end.
     pub view_end: Option<f32>,
+    /// The camera is in a dry space (`MGE_WaterDrySet`).
+    pub camera_dry: bool,
     /// The wave height of the settings (0 to 250), with the dynamic waves; `None` without.
     pub wave_height: Option<f32>,
     /// The blur of the reflection (`distant_land.water.blur_reflections`).
@@ -260,6 +267,10 @@ pub struct Water {
     /// The same as lines, when the device has the line mode: for a frame in which the game
     /// draws in wireframe (`SceneView::wireframe`).
     pipeline_lines: Option<wgpu::RenderPipeline>,
+    /// The plane outside the dry spaces.
+    pipeline_cut: wgpu::RenderPipeline,
+    /// The dry spaces, and the count of their faces.
+    dry: dry::Dry,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     /// The values of the frame for the surfaces of water volumes: they are drawn before the
@@ -364,7 +375,7 @@ impl Water {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
-        let make_pipeline = |polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -378,7 +389,7 @@ impl Water {
                 format: scene.depth_format,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: Default::default(),
+                stencil,
                 bias: Default::default(),
             }),
             multisample: Default::default(),
@@ -391,11 +402,14 @@ impl Water {
             multiview_mask: None,
             cache: None,
         });
-        let pipeline = make_pipeline(wgpu::PolygonMode::Fill);
-        let pipeline_lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE).then(|| make_pipeline(wgpu::PolygonMode::Line));
+        let pipeline = make_pipeline(wgpu::PolygonMode::Fill, Default::default());
+        let pipeline_lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE).then(|| make_pipeline(wgpu::PolygonMode::Line, Default::default()));
+        // Drawn only outside the dry spaces.
+        let pipeline_cut = make_pipeline(wgpu::PolygonMode::Fill, dry::outside());
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let volume_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let volumes = volume::Volumes::new(scene, &layout);
+        let dry = dry::Dry::new(scene, &layout);
         // Between two levels too: the blur that is sharp at the waterline reads the levels
         // of the reflection. Each other read names the first level.
         let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -496,6 +510,8 @@ impl Water {
         Ok(Water {
             pipeline,
             pipeline_lines,
+            pipeline_cut,
+            dry,
             layout,
             uniforms,
             volume_uniforms,
@@ -734,15 +750,39 @@ impl Water {
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>) {
         let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms) else { return };
         let dynamic = frame.wave_height.zip(ripples);
-        pass.set_pipeline(if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline });
+        // The dry spaces cut the plane, but not from under the water (`renderStageWater`).
+        let cut = self.dry.any() && !frame.underwater;
+        let eye = super::eye_of(&scene.view);
+        if cut && frame.camera_dry && (eye[2] - frame.water_level).abs() < DRY_LEVEL_MARGIN {
+            // The eye is in a dry space at the level of the water: the waves put the plane
+            // now over the eye and now under it, and the side that the count is made for is
+            // not sure. The plane is edge-on and is left out.
+            return;
+        }
         pass.set_bind_group(0, &group, &[]);
+        if cut {
+            self.dry.zero(pass);
+            self.dry.count_plane(pass);
+            pass.set_pipeline(&self.pipeline_cut);
+            pass.set_stencil_reference(0);
+        } else {
+            pass.set_pipeline(if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline });
+        }
         // The finer disc with the dynamic waves: the waves move its vertices.
         let (vertices, indexes, index_count) = if dynamic.is_some() { (&self.fine_vertices, &self.fine_indexes, self.fine_index_count) } else { (&self.vertices, &self.indexes, self.index_count) };
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..index_count, 0, 0..1);
+        if cut {
+            self.dry.zero(pass);
+        }
         self.frames += 1;
         self.reflected = false;
+    }
+
+    /// The triangles of the dry spaces, three corners each, in the world.
+    pub fn set_masks(&mut self, scene: &SceneView, corners: &[[f32; 3]]) {
+        self.dry.set_masks(scene, corners);
     }
 }
 
@@ -755,7 +795,9 @@ impl Water {
             return 0;
         }
         let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms) else { return 0 };
-        self.volumes.draw(scene, pass, &group, held, far, look, looks)
+        // The dry spaces cut the surfaces near the camera, but not from under the water.
+        let dry = (self.dry.any() && !frame.underwater).then_some(&self.dry);
+        self.volumes.draw(scene, pass, &group, held, far, look, looks, dry)
     }
 
     /// The water among the distant statics drawn since the start.
