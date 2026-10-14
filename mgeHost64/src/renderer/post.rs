@@ -196,6 +196,92 @@ struct VariableDef {
     default: Vec<f32>,
 }
 
+/// The name of the file with the result of each shader, in the folder of the game.
+pub const STATUS_FILE: &str = "mgeXE-shaders.txt";
+
+/// The result of the last load of each post shader: it compiles, or the error. The game
+/// side has no other way to know (the stream goes from the game to this program only), so
+/// the results go into a file in the folder of the game. The options of MGE XE read it
+/// after a reload of a shader, and show the error.
+///
+/// The file: a line `sequence N`, which changes with each write; then for each shader a
+/// line `shader <name>`, a line `loads N` (the number of its loads: a reload is complete
+/// when it changes), a line `ok` or `error`, and the lines of the error with `| ` before
+/// each.
+#[derive(Default)]
+pub struct ShaderStatus {
+    list: Vec<(String, Option<String>, u32)>,
+    sequence: u32,
+    written: u32,
+}
+
+impl ShaderStatus {
+    /// The result of a load: `None` for a shader that compiles.
+    pub fn note(&mut self, name: &str, error: Option<String>) {
+        let loads = self.list.iter().find(|(known, _, _)| known == name).map_or(0, |(_, _, loads)| *loads) + 1;
+        self.list.retain(|(known, _, _)| known != name);
+        self.list.push((name.to_string(), error, loads));
+        self.sequence += 1;
+    }
+
+    pub fn text(&self) -> String {
+        let mut text = format!("sequence {}\n", self.sequence);
+        for (name, error, loads) in &self.list {
+            text.push_str(&format!("shader {name}\nloads {loads}\n{}\n", if error.is_some() { "error" } else { "ok" }));
+            for line in error.iter().flat_map(|error| error.lines()) {
+                text.push_str(&format!("| {line}\n"));
+            }
+        }
+        text
+    }
+
+    /// Writes the file when a result came since the last write.
+    pub fn write(&mut self, root: &std::path::Path) {
+        if self.written == self.sequence {
+            return;
+        }
+        self.written = self.sequence;
+        if let Err(problem) = std::fs::write(root.join(STATUS_FILE), self.text()) {
+            println!("post: the file {STATUS_FILE} was not written: {problem}");
+        }
+    }
+}
+
+/// The part of an error of wgpu that the compiler wrote: wgpu puts lines of its own before
+/// it ("Validation Error", "Caused by", the call). The whole text without such a line.
+fn compiler_part(error: &str) -> &str {
+    error.find("Shader '").map_or(error, |at| &error[at..])
+}
+
+/// An error message of the WGSL compiler with the line numbers of the file of the shader.
+/// The compiler counts the common part and the functions of the variables first: `offset`
+/// lines. The numbers are after `wgsl:` and at the start of the lines that show the code.
+fn own_lines(message: &str, offset: usize) -> String {
+    let own = |number: &str| number.parse::<usize>().ok().filter(|n| *n > offset).map(|n| (n - offset).to_string());
+    let digits = |text: &str| text.chars().take_while(|c| c.is_ascii_digit()).count();
+    message
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let count = digits(trimmed);
+            if count > 0 && trimmed[count..].starts_with(" \u{2502}") {
+                if let Some(number) = own(&trimmed[..count]) {
+                    return format!("{number}{}", &trimmed[count..]);
+                }
+            }
+            if let Some(at) = line.find("wgsl:") {
+                let rest = &line[at + 5..];
+                let count = digits(rest);
+                if let Some(number) = own(&rest[..count]) {
+                    return format!("{}wgsl:{number}{}", &line[..at], &rest[count..]);
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The state of a shader that a mod loaded: the record 2 of the data of MGE XE
 /// (`PostShaders::sendShaderStates`).
 pub struct ShaderState {
@@ -4446,6 +4532,8 @@ pub struct Post {
     failed: Vec<String>,
     /// The shaders whose unknown variables were told, one time each.
     told_unknown: Vec<String>,
+    /// The result of the last load of each shader, for the file that the game reads.
+    pub status: ShaderStatus,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     /// The uniform `modv` of a shader without variables.
@@ -4636,6 +4724,7 @@ impl Post {
             chain: Vec::new(),
             failed: Vec::new(),
             told_unknown: Vec::new(),
+            status: ShaderStatus::default(),
             layout,
             pipeline_layout,
             no_values,
@@ -4695,6 +4784,7 @@ impl Post {
                 Ok(definition) => definition,
                 Err(problem) => {
                     println!("post: the shader file {name}.wgsl is not used: {problem}");
+                    self.status.note(name, Some(format!("The first lines of {name}.wgsl (the lines with //!) are not right: {problem}")));
                     self.failed.push(name.to_string());
                     return false;
                 }
@@ -4721,6 +4811,7 @@ impl Post {
                             Some(key) => println!("post: no file {name}.wgsl and no port of the shader {name} (the code key of {name}.fx is {key:#018x}); skipped"),
                             None => println!("post: no file {name}.wgsl, no file {name}.fx and no port of the shader {name}; skipped"),
                         }
+                        self.status.note(name, Some(format!("The wgpu renderer has no file {name}.wgsl and no port of the shader {name}.")));
                         self.failed.push(name.to_string());
                         return false;
                     }
@@ -4763,9 +4854,14 @@ impl Post {
             // variables first.
             let before = COMMON.lines().count() + functions.lines().count() + 2;
             println!("post: the shader {} does not compile; skipped (its first line is the line {before} of the message):\n{error}", shader.name);
+            // For the author: the line numbers of the file. A port has no file of its own.
+            let error = error.to_string();
+            let message = if file.is_some() { own_lines(compiler_part(&error), before - 1) } else { compiler_part(&error).to_string() };
+            self.status.note(name, Some(message));
             self.failed.push(name.to_string());
             return false;
         }
+        self.status.note(name, None);
         if file.is_some() {
             self.counts.1 += 1;
         } else {
@@ -5155,6 +5251,32 @@ mod tests {
         assert_eq!(taken, vec!["warpint".to_string()]);
         assert_eq!(variables[0].default, vec![0.005f32]);
         assert_eq!(variables[1].default, vec![0.0; 32]);
+    }
+
+    #[test]
+    fn the_status_file_has_the_result_of_each_shader() {
+        let mut status = ShaderStatus::default();
+        status.note("a", None);
+        status.note("b c", Some("first line\nsecond line".to_string()));
+        assert_eq!(status.text(), "sequence 2\nshader a\nloads 1\nok\nshader b c\nloads 1\nerror\n| first line\n| second line\n");
+        // A new result of a shader takes the place of the old one, and the sequence changes.
+        status.note("b c", None);
+        assert_eq!(status.text(), "sequence 3\nshader a\nloads 1\nok\nshader b c\nloads 2\nok\n");
+    }
+
+    #[test]
+    fn an_error_gets_the_line_numbers_of_the_file() {
+        let message = "Shader 'x' parsing error: no definition in scope for identifier: `colr`\n   \u{250c}\u{2500} wgsl:215:12\n    \u{2502}\n215 \u{2502}     return colr;\n    \u{2502}            ^^^^ unknown identifier\n";
+        let own = own_lines(message, 200);
+        assert!(own.contains("wgsl:15:12"), "{own}");
+        assert!(own.contains("15 \u{2502}     return colr;"), "{own}");
+        assert!(own.contains("unknown identifier"));
+        // A line of the common part keeps its number.
+        assert!(own_lines("wgsl:50:1", 200).contains("wgsl:50:1"));
+        // The lines of wgpu before the message of the compiler go.
+        let wrapped = format!("Validation Error\n\nCaused by:\n  In Device::create_shader_module, label = 'x'\n    \n{message}");
+        assert!(compiler_part(&wrapped).starts_with("Shader 'x' parsing error"));
+        assert_eq!(compiler_part("no compiler part"), "no compiler part");
     }
 
     #[test]

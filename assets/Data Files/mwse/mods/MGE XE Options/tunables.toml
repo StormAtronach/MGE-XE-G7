@@ -1,7 +1,9 @@
 # The parameters of the wgpu renderer that a person can change while the game runs, to find
 # a good value by eye. This file is the one list of them:
 # - the renderer (mgeHost64) has it built in, for the names, the ranges and the start values;
-# - the window "renderer parameters" of the MGE XE options reads it for its sliders.
+# - the parameters window of the MGE XE options reads it for its sliders (the row
+#   "water (renderer)" of the shader list opens it). A post shader has a file of the same
+#   form beside it: XEshaders/<name>.toml.
 # A change of this file needs a new build of mgeHost64.exe: the two must have the same list.
 #
 # The values that a person sets are not saved. A value that is good goes into this file as

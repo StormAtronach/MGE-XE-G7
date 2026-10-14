@@ -5,7 +5,8 @@
 ]]--
 
 local gui = require("MGE XE Options.gui")
-local tuning = require("MGE XE Options.tuning")
+local shaderparams = require("MGE XE Options.shaderparams")
+local hotreload = require("MGE XE Options.hotreload")
 local i18n = mwse.loadTranslations("MGE XE Options")
 
 -- MCM
@@ -57,15 +58,6 @@ function modConfig.onCreate(parent)
 	end
 
 	button:register("mouseClick", function(e) open(gui.run) end)
-
-	-- The parameters of the wgpu renderer, for a look by eye: only when that renderer
-	-- draws the game.
-	if tuning.available() then
-		local tune = container:createButton{text = i18n("OpenTuning")}
-		tune.paddingAllSides = 10
-		tune.paddingBottom = nil
-		tune:register("mouseClick", function(e) open(tuning.run) end)
-	end
 end
 
 event.register("modConfigReady", function ()
@@ -98,6 +90,11 @@ event.register(tes3.event.uiActivated, addGammaResetButton, { filter = "MenuVide
 
 local function onInitialized(mod)
 	gui.i18n = i18n
-	tuning.i18n = i18n
+	shaderparams.i18n = i18n
+	hotreload.i18n = i18n
+	-- A shader is loaded again when its file changes. The game stops each timer when it
+	-- loads a save: the watch starts again after each load.
+	hotreload.start()
+	event.register("loaded", hotreload.start)
 end
 event.register("initialized", onInitialized)

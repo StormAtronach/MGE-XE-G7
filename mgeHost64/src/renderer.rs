@@ -1346,6 +1346,11 @@ impl Extension for DistantLand {
                     post.set_state(scene, state, &|name| data_file(&root, name));
                 }
             }
+            // The results of the loads, for the game side. A replay of a capture writes no
+            // file.
+            if !self.synchronous {
+                post.status.write(&self.root);
+            }
         }
         let post = self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty());
         // The glare of the sun of the game (class 8) goes when a shader draws its own sun.

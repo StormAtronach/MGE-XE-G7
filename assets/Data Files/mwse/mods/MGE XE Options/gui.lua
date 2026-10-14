@@ -1,5 +1,7 @@
 local this = {}
 local autoSetDistances = true
+local shaderparams = require("MGE XE Options.shaderparams")
+local hotreload = require("MGE XE Options.hotreload")
 
 -- Terrain horizon-culling tuning is exposed directly by d3d8.dll as plain C exports, because
 -- MWSE's `mge` bindings live in a separate repository and cannot surface new tunables without a
@@ -496,8 +498,24 @@ function this.run()
 	element.autoHeight = true
 	element.borderLeft = 30
 	element.flowDirection = tes3.flowDirection.topToBottom
+	-- A row of the list: the name, and a button that opens the parameters.
+	local function createShaderRow(name)
+		local row = element:createBlock{}
+		row.widthProportional = 1.0
+		row.autoHeight = true
+		row.childAlignY = 0.5
+		local nameBlock = row:createBlock{}
+		nameBlock.widthProportional = 1.0
+		nameBlock.autoHeight = true
+		local params = createThinButton(row, i18n("Parameters"))
+		params.widthProportional = nil
+		params.minWidth = 90
+		params.borderRight = 10
+		return nameBlock, params
+	end
 	for i, shader in pairs(mge.shaders.list) do
-		local shaderText = element:createTextSelect{text = shader.name}
+		local nameBlock, params = createShaderRow(shader.name)
+		local shaderText = nameBlock:createTextSelect{text = shader.name}
 		if not shader.enabled then
 			shaderText.widget.state = tes3.uiState.disabled
 		end
@@ -510,6 +528,35 @@ function this.run()
 				e.source.widget.state = tes3.uiState.normal
 				shader.enabled = true
 			end
+		end)
+		params:register("mouseClick", function(e) shaderparams.open{shader = shader} end)
+	end
+	-- The parts of the wgpu renderer itself that have parameters (its water).
+	for _, group in ipairs(shaderparams.builtinGroups()) do
+		local nameBlock, params = createShaderRow(group)
+		nameBlock:createLabel{text = group .. " " .. i18n("BuiltinSuffix")}
+		params:register("mouseClick", function(e) shaderparams.open{group = group} end)
+	end
+
+	-- A shader is loaded again when its file changes: for the author of a shader.
+	createSpacer(section)
+	do
+		local block = section:createBlock{}
+		block.widthProportional = 1.0
+		block.autoHeight = true
+		block.childAlignY = 0.5
+		local label = block:createLabel{text = i18n("HotReload")}
+		label.minWidth = 250
+		local function state()
+			return hotreload.config.hotReload and i18n("On") or i18n("Off")
+		end
+		local valueLabel = createRightAlignedLabel(block, state(), 60)
+		valueLabel.borderRight = 10
+		local toggle = createThinButton(block, i18n("Switch"))
+		toggle:register("mouseClick", function(e)
+			hotreload.setEnabled(not hotreload.config.hotReload)
+			valueLabel.text = state()
+			block:getTopLevelMenu():updateLayout()
 		end)
 	end
 

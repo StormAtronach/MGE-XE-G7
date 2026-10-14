@@ -201,5 +201,48 @@ is read with `_` after its name: `distance_()`.
 The renderer writes one line for each shader of the chain to its log. A file with a wrong
 header line, a file whose WGSL does not compile, and a pass that is not a function of the
 file are reported with the reason and skipped; the other shaders run. The line numbers of a
-compile error count the common part first: the message says which line of it is the first
-line of the file.
+compile error in the log count the common part first: the message says which line of it is
+the first line of the file.
+
+The renderer also writes the result of each shader into `mgeXE-shaders.txt` in the folder
+of the game, with the line numbers of your file. The MGE XE options read it: see the next
+part.
+
+## Edit a shader while the game runs
+
+The MGE XE options (the mod configuration menu, MGE XE, then the button that opens the
+settings) have the list of the loaded post shaders on the page Rendering.
+
+- **Reload when the file changes.** With the setting "Reload a shader when its file
+  changes" on (it is on at the start), the options look at the `.fx` and the `.wgsl` file
+  of each loaded shader two times in a second. When you save a file, the shader is loaded
+  again. A shader that compiles shows "shader reloaded"; a shader that does not compile
+  shows the error of the compiler with the line of your file, and the full text goes into
+  `MWSE.log`. With Direct3D 9, the error is in `mgeXE.log`.
+- **Parameters.** The button "Parameters" of a row opens a window with an editor for each
+  variable of the shader that a mod can set (`extern` variables of the effect file; not
+  the variables that MGE XE sets itself, such as `time` or `eyepos`). A change is in the
+  picture at once. The values are not saved: they are for a look by eye. The button
+  "Reload" of the window loads the shader again by hand.
+
+Without more, each number has the buttons - and +. A file `<name>.toml` beside the shader
+(`XEshaders/<name>.toml`) describes the parameters, and a parameter with a range gets a
+slider:
+
+```toml
+[[parameter]]
+name = "strength"       # the name of the variable in the effect file
+label = "Strength"      # the text of its row; the name without it
+about = "How much of the tint is in the picture."
+start = 0.5             # the value of the button "Reset"; the first value without it
+least = 0.0             # least, most and step together give a slider
+most = 1.0
+step = 0.05
+```
+
+The rows of the parameters that the file names come first, in its order. An entry of a
+vector (`float3`) is for each of its parts. An array, a matrix and a text are listed, but
+they are not editable in the window.
+
+The water of the wgpu renderer has a row of its own in the list ("water (renderer)"): its
+parameters are in `tunables.toml` of the MGE XE options, in the same form.
