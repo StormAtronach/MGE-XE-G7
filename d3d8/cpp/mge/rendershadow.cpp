@@ -224,7 +224,8 @@ void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const 
 
     effectShadow->EndPass();
 
-    if (staticsUploaded) {
+    // Statics that are switched off cast no shadow either.
+    if (staticsUploaded && (Configuration.MGEFlags & USE_DISTANT_STATICS)) {
         // Render statics with their texture-atlas UV bounds
         effectShadow->BeginPass(PASS_RENDERSTATICSHADOWMAP);
         device->SetVertexDeclaration(StaticDecl);
@@ -279,7 +280,7 @@ void DistantLand::renderShadowLayer(int layer, float radius, const D3DXMATRIX* i
     ViewFrustum range_frustum(viewproj);
 
     visExtraShared.RemoveAll();
-    if (staticsUploaded) {
+    if (staticsUploaded && (Configuration.MGEFlags & USE_DISTANT_STATICS)) {
         // because shadow meshes don't need to be sorted, we can read and write in parallel
         ipcClient.getVisibleMeshesCoarse(visExtraSharedId, range_frustum, VIS_STATIC);
     }

@@ -1493,9 +1493,8 @@ impl Statics {
     }
 
     /// The statics and the grass on or off, from the settings record of MGE XE. A kind
-    /// that the settings had off at the start is not in the catalog, and stays off. The
-    /// statics stay in the shadow map when they are off, as on Direct3D 9 (the shadow pass
-    /// has no test of the flag).
+    /// that the settings had off at the start is not in the catalog, and stays off. Statics
+    /// that are off are not in the shadow map either.
     pub fn set_enabled(&mut self, statics: bool, grass: bool) {
         self.settings.statics = statics;
         self.settings.grass = grass;
@@ -1582,7 +1581,7 @@ impl Statics {
     fn draw_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
         // The sets 2 and 3 are the layers of the shadow map.
         let shadow = set >= 2;
-        if self.failed || (!self.settings.statics && !shadow) {
+        if self.failed || !self.settings.statics {
             return 0;
         }
         self.finish_load(scene);
@@ -1590,10 +1589,9 @@ impl Statics {
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         // The merged subsets that the draws before wanted are asked for before the arrivals
         // are taken: a subset that the shadow map wants comes in time for the main view of the
-        // same frame. The budget is sampled once in a frame: with the main view, or with the
-        // shadow map when the statics are off and only the shadow map draws them.
+        // same frame. The budget is sampled once in a frame, with the main view.
         if let Some(catalog) = self.catalog.clone() {
-            if set == 0 || !settings.statics {
+            if set == 0 {
                 self.sample_budget(scene.device);
             }
             self.admit_merged(&catalog, eye);
