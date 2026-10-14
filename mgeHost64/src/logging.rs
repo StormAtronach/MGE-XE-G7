@@ -15,6 +15,18 @@ static PANIC_HOOK: Once = Once::new();
 
 /// The guard must outlive logging so queued records can flush.
 pub fn init_logger(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
+    let guard = init_subscriber(path)?;
+    install_panic_hook();
+    Ok(guard)
+}
+
+/// The same log without the panic hook: for the wgpu renderer mode, where the crate of the
+/// renderer reports a panic in its own log.
+pub fn init_file_logger(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
+    init_subscriber(path)
+}
+
+fn init_subscriber(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
     let file = File::create(path).map_err(HostError::io)?;
 
     let (writer, guard) = tracing_appender::non_blocking(BufWriter::new(file));
@@ -54,8 +66,6 @@ pub fn init_logger(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
     if let Err(e) = registry.try_init() {
         return Err(HostError::init(format!("Failed to initialize logger: {e:?}")));
     }
-
-    install_panic_hook();
 
     Ok(guard)
 }

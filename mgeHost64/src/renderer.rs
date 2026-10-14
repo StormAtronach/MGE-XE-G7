@@ -2,7 +2,12 @@
 //!
 //! The nirender plugin starts the helper with `--live <name>`. The crate `nirender_wgpu`
 //! draws the stream of the game in the window of the game. This module adds what MGE XE
-//! draws and the game does not. For now that is the terrain of the distant land.
+//! draws and the game does not: the distant land, its statics and grass, the water, the
+//! shadows, the sky and the post shaders (the modules of this folder).
+//!
+//! In a game session with `automatic_rebuild` on, the loader thread first runs the startup
+//! generation of the IPC host mode, so the files match the load order; the terrain and the
+//! statics load after it.
 //!
 //! The terrain is `terrain.bin` and its five textures in the distant land folder. A thread
 //! reads the files; the renderer thread makes one vertex buffer and one index buffer for
@@ -19,12 +24,11 @@
 //! the `d3d8.dll` of the plugin and not with that of MGE XE) the fog is linear with the
 //! distances of `mgeXE.toml`.
 //!
-//! Not here yet: the quadtree and the horizon
-//! culling of the IPC host mode (a test of each mesh against the view is enough for the 358
-//! meshes of the test data), distant statics, grass, water and shadows.
+//! Not here yet: the quadtree and the horizon culling of the IPC host mode (a test of each
+//! mesh against the view is enough for the 358 meshes of the test data).
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 use std::time::Instant;
 
@@ -130,7 +134,25 @@ pub fn run(mut arguments: Vec<String>) {
             arguments.extend(["--backend".to_string(), backend.to_string()]);
         }
     }
-    nirender_wgpu::run_with(arguments, Some(Box::new(DistantLand::start(Path::new(".")))));
+    // A replay draws the files that are there. A game session makes them again first when
+    // they do not match the job of mgeXE.toml, as the IPC host mode does.
+    let live = arguments.iter().any(|argument| argument == "--live");
+    nirender_wgpu::run_with(arguments, Some(Box::new(DistantLand::start(Path::new("."), live))));
+}
+
+/// The startup generation of distant land, as the IPC host mode does it in `main.rs`: when
+/// the output does not match the generation job of mgeXE.toml, the generator makes it again.
+/// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread.
+fn generate_at_start() {
+    let Ok(root) = std::env::current_dir() else {
+        println!("distant land: no folder of the game; no startup generation");
+        return;
+    };
+    let _log = crate::logging::init_file_logger(root.join("mgeHost64.log")).ok();
+    let mut configuration = crate::config::Configuration::load_at(&root);
+    let started = Instant::now();
+    let status = crate::startup_generation::ensure_distant_land_ready(&mut configuration, &root);
+    println!("distant land: startup generation {status:?} in {:.1} s", started.elapsed().as_secs_f32());
 }
 
 /// The state of the game for a frame, from the 32-bit part of MGE XE. The layout is that of
@@ -235,6 +257,10 @@ pub struct DistantLand {
     settings_fog: (f32, f32),
     environment: Option<Environment>,
     loading: Option<Receiver<Result<Loaded, String>>>,
+    /// The startup generation of a game session: a message when it is done.
+    generation: Option<Receiver<()>>,
+    /// The folder of the statics to start after the startup generation.
+    statics_after_generation: Option<PathBuf>,
     gpu: Option<Gpu>,
     /// The fog distances for the near cells of the frame, when the terrain is in it.
     near_fog: Option<(f32, f32)>,
@@ -555,7 +581,9 @@ fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
 
 impl DistantLand {
     /// Reads the settings of MGE XE in `root` and starts the load of the terrain.
-    pub fn start(root: &Path) -> DistantLand {
+    /// `live`: a game session, which runs the startup generation when `automatic_rebuild` is
+    /// on. The terrain and the statics load after it.
+    pub fn start(root: &Path, live: bool) -> DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
         let mut land = DistantLand {
@@ -564,6 +592,8 @@ impl DistantLand {
             settings_fog: (settings.fog.above_water_start * CELL, settings.fog.above_water_end * CELL),
             environment: None,
             loading: None,
+            generation: None,
+            statics_after_generation: None,
             gpu: None,
             near_fog: None,
             per_pixel: (
@@ -629,16 +659,42 @@ impl DistantLand {
         if land.enabled {
             // For a test, the distant land of another folder: MGE_XE_DISTANT_LAND_DIR.
             let folder: PathBuf = std::env::var_os("MGE_XE_DISTANT_LAND_DIR").map_or_else(|| root.join("Data Files").join("distantland"), PathBuf::from);
-            if settings.statics || settings.render_grass {
-                land.statics = Some(statics::Statics::start(&document, folder.clone()));
-            }
+            let statics_wanted = settings.statics || settings.render_grass;
             let (sender, receiver) = channel();
             land.loading = Some(receiver);
-            thread::spawn(move || {
-                let _ = sender.send(load(&folder));
-            });
+            if live && settings.automatic_rebuild {
+                let (done, generation) = channel();
+                land.generation = Some(generation);
+                land.statics_after_generation = statics_wanted.then(|| folder.clone());
+                thread::spawn(move || {
+                    generate_at_start();
+                    let _ = done.send(());
+                    let _ = sender.send(load(&folder));
+                });
+            } else {
+                if statics_wanted {
+                    land.statics = Some(statics::Statics::start(&document, folder.clone()));
+                }
+                thread::spawn(move || {
+                    let _ = sender.send(load(&folder));
+                });
+            }
         }
         land
+    }
+
+    /// Starts the statics when the startup generation is done: their files are then the
+    /// new ones.
+    fn finish_generation(&mut self) {
+        let Some(generation) = self.generation.as_ref() else { return };
+        if matches!(generation.try_recv(), Err(TryRecvError::Empty)) {
+            return;
+        }
+        self.generation = None;
+        if let Some(folder) = self.statics_after_generation.take() {
+            let document = ConfigDocument::open(self.root.join(FILE_NAME));
+            self.statics = Some(statics::Statics::start(&document, folder));
+        }
     }
 
     /// Makes the buffers, the textures and the pipeline when the loader thread is done.
@@ -1284,6 +1340,7 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
+        self.finish_generation();
         self.finish_load(scene);
         self.apply_settings();
         self.cell_facts(scene);
