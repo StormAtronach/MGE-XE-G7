@@ -38,6 +38,11 @@ pub const USE_SHADOWS: Dword = 1 << 31;
 pub const DYNAMIC_RIPPLES: Dword = 1 << 26;
 /// The blur of the reflection in the water (`distant_land.water.blur_reflections`).
 pub const BLUR_REFLECTIONS: Dword = 1 << 27;
+/// The parts of the reflection in the water: the land (`distant_land.water.reflect_land`),
+/// the statics (`reflect_near_statics`) and the sky (`reflect_sky`).
+pub const REFLECTIVE_WATER: Dword = 1 << 20;
+pub const REFLECT_NEAR: Dword = 1 << 21;
+pub const REFLECT_SKY: Dword = 1 << 25;
 /// On-disk distant-land asset version expected by this host build.
 pub const MGE_DL_VERSION: u8 = 21;
 /// Terrain file magic for `terrain.bin`.

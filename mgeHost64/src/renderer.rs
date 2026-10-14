@@ -34,6 +34,7 @@ use std::time::Instant;
 
 mod blend;
 mod caustics;
+mod gpu_time;
 mod post;
 mod post_jop;
 mod shadow;
@@ -47,7 +48,7 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
-use crate::abi::constants::{BLUR_REFLECTIONS, DYNAMIC_RIPPLES, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
+use crate::abi::constants::{BLUR_REFLECTIONS, DYNAMIC_RIPPLES, REFLECTIVE_WATER, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView};
@@ -110,7 +111,7 @@ impl Settings {
 
     /// The names of the flags that differ between two records, each with its new state.
     pub fn changed_flags(before: Option<Settings>, now: Settings) -> Vec<String> {
-        const NAMES: [(u32, &str); 9] = [
+        const NAMES: [(u32, &str); 12] = [
             (USE_DISTANT_LAND, "distant land"),
             (USE_DISTANT_STATICS, "distant statics"),
             (USE_GRASS, "grass"),
@@ -120,6 +121,9 @@ impl Settings {
             (USE_HDR, "HDR measure"),
             (DYNAMIC_RIPPLES, "dynamic waves"),
             (BLUR_REFLECTIONS, "blur of the reflections"),
+            (REFLECTIVE_WATER, "land in the reflections"),
+            (REFLECT_NEAR, "statics in the reflections"),
+            (REFLECT_SKY, "sky in the reflections"),
         ];
         let before = before.map_or(!now.flags, |b| b.flags);
         NAMES.iter().filter(|(flag, _)| (before ^ now.flags) & flag != 0).map(|(flag, name)| format!("{name} {}", if now.flags & flag != 0 { "on" } else { "off" })).collect()
@@ -342,6 +346,18 @@ pub struct DistantLand {
     /// of the Direct3D 9 path.
     blur_reflections: bool,
     blur_contact: bool,
+    /// The parts of the reflection in the water of the sea, as `renderWaterReflection` of the
+    /// Direct3D 9 path has them: the land of an exterior (`distant_land.water.reflect_land`),
+    /// the statics (`reflect_near_statics`) to the end of the near statics
+    /// (`near_static_end`, in units) and of the fog, and the sky (`reflect_sky`).
+    reflect_land: bool,
+    reflect_statics: bool,
+    reflect_sky: bool,
+    near_static_end: f32,
+    /// The GPU time of the shadow map and of the reflection, in a replay with
+    /// `MGE_XE_GPU_TIME=1` (`gpu_time`); made at the first frame of a replay.
+    gpu_time: Option<gpu_time::GpuTime>,
+    gpu_time_made: bool,
     /// How far from the camera the surfaces of water volumes reflect what is in the picture,
     /// in cells (`distant_land.water.volume_reflection_cells`); 0 for the sky only.
     volume_reflect_cells: f32,
@@ -665,6 +681,12 @@ impl DistantLand {
             ripples: None,
             blur_reflections: settings.water.blur_reflections,
             blur_contact: settings.water.blur_contact_hardening,
+            reflect_land: settings.water.reflect_land,
+            reflect_statics: settings.water.reflect_near_statics,
+            reflect_sky: settings.water.reflect_sky,
+            near_static_end: settings.near_static_end * CELL,
+            gpu_time: None,
+            gpu_time_made: false,
             volume_reflect_cells: settings.water.volume_reflection_cells,
             volume_shadows: settings.water.volume_shadows,
             volume_point_lights: settings.water.volume_point_lights,
@@ -778,6 +800,9 @@ impl Drop for DistantLand {
         }
         println!("shadow map: {} frames", self.shadow.as_ref().map_or(0, |s| s.frames));
         println!("post: {} frames, {} shaders run", self.post.as_ref().map_or(0, |p| p.frames), self.post.as_ref().map_or(0, |p| p.shaders_run));
+        if let Some(timer) = self.gpu_time.as_ref() {
+            println!("{}", timer.report());
+        }
     }
 }
 
@@ -1762,6 +1787,10 @@ impl Extension for DistantLand {
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
         self.near_fog = None;
         self.cell_facts(scene);
+        if self.synchronous && !self.gpu_time_made {
+            self.gpu_time_made = true;
+            self.gpu_time = gpu_time::GpuTime::new(scene.device, scene.queue);
+        }
         if !self.enabled || !self.distant_cell {
             // A cell without the distant land: the reflection of the water is one colour,
             // as `clearReflection` of the Direct3D 9 path has it. Under the water, the
@@ -1878,6 +1907,9 @@ impl Extension for DistantLand {
         // that go to the GPU before the frame.
         if let Some(shadow) = self.shadow.as_mut().filter(|_| self.shadow_in_frame) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shadow map") });
+            if let Some(timer) = self.gpu_time.as_ref() {
+                timer.start(&mut encoder);
+            }
             let mut pass = shadow.begin(&mut encoder);
             for layer in 0..2 {
                 shadow.set_layer(&mut pass, layer);
@@ -1922,7 +1954,13 @@ impl Extension for DistantLand {
             }
             drop(pass);
             shadow.blur(&mut encoder);
+            if let Some(timer) = self.gpu_time.as_ref() {
+                timer.stop(&mut encoder);
+            }
             scene.queue.submit([encoder.finish()]);
+            if let Some(timer) = self.gpu_time.as_mut() {
+                timer.add(scene.device, gpu_time::SHADOW);
+            }
         }
 
         // The reflection in the water: the land and the sky, mirrored, in a pass of their
@@ -1930,6 +1968,9 @@ impl Extension for DistantLand {
         let water_frame = self.water_frame(scene);
         if let (Some(water), Some(frame)) = (self.water.as_mut(), water_frame.as_ref()) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection") });
+            if let Some(timer) = self.gpu_time.as_ref() {
+                timer.start(&mut encoder);
+            }
             let (mut mirror_pass, mirrored_view, far_projection) = water.begin_reflection(scene, &mut encoder, frame);
             let mut mirror_uniforms = uniforms;
             mirror_uniforms.view_projection = multiply(&mirrored_view, &far_projection);
@@ -1941,8 +1982,8 @@ impl Extension for DistantLand {
             scene.queue.write_buffer(&gpu.mirror_uniforms, 0, bytemuck::bytes_of(&mirror_uniforms));
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
-            // path); an interior cell reflects its statics only.
-            if !scene.interior {
+            // path) with `reflect_land`; an interior cell reflects its statics only.
+            if !scene.interior && self.reflect_land {
                 mirror_pass.set_pipeline(gpu.mirror_pipeline_for(scene));
                 mirror_pass.set_bind_group(0, &gpu.mirror_group, &[]);
                 for mesh in &gpu.meshes {
@@ -1955,9 +1996,13 @@ impl Extension for DistantLand {
                     mirror_pass.draw_indexed(0..mesh.index_count, 0, 0..1);
                 }
             }
-            // The statics, all of them: the game draws nothing in the reflection, so there is
-            // no handoff (a view range of 0, as the Direct3D 9 path has it).
-            if let Some(statics) = self.statics.as_mut() {
+            // The statics of each tier to the end of the near statics and of the fog
+            // (`renderReflectedStatics`), with `reflect_near_statics`. The game draws nothing in
+            // the reflection, so there is no handoff (a view range of 0, as the Direct3D 9 path
+            // has it).
+            let reflect_statics = self.reflect_statics;
+            let statics_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end).min(self.near_static_end);
+            if let Some(statics) = self.statics.as_mut().filter(|_| reflect_statics) {
                 let mirror_frame = statics::Frame {
                     view_projection: mirror_uniforms.view_projection,
                     eye: [uniforms.eye[0], uniforms.eye[1], uniforms.eye[2], 0.0],
@@ -1969,15 +2014,23 @@ impl Extension for DistantLand {
                     ambient: uniforms.ambient,
                     scattering,
                     planes: mirror_planes,
-                    fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
+                    fog_end: statics_end,
                     time: self.started.elapsed().as_secs_f32(),
                 };
                 statics.draw(scene, &mut mirror_pass, &mirror_frame, 1);
             }
-            water.reflect_sky(scene, &mut mirror_pass, replay, frame);
+            if self.reflect_sky {
+                water.reflect_sky(scene, &mut mirror_pass, replay, frame);
+            }
             drop(mirror_pass);
             water.finish_reflection(&mut encoder);
+            if let Some(timer) = self.gpu_time.as_ref() {
+                timer.stop(&mut encoder);
+            }
             scene.queue.submit([encoder.finish()]);
+            if let Some(timer) = self.gpu_time.as_mut() {
+                timer.add(scene.device, gpu_time::REFLECTION);
+            }
         }
         let far_water_wanted = self.volumes_ready && !scene.interior && !self.under_water();
         if let Some(statics) = self.statics.as_mut() {
@@ -2432,6 +2485,9 @@ impl DistantLand {
         self.hdr_reaction = settings.hdr_reaction_speed;
         self.ripples_enabled = on(DYNAMIC_RIPPLES);
         self.blur_reflections = on(BLUR_REFLECTIONS);
+        self.reflect_land = on(REFLECTIVE_WATER);
+        self.reflect_statics = on(REFLECT_NEAR);
+        self.reflect_sky = on(REFLECT_SKY);
         if settings.water_wave_height.is_finite() {
             self.wave_height = settings.water_wave_height.clamp(0.0, 250.0);
         }
@@ -2451,6 +2507,7 @@ impl DistantLand {
         // finite, or not above 0) keeps the value before.
         let distance = |cells: f32, before: f32| if cells.is_finite() && cells > 0.0 { cells * CELL } else { before };
         self.draw_distance = distance(settings.draw_distance, self.draw_distance);
+        self.near_static_end = distance(settings.near_static_end, self.near_static_end);
         if let Some(statics) = self.statics.as_mut() {
             statics.set_distances(self.draw_distance, [settings.near_static_end, settings.far_static_end, settings.very_far_static_end].map(|cells| (cells.is_finite() && cells > 0.0).then_some(cells * CELL)));
         }
@@ -2525,6 +2582,8 @@ mod settings_tests {
         let a = Settings { version: 1, flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
         let b = Settings { flags: USE_DISTANT_LAND | USE_GRASS | USE_HDR, ..a };
         assert_eq!(Settings::changed_flags(Some(a), b), vec!["shadows off".to_string(), "HDR measure on".to_string()]);
-        assert_eq!(Settings::changed_flags(None, a).len(), 9);
+        assert_eq!(Settings::changed_flags(None, a).len(), 12);
+        let c = Settings { flags: a.flags | REFLECT_SKY, ..a };
+        assert_eq!(Settings::changed_flags(Some(a), c), vec!["sky in the reflections on".to_string()]);
     }
 }
