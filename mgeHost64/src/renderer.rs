@@ -50,7 +50,7 @@ use mge_config::{ConfigDocument, FILE_NAME};
 use crate::abi::constants::{BLUR_REFLECTIONS, DYNAMIC_RIPPLES, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, Replay, SceneView};
+use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView};
 use water::{Water, WaterFrame};
 use post::{Post, Variables};
 use shadow::Shadow;
@@ -2184,6 +2184,23 @@ impl Extension for DistantLand {
         // Without the view range from the game, the default of the game with distant land.
         let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
         self.blend.get_or_insert_with(|| blend::Blend::new(scene)).draw(scene, pass, before, depth, near_view_range);
+    }
+
+    /// The water refracts the picture and reads the depth; the sea caustics read the depth
+    /// only (they multiply the picture by a blend); the blend reads its arguments only.
+    fn reads(&self, call: ReadingCall) -> Reads {
+        match call {
+            ReadingCall::Blend => Reads::NONE,
+            ReadingCall::Class(class) if class != 10 => Reads::NONE,
+            ReadingCall::Held(held) if held.is_empty() && self.far_water.is_empty() => {
+                if self.sea_caustics() {
+                    Reads::DEPTH
+                } else {
+                    Reads::NONE
+                }
+            }
+            _ => Reads::ALL,
+        }
     }
 
 }

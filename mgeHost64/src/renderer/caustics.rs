@@ -6,6 +6,11 @@
 //! water volumes have too): brighter where the waves focus it, and darker in the mean, less
 //! with the depth of the water and with the distance. Not in a dry space: the pass is drawn
 //! with the count of the dry spaces in the stencil buffer (`water::Water::draw_sea_caustics`).
+//!
+//! The pass reads no copy of the picture: a blend multiplies the target by twice the colour
+//! of the shader (`2 * colour * target`). The colour of an 8-bit target is at most 1, so one
+//! draw multiplies by at most 2: a larger factor takes more draws (`draws`), each with the
+//! part of the factor between 2^n and 2^(n+1).
 
 use nirender_wgpu::{SceneView, wgpu};
 
@@ -25,17 +30,23 @@ struct Uniforms {
     values: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var picture: texture_2d<f32>;
-@group(0) @binding(2) var depth: texture_depth_2d;
-@group(0) @binding(3) var waves: texture_3d<f32>;
-@group(0) @binding(4) var wave_sampler: sampler;
+@group(0) @binding(1) var depth: texture_depth_2d;
+@group(0) @binding(2) var waves: texture_3d<f32>;
+@group(0) @binding(3) var wave_sampler: sampler;
 
-@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
-    // One triangle that covers the picture.
-    return vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0);
+struct Corner {
+    @builtin(position) position: vec4f,
+    // The draw of the chain (the instance): see `draws`.
+    @location(0) @interpolate(flat) step: u32,
 }
 
-@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
+@vertex fn vs(@builtin(vertex_index) index: u32, @builtin(instance_index) step: u32) -> Corner {
+    // One triangle that covers the picture.
+    return Corner(vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0), step);
+}
+
+@fragment fn fs(in: Corner) -> @location(0) vec4f {
+    let position = in.position;
     let at = vec2i(position.xy);
     let d = textureLoad(depth, at, 0);
     // The depth of the pixel along the view of the camera. Nothing drawn, or past the view
@@ -63,9 +74,22 @@ struct Uniforms {
     let bound = u.values.y - u.size.z;
     let kept = 1.0 - clamp((blend_distance(depth, at, u.projection.zw, u.projection.xy, u.size.xy, bound) - bound) / u.size.z, 0.0, 1.0);
     let factor = 1.0 + caustic_light(under, u.sun.xyz, u.sun.w, z, u.values.x) * fog * kept;
-    return vec4f(textureLoad(picture, at, 0).rgb * factor, 1.0);
+    // The draw `step` multiplies by the part of the factor between 2^step and 2^(step+1); the
+    // first one by all of it to 2, a darker pixel too.
+    let low = exp2(f32(in.step));
+    if in.step > 0u && factor <= low {
+        discard;
+    }
+    let part = select(min(factor, 2.0), clamp(factor / low, 1.0, 2.0), in.step > 0u);
+    return vec4f(vec3f(0.5 * part), 1.0);
 }
 ";
+
+/// The draws of the chain for a strength: the factor of a pixel is at most 1 + `strength`
+/// (`water::CAUSTICS`), and each draw multiplies by at most 2.
+fn draws(strength: f32) -> u32 {
+    (1.0 + strength.max(0.0)).log2().ceil().max(1.0) as u32
+}
 
 fn shader() -> String {
     format!("{}{}{}", SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
@@ -118,16 +142,20 @@ impl Caustics {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
-                texture(1, wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureViewDimension::D2),
-                texture(2, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
-                texture(3, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3),
-                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                texture(1, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
+                texture(2, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3),
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("caustics"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         // In the pass of the world: no test of the depth and no write, and the stencil of the
-        // dry spaces for the cut.
+        // dry spaces for the cut. The blend multiplies the target: colour * target + target *
+        // colour.
+        let modulate = wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Dst, dst_factor: wgpu::BlendFactor::Src, operation: wgpu::BlendOperation::Add },
+            alpha: wgpu::BlendComponent::REPLACE,
+        };
         let make_pipeline = |stencil: wgpu::StencilState| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("caustics"),
@@ -146,7 +174,7 @@ impl Caustics {
                     module: &module,
                     entry_point: Some("fs"),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
+                    targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: Some(modulate), write_mask: wgpu::ColorWrites::COLOR })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -166,11 +194,10 @@ impl Caustics {
         Self { pipeline, pipeline_cut, layout, uniforms, wave_sampler, intensity, frames: 0 }
     }
 
-    /// Draws the caustics on the picture. `picture` is a copy of the picture as it is,
-    /// `depth` the depth of the draws of the game, `waves` the wave texture of the water.
-    /// With `cut`, only outside the dry spaces: the caller has their count in the stencil.
-    #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, picture: &wgpu::TextureView, depth: &wgpu::TextureView, waves: &wgpu::TextureView, frame: &CausticsFrame, cut: bool) {
+    /// Draws the caustics on the picture. `depth` is the depth of the draws of the game,
+    /// `waves` the wave texture of the water. With `cut`, only outside the dry spaces: the
+    /// caller has their count in the stencil.
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, depth: &wgpu::TextureView, waves: &wgpu::TextureView, frame: &CausticsFrame, cut: bool) {
         let eye = super::eye_of(&scene.view);
         let strength = super::water::caustic_strength(self.intensity, frame.sun_vis, frame.fog_color_far);
         let mut values = [0.0f32; 16 + 20];
@@ -186,16 +213,15 @@ impl Caustics {
             layout: &self.layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(picture) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(depth) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(waves) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.wave_sampler) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(waves) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.wave_sampler) },
             ],
         });
         pass.set_pipeline(if cut { &self.pipeline_cut } else { &self.pipeline });
         pass.set_stencil_reference(0);
         pass.set_bind_group(0, &group, &[]);
-        pass.draw(0..3, 0..1);
+        pass.draw(0..3, 0..draws(strength));
         self.frames += 1;
     }
 }
@@ -209,5 +235,18 @@ mod tests {
         let source = super::shader();
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
+    }
+
+    /// The chain has a draw for each doubling of the most factor, 1 + the strength: one to a
+    /// strength of 1, two to 3 (the setting 50 gives at most 2.5), three to 7 (100 gives 5).
+    #[test]
+    fn the_draws_cover_the_factor() {
+        assert_eq!(super::draws(0.0), 1);
+        assert_eq!(super::draws(1.0), 1);
+        assert_eq!(super::draws(1.01), 2);
+        assert_eq!(super::draws(2.5), 2);
+        assert_eq!(super::draws(3.0), 2);
+        assert_eq!(super::draws(5.0), 3);
+        assert_eq!(super::draws(-1.0), 1);
     }
 }

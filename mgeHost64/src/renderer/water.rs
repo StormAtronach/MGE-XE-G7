@@ -682,9 +682,11 @@ impl Water {
     /// Writes the values of the frame and makes the group of the shared shading: the values,
     /// the reflection, the waves, the picture and the depth of the scene. `ripples` has the
     /// textures of the dynamic waves; they count when the frame has a wave height. The values
-    /// go into `uniforms`. `None` without the picture or the depth.
-    fn frame_group(&self, scene: &SceneView, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, uniforms_buffer: &wgpu::Buffer) -> Option<wgpu::BindGroup> {
-        let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return None };
+    /// go into `uniforms`. `None` without the depth, or without the picture unless `picture`
+    /// is false (a draw that does not read it: the count of the dry spaces).
+    fn frame_group(&self, scene: &SceneView, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, uniforms_buffer: &wgpu::Buffer, picture: bool) -> Option<wgpu::BindGroup> {
+        let depth = scene.depth?;
+        let picture = if picture { scene.picture? } else { &self.flat };
         let dynamic = frame.wave_height.zip(ripples);
         let eye = super::eye_of(&scene.view);
         let sunlight = 1.0 - (1.0 - frame.sun_vis).powi(2);
@@ -749,7 +751,7 @@ impl Water {
     /// Draws the plane in place of the water plane of the game. `ripples` has the
     /// textures of the dynamic waves; they count when the frame has a wave height.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>) {
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms) else { return };
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms, true) else { return };
         let dynamic = frame.wave_height.zip(ripples);
         // The dry spaces cut the plane, but not from under the water (`renderStageWater`).
         let cut = self.dry.any() && !frame.underwater;
@@ -796,7 +798,7 @@ impl Water {
         if far.is_empty() && !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
             return 0;
         }
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms) else { return 0 };
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms, true) else { return 0 };
         // The dry spaces cut the surfaces near the camera, but not from under the water.
         let dry = (self.dry.any() && !frame.underwater).then_some(&self.dry);
         self.volumes.draw(scene, pass, &group, held, far, look, looks, light, dry)
@@ -810,16 +812,16 @@ impl Water {
     /// Draws the caustics under the sea on the picture of the game, outside the dry spaces:
     /// the faces of the dry spaces behind the depth of the game are counted first, so a point
     /// inside one (the floor of a hold under the level of the sea) has none, wherever the eye
-    /// is.
+    /// is. Reads the depth of the game only: the caustics multiply the picture by a blend.
     pub fn draw_sea_caustics(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, caustics: &mut super::caustics::Caustics, caustics_frame: &super::caustics::CausticsFrame) {
-        let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return };
-        let group = self.dry.any().then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms)).flatten();
+        let Some(depth) = scene.depth else { return };
+        let group = self.dry.any().then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms, false)).flatten();
         if let Some(group) = group.as_ref() {
             pass.set_bind_group(0, group, &[]);
             self.dry.zero(pass);
             self.dry.count_behind(pass);
         }
-        caustics.draw(scene, pass, picture, depth, &self.waves, caustics_frame, group.is_some());
+        caustics.draw(scene, pass, depth, &self.waves, caustics_frame, group.is_some());
         if let Some(group) = group.as_ref() {
             pass.set_bind_group(0, group, &[]);
             self.dry.zero(pass);
