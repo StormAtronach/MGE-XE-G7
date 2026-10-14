@@ -153,6 +153,13 @@ pub fn run(mut arguments: Vec<String>) {
     nirender_wgpu::run_with(arguments, Some(Box::new(DistantLand::start(Path::new("."), live))));
 }
 
+/// The time of the animated textures of the distant statics: the time of the simulation of
+/// the game, as `ehTime` of the Direct3D 9 path, which stops in a menu; the time of this
+/// program before the first environment record.
+fn game_time(environment: Option<Environment>, started: Instant) -> f32 {
+    environment.map_or_else(|| started.elapsed().as_secs_f32(), |e| e.time)
+}
+
 /// The startup generation of distant land, as the IPC host mode does it in `main.rs`: when
 /// the output does not match the generation job of mgeXE.toml, the generator makes it again.
 /// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread.
@@ -1972,7 +1979,7 @@ impl Extension for DistantLand {
                         scattering,
                         planes: layer_planes,
                         fog_end: 1.0e9,
-                        time: self.started.elapsed().as_secs_f32(),
+                        time: game_time(self.environment, self.started),
                     };
                     statics.draw(scene, &mut pass, &layer_frame, 2 + layer);
                 }
@@ -2040,7 +2047,7 @@ impl Extension for DistantLand {
                     scattering,
                     planes: mirror_planes,
                     fog_end: statics_end,
-                    time: self.started.elapsed().as_secs_f32(),
+                    time: game_time(self.environment, self.started),
                 };
                 statics.draw(scene, &mut mirror_pass, &mirror_frame, 1);
             }
@@ -2071,7 +2078,7 @@ impl Extension for DistantLand {
                 scattering,
                 planes,
                 fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
-                time: self.started.elapsed().as_secs_f32(),
+                time: game_time(self.environment, self.started),
             };
             statics.draw(scene, pass, &frame, 0);
             // The water among the distant statics, for `draw_held`: in an exterior, above the
