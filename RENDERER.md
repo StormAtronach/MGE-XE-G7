@@ -82,6 +82,25 @@ adapter and the one in use.
   `MGE XE Post Shaders Readme.md`). Three shaders of this build are new: `Bloom S_A`,
   `SSAO S_A` and `Depth of Field S_A`; name them in the chain like the others.
 - The frame rate of the game thread goes up where the Direct3D 9 driver was the limit.
+- A setting that a mod or the MGE XE options change while the game runs (the draw distance,
+  the ends of the static tiers, the water options, the caustics, the lighting mode, the speed
+  of the HDR) reaches the renderer at once.
+- The dynamic waves of the water (`dynamic_ripples`): the rings of rain and of the player,
+  and the height of the waves. The blur of the reflection of Direct3D 9 (`blur_reflections`);
+  with it, a new blur that stays sharp where an object meets the water
+  (`blur_contact_hardening`, on by default).
+- Parameters of a shader: the shader list of the MGE XE options has a Parameters button on
+  each row. It opens an editor for each number of that shader, a slider where a mod gives
+  the range in `Data Files/shaders/XEshaders/<name>.toml` (see
+  `MGE XE Post Shaders Readme.md`). The row
+  "water (renderer)" has the numbers of the blur of the reflection. A change lasts until the
+  game ends.
+- Reload of a shader when its file changes (an option of the MGE XE options, off at the
+  start): for an author who edits a `.fx` or a `.wgsl` beside the game. The result, with the
+  error of a shader that does not compile, is in the Parameters window and in
+  `mgeXE-shaders.txt` in the Morrowind folder.
+- With `automatic_rebuild = true` under `[distant_land]`, the distant land is made again at
+  the start when the load order or the generation settings changed, as with Direct3D 9.
 - While the game sends no picture for more than half a second (at its start, when it loads),
   a small line turns in the lower right corner of the window. The game is not stopped.
 - Alt+F4 closes the game, with either renderer. The game does not ask and does not save.
