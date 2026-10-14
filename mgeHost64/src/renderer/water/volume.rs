@@ -256,10 +256,11 @@ struct Surface {
     sky: [f32; 4],
     /// The drift of the ripples in the world (x, y), their speed and their size.
     flow: [f32; 4],
-    /// The glow, the opacity and the clarity of the look; then bits: 1 the mesh has normals,
-    /// 2 it has vertex colours, 4 the vertex colour tints the water, 8 the vertex alpha is
-    /// the opacity, 16 the mesh is drawn without the depth test.
-    look: [f32; 4],
+    /// The glow, the opacity and the clarity of the look.
+    look: [f32; 3],
+    /// Bits: 1 the mesh has normals, 2 it has vertex colours, 4 the vertex colour tints the
+    /// water, 8 the vertex alpha is the opacity, 16 the mesh is drawn without the depth test.
+    flags: u32,
     /// The view and the projection: those of the game, or those of the distant land for
     /// water among the distant statics.
     clip: [f32; 16],
@@ -282,7 +283,8 @@ struct Surface {
     anchor: vec4f,
     sky: vec4f,
     flow: vec4f,
-    look: vec4f,
+    look: vec3f,
+    flags: u32,
     clip: mat4x4f,
     far: vec4f,
     params: array<vec4f, 4>,
@@ -429,7 +431,7 @@ struct Out {
 // zeros.
 @vertex fn vs(@location(0) local: vec3f, @location(1) normal: vec3f, @location(2) color: vec4f, @location(3) uv0: vec2f, @location(4) uv1: vec2f) -> Out {
     var out: Out;
-    let bits = u32(s.look.w);
+    let bits = s.flags;
     out.world = (s.world * vec4f(local, 1.0)).xyz;
     // A mesh without normals faces up.
     out.facing = select(vec3f(0.0, 0.0, 1.0), (s.world * vec4f(normal, 0.0)).xyz, (bits & 1u) != 0u);
@@ -527,7 +529,7 @@ struct WaterShade {
 
 fn surface_look(surface: WaterSurface) -> WaterLook {
     var look: WaterLook;
-    let bits = u32(s.look.w);
+    let bits = s.flags;
     look.drift = s.flow.xy;
     look.speed = s.flow.z;
     look.scale = s.flow.w;
@@ -598,7 +600,7 @@ fn shade_water_rippled(surface: WaterSurface, look: WaterLook, ripple: vec3f) ->
     // The tests of the branches are of uniforms only: the caustics take a change from pixel
     // to pixel.
     let far = s.far.x > 0.5;
-    let no_depth = (u32(s.look.w) & 16u) != 0u;
+    let no_depth = (s.flags & 16u) != 0u;
     // The way the surface faces, turned to the side of the eye; the ripples tilted to it.
     let face = select(surface.facing, -surface.facing, dot(surface.facing, eye_vec) > 0.0);
     let fog = fog_water(eye_vec, dist);
@@ -1206,7 +1208,8 @@ impl Volumes {
                 anchor: [world[12], world[13], world[14], 0.0],
                 sky: if look.flags & LOOK_HAS_SKY != 0 { [look.sky[0], look.sky[1], look.sky[2], 1.0] } else { frame_look.sky },
                 flow: [drift[0], drift[1], look.speed, look.scale],
-                look: [look.glow, look.opacity, look.clarity, bits as f32],
+                look: [look.glow, look.opacity, look.clarity],
+                flags: bits,
                 clip: frame_look.land_view_projection,
                 far: [1.0, if water.loaded { frame_look.view_range } else { 0.0 }, frame_look.reflect_range, 0.0],
                 params: look.params,
@@ -1241,7 +1244,8 @@ impl Volumes {
                 anchor: [world[12], world[13], world[14], 0.0],
                 sky: if look.flags & LOOK_HAS_SKY != 0 { [look.sky[0], look.sky[1], look.sky[2], 1.0] } else { frame_look.sky },
                 flow: [drift[0], drift[1], look.speed, look.scale],
-                look: [look.glow, look.opacity, look.clarity, bits as f32],
+                look: [look.glow, look.opacity, look.clarity],
+                flags: bits,
                 clip: game_view_projection,
                 far: [0.0; 4],
                 params: look.params,
