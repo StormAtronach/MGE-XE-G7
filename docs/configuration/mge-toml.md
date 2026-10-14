@@ -176,6 +176,17 @@ still installed.
 The host-only horizon setting with no obsolete C++ binding is
 `distant_land.horizon.rebuild_eye_threshold`.
 
+`distant_land.statics_fallback_cap_mb` has no obsolete INI predecessor, and only the wgpu
+renderer reads it. The wgpu renderer keeps the merged distant statics on the GPU under a
+limit: what the memory budget of the GPU leaves after the memory in use and a margin (as
+MGE XE on Direct3D 9 does with the DXVK of the fork), lowered when other programs take
+memory. It reads the budget from `VK_EXT_memory_budget`, so it has it on the Vulkan backend
+with a driver that has the extension, also under Wine and Proton. Without a budget (the
+Direct3D 12 backend, or a driver without the extension), this setting is the limit in
+megabytes: `1024` by default, the range `0` to `65536`, and `0` is no limit. When the limit
+is full, a merged static farther from the camera goes from the GPU for a nearer one, and a
+far one can show late.
+
 `distant_land.water.volume_reflection_cells` has no obsolete INI predecessor. It is how far
 from the camera, in cells, a water volume among the distant statics reflects what is on screen;
 farther away it reflects the sky only. A water volume that the game draws itself, near the

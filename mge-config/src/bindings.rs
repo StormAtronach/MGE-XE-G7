@@ -171,6 +171,7 @@ impl Settings {
             "distant_land.very_far_static_end" => self.distant_land.very_far_static_end.into(),
             "distant_land.far_static_min_size" => self.distant_land.far_static_min_size.into(),
             "distant_land.very_far_static_min_size" => self.distant_land.very_far_static_min_size.into(),
+            "distant_land.statics_fallback_cap_mb" => self.distant_land.statics_fallback_cap_mb.into(),
             "distant_land.water.reflect_land" => bool_number(self.distant_land.water.reflect_land),
             "distant_land.water.reflect_near_statics" => bool_number(self.distant_land.water.reflect_near_statics),
             "distant_land.water.reflect_interiors" => bool_number(self.distant_land.water.reflect_interiors),
@@ -310,6 +311,9 @@ impl Settings {
             "distant_land.very_far_static_end" => self.distant_land.very_far_static_end = finite_f32(value, path)?,
             "distant_land.far_static_min_size" => self.distant_land.far_static_min_size = finite_f32(value, path)?,
             "distant_land.very_far_static_min_size" => self.distant_land.very_far_static_min_size = finite_f32(value, path)?,
+            "distant_land.statics_fallback_cap_mb" => {
+                self.distant_land.statics_fallback_cap_mb = integer::<u32>(value, path)?
+            }
             "distant_land.water.reflect_land" => self.distant_land.water.reflect_land = number_bool(value, path)?,
             "distant_land.water.reflect_near_statics" => {
                 self.distant_land.water.reflect_near_statics = number_bool(value, path)?

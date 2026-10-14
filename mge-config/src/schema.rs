@@ -493,6 +493,9 @@ pub struct DistantLandSettings {
     pub very_far_static_end: f32,
     pub far_static_min_size: f32,
     pub very_far_static_min_size: f32,
+    /// The wgpu renderer: the most megabytes of merged distant statics on the GPU when the
+    /// GPU does not give its memory budget (`VK_EXT_memory_budget`). 0: no limit.
+    pub statics_fallback_cap_mb: u32,
     pub water: WaterSettings,
     pub fog: FogSettings,
     pub grass: GrassSettings,
@@ -526,6 +529,7 @@ impl Default for DistantLandSettings {
             very_far_static_end: 5.0,
             far_static_min_size: 600.0,
             very_far_static_min_size: 800.0,
+            statics_fallback_cap_mb: 1024,
             water: WaterSettings::default(),
             fog: FogSettings::default(),
             grass: GrassSettings::default(),

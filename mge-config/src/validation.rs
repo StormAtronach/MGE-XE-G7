@@ -413,6 +413,13 @@ pub(crate) fn validate_bounds(settings: &mut Settings) -> Result<Vec<Warning>, V
         &mut warnings,
     )?;
     clamp_u32(
+        &mut distant.statics_fallback_cap_mb,
+        0,
+        65536,
+        "distant_land.statics_fallback_cap_mb",
+        &mut warnings,
+    );
+    clamp_u32(
         &mut distant.shadows.map_resolution,
         1024,
         2048,

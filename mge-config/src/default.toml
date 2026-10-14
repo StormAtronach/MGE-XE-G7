@@ -124,6 +124,10 @@ very_far_static_end = 5.0
 # Minimum model sizes used when classifying far static tiers.
 far_static_min_size = 600.0
 very_far_static_min_size = 800.0
+# The wgpu renderer keeps the merged distant statics on the GPU under a limit that it
+# takes from the memory budget of the GPU. When the GPU does not give a budget, this is
+# the limit in megabytes; 0 is no limit.
+statics_fallback_cap_mb = 1024
 # Enable fixed-function replacement lighting and select its scope.
 per_pixel_lighting = false
 per_pixel_mode = "always"

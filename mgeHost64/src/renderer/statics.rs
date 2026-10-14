@@ -12,7 +12,11 @@
 //! - A merged static has the statics of one exterior cell in one mesh, with one place. It is
 //!   most of the data. A merged subset is on the GPU only while the camera is near it: a
 //!   reader thread gets its bytes when the camera comes within the draw distance, and the
-//!   renderer drops it when the camera is farther than that and one more cell.
+//!   renderer drops it when the camera is farther than that and one more cell. The merged
+//!   subsets on the GPU stay under a cap, as in the IPC host mode: what the memory budget of
+//!   the GPU (`VK_EXT_memory_budget`) leaves after the memory in use and a margin, lowered
+//!   when other programs take memory; without a budget, `distant_land.statics_fallback_cap_mb`.
+//!   When the cap is full, a merged subset farther from the camera goes for a nearer one.
 //!
 //! A merged subset has three levels of detail. Its triangles are in components, each with
 //! the radius of the model that it came from. The reader puts the triangles of the largest
@@ -41,8 +45,7 @@
 //! the water (`water/volume.rs`).
 //!
 //! Not here yet: the groups of statics that the game shows or hides (all of them are shown),
-//! the quadtree and the horizon culling of the IPC host mode, and a limit of the memory on
-//! the GPU.
+//! and the quadtree and the horizon culling of the IPC host mode.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -51,7 +54,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
+use std::time::{Duration, Instant};
 
+use ash::vk;
 use distantland::mge_xe::usage_data::load_usage_data;
 use mge_config::ConfigDocument;
 use nirender_wgpu::wgpu;
@@ -77,6 +82,13 @@ const GRASS_RECORD: usize = 48;
 /// The work of one frame for subsets that arrive from the reader thread.
 const ARRIVALS_IN_FRAME: usize = 24;
 const ARRIVAL_BYTES_IN_FRAME: usize = 16 << 20;
+/// The cap of the merged subsets from the memory budget, as `DistantLand` of the IPC host
+/// mode makes it: the margin is an eighth of the budget, from 256 MB to 1 GB; a new sample
+/// each half second; the cap goes down at the fourth lower sample in a row.
+const HEADROOM_LEAST: u64 = 256 << 20;
+const HEADROOM_MOST: u64 = 1 << 30;
+const BUDGET_SAMPLE: Duration = Duration::from_millis(500);
+const LOWER_SAMPLES: u32 = 4;
 
 fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
@@ -118,6 +130,13 @@ struct Subset {
     /// The place of its first palette entry in the palette buffer.
     palette: u32,
     components: Vec<Component>,
+}
+
+impl Subset {
+    /// The bytes of its vertices and triangles in the file.
+    fn bytes(&self) -> u64 {
+        self.vertex_count as u64 * VERTEX as u64 + self.triangle_count as u64 * TRIANGLE as u64
+    }
 }
 
 struct Static {
@@ -466,6 +485,73 @@ fn reader(catalog: Arc<Catalog>, requests: Receiver<u32>, arrivals: Sender<Arriv
             return;
         }
     }
+}
+
+/// The distance from the camera to the centre of a place, across the ground.
+fn flat_distance(instance: &Instance, eye: [f32; 3]) -> f32 {
+    ((instance.center[0] - eye[0]).powi(2) + (instance.center[1] - eye[1]).powi(2)).sqrt()
+}
+
+/// The budget and the use of this process of the largest memory heap of the GPU, from
+/// `VK_EXT_memory_budget`, which wgpu turns on when the driver has it. `None` on another
+/// backend than Vulkan, or without the extension.
+fn memory_budget(device: &wgpu::Device) -> Option<(u64, u64)> {
+    // SAFETY: the guard keeps the device alive, and the calls only read the properties of its
+    // physical device.
+    let hal = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }?;
+    if !hal.enabled_device_extensions().contains(&ash::ext::memory_budget::NAME) {
+        return None;
+    }
+    let instance = hal.shared_instance();
+    // `vkGetPhysicalDeviceMemoryProperties2` is core in Vulkan 1.1.
+    if instance.instance_api_version() < vk::API_VERSION_1_1 {
+        return None;
+    }
+    let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
+    let mut properties = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget);
+    unsafe { instance.raw_instance().get_physical_device_memory_properties2(hal.raw_physical_device(), &mut properties) };
+    let memory = properties.memory_properties;
+    let heaps = &memory.memory_heaps[..(memory.memory_heap_count as usize).min(vk::MAX_MEMORY_HEAPS)];
+    let largest = (0..heaps.len()).filter(|&heap| heaps[heap].flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL)).max_by_key(|&heap| heaps[heap].size)?;
+    (budget.heap_budget[largest] > 0).then_some((budget.heap_budget[largest], budget.heap_usage[largest]))
+}
+
+/// The cap of the merged subsets from a memory budget, as `mergedCapCandidate` of the IPC
+/// host mode: what the budget leaves after the memory in use and a margin, and the merged
+/// bytes on the GPU, which the memory in use counts already. Without them the merged subsets
+/// would make their own cap smaller.
+fn cap_from_budget(budget: u64, used: u64, merged: u64) -> u64 {
+    let headroom = (budget / 8).clamp(HEADROOM_LEAST, HEADROOM_MOST);
+    merged.saturating_add(budget.saturating_sub(used).saturating_sub(headroom))
+}
+
+/// The choice of the cap of the merged subsets. `wanted` and `on_gpu` are (distance from the
+/// camera, subset, bytes); `wanted` is the nearest first, and `used` is the bytes on the GPU
+/// and asked for. Gives the subsets to ask for, the subsets to take off the GPU for them, and
+/// whether a wanted subset must wait. A subset on the GPU goes only for a nearer one, and only
+/// when that makes enough room.
+fn plan_merged(wanted: &[(f32, u32, u64)], mut on_gpu: Vec<(f32, u32, u64)>, mut used: u64, cap: u64) -> (Vec<u32>, Vec<u32>, bool) {
+    on_gpu.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let (mut admit, mut evict) = (Vec::new(), Vec::new());
+    let mut end = on_gpu.len();
+    for &(near, subset, bytes) in wanted {
+        let (mut cut, mut free) = (end, cap.saturating_sub(used));
+        while free < bytes && cut > 0 && on_gpu[cut - 1].0 > near {
+            cut -= 1;
+            free += on_gpu[cut].2;
+        }
+        if free < bytes {
+            return (admit, evict, true);
+        }
+        for &(_, gone, gone_bytes) in &on_gpu[cut..end] {
+            evict.push(gone);
+            used -= gone_bytes;
+        }
+        end = cut;
+        admit.push(subset);
+        used += bytes;
+    }
+    (admit, evict, false)
 }
 
 struct Resident {
@@ -871,6 +957,21 @@ pub struct Statics {
     resident: HashMap<u32, Resident>,
     requested: HashSet<u32>,
     resident_bytes: u64,
+    /// The merged subsets that the draws want and that are not on the GPU or asked for.
+    wanted: Vec<u32>,
+    /// The bytes of the merged subsets on the GPU, and the most that may be.
+    merged_bytes: u64,
+    merged_cap: u64,
+    /// `distant_land.statics_fallback_cap_mb` in bytes, `u64::MAX` for no cap.
+    fallback_cap: u64,
+    /// The time of the next sample of the memory budget, when the cap follows it, and the
+    /// lower samples in a row.
+    next_budget_sample: Option<Instant>,
+    lower_samples: u32,
+    lowered: u64,
+    most_merged: u64,
+    evicted: u64,
+    capped_frames: u64,
     /// The draws of the frame: texture, subset, instance, triangles.
     draws: Vec<(u32, u32, u32, u32)>,
     instance_data: Vec<f32>,
@@ -920,6 +1021,19 @@ impl Statics {
             resident: HashMap::new(),
             requested: HashSet::new(),
             resident_bytes: 0,
+            wanted: Vec::new(),
+            merged_bytes: 0,
+            merged_cap: u64::MAX,
+            fallback_cap: match land.statics_fallback_cap_mb {
+                0 => u64::MAX,
+                mb => u64::from(mb) << 20,
+            },
+            next_budget_sample: None,
+            lower_samples: 0,
+            lowered: 0,
+            most_merged: 0,
+            evicted: 0,
+            capped_frames: 0,
             draws: Vec::new(),
             instance_data: Vec::new(),
             grass_draws: Vec::new(),
@@ -967,6 +1081,126 @@ impl Statics {
         }
     }
 
+    /// The first cap of the merged subsets: from the memory budget of the GPU, else
+    /// `distant_land.statics_fallback_cap_mb`. `MGE_XE_STATICS_CAP_MB` gives a fixed cap,
+    /// for a test.
+    fn select_cap(&mut self, device: &wgpu::Device) {
+        if let Some(mb) = std::env::var("MGE_XE_STATICS_CAP_MB").ok().and_then(|mb| mb.parse::<u64>().ok()) {
+            self.merged_cap = mb << 20;
+            println!("distant statics: the cap of the merged subsets is {mb} MB, from MGE_XE_STATICS_CAP_MB");
+        } else if let Some((budget, used)) = memory_budget(device) {
+            self.merged_cap = cap_from_budget(budget, used, self.merged_bytes);
+            self.next_budget_sample = Some(Instant::now() + BUDGET_SAMPLE);
+            println!(
+                "distant statics: the cap of the merged subsets is {:.0} MB, from the memory budget of the GPU ({:.0} MB, {:.0} MB in use)",
+                self.merged_cap as f64 / 1e6,
+                budget as f64 / 1e6,
+                used as f64 / 1e6
+            );
+        } else {
+            self.merged_cap = self.fallback_cap;
+            if self.fallback_cap == u64::MAX {
+                println!("distant statics: the GPU gives no memory budget; no cap of the merged subsets (distant_land.statics_fallback_cap_mb = 0)");
+            } else {
+                println!("distant statics: the GPU gives no memory budget; the cap of the merged subsets is {} MB (distant_land.statics_fallback_cap_mb)", self.fallback_cap >> 20);
+            }
+        }
+    }
+
+    /// A new sample of the memory budget each half second, when the cap follows it. The cap
+    /// goes down to the fourth lower value in a row, not to the least of them, so that a
+    /// short peak of another program does not hold it low; it never goes up.
+    fn sample_budget(&mut self, device: &wgpu::Device) {
+        let Some(next) = self.next_budget_sample else { return };
+        let now = Instant::now();
+        if now < next {
+            return;
+        }
+        self.next_budget_sample = Some(now + BUDGET_SAMPLE);
+        let Some((budget, used)) = memory_budget(device) else {
+            self.lower_samples = 0;
+            return;
+        };
+        let candidate = cap_from_budget(budget, used, self.merged_bytes);
+        if candidate >= self.merged_cap {
+            self.lower_samples = 0;
+            return;
+        }
+        self.lower_samples += 1;
+        if self.lower_samples < LOWER_SAMPLES {
+            return;
+        }
+        println!(
+            "distant statics: the cap of the merged subsets goes down from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
+            self.merged_cap as f64 / 1e6,
+            candidate as f64 / 1e6,
+            budget as f64 / 1e6,
+            used as f64 / 1e6
+        );
+        self.merged_cap = candidate;
+        self.lower_samples = 0;
+        self.lowered += 1;
+    }
+
+    /// Takes the farthest merged subsets off the GPU while their bytes are over the cap: after
+    /// the cap went down.
+    fn pay_cap_debt(&mut self, catalog: &Catalog, eye: [f32; 3]) {
+        if self.merged_bytes <= self.merged_cap {
+            return;
+        }
+        let mut on_gpu: Vec<(f32, u32)> = self.resident.keys().filter_map(|subset| catalog.merged_place.get(subset).map(|index| (flat_distance(&catalog.instances[*index as usize], eye), *subset))).collect();
+        on_gpu.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        for (_, subset) in on_gpu {
+            if self.merged_bytes <= self.merged_cap {
+                break;
+            }
+            if let Some(resident) = self.resident.remove(&subset) {
+                self.resident_bytes -= resident.bytes;
+                self.merged_bytes -= resident.bytes;
+                self.evicted += 1;
+            }
+        }
+    }
+
+    /// Asks the reader thread for the merged subsets that the draws want, the nearest first,
+    /// while the merged bytes on the GPU and asked for stay under the cap. A merged subset on
+    /// the GPU that is further from the camera than the one asked for goes to make room; when
+    /// there is none, the rest wait until the camera comes nearer.
+    fn admit_merged(&mut self, catalog: &Catalog, eye: [f32; 3]) {
+        self.pay_cap_debt(catalog, eye);
+        if self.wanted.is_empty() {
+            return;
+        }
+        let Some(requests) = self.requests.as_ref() else {
+            self.wanted.clear();
+            return;
+        };
+        let distance = |subset: u32| flat_distance(&catalog.instances[catalog.merged_place[&subset] as usize], eye);
+        let mut wanted: Vec<(f32, u32, u64)> = self.wanted.drain(..).filter(|subset| !self.resident.contains_key(subset) && !self.requested.contains(subset)).map(|subset| (distance(subset), subset, catalog.subsets[subset as usize].bytes())).collect();
+        wanted.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        wanted.dedup_by_key(|w| w.1);
+        let asked: u64 = self.requested.iter().filter(|subset| catalog.merged_place.contains_key(subset)).map(|subset| catalog.subsets[*subset as usize].bytes()).sum();
+        let used = self.merged_bytes + asked;
+        let (admit, evict, waiting) = if used + wanted.iter().map(|w| w.2).sum::<u64>() <= self.merged_cap {
+            (wanted.iter().map(|w| w.1).collect(), Vec::new(), false)
+        } else {
+            let on_gpu = self.resident.iter().filter(|(subset, _)| catalog.merged_place.contains_key(subset)).map(|(subset, resident)| (distance(*subset), *subset, resident.bytes)).collect();
+            plan_merged(&wanted, on_gpu, used, self.merged_cap)
+        };
+        for subset in evict {
+            if let Some(resident) = self.resident.remove(&subset) {
+                self.resident_bytes -= resident.bytes;
+                self.merged_bytes -= resident.bytes;
+                self.evicted += 1;
+            }
+        }
+        for subset in admit {
+            self.requested.insert(subset);
+            let _ = requests.send(subset);
+        }
+        self.capped_frames += waiting as u64;
+    }
+
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(receiver) = self.loading.as_ref() else { return };
         let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
@@ -981,6 +1215,7 @@ impl Statics {
             }
         };
         let catalog = loaded.catalog.clone();
+        self.select_cap(scene.device);
         println!(
             "distant statics: {} subsets ({} of water, {} dry spaces), {} places in the exterior and {} interior cells, {} grass places, {} textures; {:.0} MB ordinary, {:.0} MB merged",
             catalog.subsets.len(),
@@ -1046,6 +1281,10 @@ impl Statics {
             self.resident.insert(arrival.subset, Resident { vertices, indexes, faces: arrival.faces, bytes: size });
             self.resident_bytes += size;
             self.most_bytes = self.most_bytes.max(self.resident_bytes);
+            if self.catalog.as_ref().is_some_and(|catalog| catalog.merged_place.contains_key(&arrival.subset)) {
+                self.merged_bytes += size;
+                self.most_merged = self.most_merged.max(self.merged_bytes);
+            }
             count += 1;
             bytes += size as usize;
         }
@@ -1167,7 +1406,7 @@ impl Statics {
         if self.failed || !self.settings.statics {
             return found;
         }
-        let (Some(catalog), Some(requests)) = (self.catalog.clone(), self.requests.as_ref()) else { return found };
+        let Some(catalog) = self.catalog.clone() else { return found };
         let Some(world) = catalog.worlds.get(&self.world) else { return found };
         let reach = self.settings.draw_distance;
         let admit = reach + CELL;
@@ -1181,8 +1420,8 @@ impl Statics {
                     let subset = &catalog.subsets[instance.subset as usize];
                     let Some(look) = subset.look else { continue };
                     let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
-                    if !subset.components.is_empty() && (to[0] * to[0] + to[1] * to[1]).sqrt() <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && self.requested.insert(instance.subset) {
-                        let _ = requests.send(instance.subset);
+                    if !subset.components.is_empty() && (to[0] * to[0] + to[1] * to[1]).sqrt() <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
+                        self.wanted.push(instance.subset);
                     }
                     let Some(resident) = self.resident.get(&instance.subset) else { continue };
                     let range = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
@@ -1218,10 +1457,16 @@ impl Statics {
         }
         self.finish_load(scene);
         self.take_arrivals(scene);
-        let (Some(catalog), Some(requests)) = (self.catalog.clone(), self.requests.as_ref()) else { return 0 };
+        let Some(catalog) = self.catalog.clone() else { return 0 };
         let Some(world) = catalog.worlds.get(&self.world) else { return 0 };
         let settings = self.settings;
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
+        // Once in a frame: with the main view, or with the shadow map when the statics are
+        // off and only the shadow map draws them.
+        if set == 0 || !settings.statics {
+            self.sample_budget(scene.device);
+            self.admit_merged(&catalog, eye);
+        }
         let view_range = frame.eye[3];
         let complete_at = view_range - HANDOFF;
         // A static before the band of the handoff is not there: the game draws the real one.
@@ -1244,10 +1489,8 @@ impl Statics {
                     let merged = !subset.components.is_empty();
                     if merged {
                         let flat = (to[0] * to[0] + to[1] * to[1]).sqrt();
-                        if flat <= admit + instance.radius {
-                            if !self.resident.contains_key(&instance.subset) && self.requested.insert(instance.subset) {
-                                let _ = requests.send(instance.subset);
-                            }
+                        if flat <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
+                            self.wanted.push(instance.subset);
                         }
                     }
                     let Some(resident) = self.resident.get(&instance.subset) else { continue };
@@ -1291,6 +1534,7 @@ impl Statics {
             for subset in far {
                 if let Some(resident) = self.resident.remove(&subset) {
                     self.resident_bytes -= resident.bytes;
+                    self.merged_bytes -= resident.bytes;
                 }
             }
         }
@@ -1370,6 +1614,14 @@ impl Drop for Statics {
             self.frames,
             self.drawn as f64 / self.frames.max(1) as f64,
             self.most_bytes as f64 / 1e6
+        );
+        println!(
+            "distant statics: at most {:.0} MB of merged subsets on the GPU, the cap at the end {}; the cap went down {} times, {} subsets taken off for nearer ones, {} frames in which some waited",
+            self.most_merged as f64 / 1e6,
+            if self.merged_cap == u64::MAX { "none".to_string() } else { format!("{:.0} MB", self.merged_cap as f64 / 1e6) },
+            self.lowered,
+            self.evicted,
+            self.capped_frames
         );
         println!(
             "grass: {} frames, {:.0} records in a frame as a mean, {} frames with more than {GRASS_RECORDS}",
@@ -1709,4 +1961,60 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         mapped_at_creation: false,
     });
     Gpu { pipeline, mirror_pipeline, pipeline_lines, mirror_pipeline_lines, shadow_pipeline, sets, textures, texture_views, grass_pipeline, grass_pipeline_lines, grass_group, grass_uniforms, grass_records }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cap_from_budget, plan_merged};
+
+    const MB: u64 = 1 << 20;
+
+    #[test]
+    fn the_cap_leaves_a_margin_of_an_eighth_of_the_budget() {
+        // 8 GB: the margin is 1 GB; 4 GB in use, 100 MB of it merged.
+        assert_eq!(cap_from_budget(8192 * MB, 4096 * MB, 100 * MB), 100 * MB + 3072 * MB);
+        // 4 GB: the margin is 512 MB.
+        assert_eq!(cap_from_budget(4096 * MB, 1024 * MB, 0), 2560 * MB);
+    }
+
+    #[test]
+    fn the_margin_is_256_mb_at_least_and_1_gb_at_most() {
+        assert_eq!(cap_from_budget(1024 * MB, 0, 0), 768 * MB);
+        assert_eq!(cap_from_budget(32768 * MB, 0, 0), 31744 * MB);
+    }
+
+    #[test]
+    fn a_full_budget_leaves_the_merged_bytes_on_the_gpu() {
+        assert_eq!(cap_from_budget(4096 * MB, 5000 * MB, 300 * MB), 300 * MB);
+    }
+
+    #[test]
+    fn all_wanted_fit_under_the_cap() {
+        let (admit, evict, waiting) = plan_merged(&[(1.0, 7, 30), (2.0, 8, 30)], vec![(5.0, 1, 30)], 30, 100);
+        assert_eq!((admit, evict, waiting), (vec![7, 8], vec![], false));
+    }
+
+    #[test]
+    fn a_further_subset_goes_for_a_nearer_one() {
+        let (admit, evict, waiting) = plan_merged(&[(1.0, 7, 40)], vec![(3.0, 1, 30), (9.0, 2, 30), (8.0, 3, 30)], 90, 100);
+        assert_eq!((admit, evict, waiting), (vec![7], vec![2], false));
+    }
+
+    #[test]
+    fn a_nearer_subset_stays_and_the_wanted_one_waits() {
+        let (admit, evict, waiting) = plan_merged(&[(1.0, 7, 30), (6.0, 8, 30)], vec![(3.0, 1, 30), (5.0, 2, 30)], 60, 100);
+        assert_eq!((admit, evict, waiting), (vec![7], vec![], true));
+    }
+
+    #[test]
+    fn nothing_goes_when_it_does_not_make_enough_room() {
+        let (admit, evict, waiting) = plan_merged(&[(1.0, 7, 80)], vec![(0.5, 1, 50), (9.0, 2, 30)], 80, 100);
+        assert_eq!((admit, evict, waiting), (vec![], vec![], true));
+    }
+
+    #[test]
+    fn a_subset_larger_than_the_cap_waits() {
+        let (admit, evict, waiting) = plan_merged(&[(1.0, 7, 200)], vec![(9.0, 2, 30)], 30, 100);
+        assert_eq!((admit, evict, waiting), (vec![], vec![], true));
+    }
 }
