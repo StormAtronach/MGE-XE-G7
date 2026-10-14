@@ -1239,8 +1239,10 @@ fn extension_shade(in: VertexOut) -> vec4f {
     shadow_v = 0.0;
     if (draw.counts.w & 32u) != 0u {
         // The light that the sun gives the pixel, as shadowSunEstimate: the sun of the draw
-        // is in draw.extension[5] (its direction) and [7].x (its colour and visibility).
-        var normal = vec3f(0.0, 0.0, 1.0);
+        // is in draw.extension[5] (its direction) and [7].x (its colour and visibility). A
+        // draw without normals has a zero normal, as a missing input of a shader of
+        // Direct3D 9 reads.
+        var normal = vec3f(0.0);
         if draw.flags.y != 0u {
             normal = normalize(in.world_normal + vec3f(0.0, 0.0, 1e-20));
         }
@@ -1269,7 +1271,9 @@ fn extension_shade(in: VertexOut) -> vec4f {
     if draw.flags.x == 0u {
         return in.vertex_color;
     }
-    var normal = vec3f(0.0, 0.0, 1.0);
+    // A lit draw without normals: a zero normal, as the fixed function and a shader of
+    // Direct3D 9 have it. The lights give it their ambient light and no diffuse light.
+    var normal = vec3f(0.0);
     if draw.flags.y != 0u {
         normal = normalize(in.world_normal + vec3f(0.0, 0.0, 1e-20));
     }
