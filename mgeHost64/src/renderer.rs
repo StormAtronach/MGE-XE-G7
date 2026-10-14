@@ -162,7 +162,8 @@ fn generate_at_start() {
 struct Environment {
     version: u32,
     /// 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior that
-    /// is like one (`IntLikeExterior` of MGE XE).
+    /// is like one (`IntLikeExterior` of MGE XE). 16: the camera is in a water volume; the
+    /// level of the water is the top of the volume.
     flags: u32,
     near_view_range: f32,
     fog_start: f32,
@@ -336,6 +337,17 @@ pub struct DistantLand {
     /// of the Direct3D 9 path.
     blur_reflections: bool,
     blur_contact: bool,
+    /// How far from the camera the surfaces of water volumes reflect what is in the picture,
+    /// in cells (`distant_land.water.volume_reflection_cells`); 0 for the sky only.
+    volume_reflect_cells: f32,
+    /// The surfaces of water volumes are taken from the renderer in this frame: the water
+    /// is there, with the facts of the frame.
+    volumes_ready: bool,
+    /// A marked surface came while the water was not there: the water is made for the next
+    /// frame, in a cell without water too.
+    volumes_wanted: bool,
+    /// Surfaces of water volumes were drawn in this frame.
+    volumes_drawn: bool,
     waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
@@ -635,6 +647,10 @@ impl DistantLand {
             ripples: None,
             blur_reflections: settings.water.blur_reflections,
             blur_contact: settings.water.blur_contact_hardening,
+            volume_reflect_cells: settings.water.volume_reflection_cells,
+            volumes_ready: false,
+            volumes_wanted: false,
+            volumes_drawn: false,
             waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
@@ -726,10 +742,11 @@ impl Drop for DistantLand {
         );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!(
-            "water: {} frames, {} reflections, {} frames with caustics",
+            "water: {} frames, {} reflections, {} frames with caustics, {} surfaces of water volumes",
             self.water.as_ref().map_or(0, |w| w.frames),
             self.water.as_ref().map_or(0, |w| w.reflections),
-            self.caustics.as_ref().map_or(0, |c| c.frames)
+            self.caustics.as_ref().map_or(0, |c| c.frames),
+            self.water.as_ref().map_or(0, |w| w.volumes_drawn())
         );
         if let Some(ripples) = self.ripples.as_ref() {
             println!("dynamic waves: {} frames, {} steps, {} drops", ripples.frames, ripples.steps, ripples.drops_made);
@@ -1378,7 +1395,7 @@ impl Extension for DistantLand {
         // The water: an exterior with its land, or an interior cell with water (`CellHasWater`
         // of MGE XE, which draws its water there too, with a flat reflection).
         let water_cell = self.enabled && self.environment.is_some_and(|e| e.has_water != 0) && (land || scene.interior);
-        if water_cell && self.water_enabled && self.water.is_none() {
+        if (water_cell || (self.enabled && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
             match Water::new(scene, &self.waves) {
                 Ok(water) => self.water = Some(water),
                 Err(problem) => {
@@ -1388,6 +1405,12 @@ impl Extension for DistantLand {
             }
         }
         let water = water_cell && self.water.is_some();
+        // The surfaces of water volumes: in any cell, when the water is there.
+        self.volumes_drawn = false;
+        self.volumes_ready = self.enabled && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_some();
+        // In a water volume its top is the level of the water of the frame: the sea plane is
+        // not cut there.
+        let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
         // The dynamic waves: the simulation of the frame, before a water surface reads it.
         // It runs in a cell without water too, as on the Direct3D 9 path.
         if self.enabled && self.ripples_enabled {
@@ -1472,11 +1495,11 @@ impl Extension for DistantLand {
             // The surface of the water (the plane lies at the level less 1): what blends on
             // its far side goes into the picture before the water, so the water shows it,
             // and what blends on the side of the camera goes over the water.
-            class_plane: water.then(|| {
+            class_plane: (water && !in_volume).then(|| {
                 let level = self.environment.map_or(0.0, |e| e.water_level) as f64 - 1.0;
                 (10, if self.under_water() { [0.0, 0.0, -1.0, level] } else { [0.0, 0.0, 1.0, -level] })
             }),
-            hold: false,
+            hold: self.volumes_ready || (self.enabled && self.water_enabled && self.water.is_none()),
         }
     }
 
@@ -1988,12 +2011,46 @@ impl Extension for DistantLand {
         post.run(scene, encoder, target, &variables, flags, distant);
     }
 
+    /// Takes the surfaces of water volumes: a material that a mod marked with its specular
+    /// power. Without the water yet, the surface keeps its own look in this frame and the
+    /// water is made for the next one.
+    fn hold(&mut self, facts: &DrawFacts) -> bool {
+        if !water::volume_marked(facts.specular_power) {
+            return false;
+        }
+        if !self.volumes_ready {
+            self.volumes_wanted = true;
+        }
+        self.volumes_ready
+    }
+
+    /// The surfaces of water volumes, at the end of the draws that do not blend: what
+    /// blends goes over them, and they show what is under them.
+    fn draw_held(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
+        let Some(frame) = self.volume_frame(scene) else { return };
+        // What a surface reflects in place of the sky in an interior: the light of the room,
+        // as the reflection of the water of the cell has it.
+        let sky = if self.like_exterior {
+            [0.0; 4]
+        } else {
+            let light: [f32; 3] = core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0));
+            [light[0], light[1], light[2], 1.0]
+        };
+        let look = water::VolumeLook { reflect_range: self.volume_reflect_cells * CELL, sky };
+        if let Some(water) = self.water.as_mut() {
+            self.volumes_drawn = water.draw_volumes(scene, pass, &frame, self.ripples.as_ref(), held, &look) > 0;
+        }
+    }
+
     /// The water plane of MGE XE in place of the water plane of the game.
     fn draw_class(&mut self, class: u32, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
         if class != 10 {
             return;
         }
-        let frame = self.water_frame(scene);
+        // In a water volume whose surface was drawn, that surface is the water: the plane at
+        // the top of the volume is not drawn.
+        let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
+        let frame = self.water_frame(scene).filter(|_| !(in_volume && self.volumes_drawn));
         if let (Some(water), Some(frame)) = (self.water.as_mut(), frame.as_ref()) {
             water.draw(scene, pass, frame, self.ripples.as_ref());
         }
@@ -2051,6 +2108,15 @@ impl DistantLand {
     /// the cell, without the land, or without the environment.
     fn water_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
         let e = self.environment.filter(|e| e.has_water != 0)?;
+        self.water_frame_of(scene, e)
+    }
+
+    /// What the surfaces of water volumes need: as `water_frame`, in a cell without water too.
+    fn volume_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
+        self.water_frame_of(scene, self.environment?)
+    }
+
+    fn water_frame_of(&self, scene: &SceneView, e: Environment) -> Option<WaterFrame> {
         self.water.as_ref()?;
         // The draws of the game end at the fog end of an interior, and under the water: the
         // plane ends there too (the clip plane of `renderStageWater`).

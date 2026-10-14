@@ -1213,6 +1213,9 @@ namespace Deviceless {
         e.lightAmbMult = 1.0f;
         std::memcpy(e.eye, eye, sizeof(eye));
 
+        // The water volume of the camera, as DistantLand::setView selects it on Direct3D 9:
+        // the level of the water and the look from under it follow it.
+        mwBridge->selectWaterVolume(eye[0], eye[1], eye[2]);
         const bool underwater = mwBridge->IsUnderwater(eye[2]);
         const bool exterior = mwBridge->IntLikeExterior(true);
         const bool expFog = (Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & EXP_FOG);
@@ -1278,6 +1281,10 @@ namespace Deviceless {
             }
         }
         e.flags = (expFog ? 1u : 0u) | (underwater ? 2u : 0u) | (exterior ? 4u : 0u);
+        // The camera is in a water volume: the level of the water is the top of the volume.
+        if (mwBridge->InWaterVolume()) {
+            e.flags |= 16u;
+        }
 
         // The scattering of the atmosphere, as in DistantLand::adjustFog: the fog colour of
         // the near cells becomes the colour that the scattering has at the view range of the

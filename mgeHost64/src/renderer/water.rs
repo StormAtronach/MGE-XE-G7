@@ -36,6 +36,8 @@ const NEAR: f32 = 4.0;
 
 mod shading;
 use shading::Uniforms;
+mod volume;
+pub use volume::{VolumeLook, marked as volume_marked};
 
 /// The shader of the plane: the shared shading and the entry points of the plane.
 fn shader() -> String {
@@ -102,7 +104,7 @@ struct Out {
     let fog = fog_water(eye_vec, dist);
     let normal = water_normal(in.texcoords, dist, in.world.xy);
     let reffactor = (u.sun_col.w * dist + 0.1) * normal.xy;
-    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog));
+    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0));
     let refracted = below.color;
     // With the dynamic waves the reflection is read at the point that is not above the plane.
     var reflect_uv = uv;
@@ -233,6 +235,11 @@ pub struct Water {
     pipeline_lines: Option<wgpu::RenderPipeline>,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// The values of the frame for the surfaces of water volumes: they are drawn before the
+    /// plane in the same frame, and a write of the buffer is done before the frame runs.
+    volume_uniforms: wgpu::Buffer,
+    /// The surfaces of water volumes near the camera.
+    volumes: volume::Volumes,
     vertices: wgpu::Buffer,
     indexes: wgpu::Buffer,
     index_count: u32,
@@ -357,6 +364,8 @@ impl Water {
         let pipeline = make_pipeline(wgpu::PolygonMode::Fill);
         let pipeline_lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE).then(|| make_pipeline(wgpu::PolygonMode::Line));
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let volume_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let volumes = volume::Volumes::new(scene, &layout);
         // Between two levels too: the blur that is sharp at the waterline reads the levels
         // of the reflection. Each other read names the first level.
         let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -432,6 +441,8 @@ impl Water {
             pipeline_lines,
             layout,
             uniforms,
+            volume_uniforms,
+            volumes,
             vertices: vertex_buffer,
             indexes: index_buffer,
             index_count: indexes.len() as u32,
@@ -595,9 +606,9 @@ impl Water {
 
     /// Writes the values of the frame and makes the group of the shared shading: the values,
     /// the reflection, the waves, the picture and the depth of the scene. `ripples` has the
-    /// textures of the dynamic waves; they count when the frame has a wave height. `None`
-    /// without the picture or the depth.
-    fn frame_group(&self, scene: &SceneView, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>) -> Option<wgpu::BindGroup> {
+    /// textures of the dynamic waves; they count when the frame has a wave height. The values
+    /// go into `uniforms`. `None` without the picture or the depth.
+    fn frame_group(&self, scene: &SceneView, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, uniforms_buffer: &wgpu::Buffer) -> Option<wgpu::BindGroup> {
         let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return None };
         let dynamic = frame.wave_height.zip(ripples);
         let eye = super::eye_of(&scene.view);
@@ -631,12 +642,12 @@ impl Water {
                 [projection[10], projection[14], scene.projection[0], frame.blur_tune[0] + frame.blur_tune[1] * wind_factor]
             },
         };
-        scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("water"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: uniforms_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.reflection_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.clamp_sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.waves) },
@@ -654,7 +665,7 @@ impl Water {
     /// Draws the plane in place of the water plane of the game. `ripples` has the
     /// textures of the dynamic waves; they count when the frame has a wave height.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>) {
-        let Some(group) = self.frame_group(scene, frame, ripples) else { return };
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms) else { return };
         let dynamic = frame.wave_height.zip(ripples);
         pass.set_pipeline(if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline });
         pass.set_bind_group(0, &group, &[]);
@@ -665,6 +676,24 @@ impl Water {
         pass.draw_indexed(0..index_count, 0, 0..1);
         self.frames += 1;
         self.reflected = false;
+    }
+}
+
+impl Water {
+    /// Draws the surfaces of water volumes among the shapes that the renderer held for the
+    /// extension, with the picture and the depth of the scene so far. Returns the number
+    /// drawn.
+    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], look: &VolumeLook) -> usize {
+        if !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
+            return 0;
+        }
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms) else { return 0 };
+        self.volumes.draw(scene, pass, &group, held, look)
+    }
+
+    /// The surfaces of water volumes drawn since the start.
+    pub fn volumes_drawn(&self) -> u64 {
+        self.volumes.drawn
     }
 }
 

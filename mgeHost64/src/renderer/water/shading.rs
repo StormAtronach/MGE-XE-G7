@@ -1,8 +1,8 @@
 //! The water shading that each surface of water shares: the values of the frame, the fog
 //! over the water, the normal of the waves and the ripples, the refraction with the shore,
 //! the light of the sun on the water, and the look from under the water. `XE Mod Water.fx`
-//! and `XE Common.fx`. The plane in place of the water plane of the game (`water.rs`) has its
-//! own entry points after this source.
+//! and `XE Common.fx`. The plane in place of the water plane of the game (`water.rs`) and the
+//! surfaces of water volumes (`volume.rs`) have their own entry points after this source.
 
 /// The values of a frame for the water shader. The names are those of the uniforms of
 /// `XE Mod Water.fx`.
@@ -191,10 +191,124 @@ fn reflection_at(uv: vec2f, w: f32, stretch: f32) -> vec3f {
 }
 
 // The colour of deep water with the fog over it: what the light of the sun and of the sky
-// gives the water, then the fog.
-fn deep_color(fog: vec4f) -> vec3f {
-    let depth_base = u.sun_col.rgb * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
+// gives the water, then the fog. `tint` is the colour of the water of a surface (the
+// emissive colour of its material, `waterDepthBase`); black for the usual colour.
+fn deep_color(fog: vec4f, tint: vec3f) -> vec3f {
+    var depth_base = u.sun_col.rgb * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
+    if max(tint.r, max(tint.g, tint.b)) >= 0.5 / 255.0 {
+        depth_base = (0.05 * u.sun_col.rgb + 0.085 * (2.0 * u.sky_col.rgb + u.fog_col_far.rgb)) * tint;
+    }
     return fog.a * depth_base + fog.rgb;
+}
+
+// What is left of the light that comes through this much water of the colour `tint`
+// (`waterTransmission`): the colour takes the other colours out, more with depth. All of
+// it for the usual colour (black).
+fn transmission(tint: vec3f, depth: f32) -> vec3f {
+    let most = max(tint.r, max(tint.g, tint.b));
+    if most < 0.5 / 255.0 {
+        return vec3f(1.0);
+    }
+    return pow(max(tint / max(most, 1e-4), vec3f(0.05)), vec3f(depth / 200.0));
+}
+
+// The colour of the sky in a direction (`fogColourSky`): the far fog colour at the horizon
+// goes into the sky colour above it, with the scattering of the atmosphere.
+fn sky_color(direction: vec3f) -> vec3f {
+    let up = 1.0 - pow(clamp(1.0 - 2.22 * clamp(direction.z - 0.075, 0.0, 1.0), 0.0, 1.0), 1.15);
+    var color = mix(u.fog_col_far.rgb, u.sky_col.rgb, up);
+    if u.fog_col_far.w > 0.5 && u.sky_col.w > 0.001 && u.eye.z > -1.0 {
+        let sun_cos = dot(direction, u.sun_pos.xyz);
+        let mie = (1.58 / (1.24 - sun_cos)) * u.sun_altitude.z;
+        let rayleigh = 1.0 - 0.09 * mie;
+        let air = 1.33 * exp(-2.0 * clamp(direction.z, 0.0, 1.0));
+        let sun_scatter = mix(u.inscatter.rgb, u.outscatter.rgb, 0.5 * (1.0 + sun_cos));
+        var lost = air * sun_scatter * (u.sun_altitude.x + 0.7 * mie);
+        lost = (1.0 - exp(-lost)) / lost;
+        let scattered = (0.125 * mie + u.sky.rgb * rayleigh) * lost * (1.17 * air + 0.89) * u.sun_altitude.y;
+        color = mix(color, scattered, u.sky_col.w);
+    }
+    return color;
+}
+
+// Turns `v` by the turn that takes straight up to `up` (`tiltTo`).
+fn tilt_to(up: vec3f, v: vec3f) -> vec3f {
+    let axis = vec3f(-up.y, up.x, 0.0);
+    return v * up.z + cross(axis, v) + axis * (dot(axis, v) / max(1.0 + up.z, 1e-3));
+}
+
+// The reflection of what is in the picture (`reflectScene`): the march of the reflected ray
+// from `origin` along `direction` over the depth of the game. Each step is 1.25 times as
+// long as the one before, from 12 units. A place where the ray goes a little behind what the
+// depth has is found by five halvings of the step; a place far behind is a thing nearer to
+// the eye that hides the ray, and the march goes on to where the ray is in the open again.
+// The colour of what the ray meets, and in alpha how much to trust it (less at the edge of
+// the picture); alpha 0 when it meets nothing.
+fn reflection_sample(origin: vec4f, direction: vec4f, travelled: f32) -> vec3f {
+    let clip = origin + direction * travelled;
+    let uv = vec2f(0.5, 0.5) + vec2f(0.5, -0.5) * clip.xy / clip.w;
+    return vec3f(uv, clip.w - distance_at(uv));
+}
+
+fn reflect_scene(origin: vec3f, direction: vec3f) -> vec4f {
+    let clip_origin = u.view_projection * vec4f(origin, 1.0);
+    let clip_direction = u.view_projection * vec4f(direction, 0.0);
+    // How far along the ray it leaves the picture: on it while each of these is positive.
+    let room = vec4f(clip_origin.w - clip_origin.x, clip_origin.w + clip_origin.x, clip_origin.w - clip_origin.y, clip_origin.w + clip_origin.y);
+    let closing = vec4f(clip_direction.x - clip_direction.w, -clip_direction.x - clip_direction.w, clip_direction.y - clip_direction.w, -clip_direction.y - clip_direction.w);
+    let reaches = select(vec4f(1e9), room / closing, closing > vec4f(0.0));
+    let reach = 0.999 * min(min(reaches.x, reaches.y), min(reaches.z, reaches.w));
+    var step = 12.0;
+    var marched = 0.0;
+    var hidden = false;
+    var open = 0.0;
+    var behind = 0.0;
+    var at_behind = vec3f(0.0);
+    var halvings = 0;
+    var limit = 0.0;
+    for (var i = 0; i < 39; i++) {
+        if halvings > 0 {
+            let middle = 0.5 * (open + behind);
+            let at_middle = reflection_sample(clip_origin, clip_direction, middle);
+            if at_middle.z > 0.0 {
+                behind = middle;
+                at_behind = at_middle;
+            } else {
+                open = middle;
+            }
+            halvings -= 1;
+            if halvings == 0 {
+                if at_behind.z < limit {
+                    let edge = min(at_behind.xy, vec2f(1.0) - at_behind.xy);
+                    let color = textureSampleLevel(picture, clamp_sampler, at_behind.xy, 0.0).rgb;
+                    return vec4f(color, clamp(12.0 * min(edge.x, edge.y), 0.0, 1.0));
+                }
+                hidden = true;
+            }
+        } else {
+            if marched >= reach {
+                break;
+            }
+            let next = min(marched + step, reach);
+            let at_next = reflection_sample(clip_origin, clip_direction, next);
+            if at_next.z > 0.0 {
+                if !hidden && at_next.z < 2.0 * step + 16.0 {
+                    open = marched;
+                    behind = next;
+                    at_behind = at_next;
+                    halvings = 5;
+                    limit = step / 16.0 + 16.0;
+                } else {
+                    hidden = true;
+                }
+            } else {
+                hidden = false;
+            }
+            marched = next;
+            step *= 1.25;
+        }
+    }
+    return vec4f(0.0);
 }
 
 // What the water shows of the things under it at a place of the picture (`uv`, at the
@@ -207,7 +321,7 @@ struct Refraction {
     depth_first: f32,
 }
 
-fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f, deep: vec3f) -> Refraction {
+fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f, deep: vec3f, tint: vec3f) -> Refraction {
     var out: Refraction;
     var new_uv = uv + reffactor.yx / w;
     var depth_of = max(0.0, distance_at(new_uv) - w);
@@ -220,6 +334,7 @@ fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f
         depth_of = max(0.0, distance_at(new_uv) - w);
         // From a difference of the depth to a distance along the ray.
         depth_of /= dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z));
+        refracted *= transmission(tint, depth_of);
         depth_of += 300.0 * (0.95 - normal.z);
         let depthscale = clamp(exp(-depth_of / 800.0), 0.0, 1.0);
         out.shore = pow(depthscale, 90.0);
