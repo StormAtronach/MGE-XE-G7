@@ -55,7 +55,8 @@ struct Uniforms {
     /// The start and the divisor of the exponential fog; z the debug term; w 1 under water.
     fog: [f32; 4],
     /// The two numbers of the depth of the projection of the game, for the distance of a
-    /// pixel from its depth.
+    /// pixel from its depth; then the most height for its width of the blur that is sharp
+    /// at the waterline.
     projection: [f32; 4],
     /// The size of the picture, the view depth where the plane ends (0 for no end), and
     /// the blur of the reflection: 0 for none, 1 for the six reads of MGE XE, 2 for the
@@ -318,8 +319,9 @@ fn underwater(in: Out, eye_vec: vec3f, dist: f32) -> vec4f {
         reflect_w = in.clamped.z;
         reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / reflect_w, 0.5 - 0.5 * in.clamped.y / reflect_w);
     }
-    // A flat look at the water makes the blur taller: 1 from straight above, at most 2.5.
-    let stretch = clamp(1.0 / max(abs(eye_vec.z), 0.05), 1.0, 2.5);
+    // A flat look at the water makes the blur taller: 1 from straight above, and at most
+    // the number of the parameter.
+    let stretch = clamp(1.0 / max(abs(eye_vec.z), 0.05), 1.0, max(u.projection.z, 1.0));
     var reflected = reflection_at(reflect_uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / reflect_w, reflect_w, stretch);
     reflected = mix(fog.rgb, reflected, fog.a);
     var adjust = mix(vec3f(0.0, 0.0, 0.1), normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
@@ -383,6 +385,9 @@ pub struct WaterFrame {
     /// With the blur: the one that is sharp at the waterline
     /// (`distant_land.water.blur_contact_hardening`), not the six reads of MGE XE.
     pub blur_contact: bool,
+    /// The numbers of that blur (tunables.rs): the angle of the cone of the mirror without
+    /// wind in radians, what the wind adds, and the most height of the blur for its width.
+    pub blur_tune: [f32; 3],
 }
 
 /// A disc of triangles around the camera: a centre, then rings of `segments` vertices at
@@ -815,7 +820,7 @@ impl Water {
             sky_col: [frame.sky_color[0], frame.sky_color[1], frame.sky_color[2], frame.nice_weather],
             fog_col_far: [frame.fog_color_far[0], frame.fog_color_far[1], frame.fog_color_far[2], if frame.scattering.is_some() { 1.0 } else { 0.0 }],
             fog: [frame.fog_exp.0, frame.fog_exp.1, self.debug, if frame.underwater { 1.0 } else { 0.0 }],
-            projection: [scene.projection[10], scene.projection[14], 0.0, 0.0],
+            projection: [scene.projection[10], scene.projection[14], frame.blur_tune[2], 0.0],
             size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), match (frame.blur_reflections, frame.blur_contact) {
                 (false, _) => 0.0,
                 (true, false) => 1.0,
@@ -829,7 +834,7 @@ impl Water {
             mirror: {
                 let projection = Self::far_projection(scene, frame.draw_distance);
                 // The cone of the mirror: wider with more wind, as the waves are.
-                [projection[10], projection[14], scene.projection[0], 0.008 + 0.35 * wind_factor]
+                [projection[10], projection[14], scene.projection[0], frame.blur_tune[0] + frame.blur_tune[1] * wind_factor]
             },
         };
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));

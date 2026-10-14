@@ -35,6 +35,7 @@ mod post_jop;
 mod shadow;
 mod statics;
 mod ripples;
+mod tunables;
 mod water;
 
 use distantland::mge_xe::distant_terrain::{
@@ -60,6 +61,9 @@ const ENVIRONMENT_ID: u32 = 1;
 const SHADER_STATE_ID: u32 = 2;
 /// The settings that a mod can change while the game runs: see `Settings`.
 const SETTINGS_ID: u32 = 4;
+/// A command for a parameter of the renderer, from `nirender.tune` of the plugin: see
+/// `tunables::Tunables::command`.
+const TUNE_ID: u32 = 5;
 
 /// The settings record of MGE XE (`Deviceless::sendSettings`): the feature flags
 /// (`Configuration.MGEFlags`), the lighting mode, the HDR reaction speed, the distances of
@@ -265,6 +269,8 @@ pub struct DistantLand {
     shader_states_new: Vec<String>,
     /// The picture files that a mod asked for and that the renderer did not take yet.
     pictures: Vec<PictureRequest>,
+    /// The parameters that a person can change while the game runs (tunables.rs).
+    tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
     settings: Option<Settings>,
     settings_applied: Option<Settings>,
@@ -577,6 +583,7 @@ impl DistantLand {
             shader_states: Vec::new(),
             shader_states_new: Vec::new(),
             pictures: Vec::new(),
+            tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
             settings_told_distance: (settings.draw_distance, settings.very_far_static_end),
@@ -1259,6 +1266,10 @@ impl Extension for DistantLand {
         format!("mgeHost64 v{}", env!("CARGO_PKG_VERSION"))
     }
 
+    fn overlay_lines(&self) -> Vec<String> {
+        self.tunables.lines()
+    }
+
     fn anisotropy(&self) -> u16 {
         self.anisotropy
     }
@@ -1481,6 +1492,13 @@ impl Extension for DistantLand {
     }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {
+        if id == TUNE_ID {
+            // A command for a parameter, as a text. It changes a value of this run only.
+            if let Some(line) = core::str::from_utf8(bytes).ok().and_then(|text| self.tunables.command(text)) {
+                println!("tune: {line}");
+            }
+            return;
+        }
         // Version 4 (a capture from before the name of the cell) is the same without the
         // name: the bytes that are not there stay zero.
         if id == PICTURE_ID {
@@ -1961,6 +1979,7 @@ impl DistantLand {
                 wave_height: self.wave_height_of_frame(),
                 blur_reflections: self.blur_reflections,
                 blur_contact: self.blur_contact,
+                blur_tune: self.tunables.blur(),
             });
         }
         self.gpu.as_ref()?;
@@ -2000,6 +2019,7 @@ impl DistantLand {
             wave_height: self.wave_height_of_frame(),
             blur_reflections: self.blur_reflections,
             blur_contact: self.blur_contact,
+            blur_tune: self.tunables.blur(),
         })
     }
 
