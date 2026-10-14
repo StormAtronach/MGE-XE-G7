@@ -1456,17 +1456,21 @@ impl Statics {
             return 0;
         }
         self.finish_load(scene);
+        let settings = self.settings;
+        let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
+        // The merged subsets that the draws before wanted are asked for before the arrivals
+        // are taken: a subset that the shadow map wants comes in time for the main view of the
+        // same frame. The budget is sampled once in a frame: with the main view, or with the
+        // shadow map when the statics are off and only the shadow map draws them.
+        if let Some(catalog) = self.catalog.clone() {
+            if set == 0 || !settings.statics {
+                self.sample_budget(scene.device);
+            }
+            self.admit_merged(&catalog, eye);
+        }
         self.take_arrivals(scene);
         let Some(catalog) = self.catalog.clone() else { return 0 };
         let Some(world) = catalog.worlds.get(&self.world) else { return 0 };
-        let settings = self.settings;
-        let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
-        // Once in a frame: with the main view, or with the shadow map when the statics are
-        // off and only the shadow map draws them.
-        if set == 0 || !settings.statics {
-            self.sample_budget(scene.device);
-            self.admit_merged(&catalog, eye);
-        }
         let view_range = frame.eye[3];
         let complete_at = view_range - HANDOFF;
         // A static before the band of the handoff is not there: the game draws the real one.
