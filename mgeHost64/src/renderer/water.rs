@@ -37,7 +37,7 @@ const NEAR: f32 = 4.0;
 mod shading;
 use shading::Uniforms;
 mod volume;
-pub use volume::{VolumeLook, marked as volume_marked};
+pub use volume::{Look, VolumeLook, marked as volume_marked};
 
 /// The shader of the plane: the shared shading and the entry points of the plane.
 fn shader() -> String {
@@ -104,7 +104,7 @@ struct Out {
     let fog = fog_water(eye_vec, dist);
     let normal = water_normal(in.texcoords, dist, in.world.xy);
     let reffactor = (u.sun_col.w * dist + 0.1) * normal.xy;
-    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0));
+    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0));
     let refracted = below.color;
     // With the dynamic waves the reflection is read at the point that is not above the plane.
     var reflect_uv = uv;
@@ -683,12 +683,12 @@ impl Water {
     /// Draws the surfaces of water volumes among the shapes that the renderer held for the
     /// extension, with the picture and the depth of the scene so far. Returns the number
     /// drawn.
-    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], look: &VolumeLook) -> usize {
+    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>) -> usize {
         if !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
             return 0;
         }
         let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms) else { return 0 };
-        self.volumes.draw(scene, pass, &group, held, look)
+        self.volumes.draw(scene, pass, &group, held, look, looks)
     }
 
     /// The surfaces of water volumes drawn since the start.

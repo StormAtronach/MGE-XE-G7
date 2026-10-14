@@ -95,6 +95,7 @@ extern "C" {
     // owns the volumes.
     void MGE_WaterLookSet(unsigned int slot, const WaterLook* look) {
         WaterLooks::set(slot, look);
+        WaterLooks::sendToRenderer();
     }
 
     // Replaces the dry spaces: closed meshes inside which there is no water. `corners` is

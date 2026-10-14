@@ -68,6 +68,9 @@ const SETTINGS_ID: u32 = 4;
 /// A command for a parameter of the renderer, from `nirender.tune` of the plugin: see
 /// `tunables::Tunables::command`.
 const TUNE_ID: u32 = 5;
+/// The looks of the slots of water volumes (`WaterLooks::sendToRenderer`): a state that the
+/// stream keeps, so a capture file has it.
+const WATER_LOOKS_ID: u32 = 6;
 
 /// The settings record of MGE XE (`Deviceless::sendSettings`): the feature flags
 /// (`Configuration.MGEFlags`), the lighting mode, the HDR reaction speed, the distances of
@@ -348,6 +351,8 @@ pub struct DistantLand {
     volumes_wanted: bool,
     /// Surfaces of water volumes were drawn in this frame.
     volumes_drawn: bool,
+    /// The looks of the slots of water volumes, from the game (`MGE_WaterLookSet`).
+    water_looks: std::collections::HashMap<u32, water::Look>,
     waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
@@ -651,6 +656,7 @@ impl DistantLand {
             volumes_ready: false,
             volumes_wanted: false,
             volumes_drawn: false,
+            water_looks: std::collections::HashMap::new(),
             waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
@@ -1615,6 +1621,14 @@ impl Extension for DistantLand {
     }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {
+        // A plugin from before the kept records leaves their bit in the number.
+        let id = id & !0x8000_0000;
+        if id == WATER_LOOKS_ID {
+            if let Some(table) = water::Look::read_table(bytes) {
+                self.water_looks = table;
+            }
+            return;
+        }
         if id == TUNE_ID {
             // A command for a parameter, as a text. It changes a value of this run only.
             if let Some(line) = core::str::from_utf8(bytes).ok().and_then(|text| self.tunables.command(text)) {
@@ -2038,7 +2052,7 @@ impl Extension for DistantLand {
         };
         let look = water::VolumeLook { reflect_range: self.volume_reflect_cells * CELL, sky };
         if let Some(water) = self.water.as_mut() {
-            self.volumes_drawn = water.draw_volumes(scene, pass, &frame, self.ripples.as_ref(), held, &look) > 0;
+            self.volumes_drawn = water.draw_volumes(scene, pass, &frame, self.ripples.as_ref(), held, &look, &self.water_looks) > 0;
         }
     }
 

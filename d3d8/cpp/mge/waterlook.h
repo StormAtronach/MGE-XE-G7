@@ -67,6 +67,9 @@ namespace WaterLooks {
     // The standard look
     const WaterLook& standard();
 
+    // Sends the looks of all slots to the wgpu renderer in the helper; nothing without it.
+    void sendToRenderer();
+
     // Reads a look line, the text of the string data of a mesh after "wv:", for example
     // "flow=0,-140 speed=1.2 shader=foam p0=0.4,0.5". Keys it does not know are left out.
     // The mod that owns the water reads the same line for the surfaces near the player.

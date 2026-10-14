@@ -193,12 +193,15 @@ fn reflection_at(uv: vec2f, w: f32, stretch: f32) -> vec3f {
 // The colour of deep water with the fog over it: what the light of the sun and of the sky
 // gives the water, then the fog. `tint` is the colour of the water of a surface (the
 // emissive colour of its material, `waterDepthBase`); black for the usual colour.
-fn deep_color(fog: vec4f, tint: vec3f) -> vec3f {
-    var depth_base = u.sun_col.rgb * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
+fn depth_base(tint: vec3f) -> vec3f {
     if max(tint.r, max(tint.g, tint.b)) >= 0.5 / 255.0 {
-        depth_base = (0.05 * u.sun_col.rgb + 0.085 * (2.0 * u.sky_col.rgb + u.fog_col_far.rgb)) * tint;
+        return (0.05 * u.sun_col.rgb + 0.085 * (2.0 * u.sky_col.rgb + u.fog_col_far.rgb)) * tint;
     }
-    return fog.a * depth_base + fog.rgb;
+    return u.sun_col.rgb * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
+}
+
+fn deep_color(fog: vec4f, tint: vec3f) -> vec3f {
+    return fog.a * depth_base(tint) + fog.rgb;
 }
 
 // What is left of the light that comes through this much water of the colour `tint`
@@ -312,7 +315,9 @@ fn reflect_scene(origin: vec3f, direction: vec3f) -> vec4f {
 }
 
 // What the water shows of the things under it at a place of the picture (`uv`, at the
-// view depth `w`), with the shift of the waves; deep water where the bottom is far.
+// view depth `w`), with the shift of the waves; deep water where the bottom is far. `tint`
+// is the colour of the water, `clarity` over how many units what is under the water fades
+// into the colour of deep water (800 for the sea), `look_tint` the tint of a look.
 struct Refraction {
     color: vec3f,
     // 1 at the shore, where the water is so shallow that it shows the bottom as it is.
@@ -321,7 +326,7 @@ struct Refraction {
     depth_first: f32,
 }
 
-fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f, deep: vec3f, tint: vec3f) -> Refraction {
+fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f, deep: vec3f, tint: vec3f, clarity: f32, look_tint: vec3f) -> Refraction {
     var out: Refraction;
     var new_uv = uv + reffactor.yx / w;
     var depth_of = max(0.0, distance_at(new_uv) - w);
@@ -334,9 +339,9 @@ fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f
         depth_of = max(0.0, distance_at(new_uv) - w);
         // From a difference of the depth to a distance along the ray.
         depth_of /= dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z));
-        refracted *= transmission(tint, depth_of);
+        refracted *= transmission(tint, depth_of * 800.0 / clarity) * look_tint;
         depth_of += 300.0 * (0.95 - normal.z);
-        let depthscale = clamp(exp(-depth_of / 800.0), 0.0, 1.0);
+        let depthscale = clamp(exp(-depth_of / clarity), 0.0, 1.0);
         out.shore = pow(depthscale, 90.0);
         out.color = mix(deep, refracted, 0.8 * depthscale + 0.2 * out.shore);
     }

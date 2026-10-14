@@ -162,3 +162,32 @@ const WaterLook& WaterLooks::get(unsigned int slot) {
 const WaterLook& WaterLooks::standard() {
     return standardLook;
 }
+
+// In main.cpp: sends data to the wgpu renderer in the helper.
+void sendToRenderer(unsigned int id, const void* data, unsigned int length);
+
+void WaterLooks::sendToRenderer() {
+    // The record 6 of the data that MGE XE puts into the stream, with the bit that makes the
+    // stream keep it (a capture file then has the looks that a mod set before it): the
+    // version, the number of slots, then for each slot that is not the standard look its
+    // number and its WaterLook. mgeHost64/src/renderer/water/volume.rs reads it.
+    static const unsigned int WaterLooksId = 6 | 0x80000000u;
+    struct Head {
+        std::uint32_t version, count;
+    };
+    std::vector<unsigned char> record(sizeof(Head));
+    std::uint32_t count = 0;
+    for (std::uint32_t slot = 1; slot < looks.size(); ++slot) {
+        if (std::memcmp(&looks[slot], &standardLook, sizeof(WaterLook)) == 0) {
+            continue;
+        }
+        const auto at = record.size();
+        record.resize(at + sizeof(slot) + sizeof(WaterLook));
+        std::memcpy(&record[at], &slot, sizeof(slot));
+        std::memcpy(&record[at + sizeof(slot)], &looks[slot], sizeof(WaterLook));
+        ++count;
+    }
+    const Head head = { 1, count };
+    std::memcpy(record.data(), &head, sizeof(head));
+    ::sendToRenderer(WaterLooksId, record.data(), static_cast<unsigned int>(record.size()));
+}
