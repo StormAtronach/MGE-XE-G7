@@ -781,6 +781,9 @@ struct Uniforms {
 @group(0) @binding(2) var base_sampler: sampler;
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 
+// The order of the pixels of a block of 4 x 4 for the band of the handoff (Bayer).
+const HANDOFF_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+
 struct In {
     // The position of a vertex, and the number of its palette entry.
     @location(0) position: vec4f,
@@ -846,7 +849,12 @@ struct Out {
     }
     let range = length(in.world - u.eye.xyz);
     let dissolve = clamp((range - (u.handoff.y - u.handoff.z)) / u.handoff.z, 0.0, 1.0);
-    if dissolve < 1.0 / 255.0 || (in.alpha_test > 0.5 && texel.a < 133.0 / 255.0) {
+    // Across the band a static comes in by its share of covered pixels: Direct3D 9 gives the
+    // dissolve to alpha to coverage, which needs the samples of multisampling; the picture
+    // of wgpu has one sample for each pixel, so an ordered threshold of 4 x 4 pixels.
+    let cell = vec2u(in.position.xy) % 4u;
+    let threshold = (HANDOFF_ORDER[cell.y * 4u + cell.x] + 0.5) / 16.0;
+    if dissolve < max(threshold, 1.0 / 255.0) || (in.alpha_test > 0.5 && texel.a < 133.0 / 255.0) {
         discard;
     }
     return vec4f(fog_of(texel.rgb * in.color, in.world), 1.0);
