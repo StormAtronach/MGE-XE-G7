@@ -37,7 +37,7 @@ const NEAR: f32 = 4.0;
 mod shading;
 use shading::Uniforms;
 mod volume;
-pub use volume::{Look, VolumeLook, marked as volume_marked};
+pub use volume::{FarWater, Look, VolumeLook, marked as volume_marked};
 
 /// The shader of the plane: the shared shading and the entry points of the plane.
 fn shader() -> String {
@@ -104,7 +104,7 @@ struct Out {
     let fog = fog_water(eye_vec, dist);
     let normal = water_normal(in.texcoords, dist, in.world.xy);
     let reffactor = (u.sun_col.w * dist + 0.1) * normal.xy;
-    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0));
+    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0), false);
     let refracted = below.color;
     // With the dynamic waves the reflection is read at the point that is not above the plane.
     var reflect_uv = uv;
@@ -168,6 +168,9 @@ pub struct WaterFrame {
     pub fog_exp: (f32, f32),
     /// The draw distance of the distant land, in units.
     pub draw_distance: f32,
+    /// The projection of the distant land (`DistantLand::land_projection`): the water
+    /// among the distant statics is drawn with it, and its depth is that of the land.
+    pub land_projection: [f32; 16],
     /// The view depth where the plane ends, in an interior and under the water (the clip
     /// plane of `renderStageWater`); `None` for no end.
     pub view_end: Option<f32>,
@@ -264,6 +267,8 @@ pub struct Water {
     reflection_depth: wgpu::TextureView,
     /// The depth of the mirror pass alone, for the water shader.
     reflection_depth_read: wgpu::TextureView,
+    /// One pixel of depth 1, in the place of the depth of the distant land without it.
+    no_land: wgpu::TextureView,
     /// True when the reflection of this frame is made.
     reflected: bool,
     /// MGE_XE_WATER_DEBUG: a look at one term of the shader.
@@ -329,6 +334,7 @@ impl Water {
                 texture(7, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
                 texture(8, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
                 texture(9, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
+                texture(10, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
@@ -403,6 +409,33 @@ impl Water {
         let depth_texture = target(scene.depth_format, 1);
         let reflection_depth = depth_texture.create_view(&Default::default());
         let reflection_depth_read = depth_texture.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+        // A depth texture takes no write of the queue: a pass clears it to 1.
+        let no_land = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("water no land"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water no land") });
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("water no land"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &no_land,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        scene.queue.submit([encoder.finish()]);
         // The levels of the reflection: each from the level before.
         let level_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water reflection level"),
@@ -460,6 +493,7 @@ impl Water {
             levels_wanted: false,
             reflection_depth,
             reflection_depth_read,
+            no_land,
             reflected: false,
             debug: std::env::var("MGE_XE_WATER_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
             frames: 0,
@@ -641,6 +675,7 @@ impl Water {
                 // The cone of the mirror: wider with more wind, as the waves are.
                 [projection[10], projection[14], scene.projection[0], frame.blur_tune[0] + frame.blur_tune[1] * wind_factor]
             },
+            land: [frame.land_projection[10], frame.land_projection[14], 0.0, 0.0],
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -657,6 +692,7 @@ impl Water {
                 wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.rain_view())) },
                 wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.player_view())) },
                 wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&self.reflection_depth_read) },
+                wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(scene.before_depth.unwrap_or(&self.no_land)) },
             ],
         });
         Some(group)
@@ -683,12 +719,17 @@ impl Water {
     /// Draws the surfaces of water volumes among the shapes that the renderer held for the
     /// extension, with the picture and the depth of the scene so far. Returns the number
     /// drawn.
-    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>) -> usize {
-        if !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
+    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], far: &[FarWater], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>) -> usize {
+        if far.is_empty() && !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
             return 0;
         }
         let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms) else { return 0 };
-        self.volumes.draw(scene, pass, &group, held, look, looks)
+        self.volumes.draw(scene, pass, &group, held, far, look, looks)
+    }
+
+    /// The water among the distant statics drawn since the start.
+    pub fn far_drawn(&self) -> u64 {
+        self.volumes.far_drawn
     }
 
     /// The surfaces of water volumes drawn since the start.

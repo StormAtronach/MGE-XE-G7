@@ -33,9 +33,16 @@
 //! An interior cell with statics in `usage.data` is a world space of its own, with its
 //! places and its grass; the renderer selects it by the name of the cell. In a plain
 //! interior cell the statics have the linear fog of the game (`StaticInteriorVS`), given
-//! by the flags of the frame. Not here yet: statics with a water flag, the groups of
-//! statics that the game shows or hides (all of them are shown), the quadtree and the
-//! horizon culling of the IPC host mode, and a limit of the memory on the GPU.
+//! by the flags of the frame.
+//!
+//! A subset with a water flag is not a static: it is the surface of a water volume beyond the
+//! cells that the game has loaded (flag 0x04, 0x08 for one that reflects the sky only), or a
+//! dry space (0x10). They have places of their own, and `far_water` gives those in view to
+//! the water (`water/volume.rs`).
+//!
+//! Not here yet: the groups of statics that the game shows or hides (all of them are shown),
+//! the quadtree and the horizon culling of the IPC host mode, and a limit of the memory on
+//! the GPU.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -51,6 +58,7 @@ use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::SceneView;
 
+use super::water::{FarWater, Look};
 use super::{CELL, dds_texture};
 
 /// `STATIC_MESH_SHARD_COUNT` of the generator.
@@ -99,7 +107,11 @@ struct Subset {
     triangle_count: u32,
     has_alpha: bool,
     animate_uv: bool,
-    water: bool,
+    /// 0: a static. 1: water that reflects the scene, 2: water that reflects the sky only,
+    /// 3: a dry space.
+    water: u8,
+    /// The look of water: its look line, or the standard look of its kind.
+    look: Option<Look>,
     /// The sphere of the subset in the space of its model: the centre and the radius.
     sphere: [f32; 4],
     texture: u32,
@@ -141,6 +153,8 @@ struct GrassPlace {
 /// The places of one world space: the exterior, or one interior cell.
 #[derive(Default)]
 struct World {
+    /// The places of the water subsets, by cell: as `cells`.
+    water_cells: HashMap<(i32, i32), Vec<u32>>,
     /// The instances by the cell of their centre.
     cells: HashMap<(i32, i32), Vec<u32>>,
     /// The grass places by the cell of their position.
@@ -268,6 +282,17 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                 textures.len() as u32 - 1
             });
             let flags = word(r, 72);
+            let water = if flags & 0x10 != 0 {
+                3
+            } else if flags & 0x04 != 0 {
+                if flags & 0x08 != 0 { 2 } else { 1 }
+            } else {
+                0
+            };
+            // The look line of a water subset, in the texture blob.
+            let (look_at, look_length) = (long(r, 152) as usize, word(r, 160) as usize);
+            let line = (water != 0 && water != 3 && look_length != 0).then(|| tables.get(look_at..look_at + look_length)).flatten().map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+            let look = matches!(water, 1 | 2).then(|| Look::of_distant(water, line.as_deref()));
             let (vertex_count, triangle_count) = (word(r, 64), word(r, 68));
             let (first_component, component_count) = (word(r, 136) as usize, word(r, 140) as usize);
             let (first_palette, palette_count) = (word(r, 144) as usize, word(r, 148) as usize);
@@ -301,7 +326,8 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                 triangle_count,
                 has_alpha: flags & 1 != 0,
                 animate_uv: flags & 2 != 0,
-                water: flags & 0x1C != 0,
+                water,
+                look,
                 sphere: [float(r, 4), float(r, 8), float(r, 12), float(r, 0)],
                 texture,
                 palette,
@@ -362,7 +388,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
             let world = world_matrix([place.location.x, place.location.y, place.location.z], [place.rotation.x, place.rotation.y, place.rotation.z], place.scale);
             for subset in model.first_subset..model.first_subset + model.subset_count {
                 let Some(s) = subsets.get(subset as usize) else { continue };
-                if s.water || s.vertex_count == 0 || s.triangle_count == 0 {
+                if s.vertex_count == 0 || s.triangle_count == 0 {
                     continue;
                 }
                 let (center, radius) = if model.kind == 6 {
@@ -371,7 +397,8 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                     (transform(&world, [s.sphere[0], s.sphere[1], s.sphere[2]]), s.sphere[3] * place.scale)
                 };
                 let cell = ((center[0] / CELL).floor() as i32, (center[1] / CELL).floor() as i32);
-                world_space.cells.entry(cell).or_default().push(instances.len() as u32);
+                let list = if s.water != 0 { &mut world_space.water_cells } else { &mut world_space.cells };
+                list.entry(cell).or_default().push(instances.len() as u32);
                 if !s.components.is_empty() {
                     merged_place.insert(subset, instances.len() as u32);
                 }
@@ -915,7 +942,7 @@ impl Statics {
         let Some(catalog) = self.catalog.clone() else { return };
         let Some(requests) = self.requests.as_ref() else { return };
         let Some(world) = catalog.worlds.get(&self.world) else { return };
-        let mut wanted: Vec<u32> = world.cells.values().flatten().map(|i| catalog.instances[*i as usize].subset).filter(|s| catalog.subsets[*s as usize].components.is_empty()).collect();
+        let mut wanted: Vec<u32> = world.cells.values().chain(world.water_cells.values()).flatten().map(|i| catalog.instances[*i as usize].subset).filter(|s| catalog.subsets[*s as usize].components.is_empty()).collect();
         // The subsets of the grass too: they are never merged.
         wanted.extend(world.grass_cells.values().flatten().flat_map(|i| {
             let place = &catalog.grass[*i as usize];
@@ -945,8 +972,10 @@ impl Statics {
         };
         let catalog = loaded.catalog.clone();
         println!(
-            "distant statics: {} subsets, {} places in the exterior and {} interior cells, {} grass places, {} textures; {:.0} MB ordinary, {:.0} MB merged",
+            "distant statics: {} subsets ({} of water, {} dry spaces), {} places in the exterior and {} interior cells, {} grass places, {} textures; {:.0} MB ordinary, {:.0} MB merged",
             catalog.subsets.len(),
+            catalog.subsets.iter().filter(|s| matches!(s.water, 1 | 2)).count(),
+            catalog.subsets.iter().filter(|s| s.water == 3).count(),
             catalog.instances.len(),
             catalog.worlds.len() - 1,
             catalog.grass.len(),
@@ -1117,6 +1146,56 @@ impl Statics {
                 *end = new;
             }
         }
+    }
+
+    /// The water among the distant statics of the frame (B6): the water subsets within the
+    /// draw distance that are in the view (`planes`), with their buffers. A merged one comes
+    /// to the GPU as a merged static does. `loaded` is the range of x and y of the cells that
+    /// the game has loaded: the game draws the meshes of their places near the camera.
+    pub fn far_water(&mut self, eye: [f32; 3], planes: &[[f32; 4]; 6], loaded: [f32; 4]) -> Vec<FarWater> {
+        let mut found = Vec::new();
+        if self.failed || !self.settings.statics {
+            return found;
+        }
+        let (Some(catalog), Some(requests)) = (self.catalog.clone(), self.requests.as_ref()) else { return found };
+        let Some(world) = catalog.worlds.get(&self.world) else { return found };
+        let reach = self.settings.draw_distance;
+        let admit = reach + CELL;
+        let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
+        let cells = ((reach + CELL) / CELL).ceil() as i32;
+        for y in cell_y - cells..=cell_y + cells {
+            for x in cell_x - cells..=cell_x + cells {
+                let Some(list) = world.water_cells.get(&(x, y)) else { continue };
+                for index in list {
+                    let instance = &catalog.instances[*index as usize];
+                    let subset = &catalog.subsets[instance.subset as usize];
+                    let Some(look) = subset.look else { continue };
+                    let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
+                    if !subset.components.is_empty() && (to[0] * to[0] + to[1] * to[1]).sqrt() <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && self.requested.insert(instance.subset) {
+                        let _ = requests.send(instance.subset);
+                    }
+                    let Some(resident) = self.resident.get(&instance.subset) else { continue };
+                    let range = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                    if range > reach + instance.radius {
+                        continue;
+                    }
+                    if !planes.iter().all(|p| p[0] * instance.center[0] + p[1] * instance.center[1] + p[2] * instance.center[2] + p[3] >= -instance.radius) {
+                        continue;
+                    }
+                    // The place of the reference is the translation of its world matrix.
+                    let (px, py) = (instance.world[12], instance.world[13]);
+                    found.push(FarWater {
+                        vertices: resident.vertices.clone(),
+                        indexes: resident.indexes.clone(),
+                        triangles: resident.faces[0],
+                        world: instance.world,
+                        look,
+                        loaded: px >= loaded[0] && py >= loaded[1] && px < loaded[2] && py < loaded[3],
+                    });
+                }
+            }
+        }
+        found
     }
 
     /// Draws the statics of the frame into the pass. Returns the number of draws.

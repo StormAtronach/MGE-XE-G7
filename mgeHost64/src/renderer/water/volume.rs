@@ -100,6 +100,69 @@ impl Look {
         Some(table)
     }
 
+    /// The look of a water subset among the distant statics: kind 1 reflects the scene and 2
+    /// the sky only (flags 0x04 and 0x08 of the subset), and the look line that the generator
+    /// copied from the mesh, when there is one (`WaterLooks::parse` and the load of
+    /// `distantstatics.cpp`).
+    pub fn of_distant(kind: u8, line: Option<&str>) -> Look {
+        let mut look = line.map_or(Look::STANDARD, Look::parse);
+        if kind == 2 || (line.is_none() && kind != 1) {
+            look.flags &= !LOOK_REFLECTS_SCENE;
+        }
+        look
+    }
+
+    /// A look line, as "flow=0,-140 speed=1.2 sky=FF8040 reflect=sky": the keys of
+    /// `WaterLooks::parse`. A key that it does not know is left out.
+    pub fn parse(line: &str) -> Look {
+        let mut look = Look::STANDARD;
+        // Up to `out.len()` numbers with commas between them; a number that does not read
+        // ends them.
+        fn numbers(value: &str, out: &mut [f32]) {
+            for (slot, part) in out.iter_mut().zip(value.split(',')) {
+                match part.trim().parse::<f32>() {
+                    Ok(number) => *slot = number,
+                    Err(_) => return,
+                }
+            }
+        }
+        for word in line.split_whitespace() {
+            let Some((key, value)) = word.split_once('=') else { continue };
+            match key.to_ascii_lowercase().as_str() {
+                "flow" => numbers(value, &mut look.flow),
+                "speed" => numbers(value, core::slice::from_mut(&mut look.speed)),
+                "scale" => numbers(value, core::slice::from_mut(&mut look.scale)),
+                "glow" => numbers(value, core::slice::from_mut(&mut look.glow)),
+                "clarity" => numbers(value, core::slice::from_mut(&mut look.clarity)),
+                "opacity" if value.eq_ignore_ascii_case("vertex") => look.flags |= LOOK_OPACITY_FROM_VERTEX,
+                "opacity" => {
+                    look.flags &= !LOOK_OPACITY_FROM_VERTEX;
+                    numbers(value, core::slice::from_mut(&mut look.opacity));
+                }
+                "sky" => {
+                    let digits = value.strip_prefix('#').unwrap_or(value);
+                    match (digits.len() == 6).then(|| u32::from_str_radix(digits, 16).ok()).flatten() {
+                        Some(colour) => look.sky = [(colour >> 16 & 255) as f32 / 255.0, (colour >> 8 & 255) as f32 / 255.0, (colour & 255) as f32 / 255.0],
+                        None => numbers(value, &mut look.sky),
+                    }
+                    look.flags |= LOOK_HAS_SKY;
+                }
+                "reflect" if value.eq_ignore_ascii_case("sky") => look.flags &= !LOOK_REFLECTS_SCENE,
+                "shader" => {
+                    look.shader = [0; 32];
+                    for (slot, byte) in look.shader.iter_mut().zip(value.bytes().take(31)) {
+                        *slot = byte;
+                    }
+                }
+                key if key.len() == 2 && key.starts_with('p') && (b'0'..=b'3').contains(&key.as_bytes()[1]) => {
+                    numbers(value, &mut look.params[(key.as_bytes()[1] - b'0') as usize]);
+                }
+                _ => {}
+            }
+        }
+        look
+    }
+
     /// The look of a marked surface: that of its slot, or the standard look; 99997 reflects
     /// the sky only.
     fn of(specular_power: f32, table: &HashMap<u32, Look>) -> Look {
@@ -115,6 +178,21 @@ impl Look {
     }
 }
 
+/// A water subset among the distant statics at one place, for a frame (B6).
+pub struct FarWater {
+    pub vertices: wgpu::Buffer,
+    pub indexes: wgpu::Buffer,
+    pub triangles: u32,
+    /// The world matrix of the place, row after row.
+    pub world: [f32; 16],
+    /// The look of the mesh: its look line, or the standard look (the sky only for a subset
+    /// of that kind).
+    pub look: Look,
+    /// The place is in a cell that the game has loaded: the game draws the mesh near the
+    /// camera, and this one is left out there.
+    pub loaded: bool,
+}
+
 /// What the frame says about the look of the surfaces.
 pub struct VolumeLook {
     /// How far from the camera a surface reflects what is in the picture
@@ -123,6 +201,10 @@ pub struct VolumeLook {
     /// A colour in place of the sky, and how much of it: the light of the room in an
     /// interior, as the water of the cell has it.
     pub sky: [f32; 4],
+    /// The view and the projection of the distant land, for the water among the distant
+    /// statics, and the view range of the game.
+    pub land_view_projection: [f32; 16],
+    pub view_range: f32,
 }
 
 /// The values of one surface for the shader.
@@ -144,6 +226,12 @@ struct Surface {
     /// 2 it has vertex colours, 4 the vertex colour tints the water, 8 the vertex alpha is
     /// the opacity.
     look: [f32; 4],
+    /// The view and the projection: those of the game, or those of the distant land for
+    /// water among the distant statics.
+    clip: [f32; 16],
+    /// Water among the distant statics: 1; the view depth before which it is left out (the
+    /// game draws the mesh there), and how far it reflects what is in the picture.
+    far: [f32; 4],
 }
 
 /// The space of one surface in the buffer of the surfaces: a uniform offset is a multiple
@@ -159,6 +247,8 @@ struct Surface {
     sky: vec4f,
     flow: vec4f,
     look: vec4f,
+    clip: mat4x4f,
+    far: vec4f,
 }
 @group(1) @binding(0) var<uniform> s: Surface;
 
@@ -168,6 +258,8 @@ struct Out {
     @location(1) facing: vec3f,
     @location(2) clip_w: f32,
     @location(3) color: vec4f,
+    // The colour of the water.
+    @location(4) tint: vec3f,
 }
 
 // The normal and the colour of a vertex that has none come from a buffer of zeros.
@@ -179,7 +271,22 @@ struct Out {
     out.facing = select(vec3f(0.0, 0.0, 1.0), (s.world * vec4f(normal, 0.0)).xyz, (bits & 1u) != 0u);
     // A D3DCOLOR has blue in its first byte.
     out.color = select(vec4f(1.0), color.zyxw, (bits & 2u) != 0u);
-    out.position = u.view_projection * vec4f(out.world, 1.0);
+    out.tint = s.tint.rgb;
+    out.position = s.clip * vec4f(out.world, 1.0);
+    out.clip_w = out.position.w;
+    return out;
+}
+
+// Water among the distant statics (`WaterVolumeDistantVS`): the vertex of a distant static.
+// The generator writes the colour of the water into the vertex colour, and the opacity of the
+// mesh's vertex into its alpha when the look asks for it.
+@vertex fn vs_far(@location(0) position: vec4f, @location(1) normal: vec4f, @location(2) color: vec4f) -> Out {
+    var out: Out;
+    out.world = (s.world * vec4f(position.xyz, 1.0)).xyz;
+    out.facing = (s.world * vec4f(normal.xyz * 2.0 - 1.0, 0.0)).xyz;
+    out.color = vec4f(1.0, 1.0, 1.0, color.w);
+    out.tint = color.zyx;
+    out.position = s.clip * vec4f(out.world, 1.0);
     out.clip_w = out.position.w;
     return out;
 }
@@ -210,6 +317,14 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     eye_vec /= dist;
     let uv = in.position.xy / u.size.xy;
     let w = in.clip_w;
+    // Water among the distant statics has no depth test of the pass: its depth is that of the
+    // distant land, and the game's is another. It is behind what the game drew and behind the
+    // distant land, and not nearer than the view range of the game for a mesh that the game
+    // draws itself.
+    let far = s.far.x > 0.5;
+    if far && (w < s.far.y || w > distance_at(uv) || w > land_distance_at(uv) * 1.0005 + 1.0) {
+        discard;
+    }
     var facing = vec3f(0.0, 0.0, 1.0);
     if dot(in.facing, in.facing) > 0.25 {
         facing = normalize(in.facing);
@@ -229,7 +344,7 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     let fog = fog_water(eye_vec, dist);
     let ripple = look_ripples(texcoords, dist, flat.xy);
     let normal = tilt_to(face, ripple);
-    let tint = s.tint.rgb;
+    let tint = in.tint;
     // The look: the vertex colour tints the water, and its alpha is the opacity, when the
     // look says so.
     let bits = u32(s.look.w);
@@ -237,7 +352,7 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     let opacity = s.look.y * select(1.0, in.color.a, (bits & 8u) != 0u);
     let deep = fog.a * depth_base(tint) * look_tint + fog.rgb;
     let reffactor = (u.sun_col.w * dist + 0.1) * ripple.xy;
-    let below = refraction(uv, w, reffactor, eye_vec, ripple, deep, tint, max(s.look.z, 1.0), look_tint);
+    let below = refraction(uv, w, reffactor, eye_vec, ripple, deep, tint, max(s.look.z, 1.0), look_tint, far);
     // Far away and at a flat angle the surface is calm: a ripple is smaller than a pixel.
     let calm = (1.0 + dot(eye_vec, face)) * (1.0 - clamp(1.0 / (dist / 1000.0 + 1.0), 0.0, 1.0));
     var adjust = mix(0.1 * face, normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
@@ -248,9 +363,12 @@ fn look_ripples(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     reflect_dir -= 2.0 * min(0.0, dot(reflect_dir, face)) * face;
     reflect_dir = normalize(reflect_dir);
     var reflected = mix(sky_color(reflect_dir), s.sky.rgb, s.sky.a);
-    if s.tint.w > 0.5 {
-        let seen = reflect_scene(in.world, reflect_dir);
-        reflected = mix(reflected, seen.rgb, seen.a);
+    // Far water reflects what is in the picture out to its range, and fades out over the
+    // last quarter of a cell.
+    let scene_weight = select(1.0, clamp((s.far.z - dist) / 2048.0, 0.0, 1.0), far);
+    if s.tint.w > 0.5 && scene_weight > 0.0 {
+        let seen = reflect_scene(in.world, reflect_dir, far);
+        reflected = mix(reflected, seen.rgb, seen.a * scene_weight);
     }
     reflected = mix(fog.rgb, reflected, fog.a);
     let fresnel = 0.02 + pow(clamp(0.9988 - 0.28 * dot(-eye_vec, adjust), 0.0, 1.0), 16.0);
@@ -281,6 +399,8 @@ struct Key {
     color: Option<u64>,
     topology: wgpu::PrimitiveTopology,
     lines: bool,
+    /// The vertex of a distant static, and the depth tests in the shader.
+    far: bool,
 }
 
 pub(super) struct Volumes {
@@ -296,7 +416,9 @@ pub(super) struct Volumes {
     defaults: wgpu::Buffer,
     target_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
+    /// The near surfaces and the far water drawn since the start.
     pub drawn: u64,
+    pub far_drawn: u64,
 }
 
 impl Volumes {
@@ -328,6 +450,7 @@ impl Volumes {
             target_format: scene.target_format,
             depth_format: scene.depth_format,
             drawn: 0,
+            far_drawn: 0,
         }
     }
 
@@ -348,6 +471,42 @@ impl Volumes {
     fn pipeline(&mut self, device: &wgpu::Device, key: Key) -> &wgpu::RenderPipeline {
         let (module, layout, target_format, depth_format) = (&self.module, &self.pipeline_layout, self.target_format, self.depth_format);
         self.pipelines.entry(key).or_insert_with(|| {
+            if key.far {
+                // A distant static: the position with the palette entry, the normal with the
+                // light of the material, the colour, the coordinate (statics.rs).
+                let attributes = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4];
+                return device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("water volume, far"),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module,
+                        entry_point: Some("vs_far"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 20, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: None,
+                        polygon_mode: if key.lines { wgpu::PolygonMode::Line } else { wgpu::PolygonMode::Fill },
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: depth_format,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module,
+                        entry_point: Some("fs"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState { format: target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            }
             let mut attributes = vec![wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: key.position, shader_location: 0 }];
             let mut missing = Vec::new();
             match key.normal {
@@ -397,20 +556,43 @@ impl Volumes {
         })
     }
 
-    /// Draws the marked surfaces among `held` with the group of the shared shading of the
-    /// frame. Returns the number drawn.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame_group: &wgpu::BindGroup, held: &[HeldDraw], frame_look: &VolumeLook, looks: &HashMap<u32, Look>) -> usize {
+    /// Draws the water among the distant statics, then the marked surfaces among `held`,
+    /// with the group of the shared shading of the frame. The far water writes no depth and
+    /// the near surfaces do: they go over it. Returns the number drawn.
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>) -> usize {
         let surfaces: Vec<&HeldDraw> = held.iter().filter(|h| marked(h.facts.specular_power)).collect();
-        if surfaces.is_empty() {
+        if surfaces.is_empty() && far.is_empty() {
             return 0;
         }
-        let count = surfaces.len() as u64;
+        let count = (far.len() + surfaces.len()) as u64;
         if count > self.capacity {
             self.capacity = count.next_power_of_two();
             (self.surfaces, self.group) = Self::slots(scene.device, &self.surface_layout, self.capacity);
         }
         let mut bytes = vec![0u8; (count * SLOT) as usize];
+        let game_view_projection = crate::renderer::multiply(&scene.view, &scene.projection);
+        for (index, water) in far.iter().enumerate() {
+            let look = &water.look;
+            let world = water.world;
+            let drift = [look.flow[0] * world[0] + look.flow[1] * world[4], look.flow[0] * world[1] + look.flow[1] * world[5]];
+            // The alpha of the vertex is the opacity when the look asks for it; its colour is
+            // the colour of the water.
+            let bits = 1 | 2 | (((look.flags & LOOK_OPACITY_FROM_VERTEX != 0) as u32) << 3);
+            let surface = Surface {
+                world,
+                tint: [0.0, 0.0, 0.0, if look.flags & LOOK_REFLECTS_SCENE != 0 && frame_look.reflect_range > 0.0 { 1.0 } else { 0.0 }],
+                anchor: [world[12], world[13], world[14], 0.0],
+                sky: if look.flags & LOOK_HAS_SKY != 0 { [look.sky[0], look.sky[1], look.sky[2], 1.0] } else { frame_look.sky },
+                flow: [drift[0], drift[1], look.speed, look.scale],
+                look: [look.glow, look.opacity, look.clarity, bits as f32],
+                clip: frame_look.land_view_projection,
+                far: [1.0, if water.loaded { frame_look.view_range } else { 0.0 }, frame_look.reflect_range, 0.0],
+            };
+            let at = index * SLOT as usize;
+            bytes[at..at + size_of::<Surface>()].copy_from_slice(bytemuck::bytes_of(&surface));
+        }
         for (index, held) in surfaces.iter().enumerate() {
+            let index = far.len() + index;
             // The world of a draw can be relative to an origin; the water is in the space of
             // the world of the game.
             let mut world = held.data.world[0];
@@ -436,6 +618,8 @@ impl Volumes {
                 sky: if look.flags & LOOK_HAS_SKY != 0 { [look.sky[0], look.sky[1], look.sky[2], 1.0] } else { frame_look.sky },
                 flow: [drift[0], drift[1], look.speed, look.scale],
                 look: [look.glow, look.opacity, look.clarity, bits as f32],
+                clip: game_view_projection,
+                far: [0.0; 4],
             };
             let at = index * SLOT as usize;
             bytes[at..at + size_of::<Surface>()].copy_from_slice(bytemuck::bytes_of(&surface));
@@ -443,9 +627,21 @@ impl Volumes {
         scene.queue.write_buffer(&self.surfaces, 0, &bytes);
         let lines = scene.wireframe && scene.device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         pass.set_bind_group(0, frame_group, &[]);
+        if !far.is_empty() {
+            let key = Key { stride: 20, position: 0, normal: None, color: None, topology: wgpu::PrimitiveTopology::TriangleList, lines, far: true };
+            pass.set_pipeline(self.pipeline(scene.device, key));
+            for (index, water) in far.iter().enumerate() {
+                pass.set_bind_group(1, &self.group, &[(index as u64 * SLOT) as u32]);
+                pass.set_vertex_buffer(0, water.vertices.slice(..));
+                pass.set_index_buffer(water.indexes.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..water.triangles * 3, 0, 0..1);
+            }
+            self.far_drawn += far.len() as u64;
+        }
         for (index, held) in surfaces.iter().enumerate() {
+            let index = far.len() + index;
             let layout = &held.layout;
-            let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines };
+            let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines, far: false };
             pass.set_pipeline(self.pipeline(scene.device, key));
             pass.set_bind_group(1, &self.group, &[(index as u64 * SLOT) as u32]);
             pass.set_vertex_buffer(0, held.vertices.slice(..));
@@ -455,8 +651,8 @@ impl Volumes {
                 pass.draw_indexed(first..first + count, 0, 0..1);
             }
         }
-        self.drawn += count;
-        surfaces.len()
+        self.drawn += surfaces.len() as u64;
+        count as usize
     }
 }
 
@@ -473,6 +669,23 @@ mod tests {
         assert_eq!(Look::of(99997.0, &table).flags & LOOK_REFLECTS_SCENE, 0);
         assert_eq!(Look::of(100003.0, &table).glow, 0.5);
         assert_eq!(Look::of(100004.0, &table), Look::STANDARD);
+    }
+
+    #[test]
+    fn a_look_line() {
+        let look = Look::parse("flow=0,-140 speed=1.2 SKY=#FF8040 reflect=sky opacity=vertex p2=1,2 shader=foam clarity=x");
+        assert_eq!(look.flow, [0.0, -140.0]);
+        assert_eq!(look.speed, 1.2);
+        assert_eq!(look.sky, [1.0, 128.0 / 255.0, 64.0 / 255.0]);
+        assert_eq!(look.flags, LOOK_HAS_SKY | LOOK_OPACITY_FROM_VERTEX);
+        assert_eq!(look.params[2], [1.0, 2.0, 0.0, 0.0]);
+        assert_eq!(&look.shader[..5], b"foam\0");
+        assert_eq!(look.clarity, 800.0);
+        assert_eq!(Look::parse("sky=0.5,0.25,1 opacity=0.4").sky, [0.5, 0.25, 1.0]);
+        assert_eq!(Look::of_distant(1, None), Look::STANDARD);
+        assert_eq!(Look::of_distant(2, None).flags & LOOK_REFLECTS_SCENE, 0);
+        assert_eq!(Look::of_distant(2, Some("glow=0.5")).flags & LOOK_REFLECTS_SCENE, 0);
+        assert_eq!(Look::of_distant(1, Some("glow=0.5")).glow, 0.5);
     }
 
     #[test]
@@ -505,7 +718,7 @@ mod tests {
         let source = shader();
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
-        for entry in ["vs", "fs"] {
+        for entry in ["vs", "vs_far", "fs"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
     }

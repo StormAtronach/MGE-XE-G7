@@ -45,6 +45,9 @@ pub(in crate::renderer) struct Uniforms {
     /// projection (the picture width of a view angle), and the widest angle of the blur
     /// that is sharp at the waterline, in radians.
     pub mirror: [f32; 4],
+    /// The two numbers of the depth of the projection of the distant land (`before_world`),
+    /// for the distance of a pixel of its depth.
+    pub land: [f32; 4],
 }
 
 /// The WGSL of the shared shading: the uniforms and the textures of the frame in group 0,
@@ -68,6 +71,7 @@ struct Uniforms {
     sun_altitude: vec4f,
     wave: vec4f,
     mirror: vec4f,
+    land: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var reflection: texture_2d<f32>;
@@ -81,6 +85,8 @@ struct Uniforms {
 @group(0) @binding(8) var player_waves: texture_2d<f32>;
 // The depth of the mirror pass: how far the thing in the reflection is.
 @group(0) @binding(9) var mirror_depth: texture_depth_2d;
+// The depth of the distant land (`SceneView::before_depth`); 1 everywhere without it.
+@group(0) @binding(10) var land_depth: texture_depth_2d;
 
 // fogColourWater: the exponential fog with the scattering of the atmosphere. rgb is the
 // colour that the fog adds, a is what is left of the colour of the thing.
@@ -131,6 +137,27 @@ fn distance_at(uv: vec2f) -> f32 {
         return 1e30;
     }
     return u.projection.y / (d - u.projection.x);
+}
+
+// The same for the distant land, which has a projection of its own.
+fn land_distance_at(uv: vec2f) -> f32 {
+    let size = vec2i(textureDimensions(land_depth));
+    let at = clamp(vec2i(uv * vec2f(size)), vec2i(0), size - 1);
+    let d = textureLoad(land_depth, at, 0);
+    if d >= 1.0 {
+        return 1e30;
+    }
+    return u.land.y / (d - u.land.x);
+}
+
+// The view depth of the nearest thing at a point of the picture: what the game drew, and
+// with `with_land` the distant land too.
+fn ground_at(uv: vec2f, with_land: bool) -> f32 {
+    let game = distance_at(uv);
+    if with_land {
+        return min(game, land_distance_at(uv));
+    }
+    return game;
 }
 
 // getProjectedReflection: the reflection at a place of the picture. With the blur
@@ -247,13 +274,13 @@ fn tilt_to(up: vec3f, v: vec3f) -> vec3f {
 // the eye that hides the ray, and the march goes on to where the ray is in the open again.
 // The colour of what the ray meets, and in alpha how much to trust it (less at the edge of
 // the picture); alpha 0 when it meets nothing.
-fn reflection_sample(origin: vec4f, direction: vec4f, travelled: f32) -> vec3f {
+fn reflection_sample(origin: vec4f, direction: vec4f, travelled: f32, with_land: bool) -> vec3f {
     let clip = origin + direction * travelled;
     let uv = vec2f(0.5, 0.5) + vec2f(0.5, -0.5) * clip.xy / clip.w;
-    return vec3f(uv, clip.w - distance_at(uv));
+    return vec3f(uv, clip.w - ground_at(uv, with_land));
 }
 
-fn reflect_scene(origin: vec3f, direction: vec3f) -> vec4f {
+fn reflect_scene(origin: vec3f, direction: vec3f, with_land: bool) -> vec4f {
     let clip_origin = u.view_projection * vec4f(origin, 1.0);
     let clip_direction = u.view_projection * vec4f(direction, 0.0);
     // How far along the ray it leaves the picture: on it while each of these is positive.
@@ -272,7 +299,7 @@ fn reflect_scene(origin: vec3f, direction: vec3f) -> vec4f {
     for (var i = 0; i < 39; i++) {
         if halvings > 0 {
             let middle = 0.5 * (open + behind);
-            let at_middle = reflection_sample(clip_origin, clip_direction, middle);
+            let at_middle = reflection_sample(clip_origin, clip_direction, middle, with_land);
             if at_middle.z > 0.0 {
                 behind = middle;
                 at_behind = at_middle;
@@ -293,7 +320,7 @@ fn reflect_scene(origin: vec3f, direction: vec3f) -> vec4f {
                 break;
             }
             let next = min(marched + step, reach);
-            let at_next = reflection_sample(clip_origin, clip_direction, next);
+            let at_next = reflection_sample(clip_origin, clip_direction, next, with_land);
             if at_next.z > 0.0 {
                 if !hidden && at_next.z < 2.0 * step + 16.0 {
                     open = marched;
@@ -317,7 +344,8 @@ fn reflect_scene(origin: vec3f, direction: vec3f) -> vec4f {
 // What the water shows of the things under it at a place of the picture (`uv`, at the
 // view depth `w`), with the shift of the waves; deep water where the bottom is far. `tint`
 // is the colour of the water, `clarity` over how many units what is under the water fades
-// into the colour of deep water (800 for the sea), `look_tint` the tint of a look.
+// into the colour of deep water (800 for the sea), `look_tint` the tint of a look; with
+// `with_land` the bottom can be the distant land.
 struct Refraction {
     color: vec3f,
     // 1 at the shore, where the water is so shallow that it shows the bottom as it is.
@@ -326,17 +354,17 @@ struct Refraction {
     depth_first: f32,
 }
 
-fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f, deep: vec3f, tint: vec3f, clarity: f32, look_tint: vec3f) -> Refraction {
+fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f, deep: vec3f, tint: vec3f, clarity: f32, look_tint: vec3f, with_land: bool) -> Refraction {
     var out: Refraction;
     var new_uv = uv + reffactor.yx / w;
-    var depth_of = max(0.0, distance_at(new_uv) - w);
+    var depth_of = max(0.0, ground_at(new_uv, with_land) - w);
     out.depth_first = depth_of;
     out.color = deep;
     out.shore = 0.0;
     if depth_of < 4000.0 {
         new_uv = uv + clamp(depth_of / 100.0, 0.0, 1.0) * reffactor.yx / w;
         var refracted = textureSample(picture, clamp_sampler, new_uv).rgb;
-        depth_of = max(0.0, distance_at(new_uv) - w);
+        depth_of = max(0.0, ground_at(new_uv, with_land) - w);
         // From a difference of the depth to a distance along the ray.
         depth_of /= dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z));
         refracted *= transmission(tint, depth_of * 800.0 / clarity) * look_tint;

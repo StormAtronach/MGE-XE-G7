@@ -353,6 +353,8 @@ pub struct DistantLand {
     volumes_drawn: bool,
     /// The looks of the slots of water volumes, from the game (`MGE_WaterLookSet`).
     water_looks: std::collections::HashMap<u32, water::Look>,
+    /// The water among the distant statics in view in this frame, from `before_world`.
+    far_water: Vec<water::FarWater>,
     waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
@@ -657,6 +659,7 @@ impl DistantLand {
             volumes_wanted: false,
             volumes_drawn: false,
             water_looks: std::collections::HashMap::new(),
+            far_water: Vec::new(),
             waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
@@ -748,11 +751,12 @@ impl Drop for DistantLand {
         );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!(
-            "water: {} frames, {} reflections, {} frames with caustics, {} surfaces of water volumes",
+            "water: {} frames, {} reflections, {} frames with caustics, {} surfaces of water volumes, {} far water draws",
             self.water.as_ref().map_or(0, |w| w.frames),
             self.water.as_ref().map_or(0, |w| w.reflections),
             self.caustics.as_ref().map_or(0, |c| c.frames),
-            self.water.as_ref().map_or(0, |w| w.volumes_drawn())
+            self.water.as_ref().map_or(0, |w| w.volumes_drawn()),
+            self.water.as_ref().map_or(0, |w| w.far_drawn())
         );
         if let Some(ripples) = self.ripples.as_ref() {
             println!("dynamic waves: {} frames, {} steps, {} drops", ripples.frames, ripples.steps, ripples.drops_made);
@@ -1413,6 +1417,7 @@ impl Extension for DistantLand {
         let water = water_cell && self.water.is_some();
         // The surfaces of water volumes: in any cell, when the water is there.
         self.volumes_drawn = false;
+        self.far_water.clear();
         self.volumes_ready = self.enabled && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_some();
         // In a water volume its top is the level of the water of the frame: the sea plane is
         // not cut there.
@@ -1706,16 +1711,7 @@ impl Extension for DistantLand {
         self.finish_load(scene);
         let Some(gpu) = self.gpu.as_ref() else { return false };
 
-        // The projection of the game with a far plane at the draw distance of the distant
-        // land. In a projection of Direct3D the two numbers of the depth are at 10 and 14.
-        // The near plane is a little before that of the game, as `renderStage0` of the
-        // Direct3D 9 path has it: a draw of the game then wins the depth test against the
-        // same geometry among the statics (a static of the cell itself, in an interior).
-        let mut projection = scene.projection;
-        let near = NEAR - 1e-2;
-        let far = self.draw_distance.max(NEAR * 2.0);
-        projection[10] = far / (far - near);
-        projection[14] = -near * far / (far - near);
+        let projection = self.land_projection(scene);
         let view_projection = multiply(&scene.view, &projection);
         let eye = eye_of(&scene.view);
 
@@ -1912,6 +1908,7 @@ impl Extension for DistantLand {
             water.finish_reflection(&mut encoder);
             scene.queue.submit([encoder.finish()]);
         }
+        let far_water_wanted = self.volumes_ready && !scene.interior && !self.under_water();
         if let Some(statics) = self.statics.as_mut() {
             let frame = statics::Frame {
                 view_projection,
@@ -1928,8 +1925,20 @@ impl Extension for DistantLand {
                 time: self.started.elapsed().as_secs_f32(),
             };
             statics.draw(scene, pass, &frame, 0);
+            // The water among the distant statics, for `draw_held`: in an exterior, above the
+            // water, as `flushWaterVolumes` of the Direct3D 9 path has it. The game has the
+            // cell of the camera and the eight around it.
+            if far_water_wanted {
+                let (x, y) = ((eye[0] / CELL).floor(), (eye[1] / CELL).floor());
+                let loaded = [(x - 1.0) * CELL, (y - 1.0) * CELL, (x + 2.0) * CELL, (y + 2.0) * CELL];
+                self.far_water = statics.far_water(eye, &planes, loaded);
+            }
         }
         true
+    }
+
+    fn wants_held(&self) -> bool {
+        !self.far_water.is_empty()
     }
 
     /// The grass, at the end of the world scene of the game: with the projection and the
@@ -2050,9 +2059,17 @@ impl Extension for DistantLand {
             let light: [f32; 3] = core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0));
             [light[0], light[1], light[2], 1.0]
         };
-        let look = water::VolumeLook { reflect_range: self.volume_reflect_cells * CELL, sky };
+        let look = water::VolumeLook {
+            reflect_range: self.volume_reflect_cells * CELL,
+            sky,
+            land_view_projection: multiply(&scene.view, &self.land_projection(scene)),
+            view_range: self.environment.map_or(0.0, |e| e.near_view_range),
+        };
+        let far = std::mem::take(&mut self.far_water);
         if let Some(water) = self.water.as_mut() {
-            self.volumes_drawn = water.draw_volumes(scene, pass, &frame, self.ripples.as_ref(), held, &look, &self.water_looks) > 0;
+            // The flag is for the near surfaces: the sea plane at the top of the volume of
+            // the camera goes when one was drawn.
+            self.volumes_drawn = water.draw_volumes(scene, pass, &frame, self.ripples.as_ref(), held, &far, &look, &self.water_looks) > far.len();
         }
     }
 
@@ -2125,6 +2142,20 @@ impl DistantLand {
         self.water_frame_of(scene, e)
     }
 
+    /// The projection of the game with a far plane at the draw distance of the distant land.
+    /// In a projection of Direct3D the two numbers of the depth are at 10 and 14. The near
+    /// plane is a little before that of the game, as `renderStage0` of the Direct3D 9 path has
+    /// it: a draw of the game then wins the depth test against the same geometry among the
+    /// statics (a static of the cell itself, in an interior).
+    fn land_projection(&self, scene: &SceneView) -> [f32; 16] {
+        let mut projection = scene.projection;
+        let near = NEAR - 1e-2;
+        let far = self.draw_distance.max(NEAR * 2.0);
+        projection[10] = far / (far - near);
+        projection[14] = -near * far / (far - near);
+        projection
+    }
+
     /// What the surfaces of water volumes need: as `water_frame`, in a cell without water too.
     fn volume_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
         self.water_frame_of(scene, self.environment?)
@@ -2155,6 +2186,7 @@ impl DistantLand {
                 wind: e.wind,
                 fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
                 draw_distance: self.draw_distance,
+                land_projection: self.land_projection(scene),
                 view_end,
                 wave_height: self.wave_height_of_frame(),
                 blur_reflections: self.blur_reflections,
@@ -2195,6 +2227,7 @@ impl DistantLand {
             wind: e.wind,
             fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
             draw_distance: self.draw_distance,
+            land_projection: self.land_projection(scene),
             view_end,
             wave_height: self.wave_height_of_frame(),
             blur_reflections: self.blur_reflections,
