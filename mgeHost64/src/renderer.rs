@@ -1892,7 +1892,9 @@ impl Extension for DistantLand {
             });
             if let (Some(picture), Some(waves), Some(frame)) = (scene.picture, self.water.as_ref().map(|w| w.waves()), frame) {
                 let intensity = self.caustics_intensity;
-                self.caustics.get_or_insert_with(|| caustics::Caustics::new(scene, intensity)).draw(scene, pass, picture, depth, &waves, &frame);
+                let caustics = self.caustics.get_or_insert_with(|| caustics::Caustics::new(scene, intensity));
+                caustics.intensity = intensity;
+                caustics.draw(scene, pass, picture, depth, &waves, &frame);
             }
         }
         // Without the view range from the game, the default of the game with distant land.
@@ -2027,9 +2029,9 @@ impl DistantLand {
     /// feature flags, the lighting mode, the HDR reaction speed, the draw distance and the
     /// ends of the static tiers. The distant land stays off when its data was not loaded
     /// at the start. The sizes of the static tiers are for the load only, as on Direct3D 9
-    /// (`classifyStaticComponent` runs when the statics load). The dynamic waves and
-    /// their wave height are followed too. The caustics and the interior fog end of the
-    /// record are not followed yet.
+    /// (`classifyStaticComponent` runs when the statics load). The dynamic waves, their
+    /// wave height, the strength of the caustics and the interior fog end (where the water
+    /// plane ends in an interior and under the water) are followed too.
     fn apply_settings(&mut self) {
         let Some(settings) = self.settings else { return };
         if self.settings_applied == Some(settings) {
@@ -2047,6 +2049,12 @@ impl DistantLand {
         self.ripples_enabled = on(DYNAMIC_RIPPLES);
         if settings.water_wave_height.is_finite() {
             self.wave_height = settings.water_wave_height.clamp(0.0, 250.0);
+        }
+        if settings.water_caustics.is_finite() {
+            self.caustics_intensity = settings.water_caustics.clamp(0.0, 100.0);
+        }
+        if settings.interior_fog_end.is_finite() && settings.interior_fog_end > 0.0 {
+            self.interior_fog_end = settings.interior_fog_end * CELL;
         }
         if let Some(post) = self.post.as_mut() {
             post.set_hdr(on(USE_HDR), settings.hdr_reaction_speed);
@@ -2067,6 +2075,12 @@ impl DistantLand {
         }
         if before.map_or(true, |b| b.hdr_reaction_speed != settings.hdr_reaction_speed) {
             changes.push(format!("HDR reaction {} s", settings.hdr_reaction_speed));
+        }
+        if before.is_some_and(|b| (b.water_caustics, b.water_wave_height) != (settings.water_caustics, settings.water_wave_height)) {
+            changes.push(format!("caustics {}, wave height {}", settings.water_caustics, settings.water_wave_height));
+        }
+        if before.is_some_and(|b| b.interior_fog_end != settings.interior_fog_end) {
+            changes.push(format!("interior fog end {:.3} cells", settings.interior_fog_end));
         }
         let told = self.settings_told_distance;
         if (settings.draw_distance - told.0).abs() >= 0.25 || (settings.very_far_static_end - told.1).abs() >= 0.25 {

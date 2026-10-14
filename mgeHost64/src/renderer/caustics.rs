@@ -84,8 +84,9 @@ pub struct Caustics {
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     wave_sampler: wgpu::Sampler,
-    /// The strength setting, `distant_land.water.caustics_intensity` (0 to 100).
-    intensity: f32,
+    /// The strength setting, `distant_land.water.caustics_intensity` (0 to 100). A mod can
+    /// change it while the game runs: the renderer sets it before each draw.
+    pub intensity: f32,
     /// The frames with caustics, for the report.
     pub frames: u64,
 }
