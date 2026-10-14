@@ -46,7 +46,8 @@ pub(in crate::renderer) struct Uniforms {
     /// that is sharp at the waterline, in radians.
     pub mirror: [f32; 4],
     /// The two numbers of the depth of the projection of the distant land (`before_world`),
-    /// for the distance of a pixel of its depth.
+    /// for the distance of a pixel of its depth; then those of the clip depth of the plane:
+    /// the near plane of the game and the far plane of the distant land.
     pub land: [f32; 4],
 }
 

@@ -80,13 +80,37 @@ struct Out {
     out.world = world;
     out.texcoords = vec4f(world.xy / 3900.0, world.xy / 527.0);
     out.position = u.view_projection * vec4f(world, 1.0);
+    // The far plane of the game is its view distance; the sea goes on to the draw distance of
+    // the distant land, as on Direct3D 9, where MGE XE moves the far plane of the game there.
+    // The near plane stays that of the game. The depth that the pixel writes is that of the
+    // game (see `fs`).
+    out.position.z = out.position.w * u.land.z + u.land.w;
     out.clip_w = out.position.w;
     // The point of the reflection is not above the plane.
     out.clamped = (u.view_projection * vec4f(world.xy, world.z - lowered, 1.0)).xyw;
     return out;
 }
 
-@fragment fn fs(in: Out) -> @location(0) vec4f {
+struct Pixel {
+    @location(0) color: vec4f,
+    @builtin(frag_depth) depth: f32,
+}
+
+@fragment fn fs(in: Out) -> Pixel {
+    // The distant land in front of the water hides it. The renderer cleared its depth for the
+    // game, so the test is here; the test against the draws of the game is that of the pass.
+    if in.clip_w > land_distance_at(in.position.xy / u.size.xy) * 1.0005 + 1.0 {
+        discard;
+    }
+    var out: Pixel;
+    out.color = plane_color(in);
+    // The depth in the range of the game: what blends after the water tests it. Past the far
+    // plane of the game it is the far end.
+    out.depth = clamp(u.projection.x + u.projection.y / in.clip_w, 0.0, 1.0);
+    return out;
+}
+
+fn plane_color(in: Out) -> vec4f {
     // The end of the plane in an interior and under the water.
     if u.size.z > 0.0 && in.clip_w > u.size.z {
         discard;
@@ -104,7 +128,7 @@ struct Out {
     let fog = fog_water(eye_vec, dist);
     let normal = water_normal(in.texcoords, dist, in.world.xy);
     let reffactor = (u.sun_col.w * dist + 0.1) * normal.xy;
-    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0), false);
+    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0), true);
     let refracted = below.color;
     // With the dynamic waves the reflection is read at the point that is not above the plane.
     var reflect_uv = uv;
@@ -675,7 +699,14 @@ impl Water {
                 // The cone of the mirror: wider with more wind, as the waves are.
                 [projection[10], projection[14], scene.projection[0], frame.blur_tune[0] + frame.blur_tune[1] * wind_factor]
             },
-            land: [frame.land_projection[10], frame.land_projection[14], 0.0, 0.0],
+            land: {
+                // The depth of the distant land, and the clip depth of the plane: the near plane
+                // of the game and the far plane of the distant land.
+                let (land_a, land_b) = (frame.land_projection[10], frame.land_projection[14]);
+                let near = -scene.projection[14] / scene.projection[10];
+                let far = land_b / (1.0 - land_a);
+                [land_a, land_b, far / (far - near), -near * far / (far - near)]
+            },
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
