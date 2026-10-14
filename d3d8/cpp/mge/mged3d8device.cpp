@@ -1500,6 +1500,75 @@ namespace Deviceless {
         sendToRenderer(SettingsId, &s, sizeof(s));
     }
 
+    // The vis groups of the distant statics (usage.data): a journal entry, a global variable
+    // or a unique object of the game shows or hides the statics of a group. As the Direct3D 9
+    // path has it (DistantLand::scanDynamicVisGroups): the groups are read and their objects
+    // found when a game loads, and the game data is read again when the player goes into
+    // another cell. The renderer gets the state of all groups, as a record that the stream
+    // keeps: a byte for each group, with the group 0 first; 0 for a hidden group.
+    // mgeHost64/src/renderer.rs has the same layout.
+    static const UINT VisGroupsId = 8 | 0x80000000u;
+    static bool visGroupsUnsent = false;
+
+    static void loadVisGroups() {
+        DistantLand::dynamicVisGroups.clear();
+        // The renderer can make the files again at the start: the file stays free to write.
+        HANDLE h = CreateFile("Data Files\\distantland\\statics\\usage.data", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, 0, 0);
+        if (h == INVALID_HANDLE_VALUE) {
+            return;
+        }
+        // The groups come after the number of statics.
+        DWORD staticCount = 0, read = 0;
+        if (ReadFile(h, &staticCount, sizeof(staticCount), &read, 0) && read == sizeof(staticCount)) {
+            if (!DistantLand::loadVisGroupsClient(h)) {
+                DistantLand::dynamicVisGroups.clear();
+            }
+        }
+        CloseHandle(h);
+    }
+
+    // The game resolved the objects of a save or of a new game.
+    static void onResolveDuringInit() {
+        loadVisGroups();
+        DistantLand::resolveDynamicVisGroups();
+        visGroupsUnsent = true;
+    }
+
+    static void scanVisGroups(MWBridge* mwBridge) {
+        void* playerCell = mwBridge->getPlayerCell();
+        if (playerCell == DistantLand::lastDistantVisCell) {
+            return;
+        }
+        DistantLand::lastDistantVisCell = playerCell;
+
+        auto& groups = DistantLand::dynamicVisGroups;
+        bool changed = visGroupsUnsent;
+        for (auto& vis : groups) {
+            // An object that the game does not have leaves its group shown.
+            if (!vis.gameObject) {
+                continue;
+            }
+            const bool enable = DistantLand::isVisGroupShown(vis);
+            if (enable != vis.enabled) {
+                vis.enabled = enable;
+                changed = true;
+            }
+        }
+        if (!changed || groups.empty()) {
+            return;
+        }
+        visGroupsUnsent = false;
+
+        std::vector<unsigned char> record(8 + groups.size(), 0);
+        const UINT head[2] = { 1, static_cast<UINT>(groups.size()) };
+        std::memcpy(record.data(), head, sizeof(head));
+        for (size_t i = 0; i < groups.size(); ++i) {
+            // The group 0 is not a group: its statics are always shown.
+            record[8 + i] = (i == 0 || groups[i].enabled) ? 1 : 0;
+        }
+        sendToRenderer(VisGroupsId, record.data(), static_cast<UINT>(record.size()));
+    }
+
     // The game showed a frame. The size is that of its back buffer.
     void present(unsigned width, unsigned height) {
         prepare();
@@ -1516,9 +1585,11 @@ namespace Deviceless {
             if (Configuration.ExpandedLightLimit) {
                 MWPatches::patchExpandedLightLimit();
             }
+            MWPatches::patchResolveDuringInit(&onResolveDuringInit);
         }
         if (mwBridge->IsLoaded()) {
             updateFrameLogic(mwBridge);
+            scanVisGroups(mwBridge);
             if (Configuration.ScreenFOV > 0) {
                 mwBridge->SetFOV(Configuration.ScreenFOV);
             }

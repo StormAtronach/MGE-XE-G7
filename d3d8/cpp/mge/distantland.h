@@ -370,6 +370,7 @@ public:
     static void onResolveDuringInit();
     static void resolveDynamicVisGroups();
     static void scanDynamicVisGroups();
+    static bool isVisGroupShown(const DynamicVisGroup& vis);
 
     static void setView(const D3DMATRIX* m);
     static void setProjection(D3DMATRIX* proj);

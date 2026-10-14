@@ -175,6 +175,12 @@ trailing metadata (GUI reads the last 4 bytes as the generated "near size" float
   variable value, or object-disabled flag), re-resolves on every save load, scans for
   changes on cell change, and sends toggles to the host (`UpdateDynVis`). Group index 0 is
   reserved; `visIndex` on each placement links instances to groups.
+- With the wgpu renderer (`runtime.renderer_wgpu`) there is no IPC host and no device:
+  `Deviceless` in `mged3d8device.cpp` reads the group definitions from `usage.data` on each
+  save load, scans them on cell change with the same test (`isVisGroupShown`), and sends the
+  state of all groups as the kept stream record 8 (a byte for each group, 0 = hidden). The
+  statics of the helper (`renderer/statics.rs`) read `visIndex` of each placement and do
+  not draw a place of a hidden group; a record for another group count is not used.
 
 ## 5. Generation pipeline
 

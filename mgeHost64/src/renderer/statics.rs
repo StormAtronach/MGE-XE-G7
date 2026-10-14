@@ -44,8 +44,13 @@
 //! dry space (0x10). They have places of their own, and `far_water` gives those in view to
 //! the water (`water/volume.rs`).
 //!
-//! Not here yet: the groups of statics that the game shows or hides (all of them are shown),
-//! and the quadtree and the horizon culling of the IPC host mode.
+//! A place can be in a vis group of `usage.data`: a journal entry, a global variable or a
+//! unique object of the game shows or hides all the places of the group. MGE XE finds the
+//! state of the groups when the player goes into another cell and sends it in a record
+//! (`set_groups`); a place of a hidden group is not drawn, not in the shadow map, and not
+//! given to the water. The generator never merges a place of a group.
+//!
+//! Not here yet: the quadtree and the horizon culling of the IPC host mode.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -156,6 +161,8 @@ struct Instance {
     radius: f32,
     /// 0 near, 1 far, 2 very far.
     tier: u8,
+    /// The vis group of the place: 0 for none.
+    group: u16,
 }
 
 /// A place of a grass static.
@@ -167,6 +174,8 @@ struct GrassPlace {
     scale: f32,
     /// A sphere around the position that has all of the model.
     radius: f32,
+    /// The vis group of the place: 0 for none.
+    group: u16,
 }
 
 /// The places of one world space: the exterior, or one interior cell.
@@ -193,6 +202,8 @@ struct Catalog {
     /// The one place of each merged subset.
     merged_place: HashMap<u32, u32>,
     grass: Vec<GrassPlace>,
+    /// The vis groups of `usage.data` and the group 0 (no group).
+    groups: usize,
     ordinary_bytes: u64,
     merged_bytes: u64,
 }
@@ -395,6 +406,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                         rotation: [place.rotation.x, place.rotation.y, place.rotation.z],
                         scale: place.scale,
                         radius: (center + model.radius) * place.scale,
+                        group: place.vis_index,
                     });
                 }
                 continue;
@@ -421,11 +433,19 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                 if !s.components.is_empty() {
                     merged_place.insert(subset, instances.len() as u32);
                 }
-                instances.push(Instance { subset, world, center, radius, tier });
+                instances.push(Instance { subset, world, center, radius, tier, group: place.vis_index });
             }
         }
     }
-    Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, worlds, textures, palettes, merged_place, grass, ordinary_bytes, merged_bytes })
+    let groups = usage.vis_groups.len() + 1;
+    Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, worlds, textures, palettes, merged_place, grass, groups, ordinary_bytes, merged_bytes })
+}
+
+/// True when the place of a group is hidden: `shown` has a byte for each group, 0 for a hidden
+/// one. A place without a group (0) is always shown, and so is each place before the first
+/// record.
+fn hidden(shown: &[u8], group: u16) -> bool {
+    group != 0 && shown.get(group as usize) == Some(&0)
 }
 
 /// A name of `usage.data` or of the environment without the zeros that pad it.
@@ -988,6 +1008,13 @@ pub struct Statics {
     pub synchronous: bool,
     /// The name of the world space of the frame: empty for the exterior.
     world: Vec<u8>,
+    /// The state of the vis groups from MGE XE: a byte for each group, 0 for a hidden one.
+    /// Empty while the record is not there or is not for the groups of the catalog.
+    shown: Vec<u8>,
+    /// The record of the groups as it came, for a catalog that is not read yet.
+    groups_record: Vec<u8>,
+    /// The places of hidden groups that a frame did not draw, for the report.
+    hidden_skipped: u64,
 }
 
 impl Statics {
@@ -1046,6 +1073,30 @@ impl Statics {
             failed: false,
             synchronous: false,
             world: Vec::new(),
+            shown: Vec::new(),
+            groups_record: Vec::new(),
+            hidden_skipped: 0,
+        }
+    }
+
+    /// The state of the vis groups, from the record of MGE XE: a byte for each group, with
+    /// the group 0 first; 0 is a hidden group. A record for another number of groups than
+    /// the catalog has is from other files (the generator made them again after MGE XE read
+    /// its groups): it is not used.
+    pub fn set_groups(&mut self, shown: &[u8]) {
+        self.groups_record = shown.to_vec();
+        self.apply_groups();
+    }
+
+    fn apply_groups(&mut self) {
+        let Some(catalog) = self.catalog.as_ref() else { return };
+        if self.groups_record.len() == catalog.groups {
+            self.shown = self.groups_record.clone();
+            let hidden = self.shown.iter().skip(1).filter(|shown| **shown == 0).count();
+            println!("distant statics: vis groups: {hidden} of {} hidden", catalog.groups - 1);
+        } else if !self.groups_record.is_empty() {
+            self.shown.clear();
+            println!("distant statics: a record of {} vis groups for a catalog of {}; all are shown", self.groups_record.len(), catalog.groups);
         }
     }
 
@@ -1245,6 +1296,8 @@ impl Statics {
         self.requests = Some(request_sender);
         self.arrivals = Some(arrival_receiver);
         self.catalog = Some(catalog);
+        // A record of the groups that came before the catalog.
+        self.apply_groups();
         // All ordinary subsets that a place of the world space uses go to the GPU now.
         self.request_world();
     }
@@ -1309,6 +1362,9 @@ impl Statics {
                 let Some(list) = world.grass_cells.get(&(x, y)) else { continue };
                 for index in list {
                     let place = &catalog.grass[*index as usize];
+                    if hidden(&self.shown, place.group) {
+                        continue;
+                    }
                     let to = [place.position[0] - eye[0], place.position[1] - eye[1], place.position[2] - eye[2]];
                     let reach = view_range + place.radius;
                     if to[0] * to[0] + to[1] * to[1] + to[2] * to[2] > reach * reach {
@@ -1417,6 +1473,9 @@ impl Statics {
                 let Some(list) = world.water_cells.get(&(x, y)) else { continue };
                 for index in list {
                     let instance = &catalog.instances[*index as usize];
+                    if hidden(&self.shown, instance.group) {
+                        continue;
+                    }
                     let subset = &catalog.subsets[instance.subset as usize];
                     let Some(look) = subset.look else { continue };
                     let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
@@ -1487,6 +1546,10 @@ impl Statics {
                 let Some(list) = world.cells.get(&(x, y)) else { continue };
                 for index in list {
                     let instance = &catalog.instances[*index as usize];
+                    if hidden(&self.shown, instance.group) {
+                        self.hidden_skipped += 1;
+                        continue;
+                    }
                     let subset = &catalog.subsets[instance.subset as usize];
                     let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
                     let range = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
@@ -1633,6 +1696,7 @@ impl Drop for Statics {
             self.grass_drawn as f64 / self.grass_frames.max(1) as f64,
             self.grass_cut
         );
+        println!("distant statics: {} places of hidden vis groups not drawn", self.hidden_skipped);
     }
 }
 
@@ -1969,7 +2033,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_from_budget, plan_merged};
+    use super::{cap_from_budget, hidden, plan_merged};
 
     const MB: u64 = 1 << 20;
 
@@ -2020,5 +2084,19 @@ mod tests {
     fn a_subset_larger_than_the_cap_waits() {
         let (admit, evict, waiting) = plan_merged(&[(1.0, 7, 200)], vec![(9.0, 2, 30)], 30, 100);
         assert_eq!((admit, evict, waiting), (vec![], vec![], true));
+    }
+    #[test]
+    fn a_place_of_a_hidden_group_is_hidden() {
+        let shown = [1, 1, 0, 1];
+        assert!(hidden(&shown, 2));
+        assert!(!hidden(&shown, 1));
+        assert!(!hidden(&shown, 3));
+    }
+
+    #[test]
+    fn a_place_without_a_group_or_record_is_shown() {
+        assert!(!hidden(&[0, 0], 0));
+        assert!(!hidden(&[], 2));
+        assert!(!hidden(&[1, 0], 9));
     }
 }

@@ -1179,16 +1179,44 @@ void DistantLand::resolveDynamicVisGroups() {
     lastDistantVisCell = nullptr;
 }
 
+// isVisGroupShown - Whether the game data shows a resolved vis group now
+bool DistantLand::isVisGroupShown(const DynamicVisGroup& vis) {
+    auto mwBridge = MWBridge::get();
+
+    // The switch below has no default case; an unrecognised DataSource
+    // would otherwise leave this undefined before the range test.
+    int value = 0;
+
+    switch (vis.source) {
+    case DynamicVisGroup::DataSource::Journal:
+        value = mwBridge->getJournalIndex(vis.gameObject);
+        break;
+    case DynamicVisGroup::DataSource::Global:
+        value = int(mwBridge->getGlobalVarValue(vis.gameObject));
+        break;
+    case DynamicVisGroup::DataSource::UniqueObject: {
+        const int disabledRecordFlag = 0x800;
+        const int deletedRecordFlag = 0x20;
+        value = (mwBridge->getRecordFlags(vis.gameObject) & (disabledRecordFlag | deletedRecordFlag)) == 0;
+        break;
+    }
+    }
+
+    // Enable if value is inside any range
+    for (const auto& r : vis.ranges) {
+        if (r.begin <= value && value < r.end) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // scanDynamicVisGroups - Scan through game data for visibility changes
 void DistantLand::scanDynamicVisGroups() {
-    auto mwBridge = MWBridge::get();
     dynVisFlagsShared.clear();
 
     std::uint16_t i = 0;
     for (auto& vis : dynamicVisGroups) {
-        // The switch below has no default case; an unrecognised DataSource
-        // would otherwise leave this undefined before the range test.
-        int value = 0;
         auto groupIndex = i++;
 
         // Ignore unresolved objects
@@ -1196,29 +1224,7 @@ void DistantLand::scanDynamicVisGroups() {
             continue;
         }
 
-        switch (vis.source) {
-        case DynamicVisGroup::DataSource::Journal:
-            value = mwBridge->getJournalIndex(vis.gameObject);
-            break;
-        case DynamicVisGroup::DataSource::Global:
-            value = int(mwBridge->getGlobalVarValue(vis.gameObject));
-            break;
-        case DynamicVisGroup::DataSource::UniqueObject: {
-            const int disabledRecordFlag = 0x800;
-            const int deletedRecordFlag = 0x20;
-            value = (mwBridge->getRecordFlags(vis.gameObject) & (disabledRecordFlag | deletedRecordFlag)) == 0;
-            break;
-        }
-        }
-
-        // Enable if value is inside any range
-        bool enable = false;
-        for (const auto& r : vis.ranges) {
-            if (r.begin <= value && value < r.end) {
-                enable = true;
-                break;
-            }
-        }
+        bool enable = isVisGroupShown(vis);
 
         // If enable state has changed, propagate to distant land mesh instances
         if (enable ^ vis.enabled) {

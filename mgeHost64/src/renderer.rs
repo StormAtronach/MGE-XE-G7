@@ -74,6 +74,10 @@ const TUNE_ID: u32 = 5;
 const WATER_LOOKS_ID: u32 = 6;
 /// The triangles of the dry spaces (`MGE_WaterMasksSet`), kept as the looks are.
 const WATER_MASKS_ID: u32 = 7;
+/// The state of the vis groups of the distant statics (`Deviceless::sendVisGroups`), kept
+/// as the looks are: version 1, the number of groups with the group 0, then a byte for each
+/// group, 0 for a hidden one.
+const VIS_GROUPS_ID: u32 = 8;
 
 /// The settings record of MGE XE (`Deviceless::sendSettings`): the feature flags
 /// (`Configuration.MGEFlags`), the lighting mode, the HDR reaction speed, the distances of
@@ -381,6 +385,8 @@ pub struct DistantLand {
     far_water: Vec<water::FarWater>,
     /// The triangles of the dry spaces from the game, until the water takes them.
     water_masks: Option<Vec<[f32; 3]>>,
+    /// The bytes of the last record of the vis groups, for statics that start after it.
+    vis_groups: Vec<u8>,
     waves: Vec<u8>,
     started: Instant,
     meshes_drawn: u64,
@@ -697,6 +703,7 @@ impl DistantLand {
             water_looks: std::collections::HashMap::new(),
             far_water: Vec::new(),
             water_masks: None,
+            vis_groups: Vec::new(),
             waves: Vec::new(),
             started: Instant::now(),
             meshes_drawn: 0,
@@ -755,7 +762,9 @@ impl DistantLand {
         self.generation = None;
         if let Some(folder) = self.statics_after_generation.take() {
             let document = ConfigDocument::open(self.root.join(FILE_NAME));
-            self.statics = Some(statics::Statics::start(&document, folder));
+            let mut statics = statics::Statics::start(&document, folder);
+            statics.set_groups(&self.vis_groups);
+            self.statics = Some(statics);
         }
     }
 
@@ -1731,6 +1740,18 @@ impl Extension for DistantLand {
         if id == WATER_MASKS_ID {
             if let Some(corners) = water::read_masks(bytes) {
                 self.water_masks = Some(corners);
+            }
+            return;
+        }
+        if id == VIS_GROUPS_ID {
+            let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+            if let (Some(1), Some(count)) = (word(0), word(4)) {
+                if let Some(shown) = bytes.get(8..8 + count as usize) {
+                    self.vis_groups = shown.to_vec();
+                    if let Some(statics) = self.statics.as_mut() {
+                        statics.set_groups(shown);
+                    }
+                }
             }
             return;
         }
