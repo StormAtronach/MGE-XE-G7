@@ -1,25 +1,32 @@
 //! The parameters of the renderer that a person can change while the game runs, to find a
-//! good value by eye. Each has a name, a range and a step. The debug overlay shows them, and
-//! the game side sends commands for them (`nirender.tune(command)` of the plugin; the Lua
-//! mod of the plugin sends them from the number pad while the overlay is on).
+//! good value by eye. Each has a name, a range, a step and a start value.
 //!
-//! A value that was found goes into the code as the new start value: the parameters are not
+//! The list is one file, `tunables.toml` of the MGE XE options mod. This program has it
+//! built in; the window "renderer parameters" of that mod reads the same file for its
+//! sliders, and sends a command for each change (`nirender.tune(command)` of the plugin,
+//! data of an extension). The debug overlay shows the values.
+//!
+//! A value that was found goes into the file as the new start value: the parameters are not
 //! settings, and nothing is written to a file.
 //!
-//! To add one: a constant for its place, and its line in `Tunables::new`. The code that
+//! To add one: its entry in the file, and a constant with its name here. The code that
 //! needs the value reads it with `get` in each frame.
+
+/// The file of the parameters, as the MGE XE options mod has it.
+const FILE: &str = include_str!("../../../assets/Data Files/mwse/mods/MGE XE Options/tunables.toml");
 
 /// The blur of the water reflection that is sharp at the waterline: the angle of the cone
 /// that a point of the water mirrors, in radians, without wind.
-pub const BLUR_ANGLE: usize = 0;
+pub const BLUR_ANGLE: &str = "water.blur.angle";
 /// The same: how much the wind adds to the angle (times the wind factor of the water).
-pub const BLUR_WIND: usize = 1;
+pub const BLUR_WIND: &str = "water.blur.wind";
 /// The same: the most that the blur is taller than wide, for a flat look at the water.
-pub const BLUR_STRETCH: usize = 2;
+pub const BLUR_STRETCH: &str = "water.blur.stretch";
 
+#[derive(Default)]
 struct Tunable {
-    name: &'static str,
-    about: &'static str,
+    name: String,
+    label: String,
     value: f32,
     start: f32,
     least: f32,
@@ -29,25 +36,47 @@ struct Tunable {
 
 pub struct Tunables {
     list: Vec<Tunable>,
-    selected: usize,
+}
+
+/// Reads the file: a line `[[parameter]]` starts a parameter, and each line `key = value`
+/// after it is one of its keys, with a text between quotation marks or a number.
+fn parse(text: &str) -> Vec<Tunable> {
+    let mut list: Vec<Tunable> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line == "[[parameter]]" {
+            list.push(Tunable::default());
+            continue;
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let (Some(tunable), Some((key, value))) = (list.last_mut(), line.split_once('=')) else { continue };
+        let value = value.trim();
+        let text = value.trim_matches('"').to_string();
+        let number = value.parse::<f32>().unwrap_or(0.0);
+        match key.trim() {
+            "name" => tunable.name = text,
+            "label" => tunable.label = text,
+            "start" => (tunable.start, tunable.value) = (number, number),
+            "least" => tunable.least = number,
+            "most" => tunable.most = number,
+            "step" => tunable.step = number,
+            _ => {}
+        }
+    }
+    list
 }
 
 impl Tunables {
     pub fn new() -> Tunables {
-        let one = |name, about, start: f32, least, most, step| Tunable { name, about, value: start, start, least, most, step };
-        Tunables {
-            // In the order of the constants above.
-            list: vec![
-                one("water.blur.angle", "cone of the mirror without wind, radians", 0.004, 0.0, 0.05, 0.0005),
-                one("water.blur.wind", "what the wind adds to the cone", 0.18, 0.0, 2.0, 0.02),
-                one("water.blur.stretch", "most height of the blur for its width", 2.0, 1.0, 6.0, 0.1),
-            ],
-            selected: 0,
-        }
+        Tunables { list: parse(FILE) }
     }
 
-    pub fn get(&self, which: usize) -> f32 {
-        self.list[which].value
+    /// The value of a parameter; 0 for a name that the file does not have (a test checks
+    /// that each name of this file is there).
+    pub fn get(&self, name: &str) -> f32 {
+        self.list.iter().find(|tunable| tunable.name == name).map_or(0.0, |tunable| tunable.value)
     }
 
     /// The three numbers of the blur that is sharp at the waterline.
@@ -55,59 +84,41 @@ impl Tunables {
         [self.get(BLUR_ANGLE), self.get(BLUR_WIND), self.get(BLUR_STRETCH)]
     }
 
-    /// One command: `next`, `previous`, `more [steps]`, `less [steps]`, `reset`,
-    /// `reset all`, or `set <name> <value>`. Returns a line for the log when a value
-    /// changed, and `None` for a move of the selection or a command that is not known.
+    /// One command: `set <name> <value>`, `reset <name>`, or `reset all`. Returns a line
+    /// for the log when a value changed, and `None` for a command that is not known.
     pub fn command(&mut self, text: &str) -> Option<String> {
         let mut words = text.split_whitespace();
-        let count = self.list.len();
-        let steps = |word: Option<&str>| word.and_then(|w| w.parse::<f32>().ok()).filter(|n| n.is_finite()).unwrap_or(1.0);
-        let changed = match (words.next()?, words.next(), words.next()) {
-            ("next", _, _) => {
-                self.selected = (self.selected + 1) % count;
-                return None;
-            }
-            ("previous", _, _) => {
-                self.selected = (self.selected + count - 1) % count;
-                return None;
-            }
-            ("more", n, _) => self.put(self.selected, self.list[self.selected].value + steps(n) * self.list[self.selected].step),
-            ("less", n, _) => self.put(self.selected, self.list[self.selected].value - steps(n) * self.list[self.selected].step),
-            ("reset", Some("all"), _) => {
+        match (words.next()?, words.next()?, words.next()) {
+            ("reset", "all", _) => {
                 for tunable in &mut self.list {
                     tunable.value = tunable.start;
                 }
-                return Some("all parameters at their start values".to_string());
+                Some("all parameters at their start values".to_string())
             }
-            ("reset", _, _) => {
-                self.list[self.selected].value = self.list[self.selected].start;
-                self.selected
+            ("reset", name, _) => {
+                let tunable = self.list.iter_mut().find(|tunable| tunable.name == name)?;
+                tunable.value = tunable.start;
+                Some(format!("{} = {}", tunable.name, shown(tunable.value)))
             }
-            ("set", Some(name), Some(value)) => {
-                let which = self.list.iter().position(|tunable| tunable.name == name)?;
-                self.put(which, value.parse::<f32>().ok().filter(|v| v.is_finite())?)
+            ("set", name, Some(value)) => {
+                let value = value.parse::<f32>().ok().filter(|v| v.is_finite())?;
+                let tunable = self.list.iter_mut().find(|tunable| tunable.name == name)?;
+                // In its range, and on a whole number of steps from the least value.
+                let steps = if tunable.step > 0.0 { ((value - tunable.least) / tunable.step).round() * tunable.step } else { value - tunable.least };
+                tunable.value = (tunable.least + steps).clamp(tunable.least, tunable.most);
+                Some(format!("{} = {}", tunable.name, shown(tunable.value)))
             }
-            _ => return None,
-        };
-        Some(format!("{} = {}", self.list[changed].name, shown(self.list[changed].value)))
+            _ => None,
+        }
     }
 
-    /// Sets a value, kept in its range and on a whole number of steps from 0.
-    fn put(&mut self, which: usize, value: f32) -> usize {
-        let tunable = &mut self.list[which];
-        let stepped = (value / tunable.step).round() * tunable.step;
-        tunable.value = stepped.clamp(tunable.least, tunable.most);
-        which
-    }
-
-    /// The lines of the debug overlay: the keys, then each parameter with its value, its
-    /// start value when it differs, and what it is. A mark is before the selected one.
+    /// The lines of the debug overlay: each parameter with its value, and its start value
+    /// when it differs.
     pub fn lines(&self) -> Vec<String> {
-        let mut lines = vec!["parameters   numpad 8 2 select, 4 6 change (shift: 10 steps), 5 reset".to_string()];
-        for (index, tunable) in self.list.iter().enumerate() {
-            let mark = if index == self.selected { ">" } else { " " };
-            let start = if tunable.value == tunable.start { String::new() } else { format!(" (start {})", shown(tunable.start)) };
-            lines.push(format!("{mark} {:<20} {:<8}{start}  {}", tunable.name, shown(tunable.value), tunable.about));
+        let mut lines = vec!["parameters   (the window of the MGE XE options changes them)".to_string()];
+        for tunable in &self.list {
+            let start = if tunable.value == tunable.start { String::new() } else { format!("  (start {})", shown(tunable.start)) };
+            lines.push(format!("  {:<20} {:<8}{start}", tunable.name, shown(tunable.value)));
         }
         lines
     }
@@ -123,45 +134,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_commands_select_and_change() {
+    fn the_file_has_each_parameter_of_the_code_with_a_range() {
+        let tunables = Tunables::new();
+        for name in [BLUR_ANGLE, BLUR_WIND, BLUR_STRETCH] {
+            let tunable = tunables.list.iter().find(|tunable| tunable.name == name).unwrap_or_else(|| panic!("no parameter {name} in the file"));
+            assert!(!tunable.label.is_empty(), "{name} has no label");
+            assert!(tunable.step > 0.0 && tunable.least < tunable.most, "{name} has no range");
+            assert!((tunable.least..=tunable.most).contains(&tunable.start), "{name} starts out of its range");
+            assert_eq!(tunable.value, tunable.start);
+        }
+        // Each entry of the file is complete, and no name comes two times.
+        for (index, tunable) in tunables.list.iter().enumerate() {
+            assert!(!tunable.name.is_empty() && tunable.step > 0.0, "entry {index} is not complete");
+            assert_eq!(tunables.list.iter().filter(|other| other.name == tunable.name).count(), 1, "{} comes two times", tunable.name);
+        }
+        assert_eq!(tunables.blur(), [0.004, 0.18, 2.0]);
+    }
+
+    #[test]
+    fn the_commands_set_and_reset() {
         let mut tunables = Tunables::new();
-        let start = tunables.get(BLUR_ANGLE);
-        assert!(tunables.command("more").is_some_and(|line| line.starts_with("water.blur.angle = ")));
-        assert!((tunables.get(BLUR_ANGLE) - (start + 0.0005)).abs() < 1e-6);
-        assert!(tunables.command("less 3").is_some());
-        assert!((tunables.get(BLUR_ANGLE) - (start - 0.001)).abs() < 1e-6);
-        // The selection goes around; a move of it changes no value.
-        assert_eq!(tunables.command("previous"), None);
-        assert!(tunables.lines()[3].starts_with("> water.blur.stretch"));
-        assert_eq!(tunables.command("next"), None);
-        assert_eq!(tunables.command("next"), None);
-        assert!(tunables.lines()[2].starts_with("> water.blur.wind"));
-        assert_eq!(tunables.command("more 10"), Some("water.blur.wind = 0.38".to_string()));
+        assert_eq!(tunables.command("set water.blur.wind 0.38"), Some("water.blur.wind = 0.38".to_string()));
         assert!((tunables.get(BLUR_WIND) - 0.38).abs() < 1e-6);
-        assert!(tunables.command("reset").is_some());
+        // A changed value shows its start value in the overlay.
+        assert!(tunables.lines().iter().any(|line| line.contains("water.blur.wind") && line.contains("(start 0.18)")));
+        assert!(tunables.command("set water.blur.angle 0.0101").is_some());
+        assert!((tunables.get(BLUR_ANGLE) - 0.01).abs() < 1e-6);
+        assert!(tunables.command("reset water.blur.wind").is_some());
         assert_eq!(tunables.get(BLUR_WIND), 0.18);
-        // The first value is still changed: its line has the start value.
-        assert!(tunables.lines()[1].contains("(start 0.004)"));
+        assert!((tunables.get(BLUR_ANGLE) - 0.01).abs() < 1e-6);
         assert!(tunables.command("reset all").is_some());
-        assert_eq!(tunables.get(BLUR_ANGLE), start);
+        assert_eq!(tunables.blur(), [0.004, 0.18, 2.0]);
+        assert_eq!(tunables.lines().len(), 1 + tunables.list.len());
     }
 
     #[test]
     fn a_value_stays_in_its_range_and_a_bad_command_does_nothing() {
         let mut tunables = Tunables::new();
-        assert!(tunables.command("less 1000").is_some());
-        assert_eq!(tunables.get(BLUR_ANGLE), 0.0);
         assert!(tunables.command("set water.blur.stretch 99").is_some());
         assert_eq!(tunables.get(BLUR_STRETCH), 6.0);
-        assert!(tunables.command("set water.blur.stretch 2.34").is_some());
-        assert!((tunables.get(BLUR_STRETCH) - 2.3).abs() < 1e-6);
+        assert!(tunables.command("set water.blur.angle -3").is_some());
+        assert_eq!(tunables.get(BLUR_ANGLE), 0.0);
         let before = tunables.blur();
-        for bad in ["", "louder", "set", "set no.such.name 1", "set water.blur.wind much", "set water.blur.wind NaN", "more NaN"] {
-            let _ = tunables.command(bad);
+        for bad in ["", "louder", "set", "reset", "set no.such.name 1", "reset no.such.name", "set water.blur.wind much", "set water.blur.wind NaN", "set water.blur.wind"] {
+            assert_eq!(tunables.command(bad), None, "{bad}");
         }
-        // `more NaN` counts as one step of the selected parameter, the angle.
-        assert_eq!(tunables.get(BLUR_WIND), before[1]);
-        assert_eq!(tunables.get(BLUR_STRETCH), before[2]);
-        assert!(tunables.get(BLUR_ANGLE).is_finite());
+        assert_eq!(tunables.blur(), before);
+    }
+
+    #[test]
+    fn the_file_format_is_read() {
+        let list = parse("# a comment = with a sign\nname = \"before the first\"\n[[parameter]]\nname = \"a.b\"\nlabel = \"A label: with = signs\"\nabout = \"ignored\"\nstart = 1.5\nleast = 0\nmost = 3\nstep = 0.5\n\n[[parameter]]\nname = \"c\"\n");
+        assert_eq!(list.len(), 2);
+        assert_eq!((list[0].name.as_str(), list[0].label.as_str(), list[0].start, list[0].value, list[0].least, list[0].most, list[0].step), ("a.b", "A label: with = signs", 1.5, 1.5, 0.0, 3.0, 0.5));
+        assert_eq!(list[1].name, "c");
     }
 }

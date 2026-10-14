@@ -1,6 +1,10 @@
 return {
     ["PleaseUpgrade"] = "Zaktualizuj MGE XE do wersji 0.14+.",
 	["OpenSettings"] = "Otwórz okno ustawień",
+	["OpenTuning"] = "Otwórz parametry renderera",
+	["TuningTitle"] = "Parametry renderera MGE XE",
+	["TuningNote"] = "Do oceny na oko. Wartości nie są zapisywane: przekaż deweloperowi te, które wyglądają dobrze.",
+	["ResetAll"] = "Resetuj wszystko",
 
     ["MsgLoaded"] = "Konfiguracja załadowana.",
     ["MsgSaved"] = "Zapisano konfigurację.",

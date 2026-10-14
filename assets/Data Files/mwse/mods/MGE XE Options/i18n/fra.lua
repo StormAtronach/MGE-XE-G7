@@ -1,6 +1,10 @@
 return {
     ["PleaseUpgrade"] = "Veuillez mettre à jour MGE XE vers la version 0.14+.",
 	["OpenSettings"] = "Ouvrir la fenêtre des réglages",
+	["OpenTuning"] = "Ouvrir les paramètres du moteur de rendu",
+	["TuningTitle"] = "Paramètres du moteur de rendu MGE XE",
+	["TuningNote"] = "Pour un réglage à l'œil. Les valeurs ne sont pas enregistrées : communiquez au développeur celles qui conviennent.",
+	["ResetAll"] = "Tout réinitialiser",
 
     ["MsgLoaded"] = "Configuration chargée.",
     ["MsgSaved"] = "Configuration enregistrée.",
