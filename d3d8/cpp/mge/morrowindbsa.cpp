@@ -2,11 +2,13 @@
 #include "morrowindbsa.h"
 #include "bc7format.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
 #include <memory>
+#include <string>
 
 
 
@@ -218,7 +220,18 @@ static IDirect3DTexture9* loadBC7TextureFromFile(IDirect3DDevice9* dev, const ch
 
 // Note: loadedTextures would ideally store weakRefs, but COM doesn't support those.
 static unordered_map<__int64, CacheEntry> cacheMap;
-static unordered_map<__int64, IDirect3DTexture9*> loadedTextures;
+// The textures by their path in lower case. Not by the BSA hash: two names can have one hash
+// (grass\az\aif02.dds and grass\az\aig03.dds of Fantasia Grass Mod), and the second name
+// would then get the texture of the first.
+static unordered_map<std::string, IDirect3DTexture9*> loadedTextures;
+
+static std::string textureKey(const char* filename) {
+    std::string key(filename);
+    for (auto& c : key) {
+        c = (c == '/') ? '\\' : static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+    return key;
+}
 
 
 
@@ -319,11 +332,12 @@ static EntryData BSALoadFile(BSAHash3 hash) {
 static IDirect3DTexture9* loadTextureExact(IDirect3DDevice9* dev, const char* filename) {
     char pathbuf[MAX_PATH];
     BSAHash3 hash = hashString(filename);
+    const std::string key = textureKey(filename);
     IDirect3DTexture9* tex = nullptr;
 
     // First check if the texture is already loaded. A cached entry may be null, as failed loads
     // are cached too; pass that through so callers can fall back to another extension.
-    auto it = loadedTextures.find(hash.LValue);
+    auto it = loadedTextures.find(key);
     if (it != loadedTextures.end()) {
         if (it->second) {
             it->second->AddRef();
@@ -343,7 +357,7 @@ static IDirect3DTexture9* loadTextureExact(IDirect3DDevice9* dev, const char* fi
 
         if (hr == D3D_OK) {
             // Cache failures too, so a missing or undecodable asset is not retried every draw.
-            loadedTextures[hash.LValue] = tex;
+            loadedTextures[key] = tex;
             return tex;
         }
     }
@@ -357,7 +371,7 @@ static IDirect3DTexture9* loadTextureExact(IDirect3DDevice9* dev, const char* fi
                                                       D3DX_FILTER_NONE, 0, 0, 0, &tex);
 
         if (hr == D3D_OK) {
-            loadedTextures[hash.LValue] = tex;
+            loadedTextures[key] = tex;
             return tex;
         }
     }
@@ -374,7 +388,7 @@ static IDirect3DTexture9* loadTextureExact(IDirect3DDevice9* dev, const char* fi
                                                 D3DX_DEFAULT, 0, 0, 0, &tex);
         }
 
-        loadedTextures[hash.LValue] = tex;
+        loadedTextures[key] = tex;
         return tex;
     }
 
