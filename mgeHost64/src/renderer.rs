@@ -1975,6 +1975,14 @@ impl Extension for DistantLand {
                 }
                 return;
             }
+            // `grass report <x> <y> <radius>`: the grass places near a point, by model.
+            if let Some(rest) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("grass report")) {
+                let numbers: Vec<f32> = rest.split_whitespace().filter_map(|word| word.parse().ok()).collect();
+                if let (Some(statics), [x, y, radius]) = (self.statics.as_ref(), numbers.as_slice()) {
+                    statics.grass_report(*x, *y, *radius);
+                }
+                return;
+            }
             // A command for a parameter, as a text. It changes a value of this run only.
             if let Some(line) = core::str::from_utf8(bytes).ok().and_then(|text| self.tunables.command(text)) {
                 println!("tune: {line}");

@@ -1235,6 +1235,57 @@ impl Statics {
         }
     }
 
+    /// Prints the grass places of the world space of the frame within `radius` of (x, y),
+    /// by model: the number of places, their vis groups and how many of them are hidden, and
+    /// each subset of the model with its texture, its size, and whether it is on the GPU.
+    /// The command `grass report <x> <y> <radius>` of `nirender.tune`, for a test.
+    pub fn grass_report(&self, x: f32, y: f32, radius: f32) {
+        let Some(catalog) = self.catalog.as_ref() else {
+            println!("grass report: no catalog");
+            return;
+        };
+        let Some(world) = catalog.worlds.get(&self.world) else {
+            println!("grass report: no world space {}", String::from_utf8_lossy(&self.world));
+            return;
+        };
+        // (first subset, subset count) -> (places, hidden places, groups)
+        let mut models: std::collections::BTreeMap<(u32, u32), (u32, u32, std::collections::BTreeSet<u16>)> = Default::default();
+        let cells = (radius / CELL).ceil() as i32 + 1;
+        let (cx, cy) = ((x / CELL).floor() as i32, (y / CELL).floor() as i32);
+        for gy in cy - cells..=cy + cells {
+            for gx in cx - cells..=cx + cells {
+                for index in world.grass_cells.get(&(gx, gy)).into_iter().flatten() {
+                    let place = &catalog.grass[*index as usize];
+                    let (dx, dy) = (place.position[0] - x, place.position[1] - y);
+                    if dx * dx + dy * dy > radius * radius {
+                        continue;
+                    }
+                    let entry = models.entry((place.first_subset, place.subset_count)).or_default();
+                    entry.0 += 1;
+                    entry.1 += hidden(&self.shown, place.group) as u32;
+                    entry.2.insert(place.group);
+                }
+            }
+        }
+        println!("grass report ({x}, {y}) within {radius}: {} models, grass on: {}", models.len(), self.settings.grass);
+        for ((first, count), (places, hidden_places, groups)) in &models {
+            println!("  model at subset {first} ({count} subsets): {places} places, {hidden_places} hidden, groups {groups:?}");
+            for subset in *first..first + count {
+                let Some(s) = catalog.subsets.get(subset as usize) else { continue };
+                let texture = catalog.textures.get(s.texture as usize).map_or("?", |name| name.as_str());
+                println!(
+                    "    subset {subset}: texture {} '{texture}', {} vertices, {} triangles, alpha {}, grass {}, on the GPU {}",
+                    s.texture,
+                    s.vertex_count,
+                    s.triangle_count,
+                    s.has_alpha,
+                    s.grass,
+                    self.resident.contains_key(&subset)
+                );
+            }
+        }
+    }
+
     /// Prints the work of the draws for each call of each set since the last report, and
     /// starts again: the command `statics report <label>` of `nirender.tune`.
     pub fn report(&mut self, label: &str) {
