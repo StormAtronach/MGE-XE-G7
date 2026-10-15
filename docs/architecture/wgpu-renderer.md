@@ -196,10 +196,10 @@ matrix (locations 9-12). Indices `Uint16`.
 
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
-| 0 | extension frame | 0 uniform `FrameParameters` (512 B), 1 texture (shadow atlas or white), 2 sampler, 3 uniform cluster grid, 4-5 storage cluster table and indexes (VF) | frame |
+| 0 | extension frame | 0 uniform `FrameParameters` (512 B), 1 texture (shadow atlas or white), 2 sampler, 3 uniform cluster grid, 4-5 storage cluster table and indexes, 6 storage lights of the frame, 7 storage bone palette (VF) | frame |
 | 1 | draw samplers | 0-5 sampler per texture stage (F) | material |
 | 2 | draw textures | 0-5 texture per stage (F) | material |
-| 3 | draw | 0 uniform `DrawData`, dynamic offset; 1 storage lights of the frame; 2 storage bone palette (V) | draw (offset) |
+| 3 | draw | 0 uniform `DrawData`, dynamic offset (VF) | draw (offset) |
 
 Groups 0-2 are set only when they change (`BoundGroups`); group 3 gets a new offset each draw.
 
@@ -208,18 +208,40 @@ group per draw. Depth test always, no depth write.
 
 **overlay**: made by `egui_wgpu` inside the crate.
 
-### 4.2 Helper: distant land and statics
+### 4.2 Helper: the view group, distant land and statics
+
+**The view group** (`renderer/view.rs`, `ViewBinding`) is group 0 of each helper pipeline
+that draws into the world: the land, the statics, the glows, the grass, the water, the dry
+spaces, the caustics and the water volumes. One layout, and one group object for each view of
+the frame, each with its own uniform buffer:
+
+| View | Number | Projection | Pipelines |
+| --- | --- | --- | --- |
+| main | 0 | the land's (far plane at the draw distance) | land, statics set 0, glows |
+| mirror | 1 | the mirror of the water | land and statics in the reflection |
+| shadow 0, shadow 1 | 2, 3 | the layers of the shadow map | land shadow, statics shadow |
+| game | 4 | the game's | grass, water plane, dry spaces, caustics, water volumes |
+
+| Binding | Holds | Stage |
+| --- | --- | --- |
+| 0 | uniform `View` (`u`): view projection, eye, fog colour, fog (exponential start and divisor, linear start and end), flags, sun direction, sun colour, ambient, the scattering (sun position, sky, outscatter, inscatter, sun altitude) | VF |
+| 1-4 | the baked light of the distant lights (`LightBinding`): uniform, texture of the tiles, texture `Sint` index, sampler | VF |
+
+The number of a view is the number of a statics set. The groups are made again when the
+baked light changes (`LightBinding::generation`). `before_world` writes the main, mirror and
+shadow views, and the game view at its start, in each frame with a world. The values of one
+pipeline only are in its group 1: `eye.w` of the view is 0 (the view range of a handoff, the
+time and the water level are values of a pipeline).
 
 **"distant land"** (fill, lines, mirror fill, mirror lines; `make_gpu` in `renderer.rs`).
 Vertices: 20 bytes (`Float32x3`, `Unorm8x4`, `Unorm8x4`), indices `Uint32`.
 
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
-| 0 | distant lights, baked (`LightBinding`) | 0 uniform, 1 texture of the tiles, 2 texture `Sint` index, 3 sampler (VF) | frame |
-| 1 | distant land | 0 uniform (VF), 1-5 textures atlas, material, flags, albedo, patterns, 6 sampler (F) | pass (main or mirror) |
+| 0 | view | as above | view (main or mirror) |
+| 1 | distant land | 0 uniform `Land` (VF), 1-5 textures atlas, material, flags, albedo, patterns, 6 sampler (F) | fixed |
 
-**"distant land shadow"**: group 0 is the "distant land" layout (one group per shadow layer).
-R16Float target.
+**"distant land shadow"**: the view group only (one per shadow layer). R16Float target.
 
 **"distant statics"** (back/front cull x fill/lines; `make_gpu` in `renderer/statics.rs`).
 Vertices: 20 bytes (`Float16x4` position and palette number, `Unorm8x4` normal, `Unorm8x4`
@@ -228,8 +250,8 @@ colour, `Float16x2` uv); instance 80 bytes (locations 4-8); indices `Uint16`. Dr
 
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
-| 0 | distant lights, baked | as above | frame |
-| 1 | distant statics | 0 uniform (VF), 1 storage palettes (V), 2 sampler (F), 3 storage arrivals (V) | set (main, mirror, shadow 0, shadow 1) |
+| 0 | view | as above | set (the view of the same number) |
+| 1 | distant statics | 0 uniform `Set` (range, handoff, fade) (VF), 1 storage palettes (V), 2 sampler (F), 3 storage arrivals (V) | set (main, mirror, shadow 0, shadow 1) |
 | 2 | distant statics, textures | 0 texture (F) | texture |
 
 The fade-in (2026-10-15): binding 3 has the arrival time of each subset (real time of the
@@ -237,14 +259,17 @@ helper; written in `take_arrivals`), the instance data has the subset number in 
 and the uniforms have `fade` (now, fade time from the tunable `statics.fade`; 0 in a
 replay). The statics shader multiplies the handoff dissolve by the share that is in.
 
-**"distant statics shadow"**: the same pipeline layout; its WGSL uses groups 1 and 2 only.
+**"distant statics shadow"**: the same pipeline layout, with the view of its shadow layer.
 R16Float target. Its casters fade in with the same threshold.
 
-**"grass"** (fill, lines): group 0 "grass" (uniform, sampler, the shadow atlas and its
-clamp sampler; frame), group 1 the statics texture layout (texture run). The uniform has
-the two world-to-layer matrices of the shadow map; the atlas is a 1 x 1 texture until the
-session has a shadow map. Instance 64 bytes (locations 4-7; 7.x is the share of the
-subset that is in, computed on the CPU).
+**"grass"** (fill, lines): group 0 the game view; group 1 "grass" (uniform `Grass`, sampler,
+the shadow atlas and its clamp sampler; frame); group 2 the statics texture layout (texture
+run). The grass reads the view projection, the eye, the sun direction and the linear fog
+(`u.fog.zw`) from the view. Its own uniform has the end of the grass, the fog colour of the
+near cells, its sun colour and ambient light (also in a frame without a sun direction, where
+the view has none), the wind, the player, the two world-to-layer matrices of the shadow map
+and the looks. The atlas is a 1 x 1 texture until the session has a shadow map. Instance 64
+bytes (locations 4-7; 7.x is the share of the subset that is in, computed on the CPU).
 
 **"distant statics, cull"** (compute, `renderer/statics/cull.rs`; entries `cull` and
 `compact`, workgroup 256). Group 0, one per set: 0 uniform, 1-5 storage read (places,
@@ -253,8 +278,9 @@ storage counts (atomics). `cull` runs over the places, `compact` writes the draw
 texture in a fixed order.
 
 **"distant lights, cull"** (compute, `renderer/distant_lights.rs`): group 0: uniform,
-sources, glow list, indirect arguments (atomics). **"distant lights, glows"**: group 0:
-uniform (VF), glow list (V); `draw_indirect`, no vertex buffers, additive, no depth write.
+sources, glow list, indirect arguments (atomics). **"distant lights, glows"**: group 0 the
+main view; group 1: uniform `Glow` (range, glow, screen) (VF), glow list (V);
+`draw_indirect`, no vertex buffers, additive, no depth write.
 
 ### 4.3 Helper: shadows
 
@@ -264,12 +290,14 @@ uniform (VF), 1 texture, 2 sampler (F). Blur: 2 groups, one per pass, R16Float. 
 
 ### 4.4 Helper: water
 
-**"water"** (fill, lines, cut; `renderer/water.rs`) uses the shared water layout as group 0,
-a new group each frame (`gpu::frame_group`):
+**"water"** (fill, lines, cut; `renderer/water.rs`): group 0 the game view; group 1 the
+shared water layout, a new group each frame (`gpu::frame_group`). The water reads the
+camera, the exponential fog (`u.fog.xy`), the far fog colour and the scattering from the
+view.
 
 | Binding | Holds | Stage |
 | --- | --- | --- |
-| 0 | uniform of the water | VF |
+| 0 | uniform `Water` (`water`): view matrix, plane, time, sun, sky colour, debug and underwater, projection, size, waves, mirror, land | VF |
 | 1, 2 | reflection texture, clamp sampler | F |
 | 3, 4 | waves (3D texture), wave sampler | VF |
 | 5 | copy of the picture | F |
@@ -277,24 +305,29 @@ a new group each frame (`gpu::frame_group`):
 | 7, 8 | rain and player ripples | F |
 | 9 | depth of the reflection | F |
 | 10 | depth before the world, or a 1x1 "no land" depth | F |
+| 11-16 | the light of the frame for the water volumes: uniform `lighting`, shadow atlas, storage lights, uniform clusters, storage cluster table and indexes; stand-ins in the group of the plane | F |
+
+The light of the frame is in the water group, not in the view group: the crate gives the
+lights of the frame to an extension only in `draw_held`.
 
 **"water reflection level"**: group 0 texture, sampler; one group per mip level.
 
-**"water dry spaces"** (zero, count plane, count behind; `renderer/water/dry.rs`): the water
-layout as group 0; stencil writes only, no colour.
+**"water dry spaces"** (zero, count plane, count behind; `renderer/water/dry.rs`): the game
+view and the water layout as groups 0 and 1; stencil writes only, no colour.
 
 **"water volume"** and **"water volume, far"** (`renderer/water/volume.rs`): one pipeline per
 key; a mod water shader adds its own module.
 
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
-| 0 | water | as above | frame |
-| 1 | water volume light | 0 uniform, 1 shadow atlas, 2 storage lights, 3 uniform clusters, 4-5 storage cluster table and indexes (F) | call |
-| 2 | water volume mesh | 0-1 textures of the mesh, 2 sampler (F) | mesh (a new group per draw for a mod shader) |
+| 0 | view | the game view | frame |
+| 1 | water | as above, with the light of the frame | call |
+| 2 | water volume mesh | 0-1 textures of the mesh, 2 sampler (F) | mesh (mod shaders: one group per texture pair a frame) |
 | 3 | water volume | 0 uniform `Surface`, dynamic offset (VF) | draw (offset) |
 
-**"caustics"** (plain, cut): group 0: uniform, depth, waves, sampler (F); a new group each
-frame. Multiply blend.
+**"caustics"** (plain, cut): group 0 the game view (the camera, the sun direction, the linear
+fog); group 1: uniform `Caustics` (`c`), depth, waves, sampler (F); a new group each frame.
+Multiply blend.
 
 **"ripples"** (step, player): group 0: texture, sampler, uniform with a dynamic offset; one
 group per ping-pong texture.
@@ -305,19 +338,13 @@ group per ping-pong texture.
 Alpha blending, colour only.
 
 **post chain** (`renderer/post.rs`): one pipeline per shader pass, one pipeline layout
-"post shaders" for all. Group 0 "post", 31 bindings, a new group per pass per frame:
+"post shaders" for all, three groups:
 
-| Bindings | Holds | Rate |
+| Group | Bindings | Rate |
 | --- | --- | --- |
-| 0 | uniform of the variables | frame |
-| 1, 2 | `lastshader`, `lastpass` | pass |
-| 3 | linear depth (non-filterable) | frame |
-| 4 | waves (3D) | frame |
-| 5-9, 21 | samplers | fixed |
-| 10, 22-30 | the shader's own textures | shader |
-| 11 | uniform pass information | pass |
-| 12-19 | `pass0` to `pass7` | pass |
-| 20 | uniform `modv` | shader |
+| 0 frame | 0 uniform of the variables (`u`), 1 linear depth `depthframe` (non-filterable), 2 waves `watertexture` (3D), 3-8 the six samplers | frame (one group) |
+| 1 shader | 0 uniform `modv`, 1-10 the shader's own textures `tex1` to `tex10` | shader (made at load, kept with the shader) |
+| 2 pass | 0 uniform pass information, 1 `lastshader`, 2 `lastpass`, 3-10 `pass0` to `pass7` | pass |
 
 **"post depth"** (R32Float), **"post blit"** and **"post hdr"** (one `blit_layout`), and
 **"post debug"** (`MGE_XE_POST_DEBUG`) are full-screen passes with one group each.
@@ -336,8 +363,12 @@ Alpha blending, colour only.
   the program goes on; the broken draw or pass does nothing. A lost device is logged, a
   message box comes up, and the host drains the stream. Post shaders of mods compile inside
   an error scope. After a shader or layout change, look for `gpu error` in the log.
+- **Group 0 is the view group** (`view.rs`) for a helper pipeline that draws into the
+  world: put a value that each pipeline of a view shares into `View`, and a value of one
+  pipeline into its group 1. A uniform struct in Rust gets a test of its size against its
+  WGSL struct.
 - **WGSL** lives in Rust string constants, composed with `format!` (for example
-  `distant_lights::baked_wgsl(group)` puts the baked light into the group the caller names).
+  `view::wgsl()` starts each shader of the view group with `View` and the baked light).
   Mod shaders are `.wgsl` files: post shaders (see
   [`mgeHost64/POST_SHADERS.md`](../../mgeHost64/POST_SHADERS.md)) and water shaders (see
   [`water-shaders.md`](../water-shaders.md)).
@@ -345,33 +376,34 @@ Alpha blending, colour only.
 - **Switches**: an environment switch `MGE_XE_<NAME>` for an A/B and a fallback; GPU times
   with `MGE_XE_GPU_TIME=1`.
 
-## 6. Review of the bind group layouts (2026-10-15, open)
+## 6. Review of the bind group layouts (2026-10-15, closed)
 
-Read against the code for this page. The order inside each pipeline follows the convention
-of section 5. These points are not wrong for wgpu, but a reader who knows the usual layout
-would ask about them:
+The review found six points that a reader who knows the usual layout would ask about. None
+was a cost: the bind groups made each frame cost 0.067-0.085 ms (18-21 groups). The owner
+chose to change them for the reader (plan item D1). Each step was equal to the pixel in a
+replay A/B of 32 captures against the build before (baseline, water volumes with a mod
+water shader, grass by day and at night), with no GPU errors.
 
-1. **Group 0 means something else in each pipeline of the same pass**: the extension frame
-   (game draws), the baked light (land, statics), grass values, the glow view, water,
-   caustics. A common design gives all pipelines of a pass one shared frame group 0 (camera,
-   fog, sun, time, the shadow atlas, the lights) and keeps it bound. Here each pipeline
-   switch sets group 0 again; wgpu drops a repeated set of the same group, and the measured
-   cost of all pass commands is 0.03-0.13 ms a frame.
-2. **One layout at two group numbers**: the "distant land" layout is group 1 of the land and
-   group 0 of the land shadow; the statics texture layout is group 2 of the statics and group
-   1 of the grass. This is valid, but a shared frame group 0 (point 1) would put each layout
-   at one number.
-3. **Bindings that a shader does not read**: the statics shadow pipeline has the baked-light
-   group 0 in its layout and does not use it; the land shadow group carries the five land
-   textures and uses only the uniform.
-4. **Per-frame data in the per-draw group**: group 3 of the game draws holds the lights of
-   the frame and the bone palette next to the per-draw slot. A growth of those buffers
-   rebuilds every slot group.
-5. **Post: one group of 31 bindings, made for each pass**: fixed samplers, frame values,
-   shader textures and pass inputs share group 0. The usual split is a frame group, a shader
-   group and a pass group.
-6. **Water volumes**: group 1 (light) is set again for each surface, and a mod water shader
-   gets a new group 2 for each draw.
-
-Measured (2026-10-15): the bind groups made each frame cost 0.067-0.085 ms (18-21 groups), so
-none of these is a cost to remove. Whether to change them for the reader is open.
+1. **Group 0 meant something else in each pipeline**: the baked light (land, statics), grass
+   values, the glow view, water, caustics. Now group 0 is the view group (section 4.2) in each
+   helper pipeline that draws into the world (MGE c80148c, 341176c, b97394f, 3b04a57,
+   223cbb1). The game's draws keep the crate's own group 0 (the extension frame): the helper
+   draws with the projection of the land, so the two cannot share one group object, and a
+   group 0 shared with the crate would change the interface of both repos.
+2. **One layout at two group numbers**: the "distant land" layout was group 1 of the land
+   and group 0 of the land shadow; the statics texture layout was group 2 of the statics and
+   group 1 of the grass. Now the land shadow has the view group only, and the texture layout
+   is group 2 in both.
+3. **Bindings that a shader did not read**: the statics shadow pipeline had the baked-light
+   group in its layout; the land shadow group had the five land textures. Now both shadow
+   pipelines read their view from group 0.
+4. **Per-frame data in the per-draw group**: group 3 of the game draws held the lights of the
+   frame and the bone palette. They are now bindings 6 and 7 of the crate's group 0, and
+   group 3 is the per-draw slot only (nirender-plugin 086533b).
+5. **Post: one group of 31 bindings, made for each pass**. Now three groups: frame, shader
+   (kept with the compiled shader) and pass (MGE 17897f3). The names in the post shaders did
+   not change.
+6. **Water volumes**: the light group was set again for each surface, and a mod water shader
+   got a new mesh group for each draw. The light is set once for each call (MGE dd84691) and
+   is now part of the water group (223cbb1); the mesh groups of mod shaders are kept for a
+   frame by texture pair (e257386).
