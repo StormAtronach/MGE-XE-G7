@@ -956,9 +956,10 @@ namespace api {
     static void saveScreenshotCallback(IDirect3DSurface9* surface);
 
     void MGEAPIv2::saveScreenshot(const char* path, bool captureWithUI) {
-        if (path && Deviceless::active()) {
+        if (path && Configuration.RendererWgpu) {
             // The wgpu renderer mode: the renderer in the helper writes the file. A file
-            // that is there stays, as with a device.
+            // that is there stays, as with a device. A request before the first frame waits
+            // for it.
             if (GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES) {
                 LOG::logline("mge.saveScreenshot failed - %s already exists", path);
                 return;

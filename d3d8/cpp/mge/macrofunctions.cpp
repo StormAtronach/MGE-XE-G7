@@ -6,6 +6,7 @@
 #include "mwbridge.h"
 #include "statusoverlay.h"
 #include "distantland.h"
+#include "mged3d8device.h"
 #include "postshaders.h"
 #include "support/pngsave.h"
 
@@ -23,33 +24,81 @@ enum SuffixFormatting {
 };
 
 static void saveScreenshot(IDirect3DSurface9* surface);
+static bool screenshotPath(char (&filename)[MAX_PATH], char (&path)[MAX_PATH]);
 static int nextScreenshotOrdinal(const char* path);
 
 
 void MacroFunctions::TakeScreenshot() {
-    // Distant-land capture must be available; menu mode or Shift also captures the UI.
-    if (!DistantLand::canRenderDistantLand()) {
+    // Menu mode or Shift also captures the UI.
+    bool captureWithUI = MWBridge::get()->IsMenu();
+    captureWithUI |= (MGEProxyDirectInput::modifierKeys & 1) != 0;
+
+    if (Configuration.RendererWgpu) {
+        // The wgpu renderer mode: the renderer in the helper writes the file, in the format
+        // that its extension names.
+        char filename[MAX_PATH], path[MAX_PATH];
+        if (screenshotPath(filename, path)) {
+            Deviceless::requestPicture(path, captureWithUI);
+            StatusOverlay::setStatus(filename);
+        }
         return;
     }
 
-    bool captureWithUI = MWBridge::get()->IsMenu();
-    captureWithUI |= (MGEProxyDirectInput::modifierKeys & 1) != 0;
+    // Distant-land capture must be available.
+    if (!DistantLand::canRenderDistantLand()) {
+        return;
+    }
 
     DistantLand::requestCapture(&saveScreenshot, captureWithUI);
 }
 
 static void saveScreenshot(IDirect3DSurface9* surface) {
-    const char* strImageExtensions[] = { ".bmp", ".jpg", ".dds", ".png", ".tga" };
     const D3DXIMAGE_FILEFORMAT formats[] = { D3DXIFF_BMP, D3DXIFF_JPG, D3DXIFF_DDS, D3DXIFF_PNG, D3DXIFF_TGA };
 
     char filename[MAX_PATH], path[MAX_PATH];
-    const char* dir = "./screenshots";
-    int str_sz;
 
     if (!surface) {
         StatusOverlay::setStatus("Screenshot failed - Surface error");
         return;
     }
+
+    if (!screenshotPath(filename, path)) {
+        return;
+    }
+
+    if (Configuration.SSFormat == D3DXIFF_PNG) {
+        // D3DX PNG support does full compression which takes >1 sec to save an image
+        // Use a non-compressing PNG encoder for reasonable screenshot times
+        bool success = false;
+        D3DSURFACE_DESC desc;
+        D3DLOCKED_RECT rect;
+        surface->GetDesc(&desc);
+
+        if (surface->LockRect(&rect, NULL, D3DLOCK_READONLY) == D3D_OK) {
+            success = pngSaveBGRA(path, rect.pBits, desc.Width, desc.Height, rect.Pitch);
+            surface->UnlockRect();
+        }
+
+        StatusOverlay::setStatus(success ? filename : "Screenshot failed");
+    }
+    else {
+        HRESULT hr = D3DXSaveSurfaceToFile(path, formats[Configuration.SSFormat], surface, NULL, NULL);
+        if (SUCCEEDED(hr)) {
+            StatusOverlay::setStatus(filename);
+        } else {
+            std::snprintf(filename, sizeof(filename), "Screenshot failed - D3DX Error %lx", hr);
+            StatusOverlay::setStatus(filename);
+        }
+    }
+}
+
+// The name of the next screenshot, and its path in the folder of the screenshots, which this
+// makes when it is not there. False, with the reason in the status text, when no file can
+// be written.
+static bool screenshotPath(char (&filename)[MAX_PATH], char (&path)[MAX_PATH]) {
+    const char* strImageExtensions[] = { ".bmp", ".jpg", ".dds", ".png", ".tga" };
+    const char* dir = "./screenshots";
+    int str_sz;
 
     if (strlen(Configuration.SSDir) > 0) {
         dir = Configuration.SSDir;
@@ -59,7 +108,7 @@ static void saveScreenshot(IDirect3DSurface9* surface) {
         if (!CreateDirectory(dir, NULL)) {
             std::snprintf(path, sizeof(path), "Screenshot failed - Cannot create directory %s", dir);
             StatusOverlay::setStatus(path);
-            return;
+            return false;
         }
     }
 
@@ -116,39 +165,16 @@ static void saveScreenshot(IDirect3DSurface9* surface) {
     str_sz = std::snprintf(path, sizeof(path), "%s\\%s%s", dir, filename, strImageExtensions[Configuration.SSFormat]);
     if (str_sz >= sizeof(path)) {
         StatusOverlay::setStatus("Screenshot failed - Path too long");
-        return;
+        return false;
     }
 
     if (GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES) {
         std::snprintf(path, sizeof(path), "Screenshot failed - %s already exists", filename);
         StatusOverlay::setStatus(path);
-        return;
+        return false;
     }
 
-    if (Configuration.SSFormat == D3DXIFF_PNG) {
-        // D3DX PNG support does full compression which takes >1 sec to save an image
-        // Use a non-compressing PNG encoder for reasonable screenshot times
-        bool success = false;
-        D3DSURFACE_DESC desc;
-        D3DLOCKED_RECT rect;
-        surface->GetDesc(&desc);
-
-        if (surface->LockRect(&rect, NULL, D3DLOCK_READONLY) == D3D_OK) {
-            success = pngSaveBGRA(path, rect.pBits, desc.Width, desc.Height, rect.Pitch);
-            surface->UnlockRect();
-        }
-
-        StatusOverlay::setStatus(success ? filename : "Screenshot failed");
-    }
-    else {
-        HRESULT hr = D3DXSaveSurfaceToFile(path, formats[Configuration.SSFormat], surface, NULL, NULL);
-        if (SUCCEEDED(hr)) {
-            StatusOverlay::setStatus(filename);
-        } else {
-            std::snprintf(filename, sizeof(filename), "Screenshot failed - D3DX Error %lx", hr);
-            StatusOverlay::setStatus(filename);
-        }
-    }
+    return true;
 }
 
 static int nextScreenshotOrdinal(const char* path) {

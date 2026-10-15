@@ -1420,6 +1420,15 @@ namespace Deviceless {
         if (GetFullPathNameA(path, sizeof(full), full, nullptr) == 0) {
             return;
         }
+        // The requests wait for a frame. When the plugin refused to draw, no frame comes.
+        if (pictureRequests.size() >= 16) {
+            static bool told = false;
+            if (!told) {
+                LOG::logline("!! wgpu renderer: no frame took the last 16 picture requests; no more are taken: %s", full);
+                told = true;
+            }
+            return;
+        }
         pictureRequests.emplace_back(full, withUI);
     }
 

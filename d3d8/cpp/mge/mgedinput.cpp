@@ -106,13 +106,9 @@ void* CreateInputWrapper(void* real) {
     FakeFuncs[GF_MoveDown3PC] = MacroFunctions::MoveDown3PCam;
     FakeFuncs[GF_MoveUp3PC] = MacroFunctions::MoveUp3PCam;
 
-    // Force screenshots from PrintScreen
-    // Not with the wgpu renderer: MGE XE has no device to read a picture from, and the
-    // screenshot of the game works there.
-    if (!Configuration.RendererWgpu) {
-        FakeKeys[DIK_SYSRQ].type = MT_Graphics;
-        FakeKeys[DIK_SYSRQ].Function.index = GF_Screenshot;
-    }
+    // Force screenshots from PrintScreen. With the wgpu renderer the helper writes the file.
+    FakeKeys[DIK_SYSRQ].type = MT_Graphics;
+    FakeKeys[DIK_SYSRQ].Function.index = GF_Screenshot;
 
     return new MGEProxyDirectInput((IDirectInput8A*)real);
 }
