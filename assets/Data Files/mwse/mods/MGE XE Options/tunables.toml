@@ -93,3 +93,12 @@ start = 1.0
 least = 0.0
 most = 5.0
 step = 0.1
+
+[[parameter]]
+name = "grass.shadow"
+label = "Grass: shadow"
+about = "2: the shadow on the grass fades at the edge of the shadow map and in the fog, as the shadow on the ground under it. 1: as Direct3D 9, without the fade. 0: no shadow on the grass."
+start = 2.0
+least = 0.0
+most = 2.0
+step = 1.0

@@ -2463,6 +2463,17 @@ impl Extension for DistantLand {
             wind: environment.map_or([0.0; 4], |e| [e.wind[0], e.wind[1], e.time, 0.0]),
             foot: environment.map_or([0.0; 4], |e| [e.foot_pos[0], e.foot_pos[1], e.foot_pos[2], e.foot_valid as f32]),
             planes: planes(&view_projection),
+            // The shadow map of the frame (an exterior or a cell like one, with shadows on),
+            // as `renderGrassInst` of the Direct3D 9 path.
+            shadow: self.shadow.as_ref().filter(|_| self.shadow_in_frame).map(|shadow| statics::GrassShadow {
+                atlas: shadow.atlas_view.clone(),
+                layers: shadow.viewproj,
+                rcp: 1.0 / shadow.resolution as f32,
+                sun_vis: environment.map_or(0.0, |e| e.sun_vis),
+                above_sea: eye[2] > -1.0,
+                edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
+            })
+            .filter(|_| self.tunables.get(tunables::GRASS_SHADOW) > 0.5),
         };
         statics.draw_grass(scene, pass, &frame);
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {

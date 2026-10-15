@@ -30,9 +30,10 @@
 //! The grass is in the same files: a static of the type grass, with places in `usage.data`
 //! as the others. It is never merged and has no palette. The grass of a frame is one draw
 //! for each subset, with one record for each place (`rendergrass.cpp`): at most 16384
-//! records, out to the view range of the game. The shader is that of `XE Mod Grass.fx`
-//! without its shadows: the wind, the grass that the player pushes away, and the light of
-//! the sun from the two sides.
+//! records, out to the view range of the game. The shader is that of `XE Mod Grass.fx`: the
+//! wind, the grass that the player pushes away, the light of the sun from the two sides, and
+//! the shadow map of the frame (`GrassShadow`), which ends on a blade as on the ground under
+//! it (tunable `grass.shadow`).
 //!
 //! An interior cell with statics in `usage.data` is a world space of its own, with its
 //! places and its grass; the renderer selects it by the name of the cell. In a plain
@@ -738,12 +739,18 @@ struct Gpu {
     grass_pipeline: wgpu::RenderPipeline,
     grass_pipeline_lines: Option<wgpu::RenderPipeline>,
     grass_group: wgpu::BindGroup,
+    grass_layout: wgpu::BindGroupLayout,
+    grass_sampler: wgpu::Sampler,
+    grass_shadow_sampler: wgpu::Sampler,
+    /// The shadow map in `grass_group`: a texture of one texel until the first frame with a
+    /// shadow map.
+    grass_atlas: std::rc::Rc<wgpu::TextureView>,
     grass_uniforms: wgpu::Buffer,
     grass_records: wgpu::Buffer,
 }
 
 /// The values of a frame for the grass.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct GrassFrame {
     /// The view and the projection of the game.
     pub view_projection: [f32; 16],
@@ -760,6 +767,26 @@ pub struct GrassFrame {
     /// The position of the player, and 1 in w when it is known.
     pub foot: [f32; 4],
     pub planes: [[f32; 4]; 6],
+    /// The shadow map of the frame, when the frame has one.
+    pub shadow: Option<GrassShadow>,
+}
+
+/// The shadow map for the grass of a frame (`renderGrassInst` of the Direct3D 9 path).
+#[derive(Clone)]
+pub struct GrassShadow {
+    pub atlas: std::rc::Rc<wgpu::TextureView>,
+    /// The matrices from the world to the two layers, with the layout of Direct3D.
+    pub layers: [[f32; 16]; 2],
+    /// 1 over the resolution of a layer.
+    pub rcp: f32,
+    /// The visibility of the sun, for the light that `shadowSunEstimate` gives.
+    pub sun_vis: f32,
+    /// The camera is above the sea: the fog weakens the shadow less below it.
+    pub above_sea: bool,
+    /// The shadow of a blade ends as the shadow of the ground under it: the fade at the edge
+    /// of the outer layer and in the fog (tunable `grass.shadow`, 2). With 1, as the
+    /// Direct3D 9 path: no fade.
+    pub edge: bool,
 }
 
 #[repr(C)]
@@ -774,6 +801,16 @@ struct GrassUniforms {
     ambient: [f32; 4],
     wind: [f32; 4],
     foot: [f32; 4],
+    /// The matrices from the world to the two layers of the shadow map.
+    shadow_layers: [[f32; 16]; 2],
+    /// `ESM_c`, `ESM_bias`, `ESM_scale`, 1 over the resolution of a layer.
+    esm: [f32; 4],
+    /// `shadecolor`, and `shade` of `shadowSunEstimate`.
+    shade: [f32; 4],
+    /// x: 1 with a shadow map. y: the light of the sun for `shadowSunEstimate` (the luminance
+    /// of its colour, times 0.25 + 0.75 of its visibility). z: 1 above the sea. w: 1 for the
+    /// fade of the ground at the edge and in the fog.
+    shadow: [f32; 4],
 }
 
 const GRASS_SHADER: &str = "
@@ -787,9 +824,16 @@ struct Uniforms {
     ambient: vec4f,
     wind: vec4f,
     foot: vec4f,
+    shadow_layer0: mat4x4f,
+    shadow_layer1: mat4x4f,
+    esm: vec4f,
+    shade: vec4f,
+    shadow: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var base_sampler: sampler;
+@group(0) @binding(2) var shadow_atlas: texture_2d<f32>;
+@group(0) @binding(3) var shadow_sampler: sampler;
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 
 struct In {
@@ -811,10 +855,30 @@ struct Out {
     @location(1) coordinate: vec2f,
     @location(2) fog: f32,
     @location(3) @interpolate(flat) fade: f32,
+    // The light of the sun for the shadow (shadowSunEstimate), and the position in the two
+    // layers of the shadow map, z divided by w.
+    @location(4) light: f32,
+    @location(5) shadow0: vec3f,
+    @location(6) shadow1: vec3f,
 }
 
 // The order of the pixels of a block of 4 x 4 for the fade-in (Bayer), as the statics have it.
 const FADE_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+
+// shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
+// the pixel; a positive number when the map has nothing nearer to the sun.
+fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
+    let margin = vec3f(1.0 - 8.0 * u.esm.w, 1.0 - 8.0 * u.esm.w, 1.0);
+    if all(abs(s0) < margin) {
+        let uv = vec2f(0.5 + 0.5 * s0.x, 0.5 - 0.5 * s0.y);
+        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r / u.esm.z - s0.z;
+    }
+    if all(abs(s1) < margin) {
+        let uv = vec2f(0.5 + 0.5 * s1.x, 0.5 - 0.5 * s1.y);
+        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r / u.esm.z - s1.z;
+    }
+    return 1e-6;
+}
 
 // grassDisplacement: the wind in four waves, and the grass that the player pushes away. The
 // height of a vertex in its model is the weight.
@@ -860,6 +924,13 @@ fn displacement(world: vec3f, height: f32) -> vec2f {
     // fogMWScalar: the linear fog of the near cells.
     out.fog = clamp((u.fog.y - length(to_vertex)) / max(u.fog.y - u.fog.x, 1.0), 0.0, 1.0);
     out.fade = in.fade.x;
+    // shadowSunEstimate of the light of the blade, with the light through the far side.
+    let x = lambert * u.shadow.y;
+    out.light = x / (u.shade.w + x);
+    let s0 = u.shadow_layer0 * vec4f(world, 1.0);
+    let s1 = u.shadow_layer1 * vec4f(world, 1.0);
+    out.shadow0 = vec3f(s0.xy, s0.z / s0.w);
+    out.shadow1 = vec3f(s1.xy, s1.z / s1.w);
     return out;
 }
 
@@ -869,7 +940,21 @@ fn displacement(world: vec3f, height: f32) -> vec2f {
     if texel.a < 128.0 / 255.0 || in.fade < (FADE_ORDER[cell.y * 4u + cell.x] + 0.5) / 16.0 {
         discard;
     }
-    return vec4f(mix(u.fog_color.rgb, texel.rgb * in.color, in.fog), 1.0);
+    var color = texel.rgb * in.color;
+    // The shadow, as GrassPS: shadowESM times the light of the sun, towards shadecolor.
+    if u.shadow.x > 0.5 {
+        let dz = shadow_delta(in.shadow0, in.shadow1);
+        var v = (1.0 - clamp(exp(u.esm.x * dz + u.esm.y), 0.0, 1.0)) * in.light;
+        if u.shadow.w > 0.5 {
+            // As the ground under the blade (RenderShadowsPS): the fade at the edge of the
+            // outer layer, and the fog weakens the shadow.
+            let edge = clamp(25.0 * (1.0 - abs(in.shadow1.xy)), vec2f(0.0), vec2f(1.0));
+            let fogatt = in.fog * in.fog;
+            v *= edge.x * edge.y * select(clamp(4.0 * fogatt, 0.0, 1.0), fogatt, u.shadow.z > 0.5);
+        }
+        color *= 1.0 - v * u.shade.rgb;
+    }
+    return vec4f(mix(u.fog_color.rgb, color, in.fog), 1.0);
 }
 ";
 
@@ -1689,6 +1774,13 @@ impl Statics {
     }
 
     fn draw_grass_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame) {
+        // The shadow map is made once in a session: the group takes it at its first frame.
+        if let (Some(shadow), Some(gpu)) = (frame.shadow.as_ref(), self.gpu.as_mut()) {
+            if !std::rc::Rc::ptr_eq(&gpu.grass_atlas, &shadow.atlas) {
+                gpu.grass_group = make_grass_group(scene.device, &gpu.grass_layout, &gpu.grass_uniforms, &gpu.grass_sampler, &shadow.atlas, &gpu.grass_shadow_sampler);
+                gpu.grass_atlas = shadow.atlas.clone();
+            }
+        }
         let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else { return };
         let Some(world) = catalog.worlds.get(&self.world) else { return };
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
@@ -1747,6 +1839,14 @@ impl Statics {
             ambient: frame.ambient,
             wind: frame.wind,
             foot: frame.foot,
+            shadow_layers: frame.shadow.as_ref().map_or([[0.0; 16]; 2], |shadow| shadow.layers),
+            esm: [super::shadow::ESM_C, super::shadow::ESM_BIAS, super::shadow::ESM_SCALE, frame.shadow.as_ref().map_or(0.0, |shadow| shadow.rcp)],
+            shade: [super::shadow::SHADE_COLOR[0], super::shadow::SHADE_COLOR[1], super::shadow::SHADE_COLOR[2], super::shadow::SHADE],
+            shadow: frame.shadow.as_ref().map_or([0.0; 4], |shadow| {
+                let c = frame.sun_color;
+                let luminance = c[0] * 0.36 + c[1] * 0.53 + c[2] * 0.11;
+                [1.0, luminance * (0.25 + 0.75 * shadow.sun_vis), shadow.above_sea as u32 as f32, shadow.edge as u32 as f32]
+            }),
         };
         scene.queue.write_buffer(&gpu.grass_uniforms, 0, bytemuck::bytes_of(&uniforms));
 
@@ -2563,16 +2663,38 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
                 count: None,
             },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
         ],
     });
-    let grass_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("grass"),
-        layout: &grass_layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: grass_uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-        ],
+    // The shadow map is made at the first frame with shadows; until then the group has a
+    // texture of one texel in its place (the shader reads no shadow without a map).
+    let grass_shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("grass, the shadow map"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
     });
+    let no_shadow = std::rc::Rc::new(
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("grass, no shadow map"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default()),
+    );
+    let grass_group = make_grass_group(device, &grass_layout, &grass_uniforms, &sampler, &no_shadow, &grass_shadow_sampler);
     let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("grass"), source: wgpu::ShaderSource::Wgsl(GRASS_SHADER.into()) });
     let grass_pipeline_layout =
         device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("grass"), bind_group_layouts: &[Some(&grass_layout), Some(&texture_layout)], immediate_size: 0 });
@@ -2616,7 +2738,44 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    Gpu { pipeline, mirror_pipeline, pipeline_lines, mirror_pipeline_lines, shadow_pipeline, sets, textures, texture_views, instances, arrivals, pools, culling, grass_pipeline, grass_pipeline_lines, grass_group, grass_uniforms, grass_records }
+    Gpu {
+        pipeline,
+        mirror_pipeline,
+        pipeline_lines,
+        mirror_pipeline_lines,
+        shadow_pipeline,
+        sets,
+        textures,
+        texture_views,
+        instances,
+        arrivals,
+        pools,
+        culling,
+        grass_pipeline,
+        grass_pipeline_lines,
+        grass_group,
+        grass_layout,
+        grass_sampler: sampler,
+        grass_shadow_sampler,
+        grass_atlas: no_shadow,
+        grass_uniforms,
+        grass_records,
+    }
+}
+
+/// The frame group of the grass: its uniforms, the sampler of its textures, and the shadow
+/// map.
+fn make_grass_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniforms: &wgpu::Buffer, sampler: &wgpu::Sampler, atlas: &wgpu::TextureView, atlas_sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("grass"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(atlas) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(atlas_sampler) },
+        ],
+    })
 }
 
 #[cfg(test)]
