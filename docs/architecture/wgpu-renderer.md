@@ -201,8 +201,8 @@ pool (16 MB); the draw names its first index. Since 2026-10-16 (plan 0.5 entries
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
 | 0 | extension frame | 0 uniform `FrameParameters` (512 B), 1 texture (shadow atlas or white), 2 sampler, 3 uniform cluster grid, 4-5 storage cluster table and indexes, 6 storage lights of the frame, 7 storage bone palette (V), 8 storage records of the draws (`array<Draw>`, VF) | frame |
-| 1 | draw samplers | 0-5 sampler per texture stage (F) | material |
-| 2 | draw textures | 0-5 texture per stage (F) | material |
+| 1 | draw texture arrays (an adapter with binding arrays) | 0 `binding_array<texture_2d>` of the frame's textures (4096 at most), 1 `binding_array<sampler>` (64) (F); a stage reads by the slots in its record | pass (a variant for a pass into a rendered texture of the game) |
+| 1, 2 | draw samplers, draw textures (without binding arrays, or `MGE_XE_ARRAYS=0`) | 0-5 sampler, 0-5 texture per stage (F) | material |
 
 The groups are set only when they change (`BoundGroups`), as are the pipeline, the stencil
 reference and the buffers of slot 0 and the index buffer; slots 1 and 2 once a pass. A draw
