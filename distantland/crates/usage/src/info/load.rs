@@ -324,6 +324,23 @@ impl<'a> UsageInfo<'a> {
             ..UsageInfo::default()
         };
 
+        // The light records, for the distant lights: a light without a mesh lights its place too.
+        for light in plugin.objects_of_type::<Light>() {
+            if light.flags.contains(ObjectFlags::DELETED) {
+                continue;
+            }
+            let [r, g, b, _] = light.data.color;
+            info.lights.insert(
+                light.id.to_ascii_lowercase(),
+                LightRecord {
+                    radius: light.data.radius as f32,
+                    color: [r, g, b],
+                    flags: light.data.flags.bits(),
+                    has_mesh: !light.mesh.trim().is_empty(),
+                },
+            );
+        }
+
         for object in plugin.objects.iter_mut() {
             #[rustfmt::skip]
             let (kind, id, mesh, script) = match object {

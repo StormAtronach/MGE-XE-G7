@@ -121,6 +121,11 @@ impl UnitSettingsPartitions {
             include_large_interiors: _,
             exclude_script_disable_targets: _,
             deep_water_static_cull_depth: _,
+            // The overrides found in the mge3 folder reach the units through their identities.
+            discover_override_files: _,
+            // The lights go to a file of their own (`lights.rs`), outside the units.
+            distant_lights: _,
+            bake_lights: _,
             // Control-map limits clip terrain cells and exterior references before capture,
             // so they affect statics membership, not just terrain globals.
             max_terrain_control_texture_size: _,

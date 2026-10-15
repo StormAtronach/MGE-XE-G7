@@ -6,6 +6,7 @@
 
 mod cache;
 pub(crate) mod identity;
+mod lights;
 mod metrics;
 mod output;
 mod progress;
@@ -463,6 +464,19 @@ fn run_generation(
                 identities.record_override(apply_override_source_with_identity(path, &mut builder)?);
             }
         }
+        // Legacy support: the override files of old mods in the mge3 folder of the game, after
+        // the list. A file that cannot be read is skipped with a warning, as plugin metadata is.
+        if job.settings.discover_override_files {
+            for path in discover_override_files(job, &vfs) {
+                match apply_override_source_with_identity(&path, &mut builder) {
+                    Ok(identity) => {
+                        crate::logging::info!("Applied the override file {} found in mge3", path.display());
+                        identities.record_override(identity);
+                    }
+                    Err(error) => crate::logging::warn!("Skipped the override file {}: {error}", path.display()),
+                }
+            }
+        }
         // Plugin metadata merges after all configured override sources, in load order, so mods
         // override the global override-file layer.
         if job.settings.use_plugin_metadata {
@@ -498,10 +512,13 @@ fn run_generation(
                 |usage_info| {
                     let started = Instant::now();
                     let projections = projection::Projections::capture(usage_info, &job.settings, &overrides);
-                    (projections, started.elapsed())
+                    // The light sources need the ids of the references, which the remap after
+                    // the capture turns into the names of meshes.
+                    let light_sources = if job.settings.distant_lights { lights::light_sources(usage_info) } else { Vec::new() };
+                    (projections, started.elapsed(), light_sources)
                 },
             )?;
-        let (mut projections, mut projection_build_time) = capture;
+        let (mut projections, mut projection_build_time, light_sources) = capture;
         let grass_capture_started = Instant::now();
         projections.capture_dedicated_grass(&usage_info, &grass_plugins, &job.settings, &overrides);
         projection_build_time += grass_capture_started.elapsed();
@@ -518,9 +535,10 @@ fn run_generation(
             grass_plugin_identities,
             grass_warnings,
             projections,
+            light_sources,
         ))
     })?;
-    let (mut usage_info, plugin_identities, grass_plugin_identities, grass_warnings, _projections) = usage_result;
+    let (mut usage_info, plugin_identities, grass_plugin_identities, grass_warnings, _projections, light_sources) = usage_result;
     identities.set_plugins(plugin_identities);
     identities.set_grass_plugins(grass_plugin_identities);
     warnings.extend(grass_warnings.into_iter().map(GenerationWarning::from));
@@ -549,6 +567,19 @@ fn run_generation(
     metrics.usage.total_reference_count_after_parse = usage_info.total_references_count();
     metrics.usage.exterior_reference_count_after_parse = usage_info.exterior_references_count();
     metrics.usage.script_disable = usage_info.script_disable.clone();
+
+    // The light sources and the baked light, before the pruning drops the references that no
+    // distant static uses.
+    let lights = {
+        let span = info_span!("stage.distant_lights", report = true, source_count = field::Empty, tile_count = field::Empty);
+        let _guard = span.enter();
+        let lights = lights::build(&light_sources, &usage_info, &job.settings);
+        if let Some(lights) = lights.as_ref() {
+            record_usize(&span, "source_count", lights.source_count);
+            record_usize(&span, "tile_count", lights.tile_count);
+        }
+        lights
+    };
 
     // Terrain layout depends only on the set of participating terrain cells, so it can
     // be computed once up front and reused by both texture and world-mesh stages.
@@ -742,12 +773,22 @@ fn run_generation(
         current: units_are_clean(&diff.report),
         rebuild_cause: rebuild_cause.clone(),
     };
+    // The light file is not in the units: a missing or old one is written without a rebuild.
+    let lights_current = lights::is_current(&output_paths, lights.as_ref());
     match run_mode {
         RunMode::Inspect => {
-            return Ok(GenerationRunResult::Inspected(input_status));
+            let mut status = input_status;
+            if !lights_current {
+                status.current = false;
+                status.rebuild_cause.get_or_insert_with(|| "distant lights".to_string());
+            }
+            return Ok(GenerationRunResult::Inspected(status));
         }
         RunMode::Ensure { return_if_current: true } if input_status.current => {
             let writer = writer.context("ensure mode lost its writer session")?;
+            if !lights_current && lights::publish(&output_paths, lights.as_ref())? {
+                info!("Wrote the distant lights");
+            }
             writer.finish_noop();
             return Ok(GenerationRunResult::AlreadyCurrent);
         }
@@ -924,6 +965,7 @@ fn run_generation(
             .context("no-op base failed under-session Routine validation")?;
         // True no-ops perform no writes, so no deferred payload sync may be outstanding.
         debug_assert!(writes.pending_durables_is_empty());
+        lights::publish(&output_paths, lights.as_ref())?;
         writer.finish_noop();
         return Ok(GenerationRunResult::Published(ValidatedGeneration {
             report: GenerationReport {
@@ -1054,6 +1096,7 @@ fn run_generation(
     let generator_state = state_db::encode(&current_state)?;
     let committed = storage::state::CommittedState::new(generator_state, artifacts)?;
     writer.finish_publish(committed, &writes)?;
+    lights::publish(&output_paths, lights.as_ref())?;
 
     let (report_data, report_written) = run_stage(GenerationStage::WriteGenerationReport, reporter, || {
         let _stage_guard = info_span!("stage.write_generation_report", report = true).entered();
@@ -1095,6 +1138,39 @@ fn run_generation(
             warnings,
         },
     }))
+}
+
+/// The `.ovr` and `.toml` files in the `mge3` folder of the game that the override list does not
+/// name, sorted by name: the legacy rules of old mods (`discover_override_files`).
+fn discover_override_files(job: &GenerationJob, vfs: &Vfs) -> Vec<std::path::PathBuf> {
+    let game = job
+        .morrowind_ini
+        .as_ref()
+        .and_then(|ini| ini.parent().map(Path::to_path_buf))
+        .or_else(|| vfs.data_dirs().first().and_then(|data| data.parent().map(Path::to_path_buf)));
+    let Some(game) = game else { return Vec::new() };
+    let listed: Vec<String> = job.settings.override_files.iter().map(|path| normalized(path)).collect();
+    let Ok(entries) = fs::read_dir(game.join("mge3")) else { return Vec::new() };
+    let mut found: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| ["ovr", "toml"].iter().any(|wanted| extension.to_string_lossy().eq_ignore_ascii_case(wanted)))
+        })
+        .filter(|path| !listed.iter().any(|listed| listed.ends_with(&normalized_name(path)) && listed.contains("mge3")))
+        .collect();
+    found.sort_by_key(|path| normalized(path));
+    found
+}
+
+fn normalized(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
+}
+
+fn normalized_name(path: &Path) -> String {
+    path.file_name().map(|name| name.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
 
 fn artifact_from_atlas_written(written: WrittenFile) -> Result<storage::state::RequiredArtifact> {

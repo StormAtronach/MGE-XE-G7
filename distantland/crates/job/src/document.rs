@@ -407,6 +407,9 @@ const SETTINGS_KEY_COMMENTS: &[(&str, &str)] = &[
         "Distance in game units below water level at which non-grass statics are culled.",
     ),
     ("static_texture_sizing", "Static texture downscaling policy."),
+    ("distant_lights", "Write the exterior light sources for the distant lights of the renderer."),
+    ("bake_lights", "Bake the light of those sources onto the distant land and statics."),
+    ("discover_override_files", "Legacy support: also apply every .ovr and .toml file in the mge3 folder."),
 ];
 
 /// One-line explanations emitted above each key of the `static_texture_sizing` table.

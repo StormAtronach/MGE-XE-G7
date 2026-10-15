@@ -78,6 +78,9 @@ pub fn write_generation_settings_canonical(writer: &mut CanonicalWriter, setting
         texture_dedupe_mode,
         deep_water_static_cull_depth,
         static_texture_sizing,
+        distant_lights,
+        bake_lights,
+        discover_override_files,
     } = settings;
     let StaticTextureSizingSettings {
         mode,
@@ -124,4 +127,7 @@ pub fn write_generation_settings_canonical(writer: &mut CanonicalWriter, setting
     writer.write_f32(*protected_density);
     writer.write_u32(*min_texture_size);
     writer.write_u8(*max_mip_reduction);
+    writer.write_bool(*distant_lights);
+    writer.write_bool(*bake_lights);
+    writer.write_bool(*discover_override_files);
 }

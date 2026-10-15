@@ -673,6 +673,11 @@ impl From<&GenerationSettings> for UsageSettingsProjection {
             // --- Terrain-domain globals (not statics) ---
             generate_terrain: _,
             // --- Execution policy (excluded from `settings_identity`) ---
+            // The lights are written apart from the statics (`lights.rs`); the overrides of the
+            // mge3 folder reach the statics through their identities.
+            distant_lights: _,
+            bake_lights: _,
+            discover_override_files: _,
             force_rebuild: _,
         } = value;
 

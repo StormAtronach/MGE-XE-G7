@@ -293,7 +293,7 @@ impl WriterSession {
                     continue;
                 }
                 if keep.contains(name.as_ref())
-                    || matches!(name.as_ref(), ".writer.lock" | "generation_state.bin" | "version")
+                    || matches!(name.as_ref(), ".writer.lock" | "generation_state.bin" | "version" | "lights.data")
                     || name == GENERATION_REPORT_NAME
                 {
                     continue;

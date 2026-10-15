@@ -233,6 +233,19 @@ pub struct ScriptDisableReport {
     pub excluded_disable_targets: Vec<String>,
 }
 
+/// A light record of the load order: what a placed light gives off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightRecord {
+    /// The radius of the light, in game units.
+    pub radius: f32,
+    /// The colour, red, green and blue.
+    pub color: [u8; 3],
+    /// The flags of the record (`tes3::esp::LightFlags`): flicker, fire, off by default...
+    pub flags: u32,
+    /// The light has a mesh: something that glows can be seen.
+    pub has_mesh: bool,
+}
+
 /// Global repository of collected object and placement data from plugins.
 #[derive(Default, Clone)]
 pub struct UsageInfo<'a> {
@@ -260,6 +273,8 @@ pub struct UsageInfo<'a> {
     pub(super) terrain_control_clip: Option<TerrainControlClip>,
     /// Inclusion metadata for interior cells.
     pub interior_metadata: HashMap<UString, InteriorMetadata>,
+    /// The light records, keyed by their lowercased IDs; a later plugin replaces an earlier one.
+    pub lights: HashMap<String, LightRecord>,
     /// Ids of scripts anywhere in the load order that are classified as disabling their object.
     ///
     /// Accumulated across every plugin by [`UsageInfo::merge`], never cleared. Per-plugin scope
@@ -329,6 +344,7 @@ impl<'a> UsageInfo<'a> {
         self.door_meshes.extend(other.door_meshes);
         self.terrain_cells.extend(other.terrain_cells);
         self.interior_metadata.extend(other.interior_metadata);
+        self.lights.extend(other.lights);
         // A union, not a last-wins overwrite: `X->Disable` is inherently cross-plugin, and a
         // script declared in one plugin can be attached to an object declared in another.
         self.disable_scripts.extend(other.disable_scripts);

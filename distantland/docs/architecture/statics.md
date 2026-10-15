@@ -438,7 +438,8 @@ substitute for either.
 | `max_terrain_texture_size`, `max_terrain_atlas_size`, `terrain_mesh_*` | terrain unit | Not statics. |
 | `grass_density`, `include_*`, `exclude_script_disable_targets` | usage-global | Decide which references/placements exist (membership), caught by unit add/remove and clean-owner reproduction. Captured as themselves by `UsageSettingsProjection`, because not every effect is materialized at the pre-filter boundary. |
 | `deep_water_static_cull_depth` | usage-global | Cull depth below water during usage pruning; captured by `UsageSettingsProjection` because interior membership is not otherwise materialized at the final usage boundary. |
-| `use_override_list`, `override_files`, `use_plugin_metadata` | usage-global | Select which override sources are parsed; the whole effect is already in the resolved `StaticOverrides`, so `OverrideStateProjection` carries them and `UsageSettingsProjection` ignores them. |
+| `use_override_list`, `override_files`, `use_plugin_metadata`, `discover_override_files` | usage-global | Select which override sources are parsed; the whole effect is already in the resolved `StaticOverrides`, so `OverrideStateProjection` carries them and `UsageSettingsProjection` ignores them. `discover_override_files` (legacy support, off by default) adds the `.ovr` and `.toml` files of the game's `mge3` folder after the list; their identities are recorded like those of the list. |
+| `distant_lights`, `bake_lights` | none (own file) | The light sources and the baked light go to `distantland\lights.data` (`generation/lights.rs`), outside the units and the committed inventory: rebuilt at every run, written when its bytes change, reported as stale by the inspection when it differs. |
 | `generate_terrain`, `max_terrain_control_texture_size`, `max_terrain_control_texture_bytes` | terrain-global / guard | Not statics. |
 | `force_rebuild` | execution policy | Excluded from `settings_identity`. |
 

@@ -115,6 +115,9 @@ pub struct OutputPaths {
     pub terrain_blend_patterns_path: PathBuf,
     /// `distantland\statics\usage.data`.
     pub usage_data_path: PathBuf,
+    /// `distantland\lights.data`: the light sources and the baked light (`distant_lights`). It is
+    /// written apart from the committed inventory, when its bytes change.
+    pub lights_path: PathBuf,
     /// Fixed static-mesh shard payload set for this build's shard count.
     pub static_mesh_shard_paths: [PathBuf; STATIC_MESH_SHARD_COUNT],
     /// `distantland\generation_report.toml` (optional observability; not authority).
@@ -152,6 +155,7 @@ impl OutputPaths {
             terrain_patch_albedo_path: distantland_dir.join(TERRAIN_PATCH_ALBEDO_FILE_NAME),
             terrain_blend_patterns_path: distantland_dir.join(TERRAIN_BLEND_PATTERNS_FILE_NAME),
             usage_data_path: statics_dir.join("usage.data"),
+            lights_path: distantland_dir.join("lights.data"),
             static_mesh_shard_paths: std::array::from_fn(|shard_id| statics_dir.join(static_mesh_shard_file_name(shard_id))),
             generation_report_path: distantland_dir.join(GENERATION_REPORT_NAME),
             generation_state_path: distantland_dir.join("generation_state.bin"),

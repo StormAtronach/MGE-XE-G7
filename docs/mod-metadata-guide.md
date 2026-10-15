@@ -24,6 +24,23 @@ OpenMW `.omwaddon` package is never a plugin input.
 2. **Coexistence**: The file is shared with other tools (such as MWSE). MGE XE only reads the `[tools.mge-xe.distantland]` table; all other sections are ignored.
 3. **Fail-Soft**: If the file contains syntax errors, MGE XE logs a warning and skips the file but continues generating distant land.
 
+### Legacy override files in `mge3`
+
+Older mods ship an `.ovr` file meant to be added to the override list by hand. With
+`[generation.settings] discover_override_files = true` (off by default) the generator also
+applies every `.ovr` and `.toml` file in the `mge3` folder of the game, after the configured
+list and sorted by name. A file that cannot be read is skipped with a warning. Prefer the
+plugin metadata of this guide for new mods.
+
+### Distant lights
+
+The distant lights need no rules: with `[generation.settings] distant_lights = true` (the
+default) the generator writes every light source of the exterior (its light record's colour,
+radius and flags, from the load order) to `distantland\lights.data`, and with `bake_lights =
+true` (the default) also the light that they give the land far away. The renderer draws a glow
+for each light with a mesh beyond the cells that the game has loaded. A light that is off by
+default, or a negative light, is left out.
+
 ### Global Override TOML
 
 The generator's ordered override-file list also accepts TOML documents using the same
