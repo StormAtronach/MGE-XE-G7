@@ -728,7 +728,7 @@ impl Water {
             },
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
-        let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
             label: Some("water"),
             layout: &self.layout,
             entries: &[

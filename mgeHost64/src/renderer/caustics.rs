@@ -208,7 +208,7 @@ impl Caustics {
         values[28..32].copy_from_slice(&[frame.sun_direction[0], frame.sun_direction[1], frame.sun_direction[2], frame.time]);
         values[32..36].copy_from_slice(&[strength, frame.near_view_range, frame.fog_near.0, frame.fog_near.1]);
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
-        let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
             label: Some("caustics"),
             layout: &self.layout,
             entries: &[

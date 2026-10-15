@@ -209,7 +209,7 @@ fn grow(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &mut wgpu::Buffer, r
     let larger = pool_buffer(device, capacity as u64 * unit, buffer.usage() & (wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX));
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, a pool grows") });
     encoder.copy_buffer_to_buffer(buffer, 0, &larger, 0, old as u64 * unit);
-    queue.submit([encoder.finish()]);
+    nirender_wgpu::gpu::submit(queue, [encoder.finish()]);
     *buffer = larger;
     ranges.grow(capacity);
     Some((capacity - old) as u64 * unit)
@@ -637,7 +637,7 @@ impl Culling {
             encoder.copy_buffer_to_buffer(&buffers.counts, start, &read, at as u64 * size, size);
             encoder.clear_buffer(&buffers.counts, start, Some(size));
         }
-        queue.submit([encoder.finish()]);
+        nirender_wgpu::gpu::submit(queue, [encoder.finish()]);
         read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
         let Ok(data) = read.slice(..).get_mapped_range() else { return Vec::new() };

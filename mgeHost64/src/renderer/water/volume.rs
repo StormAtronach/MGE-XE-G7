@@ -979,7 +979,7 @@ impl Volumes {
         let atlas = light.shadow.map_or(&self.no_shadow, |(atlas, ..)| atlas);
         let [no_lights, no_clusters, no_table, no_indexes] = &self.no_lights;
         let buffers = light.lights.map_or([no_lights, no_clusters, no_table, no_indexes], |l| [l.lights, l.clusters, l.table, l.indexes]);
-        scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
             label: Some("water volume light"),
             layout: &self.light_layout,
             entries: &[
@@ -1025,7 +1025,7 @@ impl Volumes {
     }
 
     fn mesh_group_of(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, base: &wgpu::TextureView, second: &wgpu::TextureView) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
             label: Some("water volume mesh"),
             layout,
             entries: &[

@@ -150,7 +150,7 @@ impl Blend {
             scene.target_size.1 as f32,
         ];
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
-        let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
             label: Some("blend"),
             layout: &self.layout,
             entries: &[

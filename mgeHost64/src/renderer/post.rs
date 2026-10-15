@@ -887,7 +887,7 @@ impl Hdr {
                 // the mean of 2 x 2 pixels from the second level on.
                 let mut source = picture;
                 for level in &self.levels {
-                    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
                         label: Some("post hdr"),
                         layout: blit_layout,
                         entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(linear) }],
@@ -5048,7 +5048,7 @@ impl Post {
         let reads_depth = self.debug == 2.0 || self.chain.iter().any(|c| c.enabled && c.disable_flags & environment_flags == 0 && c.reads_depth);
         if reads_depth {
             self.depth_frames += 1;
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
                 label: Some("post depth"),
                 layout: &self.depth_layout,
                 entries: &[
@@ -5089,7 +5089,7 @@ impl Post {
                 };
                 let earlier = |i: usize| targets.get(i).map_or(&self.white, |index| &self.pool[*index].view);
                 let own = |i: usize| wgpu::BindingResource::TextureView(compiled.textures.get(i).unwrap_or(&self.white));
-                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
                     label: Some(&compiled.name),
                     layout: &self.layout,
                     entries: &[
@@ -5141,7 +5141,7 @@ impl Post {
         // A look at a term, for a test.
         if self.debug > 0.0 {
             let source = if self.debug == 2.0 { depth_view } else { &self.pool[last.unwrap_or(0)].view };
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
                 label: Some("post debug"),
                 layout: &self.debug_layout,
                 entries: &[
@@ -5158,7 +5158,7 @@ impl Post {
         }
         // The result into the picture of the frame.
         if let Some(index) = last {
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
                 label: Some("post blit"),
                 layout: &self.blit_layout,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.pool[index].view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) }],
