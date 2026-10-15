@@ -184,9 +184,9 @@ struct ConfigurationStruct {
         // set, and that is compiled out of the water shading when it is off: the shadows of
         // the shadow map, the point lights of the game, and caustics on what is under the
         // surface.
-        BYTE Shadows;
-        BYTE PointLights;
-        BYTE Caustics;
+        bool Shadows;
+        bool PointLights;
+        bool Caustics;
     } WaterVolume;
 
     struct {
