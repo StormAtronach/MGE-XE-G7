@@ -139,6 +139,12 @@ adapter and the one in use.
 - The screenshot key (PrintScreen, or the macro) writes the picture as on Direct3D 9: the
   folder, the name and the format of the screenshot settings. The status text of MGE XE and
   its frame rate counter show in the upper left corner, as on Direct3D 9.
+- "Pause world rendering in menus" (`menu_caching` under `[runtime]`, off at the start)
+  works as on Direct3D 9: in a menu the picture of the world stays still, and the renderer
+  does less work, until a click.
+- For mod authors: the event `distantLandReady` tells when the distant land is loaded and
+  when it is there around the camera after a load or a teleport (see
+  `docs/architecture/mwse-api.md`). It works on Direct3D 9 too.
 - If the renderer program stops (`mgeHost64.exe` crashed or was ended), a message box says
   so. The game cannot show a new picture after that: quit and start again, and send
   `nirender-host.log` and `nirender.log`.

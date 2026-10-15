@@ -59,6 +59,26 @@ A kept record (bit `0x80000000`) stays in the stream, so a capture file holds it
 records for state. The next free id is 10. The ids are constants at the top of `renderer.rs`
 and in `Deviceless`; each side names the other.
 
+The environment flags (record 1): 1 exponential fog, 2 under water, 4 an exterior or an
+interior like one, 16 in a water volume, 32 in a dry space, 64 in a menu, 128 a mouse click
+in this frame, 256 a game was loaded (in one record only; the helper latches it in `data()`,
+because a loading screen has no world frame).
+
+### Messages (helper to game)
+
+The helper's `Extension::messages` go at the end of each live frame into the shared memory
+`<ring>.messages` (a ring of number, length, bytes; 64 KB; the plugin makes it). The plugin
+reads it at each frame end and calls `MGE_StreamMessage(id, data, length)` of `d3d8.dll`
+(`Deviceless::message`). A replay drops the messages.
+
+| Id | Message | Sent |
+| --- | --- | --- |
+| 1 | distant land: version 1, reason 1 loaded / 2 arrived | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` (or after 10 s) |
+
+`d3d8.dll` queues the reasons (`distantlandready.h`, also filled by the Direct3D 9 path); the
+Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export
+`MGE_DistantLandReadyNext` and triggers the MWSE event `distantLandReady { reason }`.
+
 ## 2. Device
 
 `Renderer::new` (`nirender_wgpu`, `host/src/lib.rs`):

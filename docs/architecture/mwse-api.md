@@ -174,7 +174,8 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `render.*` features: exponentialFog, atmosphericScattering | followed (environment flags) |
 | `render.distantLand` | refused before the first frame; after it, followed only if the helper loaded the land at the start |
 | `render.*` features: fpsCounter, displayMessages | followed: the helper draws the status text and the frame rate on the window (not in screenshots, as on Direct3D 9) |
-| `render.*` features: reflectInterior, distantWater, pauseRenderingInMenus, transparencyAA, noMWMGEBlending, noMWSunglare | the flag is stored, the helper does not use it (sun glare: each post shader's own `disable_sunglare`) |
+| `render.pauseRenderingInMenus` | followed: the helper keeps the picture of the first menu frame and does no distant land or post work until a click (`renderer/menu_keep.rs`) |
+| `render.*` features: reflectInterior, distantWater, transparencyAA, noMWMGEBlending, noMWSunglare | the flag is stored, the helper does not use it (sun glare: each post shader's own `disable_sunglare`) |
 | crosshairAutoHide, UI scale, lighting mode | work |
 | `distantLandRenderConfig`: draw distance, static ends, caustics, wave height, interior fog end | followed (settings record) |
 | `distantLandRenderConfig`: fog and wind; `weather` fog, per-pixel lighting, wind, scattering, skylight scattering | followed (environment record) |
@@ -193,5 +194,25 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | HUD calls | do nothing (no device; MWSE does not bind them) |
 
 The FFI exports outside the vtable (`MGE_HorizonGet/SetParam`, `MGE_WaterVolumesSet`,
-`MGE_WaterLookSet`, `MGE_WaterMasksSet`, `MGE_WaterDrySet`, in `mge/apiffi.cpp` and
-`exports.def`) work on both renderers; the water ones reach the helper as records 6 and 7.
+`MGE_WaterLookSet`, `MGE_WaterMasksSet`, `MGE_WaterDrySet`, `MGE_DistantLandReadyNext`, in
+`mge/apiffi.cpp` and `exports.def`) work on both renderers; the water ones reach the helper
+as records 6 and 7.
+
+## The event distantLandReady
+
+MGE XE triggers the MWSE event `distantLandReady` on both renderers (since 2026-10-15):
+
+```lua
+event.register("distantLandReady", function(e)
+    -- e.reason == "loaded": the distant land of the session is loaded (once).
+    -- e.reason == "arrived": after a game load or a jump of the camera of more than 2 cells,
+    -- the distant statics around the camera are there, or the wait ended after 10 s.
+end)
+```
+
+The renderer queues the reasons in `d3d8.dll` (`mge/distantlandready.h`): Direct3D 9 when
+its upload pump is done and when the residency is quiet after a load or a jump; the wgpu
+renderer through message 1 of its helper ([wgpu-renderer.md](wgpu-renderer.md), "Messages").
+`MGE XE Options/events.lua` polls `MGE_DistantLandReadyNext` at `enterFrame` and triggers the
+event, so it needs that mod. A "loaded" before a mod registers its handler is not given
+again. The event is not an MWSE event: it has no entry in the MWSE documentation.
