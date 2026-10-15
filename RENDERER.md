@@ -148,6 +148,12 @@ adapter and the one in use.
   page of the MGE XE GUI (`wait_on_load = true` under `[distant_land]`). The loading screen
   then stays until the distant statics around you are there, at most 15 s. Teleports do not
   wait; their statics fade in.
+- Three looks of the grass shader of Remiros' Groundcover are options in the Distant Land
+  page of the MGE XE GUI (`[distant_land.grass]`, off at the start): `soft_end` (the grass
+  sinks into the ground near the end of its range, so it ends without a line),
+  `vertex_color_sway` (the red of the vertex colour of a grass mesh weights its sway) and
+  `wrap_lighting` (the sun light wraps past the side of a blade, and some comes through
+  from the back). The wgpu renderer only.
 - "Pause world rendering in menus" (`menu_caching` under `[runtime]`, off at the start)
   works as on Direct3D 9: in a menu the picture of the world stays still, and the renderer
   does less work, until a click.

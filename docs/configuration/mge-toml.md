@@ -186,8 +186,16 @@ still installed.
 
 `src/default.toml` describes each of these new keys, and `render.camera_relative` too.
 
-Two more keys have no obsolete INI predecessor and no C++ binding: only the wgpu renderer
+Five more keys have no obsolete INI predecessor and no C++ binding: only the wgpu renderer
 reads them.
+
+- `distant_land.grass.soft_end`, `distant_land.grass.vertex_color_sway` and
+  `distant_land.grass.wrap_lighting` (default `false` each): the looks of the grass shader
+  of Remiros' Groundcover. The grass sinks into the ground near the end of its range at a
+  distance that a noise moves; the red of the vertex colour weights the sway (and chooses
+  the parts that get the wrap light); the sun light wraps past the side of a blade, and
+  0.4 of it comes through from the back. The shader is
+  `mgeHost64/src/renderer/statics/grass.wgsl`.
 
 - `distant_land.per_pixel_original_lights` (default `false`): the wgpu renderer lights each
   pixel with each light of the game in its own colour and with its whole falloff. `true`
