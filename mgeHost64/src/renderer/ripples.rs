@@ -309,7 +309,7 @@ impl Ripples {
         for target in ripples.rain.iter().chain(ripples.player.iter()) {
             clear(&mut encoder, &target.view);
         }
-        scene.queue.submit([encoder.finish()]);
+        scene.commands.defer(encoder.finish());
         ripples
     }
 
@@ -414,7 +414,7 @@ impl Ripples {
             }
             self.origin = [pixel.0 as f32 * WORLD_PIXEL - 0.5 * WORLD_SIZE, pixel.1 as f32 * WORLD_PIXEL - 0.5 * WORLD_SIZE];
         }
-        scene.queue.submit([encoder.finish()]);
+        scene.commands.defer(encoder.finish());
     }
 
     fn pass(&self, encoder: &mut wgpu::CommandEncoder, pipeline: &wgpu::RenderPipeline, source: &wgpu::BindGroup, target: &wgpu::TextureView, offset: u32) {

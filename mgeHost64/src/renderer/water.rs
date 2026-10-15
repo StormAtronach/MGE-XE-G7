@@ -474,7 +474,7 @@ impl Water {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        scene.queue.submit([encoder.finish()]);
+        scene.commands.defer(encoder.finish());
         // The levels of the reflection: each from the level before.
         let level_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water reflection level"),
@@ -641,7 +641,7 @@ impl Water {
                 multiview_mask: None,
             });
         }
-        scene.queue.submit([encoder.finish()]);
+        scene.commands.defer(encoder.finish());
         self.reflected = true;
     }
 

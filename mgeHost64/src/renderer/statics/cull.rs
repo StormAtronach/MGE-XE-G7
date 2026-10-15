@@ -580,10 +580,10 @@ impl Culling {
 
     /// Runs the compute passes of a set in a command buffer of their own, before the commands
     /// of the frame that draw them.
-    pub fn run(&self, device: &wgpu::Device, queue: &wgpu::Queue, set: usize, uniforms: &CullUniforms) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull") });
-        self.encode(queue, &mut encoder, set, uniforms);
-        queue.submit([encoder.finish()]);
+    pub fn run(&self, scene: &nirender_wgpu::SceneView, set: usize, uniforms: &CullUniforms) {
+        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull") });
+        self.encode(scene.queue, &mut encoder, set, uniforms);
+        scene.commands.defer(encoder.finish());
     }
 
     /// Puts the compute passes of a set into `encoder`, which goes to the GPU before the

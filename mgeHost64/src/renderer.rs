@@ -2113,9 +2113,13 @@ impl Extension for DistantLand {
             if let Some(timer) = self.gpu_time.as_ref() {
                 timer.stop(&mut encoder);
             }
-            scene.queue.submit([encoder.finish()]);
-            if let Some(timer) = self.gpu_time.as_mut() {
-                timer.add(scene.device, gpu_time::SHADOW);
+            // With the time stamps, the GPU does the part now and the time is read.
+            match self.gpu_time.as_mut() {
+                Some(timer) => {
+                    scene.commands.submit_now(scene.queue, encoder.finish());
+                    timer.add(scene.device, gpu_time::SHADOW);
+                }
+                None => scene.commands.defer(encoder.finish()),
             }
         }
 
@@ -2183,9 +2187,12 @@ impl Extension for DistantLand {
             if let Some(timer) = self.gpu_time.as_ref() {
                 timer.stop(&mut encoder);
             }
-            scene.queue.submit([encoder.finish()]);
-            if let Some(timer) = self.gpu_time.as_mut() {
-                timer.add(scene.device, gpu_time::REFLECTION);
+            match self.gpu_time.as_mut() {
+                Some(timer) => {
+                    scene.commands.submit_now(scene.queue, encoder.finish());
+                    timer.add(scene.device, gpu_time::REFLECTION);
+                }
+                None => scene.commands.defer(encoder.finish()),
             }
         }
         let far_water_wanted = self.volumes_ready && !scene.interior && !self.under_water();

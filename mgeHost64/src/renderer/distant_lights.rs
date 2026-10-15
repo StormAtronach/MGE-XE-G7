@@ -488,7 +488,7 @@ impl DistantLights {
             pass.set_bind_group(0, &glows.cull_group, &[]);
             pass.dispatch_workgroups(glows.sources.div_ceil(256), 1, 1);
         }
-        scene.queue.submit([encoder.finish()]);
+        scene.commands.defer(encoder.finish());
         self.frames += 1;
     }
 

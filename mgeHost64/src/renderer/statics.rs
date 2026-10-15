@@ -1729,7 +1729,7 @@ impl Statics {
                             *prepared = true;
                         }
                     }
-                    scene.queue.submit([encoder.finish()]);
+                    scene.commands.defer(encoder.finish());
                 }
             }
         }
@@ -1864,7 +1864,7 @@ impl Statics {
                 if !culling.has_world(&self.world) {
                     culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
                 }
-                culling.run(scene.device, scene.queue, set, &cull_values(&settings, frame.planes, frame.eye, frame.fog_end));
+                culling.run(scene, set, &cull_values(&settings, frame.planes, frame.eye, frame.fog_end));
                 return Self::draw_chosen(gpu, self.light_group.as_ref(), scene, pass, frame, set);
             }
         }
