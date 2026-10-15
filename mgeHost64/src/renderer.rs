@@ -429,6 +429,9 @@ pub struct DistantLand {
     /// of the frame for each pixel, and the caustics under them
     /// (`distant_land.water.volume_shadows`, `volume_point_lights`, `volume_caustics`).
     volume_shadows: bool,
+    /// The looks of the grass shader of Remiros' Groundcover (`[distant_land.grass]`
+    /// `soft_end`, `vertex_color_sway`, `wrap_lighting`): 1 on.
+    grass_look: [f32; 4],
     volume_point_lights: bool,
     volume_caustics: bool,
     /// The surfaces of water volumes are taken from the renderer in this frame: the water
@@ -773,6 +776,7 @@ impl DistantLand {
             lose_device: false,
             volume_reflect_cells: settings.water.volume_reflection_cells,
             volume_shadows: settings.water.volume_shadows,
+            grass_look: [settings.grass.soft_end, settings.grass.vertex_color_sway, settings.grass.wrap_lighting, false].map(|on| on as u32 as f32),
             volume_point_lights: settings.water.volume_point_lights,
             volume_caustics: settings.water.volume_caustics,
             volumes_ready: false,
@@ -2474,6 +2478,7 @@ impl Extension for DistantLand {
                 edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
             })
             .filter(|_| self.tunables.get(tunables::GRASS_SHADOW) > 0.5),
+            look: self.grass_look,
         };
         statics.draw_grass(scene, pass, &frame);
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {

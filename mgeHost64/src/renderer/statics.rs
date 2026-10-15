@@ -769,6 +769,9 @@ pub struct GrassFrame {
     pub planes: [[f32; 4]; 6],
     /// The shadow map of the frame, when the frame has one.
     pub shadow: Option<GrassShadow>,
+    /// The looks of Remiros' Groundcover (`[distant_land.grass]`): 1 on, for the soft end,
+    /// the vertex colour sway and the wrap lighting.
+    pub look: [f32; 4],
 }
 
 /// The shadow map for the grass of a frame (`renderGrassInst` of the Direct3D 9 path).
@@ -811,152 +814,12 @@ struct GrassUniforms {
     /// of its colour, times 0.25 + 0.75 of its visibility). z: 1 above the sea. w: 1 for the
     /// fade of the ground at the edge and in the fog.
     shadow: [f32; 4],
+    /// The looks of Remiros' Groundcover: x soft end, y vertex colour sway, z wrap lighting.
+    look: [f32; 4],
 }
 
-const GRASS_SHADER: &str = "
-struct Uniforms {
-    view_projection: mat4x4f,
-    eye: vec4f,
-    fog_color: vec4f,
-    fog: vec4f,
-    sun_direction: vec4f,
-    sun_color: vec4f,
-    ambient: vec4f,
-    wind: vec4f,
-    foot: vec4f,
-    shadow_layer0: mat4x4f,
-    shadow_layer1: mat4x4f,
-    esm: vec4f,
-    shade: vec4f,
-    shadow: vec4f,
-}
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var base_sampler: sampler;
-@group(0) @binding(2) var shadow_atlas: texture_2d<f32>;
-@group(0) @binding(3) var shadow_sampler: sampler;
-@group(1) @binding(0) var base_texture: texture_2d<f32>;
-
-struct In {
-    @location(0) position: vec4f,
-    @location(1) normal: vec4f,
-    @location(2) color: vec4f,
-    @location(3) coordinate: vec2f,
-    // The world matrix of the place: its three columns that a position uses.
-    @location(4) world0: vec4f,
-    @location(5) world1: vec4f,
-    @location(6) world2: vec4f,
-    // x: the share of the subset that is in (the fade-in after its arrival).
-    @location(7) fade: vec4f,
-}
-
-struct Out {
-    @builtin(position) position: vec4f,
-    @location(0) color: vec3f,
-    @location(1) coordinate: vec2f,
-    @location(2) fog: f32,
-    @location(3) @interpolate(flat) fade: f32,
-    // The light of the sun for the shadow (shadowSunEstimate), and the position in the two
-    // layers of the shadow map, z divided by w.
-    @location(4) light: f32,
-    @location(5) shadow0: vec3f,
-    @location(6) shadow1: vec3f,
-}
-
-// The order of the pixels of a block of 4 x 4 for the fade-in (Bayer), as the statics have it.
-const FADE_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
-
-// shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
-// the pixel; a positive number when the map has nothing nearer to the sun.
-fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
-    let margin = vec3f(1.0 - 8.0 * u.esm.w, 1.0 - 8.0 * u.esm.w, 1.0);
-    if all(abs(s0) < margin) {
-        let uv = vec2f(0.5 + 0.5 * s0.x, 0.5 - 0.5 * s0.y);
-        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r / u.esm.z - s0.z;
-    }
-    if all(abs(s1) < margin) {
-        let uv = vec2f(0.5 + 0.5 * s1.x, 0.5 - 0.5 * s1.y);
-        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r / u.esm.z - s1.z;
-    }
-    return 1e-6;
-}
-
-// grassDisplacement: the wind in four waves, and the grass that the player pushes away. The
-// height of a vertex in its model is the weight.
-fn displacement(world: vec3f, height: f32) -> vec2f {
-    let time = u.wind.z;
-    let speed = length(u.wind.xy);
-    let displace = 2.0 * u.wind.xy + 0.1;
-    var harmonics = vec2f(0.0);
-    harmonics += (1.0 - 0.10 * speed) * sin(1.0 * time + world.xy / 1104.0);
-    harmonics += (1.0 - 0.04 * speed) * cos(2.0 * time + world.xy / 751.0);
-    harmonics += (1.0 + 0.14 * speed) * sin(3.0 * time + world.xy / 526.0);
-    harmonics += (1.0 + 0.28 * speed) * sin(5.0 * time + world.xy / 209.0);
-    var stomp = vec2f(0.0);
-    if u.foot.w > 0.5 {
-        var d = length(world.xy - u.foot.xy);
-        let above = 0.06 * max(0.0, u.foot.z - world.z - 60.0);
-        d += above * above;
-        if d < 150.0 {
-            stomp = (60.0 / max(d, 0.001) - 0.4) * (world.xy - u.foot.xy);
-        }
-    }
-    return clamp(0.02 * height, 0.0, 1.0) * (harmonics * displace + stomp);
-}
-
-@vertex fn vs(in: In) -> Out {
-    var out: Out;
-    let model = vec4f(in.position.xyz, 1.0);
-    var world = vec3f(dot(model, in.world0), dot(model, in.world1), dot(model, in.world2));
-    let moved = displacement(world, in.position.z);
-    world = vec3f(world.xy + moved, world.z);
-    out.position = u.view_projection * vec4f(world, 1.0);
-    // The normal goes through the world matrix and is not made of length 1 again.
-    let n = vec4f(normalize(in.normal.xyz * 2.0 - 1.0), 0.0);
-    let normal = vec3f(dot(n, in.world0), dot(n, in.world1), dot(n, in.world2));
-    let to_vertex = world - u.eye.xyz;
-    // The light of the sun for the side that the camera sees; the other side gets a part.
-    var lambert = dot(normal, -u.sun_direction.xyz) * -sign(dot(to_vertex, normal));
-    if lambert < 0.0 {
-        lambert *= -0.3;
-    }
-    out.color = u.sun_color.rgb * lambert + u.ambient.rgb;
-    out.coordinate = in.coordinate;
-    // fogMWScalar: the linear fog of the near cells.
-    out.fog = clamp((u.fog.y - length(to_vertex)) / max(u.fog.y - u.fog.x, 1.0), 0.0, 1.0);
-    out.fade = in.fade.x;
-    // shadowSunEstimate of the light of the blade, with the light through the far side.
-    let x = lambert * u.shadow.y;
-    out.light = x / (u.shade.w + x);
-    let s0 = u.shadow_layer0 * vec4f(world, 1.0);
-    let s1 = u.shadow_layer1 * vec4f(world, 1.0);
-    out.shadow0 = vec3f(s0.xy, s0.z / s0.w);
-    out.shadow1 = vec3f(s1.xy, s1.z / s1.w);
-    return out;
-}
-
-@fragment fn fs(in: Out) -> @location(0) vec4f {
-    let texel = textureSample(base_texture, base_sampler, in.coordinate);
-    let cell = vec2u(in.position.xy) % 4u;
-    if texel.a < 128.0 / 255.0 || in.fade < (FADE_ORDER[cell.y * 4u + cell.x] + 0.5) / 16.0 {
-        discard;
-    }
-    var color = texel.rgb * in.color;
-    // The shadow, as GrassPS: shadowESM times the light of the sun, towards shadecolor.
-    if u.shadow.x > 0.5 {
-        let dz = shadow_delta(in.shadow0, in.shadow1);
-        var v = (1.0 - clamp(exp(u.esm.x * dz + u.esm.y), 0.0, 1.0)) * in.light;
-        if u.shadow.w > 0.5 {
-            // As the ground under the blade (RenderShadowsPS): the fade at the edge of the
-            // outer layer, and the fog weakens the shadow.
-            let edge = clamp(25.0 * (1.0 - abs(in.shadow1.xy)), vec2f(0.0), vec2f(1.0));
-            let fogatt = in.fog * in.fog;
-            v *= edge.x * edge.y * select(clamp(4.0 * fogatt, 0.0, 1.0), fogatt, u.shadow.z > 0.5);
-        }
-        color *= 1.0 - v * u.shade.rgb;
-    }
-    return vec4f(mix(u.fog_color.rgb, color, in.fog), 1.0);
-}
-";
+/// The grass shader (`XE Mod Grass.fx`, with the looks of Remiros' Groundcover as options).
+const GRASS_SHADER: &str = include_str!("statics/grass.wgsl");
 
 /// The casters of the shadow map: `StaticShadowVS` and `StaticShadowPS` of `XE Shadowmap.fx`.
 /// The uniforms are those of the statics (the matrix of the layer in `view_projection`).
@@ -1847,6 +1710,7 @@ impl Statics {
                 let luminance = c[0] * 0.36 + c[1] * 0.53 + c[2] * 0.11;
                 [1.0, luminance * (0.25 + 0.75 * shadow.sun_vis), shadow.above_sea as u32 as f32, shadow.edge as u32 as f32]
             }),
+            look: frame.look,
         };
         scene.queue.write_buffer(&gpu.grass_uniforms, 0, bytemuck::bytes_of(&uniforms));
 
