@@ -190,18 +190,25 @@ bound group object changes. V = vertex, F = fragment, C = compute.
 
 **"game draw"**: one pipeline per `PipelineKey` (vertex format, topology, blend, depth,
 stencil, cull, fill, colour mask), one layout "draw" for all. WGSL: `host/src/shader.wgsl`
-plus the extension's `draw_shader` text. Vertex buffers: the game's vertices, a 64-byte
-"vertex defaults" buffer (instance step) for attributes a vertex lacks, the instance world
-matrix (locations 9-12). Indices `Uint16`.
+plus the extension's `draw_shader` text (its `draw.` becomes `draws[record].` when the
+shader is made). Vertex buffers: slot 0 the game's vertices (a chunk of the vertex pool:
+the vertices of all meshes in buffers of 64 MB; the draw names its base vertex), slot 1 a
+"vertex defaults" buffer (instance step, zeros, as long as the instance buffer) for
+attributes a vertex lacks, slot 2 the instances (80 bytes: the world matrix at locations
+9-12 and the index of the draw's record at 13). Indices `Uint16` in chunks of the index
+pool (16 MB); the draw names its first index. Since 2026-10-16 (plan 0.5 entries TD1, TD3).
 
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
-| 0 | extension frame | 0 uniform `FrameParameters` (512 B), 1 texture (shadow atlas or white), 2 sampler, 3 uniform cluster grid, 4-5 storage cluster table and indexes, 6 storage lights of the frame, 7 storage bone palette (VF) | frame |
+| 0 | extension frame | 0 uniform `FrameParameters` (512 B), 1 texture (shadow atlas or white), 2 sampler, 3 uniform cluster grid, 4-5 storage cluster table and indexes, 6 storage lights of the frame, 7 storage bone palette (V), 8 storage records of the draws (`array<Draw>`, VF) | frame |
 | 1 | draw samplers | 0-5 sampler per texture stage (F) | material |
 | 2 | draw textures | 0-5 texture per stage (F) | material |
-| 3 | draw | 0 uniform `DrawData`, dynamic offset (VF) | draw (offset) |
 
-Groups 0-2 are set only when they change (`BoundGroups`); group 3 gets a new offset each draw.
+The groups are set only when they change (`BoundGroups`), as are the pipeline, the stencil
+reference and the buffers of slot 0 and the index buffer; slots 1 and 2 once a pass. A draw
+is `draw_indexed(first index.., base vertex, first instance..)`: its record is read by
+`draws[instance.record]` in both stages. A copy of a draw (clipped at a water plane, replayed
+into a reflection) takes a record and instances from the end of the room of the frame.
 
 **"screen draw"**: film frames and screen-space draws. Group 0: texture, sampler (F); a new
 group per draw. Depth test always, no depth write.
