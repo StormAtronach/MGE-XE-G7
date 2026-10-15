@@ -84,3 +84,12 @@ start = 1.0
 least = 0.0
 most = 4.0
 step = 0.1
+
+[[parameter]]
+name = "statics.fade"
+label = "Distant statics: fade-in time"
+about = "The seconds that a distant static takes to come in when its geometry arrives on the GPU (after a load, a teleport, or as the camera moves). 0 shows it at once."
+start = 1.0
+least = 0.0
+most = 5.0
+step = 0.1

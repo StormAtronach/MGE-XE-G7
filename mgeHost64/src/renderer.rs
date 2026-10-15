@@ -1586,6 +1586,9 @@ impl Extension for DistantLand {
         self.finish_load(scene);
         self.apply_settings();
         self.cell_facts(scene);
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_fade(self.tunables.get(tunables::STATICS_FADE));
+        }
         // A jump of the camera of more than 2 cells (a teleport) waits for the statics as a
         // game load does; each world frame counts for a wait.
         let eye = eye_of(&scene.view);

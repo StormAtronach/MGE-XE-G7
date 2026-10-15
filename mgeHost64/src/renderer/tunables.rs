@@ -33,6 +33,8 @@ pub const GLOW_STRENGTH: &str = "lights.glow.strength";
 pub const GLOW_PIXELS: &str = "lights.glow.pixels";
 /// The same: how strong the baked light is on the land and the statics at night.
 pub const BAKED_STRENGTH: &str = "lights.baked.strength";
+/// The distant statics: the seconds that a subset takes to come in after its arrival.
+pub const STATICS_FADE: &str = "statics.fade";
 
 #[derive(Default)]
 struct Tunable {
@@ -147,7 +149,7 @@ mod tests {
     #[test]
     fn the_file_has_each_parameter_of_the_code_with_a_range() {
         let tunables = Tunables::new();
-        for name in [BLUR_ANGLE, BLUR_WIND, BLUR_STRETCH, WATER_LIGHT_COLOUR, GLOW_SIZE, GLOW_STRENGTH, GLOW_PIXELS, BAKED_STRENGTH] {
+        for name in [BLUR_ANGLE, BLUR_WIND, BLUR_STRETCH, WATER_LIGHT_COLOUR, GLOW_SIZE, GLOW_STRENGTH, GLOW_PIXELS, BAKED_STRENGTH, STATICS_FADE] {
             let tunable = tunables.list.iter().find(|tunable| tunable.name == name).unwrap_or_else(|| panic!("no parameter {name} in the file"));
             assert!(!tunable.label.is_empty(), "{name} has no label");
             assert!(tunable.step > 0.0 && tunable.least < tunable.most, "{name} has no range");
