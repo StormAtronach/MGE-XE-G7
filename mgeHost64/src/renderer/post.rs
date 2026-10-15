@@ -62,48 +62,52 @@ struct Variables {
     fog_near: vec4f,
     switches: vec4f,
 }
+// Group 0, the frame: the same for all shaders and passes of the frame.
 @group(0) @binding(0) var<uniform> u: Variables;
-@group(0) @binding(1) var lastshader: texture_2d<f32>;
-@group(0) @binding(2) var lastpass: texture_2d<f32>;
-@group(0) @binding(3) var depthframe: texture_2d<f32>;
-@group(0) @binding(4) var watertexture: texture_3d<f32>;
-@group(0) @binding(5) var point_clamp: sampler;
-@group(0) @binding(6) var linear_clamp: sampler;
-@group(0) @binding(7) var linear_wrap: sampler;
-@group(0) @binding(8) var linear_mirror: sampler;
-@group(0) @binding(9) var point_wrap: sampler;
-// The textures of the shader (the `src` annotations of its file), white without one:
-// `tex1` here, `tex2` to `tex10` after the other bindings.
-@group(0) @binding(10) var tex1: texture_2d<f32>;
-// The size of the target of the pass in xy, and 1 over it in zw.
-@group(0) @binding(11) var<uniform> pass_info: vec4f;
-// The outputs of the first eight passes of the shader; white before they are drawn.
-@group(0) @binding(12) var pass0: texture_2d<f32>;
-@group(0) @binding(13) var pass1: texture_2d<f32>;
-@group(0) @binding(14) var pass2: texture_2d<f32>;
-@group(0) @binding(15) var pass3: texture_2d<f32>;
-@group(0) @binding(16) var pass4: texture_2d<f32>;
-@group(0) @binding(17) var pass5: texture_2d<f32>;
-@group(0) @binding(18) var pass6: texture_2d<f32>;
-@group(0) @binding(19) var pass7: texture_2d<f32>;
+@group(0) @binding(1) var depthframe: texture_2d<f32>;
+@group(0) @binding(2) var watertexture: texture_3d<f32>;
+@group(0) @binding(3) var point_clamp: sampler;
+@group(0) @binding(4) var linear_clamp: sampler;
+@group(0) @binding(5) var linear_wrap: sampler;
+@group(0) @binding(6) var linear_mirror: sampler;
+@group(0) @binding(7) var point_wrap: sampler;
+@group(0) @binding(8) var point_mirror: sampler;
 
-// The rows of the matrices of Direct3D: mview[row][col] of HLSL.
+// Group 1, the shader: made when the shader is loaded.
 // The variables of the shader that a mod sets from Lua. The renderer makes a function for
 // each one: `name()`, or `name(i)` for an array.
 struct ModValues {
     values: array<vec4f, 256>,
 }
-@group(0) @binding(20) var<uniform> modv: ModValues;
-@group(0) @binding(21) var point_mirror: sampler;
-@group(0) @binding(22) var tex2: texture_2d<f32>;
-@group(0) @binding(23) var tex3: texture_2d<f32>;
-@group(0) @binding(24) var tex4: texture_2d<f32>;
-@group(0) @binding(25) var tex5: texture_2d<f32>;
-@group(0) @binding(26) var tex6: texture_2d<f32>;
-@group(0) @binding(27) var tex7: texture_2d<f32>;
-@group(0) @binding(28) var tex8: texture_2d<f32>;
-@group(0) @binding(29) var tex9: texture_2d<f32>;
-@group(0) @binding(30) var tex10: texture_2d<f32>;
+@group(1) @binding(0) var<uniform> modv: ModValues;
+// The textures of the shader (the `src` annotations of its file), white without one.
+@group(1) @binding(1) var tex1: texture_2d<f32>;
+@group(1) @binding(2) var tex2: texture_2d<f32>;
+@group(1) @binding(3) var tex3: texture_2d<f32>;
+@group(1) @binding(4) var tex4: texture_2d<f32>;
+@group(1) @binding(5) var tex5: texture_2d<f32>;
+@group(1) @binding(6) var tex6: texture_2d<f32>;
+@group(1) @binding(7) var tex7: texture_2d<f32>;
+@group(1) @binding(8) var tex8: texture_2d<f32>;
+@group(1) @binding(9) var tex9: texture_2d<f32>;
+@group(1) @binding(10) var tex10: texture_2d<f32>;
+
+// Group 2, the pass.
+// The size of the target of the pass in xy, and 1 over it in zw.
+@group(2) @binding(0) var<uniform> pass_info: vec4f;
+@group(2) @binding(1) var lastshader: texture_2d<f32>;
+@group(2) @binding(2) var lastpass: texture_2d<f32>;
+// The outputs of the first eight passes of the shader; white before they are drawn.
+@group(2) @binding(3) var pass0: texture_2d<f32>;
+@group(2) @binding(4) var pass1: texture_2d<f32>;
+@group(2) @binding(5) var pass2: texture_2d<f32>;
+@group(2) @binding(6) var pass3: texture_2d<f32>;
+@group(2) @binding(7) var pass4: texture_2d<f32>;
+@group(2) @binding(8) var pass5: texture_2d<f32>;
+@group(2) @binding(9) var pass6: texture_2d<f32>;
+@group(2) @binding(10) var pass7: texture_2d<f32>;
+
+// The rows of the matrices of Direct3D: mview[row][col] of HLSL.
 
 fn mview(row: u32, col: u32) -> f32 {
     return u.mview[row][col];
@@ -4514,10 +4518,11 @@ struct Compiled {
     /// declares it).
     reads_depth: bool,
     passes: Vec<CompiledPass>,
-    textures: Vec<wgpu::TextureView>,
     variables: Vec<VariableDef>,
     /// The uniform `modv` of the shader, when it has variables.
     values: Option<wgpu::Buffer>,
+    /// Group 1 of the shader: `modv` and its textures.
+    group: wgpu::BindGroup,
 }
 
 /// A texture of the pool: the scale and the format of its class, and its view.
@@ -4537,7 +4542,10 @@ pub struct Post {
     told_unknown: Vec<String>,
     /// The result of the last load of each shader, for the file that the game reads.
     pub status: ShaderStatus,
-    layout: wgpu::BindGroupLayout,
+    /// The layouts of the groups of the shaders: the frame, the shader, the pass.
+    frame_layout: wgpu::BindGroupLayout,
+    shader_layout: wgpu::BindGroupLayout,
+    pass_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     /// The uniform `modv` of a shader without variables.
     no_values: wgpu::Buffer,
@@ -4589,58 +4597,39 @@ impl Post {
     /// bytes of a file under `Data Files`; `hdr_reaction` is `render.hdr_reaction_time`.
     pub fn new(scene: &SceneView, chain: &[String], waves: wgpu::TextureView, read: &dyn Fn(&str) -> Option<Vec<u8>>, hdr_reaction: f32) -> Post {
         let device = scene.device;
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("post"),
+        // The groups of the shaders (`COMMON`): 0 the frame, 1 the shader, 2 the pass.
+        let uniform = |binding, visibility| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let colour = |binding| texture(binding, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2);
+        let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post frame"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
-                texture(1, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(2, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(3, wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureViewDimension::D2),
-                texture(4, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3),
-                sampler(5, wgpu::SamplerBindingType::NonFiltering),
+                uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                texture(1, wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureViewDimension::D2),
+                texture(2, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3),
+                sampler(3, wgpu::SamplerBindingType::NonFiltering),
+                sampler(4, wgpu::SamplerBindingType::Filtering),
+                sampler(5, wgpu::SamplerBindingType::Filtering),
                 sampler(6, wgpu::SamplerBindingType::Filtering),
-                sampler(7, wgpu::SamplerBindingType::Filtering),
-                sampler(8, wgpu::SamplerBindingType::Filtering),
-                sampler(9, wgpu::SamplerBindingType::NonFiltering),
-                texture(10, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 11,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
-                texture(12, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(13, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(14, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(15, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(16, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(17, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(18, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(19, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 20,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
-                sampler(21, wgpu::SamplerBindingType::NonFiltering),
-                texture(22, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(23, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(24, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(25, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(26, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(27, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(28, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(29, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(30, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
+                sampler(7, wgpu::SamplerBindingType::NonFiltering),
+                sampler(8, wgpu::SamplerBindingType::NonFiltering),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("post shaders"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let mut entries = vec![uniform(0, wgpu::ShaderStages::FRAGMENT)];
+        entries.extend((1..=10).map(colour));
+        let shader_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("post shader"), entries: &entries });
+        let mut entries = vec![uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT)];
+        entries.extend((1..=10).map(colour));
+        let pass_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("post pass"), entries: &entries });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("post shaders"),
+            bind_group_layouts: &[Some(&frame_layout), Some(&shader_layout), Some(&pass_layout)],
+            immediate_size: 0,
+        });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let make_sampler = |filter: wgpu::FilterMode, address: wgpu::AddressMode| {
             device.create_sampler(&wgpu::SamplerDescriptor { address_mode_u: address, address_mode_v: address, address_mode_w: address, mag_filter: filter, min_filter: filter, ..Default::default() })
@@ -4730,7 +4719,9 @@ impl Post {
             failed: Vec::new(),
             told_unknown: Vec::new(),
             status: ShaderStatus::default(),
-            layout,
+            frame_layout,
+            shader_layout,
+            pass_layout,
             pipeline_layout,
             no_values,
             hdr_reaction,
@@ -4877,7 +4868,7 @@ impl Post {
             self.hdr = Some(Hdr::new(device, &self.blit_layout, self.hdr_reaction));
         }
         // The textures of the shader. One that is not found reads as black, as on Direct3D 9.
-        let textures = shader
+        let textures: Vec<wgpu::TextureView> = shader
             .textures
             .iter()
             .map(|name| {
@@ -4896,6 +4887,10 @@ impl Post {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("post values"), contents: bytemuck::cast_slice(&values_of(&shader.variables, &[])), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST })
         });
+        // Group 1 of the shader; it keeps the textures.
+        let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: values.as_ref().unwrap_or(&self.no_values).as_entire_binding() }];
+        entries.extend((0..10).map(|i| wgpu::BindGroupEntry { binding: i as u32 + 1, resource: wgpu::BindingResource::TextureView(textures.get(i).unwrap_or(&self.white)) }));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(&shader.name), layout: &self.shader_layout, entries: &entries });
         self.chain.push(Compiled {
             name: shader.name,
             disable_flags: shader.disable_flags,
@@ -4906,9 +4901,9 @@ impl Post {
             no_sun_glare: shader.no_sun_glare,
             reads_depth: shader.source.contains("depthframe"),
             passes,
-            textures,
             variables: shader.variables,
             values,
+            group,
         });
         true
     }
@@ -5066,6 +5061,21 @@ impl Post {
         // the picture. The passes of a shader each get a texture of their class that is not
         // the input and not an earlier pass of the shader (`pass0` to `pass7` read those).
         let mut last: Option<usize> = None;
+        let frame_group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
+            label: Some("post frame"),
+            layout: &self.frame_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.waves) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.samplers[1]) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.samplers[2]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.samplers[3]) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.samplers[4]) },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&self.samplers[5]) },
+            ],
+        });
         let chain = std::mem::take(&mut self.chain);
         for compiled in &chain {
             if !compiled.enabled || compiled.disable_flags & environment_flags != 0 {
@@ -5088,48 +5098,19 @@ impl Post {
                     None => lastshader_view,
                 };
                 let earlier = |i: usize| targets.get(i).map_or(&self.white, |index| &self.pool[*index].view);
-                let own = |i: usize| wgpu::BindingResource::TextureView(compiled.textures.get(i).unwrap_or(&self.white));
-                let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-                    label: Some(&compiled.name),
-                    layout: &self.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(lastshader_view) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(lastpass_view) },
-                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(depth_view) },
-                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&self.waves) },
-                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) },
-                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.samplers[1]) },
-                        wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.samplers[2]) },
-                        wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&self.samplers[3]) },
-                        wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&self.samplers[4]) },
-                        wgpu::BindGroupEntry { binding: 10, resource: own(0) },
-                        wgpu::BindGroupEntry { binding: 11, resource: pass.info.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(earlier(0)) },
-                        wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(earlier(1)) },
-                        wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(earlier(2)) },
-                        wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(earlier(3)) },
-                        wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::TextureView(earlier(4)) },
-                        wgpu::BindGroupEntry { binding: 17, resource: wgpu::BindingResource::TextureView(earlier(5)) },
-                        wgpu::BindGroupEntry { binding: 18, resource: wgpu::BindingResource::TextureView(earlier(6)) },
-                        wgpu::BindGroupEntry { binding: 19, resource: wgpu::BindingResource::TextureView(earlier(7)) },
-                        wgpu::BindGroupEntry { binding: 20, resource: compiled.values.as_ref().unwrap_or(&self.no_values).as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 21, resource: wgpu::BindingResource::Sampler(&self.samplers[5]) },
-                        wgpu::BindGroupEntry { binding: 22, resource: own(1) },
-                        wgpu::BindGroupEntry { binding: 23, resource: own(2) },
-                        wgpu::BindGroupEntry { binding: 24, resource: own(3) },
-                        wgpu::BindGroupEntry { binding: 25, resource: own(4) },
-                        wgpu::BindGroupEntry { binding: 26, resource: own(5) },
-                        wgpu::BindGroupEntry { binding: 27, resource: own(6) },
-                        wgpu::BindGroupEntry { binding: 28, resource: own(7) },
-                        wgpu::BindGroupEntry { binding: 29, resource: own(8) },
-                        wgpu::BindGroupEntry { binding: 30, resource: own(9) },
-                    ],
-                });
+                let mut entries = vec![
+                    wgpu::BindGroupEntry { binding: 0, resource: pass.info.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(lastshader_view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(lastpass_view) },
+                ];
+                entries.extend((0..8).map(|i| wgpu::BindGroupEntry { binding: i as u32 + 3, resource: wgpu::BindingResource::TextureView(earlier(i)) }));
+                let pass_group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor { label: Some(&compiled.name), layout: &self.pass_layout, entries: &entries });
                 // A pass keeps what the texture held where it discards a pixel.
                 let mut render = full_screen_pass(encoder, &self.pool[sink].view, wgpu::LoadOp::Load);
                 render.set_pipeline(&pass.pipeline);
-                render.set_bind_group(0, &group, &[]);
+                render.set_bind_group(0, &frame_group, &[]);
+                render.set_bind_group(1, &compiled.group, &[]);
+                render.set_bind_group(2, &pass_group, &[]);
                 render.draw(0..3, 0..1);
                 drop(render);
                 targets.push(sink);
