@@ -464,13 +464,13 @@ struct Uniforms {
     inscatter: vec4f,
     sun_altitude: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var atlas: texture_2d<f32>;
-@group(0) @binding(2) var material: texture_2d<f32>;
-@group(0) @binding(3) var material_flags: texture_2d<f32>;
-@group(0) @binding(4) var patch_albedo: texture_2d<f32>;
-@group(0) @binding(5) var blend_patterns: texture_2d<f32>;
-@group(0) @binding(6) var smooth_sampler: sampler;
+@group(1) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(1) var atlas: texture_2d<f32>;
+@group(1) @binding(2) var material: texture_2d<f32>;
+@group(1) @binding(3) var material_flags: texture_2d<f32>;
+@group(1) @binding(4) var patch_albedo: texture_2d<f32>;
+@group(1) @binding(5) var blend_patterns: texture_2d<f32>;
+@group(1) @binding(6) var smooth_sampler: sampler;
 
 struct Out {
     @builtin(position) position: vec4f,
@@ -598,7 +598,7 @@ struct Uniforms {
     inscatter: vec4f,
     sun_altitude: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(0) var<uniform> u: Uniforms;
 
 struct Out {
     @builtin(position) position: vec4f,
@@ -1075,12 +1075,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         entries[0] = wgpu::BindGroupEntry { binding: 0, resource: shadow_uniforms[i].as_entire_binding() };
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("distant land shadow"), layout: &layout, entries: &entries })
     });
-    let source = format!("{SHADER}{FOG_FUNCTION}{}", distant_lights::baked_wgsl(1));
+    let source = format!("{SHADER}{FOG_FUNCTION}{}", distant_lights::baked_wgsl(0));
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    // The land and its mirror have the baked light of the distant lights in group 1; the
-    // shadow map does not.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land"), bind_group_layouts: &[Some(&layout), Some(light_layout)], immediate_size: 0 });
-    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land shadow"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+    // Group 0: the baked light of the distant lights, the same for the frame (the shadow map
+    // has none); group 1: the uniforms and the textures of the pass.
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land"), bind_group_layouts: &[Some(light_layout), Some(&layout)], immediate_size: 0 });
+    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land shadow"), bind_group_layouts: &[None, Some(&layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
     let make_pipeline = |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2000,8 +2000,8 @@ impl Extension for DistantLand {
         if !scene.interior {
             pass.push_debug_group("distant land");
             pass.set_pipeline(gpu.pipeline_for(scene));
-            pass.set_bind_group(0, &gpu.group, &[]);
-            pass.set_bind_group(1, &light_group, &[]);
+            pass.set_bind_group(0, &light_group, &[]);
+            pass.set_bind_group(1, &gpu.group, &[]);
             for mesh in &gpu.meshes {
                 let inside = planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
                 if !inside {
@@ -2079,7 +2079,7 @@ impl Extension for DistantLand {
                 // of the Direct3D 9 path has it.
                 if !scene.interior {
                     pass.set_pipeline(&gpu.shadow_pipeline);
-                    pass.set_bind_group(0, &gpu.shadow_groups[layer], &[]);
+                    pass.set_bind_group(1, &gpu.shadow_groups[layer], &[]);
                     for mesh in &gpu.meshes {
                         let inside = layer_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
                         if !inside {
@@ -2144,8 +2144,8 @@ impl Extension for DistantLand {
             // path) with `reflect_land`; an interior cell reflects its statics only.
             if !scene.interior && self.reflect_land {
                 mirror_pass.set_pipeline(gpu.mirror_pipeline_for(scene));
-                mirror_pass.set_bind_group(0, &gpu.mirror_group, &[]);
-                mirror_pass.set_bind_group(1, &light_group, &[]);
+                mirror_pass.set_bind_group(0, &light_group, &[]);
+                mirror_pass.set_bind_group(1, &gpu.mirror_group, &[]);
                 for mesh in &gpu.meshes {
                     let inside = mirror_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
                     if !inside {

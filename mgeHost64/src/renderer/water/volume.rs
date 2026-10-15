@@ -289,14 +289,14 @@ struct Surface {
     far: vec4f,
     params: array<vec4f, 4>,
 }
-@group(1) @binding(0) var<uniform> s: Surface;
+@group(3) @binding(0) var<uniform> s: Surface;
 
 // The textures of the mesh, for a water shader: its base texture (white without one), and its
 // second texture (a dark, detail or decal map; transparent black without one, and far away),
 // with mip levels, wrapped.
-@group(3) @binding(0) var mesh0: texture_2d<f32>;
-@group(3) @binding(1) var mesh1: texture_2d<f32>;
-@group(3) @binding(2) var mesh_sampler: sampler;
+@group(2) @binding(0) var mesh0: texture_2d<f32>;
+@group(2) @binding(1) var mesh1: texture_2d<f32>;
+@group(2) @binding(2) var mesh_sampler: sampler;
 
 // The light of the frame on the surfaces (`VolumeLight`): the shadow map of the frame, the
 // lights of the frame with their clusters (`nirender_wgpu::FrameLights`), the caustics.
@@ -326,12 +326,12 @@ struct Lighting {
     // lights.
     origin: vec4f,
 }
-@group(2) @binding(0) var<uniform> lighting: Lighting;
-@group(2) @binding(1) var shadow_atlas: texture_2d<f32>;
-@group(2) @binding(2) var<storage, read> lights: array<Light>;
-@group(2) @binding(3) var<uniform> clusters: Clusters;
-@group(2) @binding(4) var<storage, read> cluster_table: array<vec2u>;
-@group(2) @binding(5) var<storage, read> cluster_indexes: array<u32>;
+@group(1) @binding(0) var<uniform> lighting: Lighting;
+@group(1) @binding(1) var shadow_atlas: texture_2d<f32>;
+@group(1) @binding(2) var<storage, read> lights: array<Light>;
+@group(1) @binding(3) var<uniform> clusters: Clusters;
+@group(1) @binding(4) var<storage, read> cluster_table: array<vec2u>;
+@group(1) @binding(5) var<storage, read> cluster_indexes: array<u32>;
 
 // How much of the sun reaches a place, 0 to 1: the shadow map of the frame, read as the draws
 // of the game read it (`extension_shade` of the renderer), so the water has the shadow of the
@@ -882,7 +882,7 @@ impl Volumes {
                 entry(5, storage),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water volume"), bind_group_layouts: &[Some(frame_layout), Some(&surface_layout), Some(&light_layout), Some(&mesh_layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water volume"), bind_group_layouts: &[Some(frame_layout), Some(&light_layout), Some(&mesh_layout), Some(&surface_layout)], immediate_size: 0 });
         let lighting = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume light"), size: size_of::<Lighting>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         use wgpu::util::DeviceExt;
         let no_shadow = device
@@ -1257,7 +1257,7 @@ impl Volumes {
         let lines = scene.wireframe && scene.device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         let light_group = self.light_group(scene, light);
         pass.set_bind_group(0, frame_group, &[]);
-        pass.set_bind_group(2, &light_group, &[]);
+        pass.set_bind_group(1, &light_group, &[]);
         if !far.is_empty() {
             for (index, water) in far.iter().enumerate() {
                 let shader = self.shader_of(&water.look);
@@ -1268,8 +1268,8 @@ impl Volumes {
                     (Some(texture), 1..) => Self::mesh_group_of(scene.device, &self.mesh_layout, &self.mesh_sampler, texture, &self.clear),
                     _ => self.plain_mesh.clone(),
                 };
-                pass.set_bind_group(3, &mesh, &[]);
-                pass.set_bind_group(1, &self.group, &[((base + index as u64) * SLOT) as u32]);
+                pass.set_bind_group(2, &mesh, &[]);
+                pass.set_bind_group(3, &self.group, &[((base + index as u64) * SLOT) as u32]);
                 pass.set_vertex_buffer(0, water.vertices.slice(..));
                 pass.set_index_buffer(water.indexes.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..water.triangles * 3, 0, 0..1);
@@ -1304,10 +1304,10 @@ impl Volumes {
                 let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines: lines && !cut && !depth_only, far: false, cut, depth_only, depth_test, stencil, coordinates, shader };
                 pass.set_pipeline(self.pipeline(scene.device, key));
                 let mesh = if shader == 0 { self.plain_mesh.clone() } else { self.mesh_group(scene.device, held) };
-                pass.set_bind_group(3, &mesh, &[]);
+                pass.set_bind_group(2, &mesh, &[]);
                 pass.set_stencil_reference(if stencil.is_some() { held.stencil[2] } else { 0 });
-                pass.set_bind_group(1, &self.group, &[((base + index as u64) * SLOT) as u32]);
-                pass.set_bind_group(2, &light_group, &[]);
+                pass.set_bind_group(3, &self.group, &[((base + index as u64) * SLOT) as u32]);
+                pass.set_bind_group(1, &light_group, &[]);
                 pass.set_vertex_buffer(0, held.vertices.slice(..));
                 pass.set_vertex_buffer(1, self.defaults.slice(..));
                 pass.set_index_buffer(held.indexes.slice(..), wgpu::IndexFormat::Uint16);

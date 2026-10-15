@@ -821,10 +821,10 @@ struct Uniforms {
     sun_altitude: vec4f,
     handoff: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var<storage, read> palettes: array<vec4f>;
-@group(0) @binding(2) var base_sampler: sampler;
-@group(1) @binding(0) var base_texture: texture_2d<f32>;
+@group(1) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(1) var<storage, read> palettes: array<vec4f>;
+@group(1) @binding(2) var base_sampler: sampler;
+@group(2) @binding(0) var base_texture: texture_2d<f32>;
 
 struct In {
     @location(0) position: vec4f,
@@ -940,10 +940,10 @@ struct Uniforms {
     sun_altitude: vec4f,
     handoff: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var<storage, read> palettes: array<vec4f>;
-@group(0) @binding(2) var base_sampler: sampler;
-@group(1) @binding(0) var base_texture: texture_2d<f32>;
+@group(1) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(1) var<storage, read> palettes: array<vec4f>;
+@group(1) @binding(2) var base_sampler: sampler;
+@group(2) @binding(0) var base_texture: texture_2d<f32>;
 
 // The order of the pixels of a block of 4 x 4 for the band of the handoff (Bayer).
 const HANDOFF_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
@@ -1061,7 +1061,7 @@ pub struct Statics {
     pool_full: bool,
     /// The sets that `prepare` chose for this frame.
     prepared: [bool; 4],
-    /// The bind group of the baked light of the distant lights, and its layout (group 2 of the
+    /// The bind group of the baked light of the distant lights, and its layout (group 0 of the
     /// pipelines of the statics). The catalog loads when the layout is there.
     light_layout: Option<wgpu::BindGroupLayout>,
     light_group: Option<wgpu::BindGroup>,
@@ -1815,14 +1815,14 @@ impl Statics {
     fn bind_set(gpu: &Gpu, light_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) {
         let buffers = &gpu.sets[set];
         if let Some(light_group) = light_group {
-            pass.set_bind_group(2, light_group, &[]);
+            pass.set_bind_group(0, light_group, &[]);
         }
         scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms_of(frame)));
         // Lines when the game draws in wireframe (see `SceneView::wireframe`), as MGE XE on
         // Direct3D 9 draws with the fill mode the engine left; the shadow map stays filled.
         let (fill, lines) = if set == 1 { (&gpu.mirror_pipeline, &gpu.mirror_pipeline_lines) } else { (&gpu.pipeline, &gpu.pipeline_lines) };
         pass.set_pipeline(if set >= 2 { &gpu.shadow_pipeline } else if scene.wireframe { lines.as_ref().unwrap_or(fill) } else { fill });
-        pass.set_bind_group(0, &buffers.group, &[]);
+        pass.set_bind_group(1, &buffers.group, &[]);
         pass.set_vertex_buffer(1, gpu.instances.slice(..));
     }
 
@@ -1833,7 +1833,7 @@ impl Statics {
         let (pools, textures) = (&gpu.pools, &gpu.textures);
         culling.draw(set, pass, |pass, texture| {
             let Some((vertices, indexes)) = pools.buffers(texture) else { return false };
-            pass.set_bind_group(1, &textures[texture as usize], &[]);
+            pass.set_bind_group(2, &textures[texture as usize], &[]);
             pass.set_vertex_buffer(0, vertices.slice(..));
             pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
             true
@@ -1946,7 +1946,7 @@ impl Statics {
             if draw_texture != texture {
                 let Some((vertices, indexes)) = gpu.pools.buffers(draw_texture) else { continue };
                 texture = draw_texture;
-                pass.set_bind_group(1, &gpu.textures[texture as usize], &[]);
+                pass.set_bind_group(2, &gpu.textures[texture as usize], &[]);
                 pass.set_vertex_buffer(0, vertices.slice(..));
                 pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
             }
@@ -2204,12 +2204,13 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         println!("distant statics: {} textures are white: {}", missing.len(), missing.iter().take(6).cloned().collect::<Vec<_>>().join("; "));
     }
 
-    let source = format!("{SHADER}{}{}", super::FOG_FUNCTION, super::distant_lights::baked_wgsl(2));
+    let source = format!("{SHADER}{}{}", super::FOG_FUNCTION, super::distant_lights::baked_wgsl(0));
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    // Group 2: the baked light of the distant lights (`distant_lights::LightBinding`).
+    // Group 0: the baked light of the distant lights (`distant_lights::LightBinding`), the
+    // same for the frame; group 1: the uniforms of the set; group 2: the textures of a draw.
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant statics"),
-        bind_group_layouts: &[Some(&layout), Some(&texture_layout), Some(light_layout)],
+        bind_group_layouts: &[Some(light_layout), Some(&layout), Some(&texture_layout)],
         immediate_size: 0,
     });
     // A vertex of a statics file has 20 bytes: the position and the palette number as four
