@@ -3,10 +3,12 @@
 //! the shadow map). It has the values of the view (`View`, the uniform `u` of a shader) and the
 //! baked light of the distant lights (`baked_light`, from `LightBinding`). The values of one
 //! pipeline only (the terrain of the land, the view range of a handoff) are in its group 1.
+//! The land and the statics (with their shadow casters) take it; the number of a view is the
+//! number of a set of the statics.
 //!
-//! Not there yet (plan D1, step by step): the statics, the glows, the grass, the water, the
-//! caustics and the volumes have a group 0 of their own; the game view (the projection of the
-//! game, for the grass and the water) is not a view here yet.
+//! Not there yet (plan D1, step by step): the glows, the grass, the water, the caustics and
+//! the volumes have a group 0 of their own; the game view (the projection of the game, for the
+//! grass and the water) is not a view here yet.
 
 use nirender_wgpu::wgpu;
 
@@ -119,6 +121,11 @@ impl ViewBinding {
     /// The group of a view; `refresh` makes the groups.
     pub fn group(&self, view: usize) -> &wgpu::BindGroup {
         &self.groups[view]
+    }
+
+    /// The groups of all views, by their numbers; empty before `refresh`.
+    pub fn groups(&self) -> &[wgpu::BindGroup] {
+        &self.groups
     }
 }
 

@@ -815,6 +815,20 @@ impl DistantLand {
         }
     }
 
+    /// The distant lights: the bind group of their baked light, the file when it comes, and
+    /// the view groups with that light, for the statics too.
+    fn poll_lights(&mut self, scene: &SceneView) {
+        let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+        if let Some(lights) = self.lights.as_mut() {
+            lights.poll(scene, binding, self.synchronous);
+        }
+        let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
+        views.refresh(scene.device, binding);
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_views(views);
+        }
+    }
+
     /// Makes the buffers, the textures and the pipeline when the loader thread is done.
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(receiver) = self.loading.as_ref() else { return };
@@ -1862,13 +1876,7 @@ impl Extension for DistantLand {
         // At the first load of a session the data comes in a frame with no world: the loads
         // are finished here, as in `frame` and `before_world`.
         self.finish_generation();
-        let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
-        if let Some(lights) = self.lights.as_mut() {
-            lights.poll(scene, binding, self.synchronous);
-        }
-        if let Some(statics) = self.statics.as_mut() {
-            statics.set_lights(&binding.layout, &binding.group);
-        }
+        self.poll_lights(scene);
         self.finish_load(scene);
         self.apply_settings();
         if let Some(statics) = self.statics.as_mut() {
@@ -2060,15 +2068,7 @@ impl Extension for DistantLand {
             }
             return false;
         }
-        // The distant lights: the bind group of their baked light, the file when it comes, and
-        // the bind group for the statics.
-        let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
-        if let Some(lights) = self.lights.as_mut() {
-            lights.poll(scene, binding, self.synchronous);
-        }
-        if let Some(statics) = self.statics.as_mut() {
-            statics.set_lights(&binding.layout, &binding.group);
-        }
+        self.poll_lights(scene);
         self.finish_load(scene);
         let Some(gpu) = self.gpu.as_ref() else { return false };
 
@@ -2145,7 +2145,6 @@ impl Extension for DistantLand {
         let night = distant_lights::night_of(scene.sun_color);
         let Some(binding) = self.light_binding.as_mut() else { return false };
         binding.set_strength(scene.queue, if scene.interior { 0.0 } else { self.tunables.get(tunables::BAKED_STRENGTH) * night });
-        self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device)).refresh(scene.device, binding);
         let Some(views) = self.view_binding.as_ref() else { return false };
         views.write(scene.queue, view::MAIN, &main_view);
 
@@ -2245,20 +2244,7 @@ impl Extension for DistantLand {
                     }
                 }
                 if let Some(statics) = self.statics.as_mut() {
-                    let layer_frame = statics::Frame {
-                        view_projection: viewproj,
-                        eye: [eye[0], eye[1], eye[2], 0.0],
-                        fog_color,
-                        fog,
-                        flags: layer_view.flags,
-                        sun_direction: main_view.sun_direction,
-                        sun_color: main_view.sun_color,
-                        ambient: main_view.ambient,
-                        scattering,
-                        planes: layer_planes,
-                        fog_end: 1.0e9,
-                        time: game_time(self.environment, self.started),
-                    };
+                    let layer_frame = statics::Frame { eye: [eye[0], eye[1], eye[2], 0.0], planes: layer_planes, fog_end: 1.0e9, time: game_time(self.environment, self.started) };
                     statics.draw(scene, &mut pass, &layer_frame, 2 + layer);
                 }
             }
@@ -2316,20 +2302,7 @@ impl Extension for DistantLand {
             let reflect_statics = self.reflect_statics;
             let statics_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end).min(self.near_static_end);
             if let Some(statics) = self.statics.as_mut().filter(|_| reflect_statics) {
-                let mirror_frame = statics::Frame {
-                    view_projection: mirror_view.view_projection,
-                    eye: [eye[0], eye[1], eye[2], 0.0],
-                    fog_color,
-                    fog,
-                    flags: mirror_view.flags,
-                    sun_direction: main_view.sun_direction,
-                    sun_color: main_view.sun_color,
-                    ambient: main_view.ambient,
-                    scattering,
-                    planes: mirror_planes,
-                    fog_end: statics_end,
-                    time: game_time(self.environment, self.started),
-                };
+                let mirror_frame = statics::Frame { eye: [eye[0], eye[1], eye[2], 0.0], planes: mirror_planes, fog_end: statics_end, time: game_time(self.environment, self.started) };
                 statics.draw(scene, &mut mirror_pass, &mirror_frame, 1);
             }
             if self.reflect_sky {
@@ -2350,20 +2323,7 @@ impl Extension for DistantLand {
         }
         let far_water_wanted = self.volumes_ready && !scene.interior && !self.under_water();
         if let Some(statics) = self.statics.as_mut() {
-            let frame = statics::Frame {
-                view_projection,
-                eye: eye_range,
-                fog_color,
-                fog,
-                flags,
-                sun_direction: main_view.sun_direction,
-                sun_color: main_view.sun_color,
-                ambient: main_view.ambient,
-                scattering,
-                planes,
-                fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
-                time: game_time(self.environment, self.started),
-            };
+            let frame = statics::Frame { eye: eye_range, planes, fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end), time: game_time(self.environment, self.started) };
             pass.push_debug_group("distant statics");
             statics.draw(scene, pass, &frame, 0);
             pass.pop_debug_group();

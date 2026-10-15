@@ -821,40 +821,42 @@ struct GrassUniforms {
 /// The grass shader (`XE Mod Grass.fx`, with the looks of Remiros' Groundcover as options).
 const GRASS_SHADER: &str = include_str!("statics/grass.wgsl");
 
-/// The casters of the shadow map: `StaticShadowVS` and `StaticShadowPS` of `XE Shadowmap.fx`.
-/// The uniforms are those of the statics (the matrix of the layer in `view_projection`).
-const SHADOW_SHADER: &str = "
-struct Uniforms {
-    view_projection: mat4x4f,
-    eye: vec4f,
-    fog_color: vec4f,
-    fog: vec4f,
-    flags: vec4f,
-    sun_direction: vec4f,
-    sun_color: vec4f,
-    ambient: vec4f,
-    sun_pos: vec4f,
-    sky: vec4f,
-    outscatter: vec4f,
-    inscatter: vec4f,
-    sun_altitude: vec4f,
+/// The values of a set (group 1 of the statics shaders), and the share of a subset that is in.
+const SET_WGSL: &str = "
+struct Set {
+    // x: the view range of the game in this set (0 for a set without the handoff).
+    range: vec4f,
+    // x: the time. y: the distance where a static is complete. z: the width of the band
+    // before it. w: the distance before the band where a vertex goes away.
     handoff: vec4f,
+    // x: the time now on the clock of the arrivals. y: the time a subset takes to come in
+    // after its arrival (0: no fade-in).
     fade: vec4f,
 }
-@group(1) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(0) var<uniform> set_values: Set;
 @group(1) @binding(1) var<storage, read> palettes: array<vec4f>;
 @group(1) @binding(2) var base_sampler: sampler;
 @group(1) @binding(3) var<storage, read> arrivals: array<f32>;
 @group(2) @binding(0) var base_texture: texture_2d<f32>;
 
-// The share of a subset that is in: it comes in over u.fade.y seconds after its geometry
-// arrived (`Statics::fade_values`).
+// The share of a subset that is in: it comes in over set_values.fade.y seconds after its
+// geometry arrived (`Statics::fade_values`).
 fn arrival_fade(subset: u32) -> f32 {
-    if u.fade.y <= 0.0 {
+    if set_values.fade.y <= 0.0 {
         return 1.0;
     }
-    return clamp((u.fade.x - arrivals[subset]) / u.fade.y, 0.0, 1.0);
+    return clamp((set_values.fade.x - arrivals[subset]) / set_values.fade.y, 0.0, 1.0);
 }
+
+// The view range of the game, for the fog (`fog_of`).
+fn fog_range() -> f32 {
+    return set_values.range.x;
+}
+";
+
+/// The casters of the shadow map: `StaticShadowVS` and `StaticShadowPS` of `XE Shadowmap.fx`.
+/// After the view group and `SET_WGSL` (the matrix of the layer in `view_projection`).
+const SHADOW_SHADER: &str = "
 
 struct In {
     @location(0) position: vec4f,
@@ -890,7 +892,7 @@ const FADE_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0
     out.depth = clip.z / clip.w;
     out.coordinate = in.coordinate;
     if in.subset.z > 0.5 {
-        out.coordinate.y += fract(0.08 * u.handoff.x);
+        out.coordinate.y += fract(0.08 * set_values.handoff.x);
     }
     out.bounds = palettes[u32(in.subset.x) + u32(in.position.w)];
     out.alpha_test = in.subset.y;
@@ -920,20 +922,13 @@ fn grass_record(world: &[f32; 16]) -> [f32; 12] {
     [world[0], world[4], world[8], world[12], world[1], world[5], world[9], world[13], world[2], world[6], world[10], world[14]]
 }
 
-/// The values of a frame that the terrain and the statics have in common. The names are
-/// those of the uniforms of the shaders.
+/// The values of a set of the statics in a frame for its draws and its choice of places. Those
+/// of its view (the matrix, the fog, the sun) are in its view group (`view::View`).
 #[derive(Clone, Copy)]
 pub struct Frame {
-    pub view_projection: [f32; 16],
-    /// The position of the camera, and the view range of the game.
+    /// The position of the camera, and the view range of the game (0 for a set without the
+    /// handoff).
     pub eye: [f32; 4],
-    pub fog_color: [f32; 4],
-    pub fog: [f32; 4],
-    pub flags: [f32; 4],
-    pub sun_direction: [f32; 4],
-    pub sun_color: [f32; 4],
-    pub ambient: [f32; 4],
-    pub scattering: [[f32; 4]; 5],
     pub planes: [[f32; 4]; 6],
     /// The end of the fog of the frame: nothing is drawn past it.
     pub fog_end: f32,
@@ -941,63 +936,17 @@ pub struct Frame {
     pub time: f32,
 }
 
+/// Group 1 of the statics shaders: `Set` of `SET_WGSL`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
-    view_projection: [f32; 16],
-    eye: [f32; 4],
-    fog_color: [f32; 4],
-    fog: [f32; 4],
-    flags: [f32; 4],
-    sun_direction: [f32; 4],
-    sun_color: [f32; 4],
-    ambient: [f32; 4],
-    sun_pos: [f32; 4],
-    sky: [f32; 4],
-    outscatter: [f32; 4],
-    inscatter: [f32; 4],
-    sun_altitude: [f32; 4],
-    /// x: the time. y: the distance where a static is complete. z: the width of the band
-    /// before it. w: the distance before the band where a vertex goes away.
+struct SetUniforms {
+    range: [f32; 4],
     handoff: [f32; 4],
-    /// x: the time now on the clock of the arrivals. y: the time a subset takes to come in
-    /// after its arrival (0: no fade-in).
     fade: [f32; 4],
 }
 
+/// The statics in a view: after the view group and `SET_WGSL`.
 const SHADER: &str = "
-struct Uniforms {
-    view_projection: mat4x4f,
-    eye: vec4f,
-    fog_color: vec4f,
-    fog: vec4f,
-    flags: vec4f,
-    sun_direction: vec4f,
-    sun_color: vec4f,
-    ambient: vec4f,
-    sun_pos: vec4f,
-    sky: vec4f,
-    outscatter: vec4f,
-    inscatter: vec4f,
-    sun_altitude: vec4f,
-    handoff: vec4f,
-    fade: vec4f,
-}
-@group(1) @binding(0) var<uniform> u: Uniforms;
-@group(1) @binding(1) var<storage, read> palettes: array<vec4f>;
-@group(1) @binding(2) var base_sampler: sampler;
-@group(1) @binding(3) var<storage, read> arrivals: array<f32>;
-@group(2) @binding(0) var base_texture: texture_2d<f32>;
-
-// The share of a subset that is in: it comes in over u.fade.y seconds after its geometry
-// arrived (`Statics::fade_values`).
-fn arrival_fade(subset: u32) -> f32 {
-    if u.fade.y <= 0.0 {
-        return 1.0;
-    }
-    return clamp((u.fade.x - arrivals[subset]) / u.fade.y, 0.0, 1.0);
-}
-
 // The order of the pixels of a block of 4 x 4 for the band of the handoff (Bayer).
 const HANDOFF_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 
@@ -1034,7 +983,7 @@ struct Out {
     let world = in.position.x * in.world0.xyz + in.position.y * in.world1.xyz + in.position.z * in.world2.xyz + in.world3.xyz;
     out.position = u.view_projection * vec4f(world, 1.0);
     // Near the camera the game draws the real static. A vertex before the band goes away.
-    if length(world - u.eye.xyz) < u.handoff.y - u.handoff.z - u.handoff.w {
+    if length(world - u.eye.xyz) < set_values.handoff.y - set_values.handoff.z - set_values.handoff.w {
         out.position = vec4f(0.0, 0.0, -10000.0, 0.0);
     }
     // lightStaticVert: the normal goes through the world matrix and is not made of length 1
@@ -1046,7 +995,7 @@ struct Out {
     out.color = in.color.bgr * light;
     out.coordinate = in.coordinate;
     if in.subset.z > 0.5 {
-        out.coordinate.y += fract(0.08 * u.handoff.x);
+        out.coordinate.y += fract(0.08 * set_values.handoff.x);
     }
     out.world = world;
     out.bounds = palettes[u32(in.subset.x) + u32(in.position.w)];
@@ -1068,7 +1017,7 @@ struct Out {
     }
     let range = length(in.world - u.eye.xyz);
     // The handoff to the game, and the fade-in after the arrival of the subset.
-    let dissolve = clamp((range - (u.handoff.y - u.handoff.z)) / u.handoff.z, 0.0, 1.0) * in.fade;
+    let dissolve = clamp((range - (set_values.handoff.y - set_values.handoff.z)) / set_values.handoff.z, 0.0, 1.0) * in.fade;
     // Across the band a static comes in by its share of covered pixels: Direct3D 9 gives the
     // dissolve to alpha to coverage, which needs the samples of multisampling; the picture
     // of wgpu has one sample for each pixel, so an ordered threshold of 4 x 4 pixels.
@@ -1119,10 +1068,10 @@ pub struct Statics {
     pool_full: bool,
     /// The sets that `prepare` chose for this frame.
     prepared: [bool; 4],
-    /// The bind group of the baked light of the distant lights, and its layout (group 0 of the
+    /// The view groups of the frame, one for each set, and their layout (group 0 of the
     /// pipelines of the statics). The catalog loads when the layout is there.
-    light_layout: Option<wgpu::BindGroupLayout>,
-    light_group: Option<wgpu::BindGroup>,
+    view_layout: Option<wgpu::BindGroupLayout>,
+    view_groups: Vec<wgpu::BindGroup>,
     prepare_calls: u64,
     prepare_seconds: f64,
     /// The grass of the frame: texture, subset, record.
@@ -1209,8 +1158,8 @@ impl Statics {
             frame_ended: false,
             pool_full: false,
             prepared: [false; 4],
-            light_layout: None,
-            light_group: None,
+            view_layout: None,
+            view_groups: Vec::new(),
             prepare_calls: 0,
             prepare_seconds: 0.0,
             grass_draws: Vec::new(),
@@ -1552,7 +1501,7 @@ impl Statics {
     }
 
     fn finish_load(&mut self, scene: &SceneView) {
-        let Some(light_layout) = self.light_layout.clone() else { return };
+        let Some(view_layout) = self.view_layout.clone() else { return };
         let Some(receiver) = self.loading.as_ref() else { return };
         let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
         let Some(result) = result else { return };
@@ -1596,7 +1545,7 @@ impl Statics {
         }
         self.device = Some(scene.device.clone());
         self.queue = Some(scene.queue.clone());
-        self.gpu = Some(make_gpu(scene, &loaded, &light_layout));
+        self.gpu = Some(make_gpu(scene, &loaded, &view_layout));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();
         let for_reader = catalog.clone();
@@ -1883,12 +1832,14 @@ impl Statics {
         found
     }
 
-    /// The bind group of the baked light of the distant lights for the draws of this frame.
-    pub fn set_lights(&mut self, layout: &wgpu::BindGroupLayout, group: &wgpu::BindGroup) {
-        if self.light_layout.is_none() {
-            self.light_layout = Some(layout.clone());
+    /// The view groups for the draws of this frame, one for each set (`view::MAIN` and the
+    /// others have the numbers of the sets).
+    pub fn set_views(&mut self, views: &super::view::ViewBinding) {
+        if self.view_layout.is_none() {
+            self.view_layout = Some(views.layout.clone());
         }
-        self.light_group = Some(group.clone());
+        self.view_groups.clear();
+        self.view_groups.extend_from_slice(views.groups());
     }
 
     /// Chooses the places of the sets of a frame on the GPU, in one command buffer before the
@@ -2027,10 +1978,10 @@ impl Statics {
     }
 
     /// Binds what the draws of a set read: its pipeline, its uniforms and the places.
-    fn bind_set(gpu: &Gpu, light_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) {
+    fn bind_set(gpu: &Gpu, view_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) {
         let buffers = &gpu.sets[set];
-        if let Some(light_group) = light_group {
-            pass.set_bind_group(0, light_group, &[]);
+        if let Some(view_group) = view_group {
+            pass.set_bind_group(0, view_group, &[]);
         }
         scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms_of(frame, fade)));
         // Lines when the game draws in wireframe (see `SceneView::wireframe`), as MGE XE on
@@ -2042,9 +1993,9 @@ impl Statics {
     }
 
     /// The indirect draws of a set that the GPU chose.
-    fn draw_chosen(gpu: &Gpu, light_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) -> u32 {
+    fn draw_chosen(gpu: &Gpu, view_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) -> u32 {
         let Some(culling) = gpu.culling.as_ref() else { return 0 };
-        Self::bind_set(gpu, light_group, scene, pass, frame, set, fade);
+        Self::bind_set(gpu, view_group, scene, pass, frame, set, fade);
         let (pools, textures) = (&gpu.pools, &gpu.textures);
         culling.draw(set, pass, |pass, texture| {
             let Some((vertices, indexes)) = pools.buffers(texture) else { return false };
@@ -2064,7 +2015,7 @@ impl Statics {
         if self.prepared.get(set).copied().unwrap_or(false) {
             self.prepared[set] = false;
             let Some(gpu) = self.gpu.as_ref() else { return 0 };
-            return Self::draw_chosen(gpu, self.light_group.as_ref(), scene, pass, frame, set, fade);
+            return Self::draw_chosen(gpu, self.view_groups.get(set), scene, pass, frame, set, fade);
         }
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         if !self.frame_work(scene, eye, set == 0) {
@@ -2081,7 +2032,7 @@ impl Statics {
                     culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
                 }
                 culling.run(scene, set, &cull_values(&settings, frame.planes, frame.eye, frame.fog_end));
-                return Self::draw_chosen(gpu, self.light_group.as_ref(), scene, pass, frame, set, fade);
+                return Self::draw_chosen(gpu, self.view_groups.get(set), scene, pass, frame, set, fade);
             }
         }
 
@@ -2155,7 +2106,7 @@ impl Statics {
             return 0;
         }
         let Some(gpu) = self.gpu.as_ref() else { return 0 };
-        Self::bind_set(gpu, self.light_group.as_ref(), scene, pass, frame, set, fade);
+        Self::bind_set(gpu, self.view_groups.get(set), scene, pass, frame, set, fade);
         let mut texture = u32::MAX;
         for &(draw_texture, subset, instance, faces) in &self.draws {
             let Some(Resident { geometry: Geometry::Pool(slot), .. }) = self.resident.get(&subset) else { continue };
@@ -2201,25 +2152,9 @@ fn cull_values(settings: &Settings, planes: [[f32; 4]; 6], eye: [f32; 4], fog_en
     }
 }
 
-/// The uniforms of the draws of a set.
-fn uniforms_of(frame: &Frame, fade: [f32; 4]) -> Uniforms {
-    Uniforms {
-        view_projection: frame.view_projection,
-        eye: frame.eye,
-        fog_color: frame.fog_color,
-        fog: frame.fog,
-        flags: frame.flags,
-        sun_direction: frame.sun_direction,
-        sun_color: frame.sun_color,
-        ambient: frame.ambient,
-        sun_pos: frame.scattering[0],
-        sky: frame.scattering[1],
-        outscatter: frame.scattering[2],
-        inscatter: frame.scattering[3],
-        sun_altitude: frame.scattering[4],
-        handoff: [frame.time, frame.eye[3] - HANDOFF, HANDOFF_BAND, HANDOFF_CULL],
-        fade,
-    }
+/// The values of the draws of a set (group 1).
+fn uniforms_of(frame: &Frame, fade: [f32; 4]) -> SetUniforms {
+    SetUniforms { range: [frame.eye[3], 0.0, 0.0, 0.0], handoff: [frame.time, frame.eye[3] - HANDOFF, HANDOFF_BAND, HANDOFF_CULL], fade }
 }
 
 /// A set for `Statics::prepare`: its number (0 the main view, 1 the mirror, 2 and 3 the
@@ -2308,13 +2243,13 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
     }
 }
 
-fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLayout) -> Gpu {
+fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLayout) -> Gpu {
     let device = scene.device;
     let catalog = &loaded.catalog;
     let make_uniforms = || {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("distant statics"),
-            size: size_of::<Uniforms>() as u64,
+            size: size_of::<SetUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -2434,14 +2369,13 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         println!("distant statics: {} textures are white: {}", missing.len(), missing.iter().take(6).cloned().collect::<Vec<_>>().join("; "));
     }
 
-    // The view range for `fog_of` is `u.eye.w` of the set.
-    let source = format!("{SHADER}{}\nfn fog_range() -> f32 {{\n    return u.eye.w;\n}}\n{}", super::FOG_FUNCTION, super::distant_lights::baked_wgsl(0));
+    let source = format!("{}{SET_WGSL}{SHADER}{}", super::view::wgsl(), super::FOG_FUNCTION);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    // Group 0: the baked light of the distant lights (`distant_lights::LightBinding`), the
-    // same for the frame; group 1: the uniforms of the set; group 2: the textures of a draw.
+    // Group 0: the view group of the set (`view::ViewBinding`); group 1: the values of the
+    // set; group 2: the textures of a draw.
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant statics"),
-        bind_group_layouts: &[Some(light_layout), Some(&layout), Some(&texture_layout)],
+        bind_group_layouts: &[Some(view_layout), Some(&layout), Some(&texture_layout)],
         immediate_size: 0,
     });
     // A vertex of a statics file has 20 bytes: the position and the palette number as four
@@ -2488,7 +2422,8 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
     let pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Line));
     let mirror_pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Line));
     // The casters of the shadow map: the same vertices and places, the depth from the sun.
-    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics shadow"), source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER.into()) });
+    let shadow_source = format!("{}{SET_WGSL}{SHADOW_SHADER}", super::view::wgsl());
+    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics shadow"), source: wgpu::ShaderSource::Wgsl(shadow_source.into()) });
     let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant statics shadow"),
         layout: Some(&pipeline_layout),

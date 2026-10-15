@@ -10,7 +10,7 @@
 //! - The baked light: the generator gives the light of the sources on the land of each lit
 //!   cell, a tile of 65 x 65 values (the vertices of the land). The tiles are in one texture,
 //!   with a texture of the tile of each cell. The shaders of the land and of the statics add it
-//!   to their light at night (`baked_light`, in the bind group of `LightBinding`).
+//!   to their light at night (`baked_light`, in the view group, from `LightBinding`).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
@@ -70,11 +70,6 @@ fn baked_light(world: vec3f) -> vec3f {
 }
 ";
 
-/// `BAKED_WGSL` for the bind group `group`, with the bindings 0 to 3 of `LightBinding`.
-pub fn baked_wgsl(group: u32) -> String {
-    baked_wgsl_at(group, 0)
-}
-
 /// `BAKED_WGSL` for the bind group `group`, with the bindings from `first` (`LightBinding::layout_entries`).
 pub fn baked_wgsl_at(group: u32, first: u32) -> String {
     (0..4).fold(BAKED_WGSL.replace("GROUP", &group.to_string()), |code, i| code.replace(&format!("B{i}"), &(first + i).to_string()))
@@ -87,11 +82,10 @@ struct MapUniforms {
     values: [f32; 4],
 }
 
-/// The bind group of the baked light that the land and the statics read. It has no light until
-/// a file comes (`DistantLights::poll`).
+/// The resources of the baked light that the land and the statics read, as four bindings of
+/// the view group (`view::ViewBinding`). It has no light until a file comes
+/// (`DistantLights::poll`).
 pub struct LightBinding {
-    pub layout: wgpu::BindGroupLayout,
-    pub group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     sampler: wgpu::Sampler,
     tiles: wgpu::TextureView,
@@ -136,7 +130,6 @@ impl LightBinding {
     }
 
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> LightBinding {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("distant lights, baked"), entries: &Self::layout_entries(0) });
         let map = MapUniforms { origin: [0.0, 0.0, 1.0, 1.0], values: [0.0, TILES_IN_ROW as f32, 0.0, 0.0] };
         let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant lights, baked"),
@@ -151,8 +144,7 @@ impl LightBinding {
         });
         let tiles = texture(device, queue, "distant lights, the tiles", 1, 1, wgpu::TextureFormat::Rgba8Unorm, &[0; 4]);
         let index = texture(device, queue, "distant lights, the tile of each cell", 1, 1, wgpu::TextureFormat::R32Sint, &(-1i32).to_le_bytes());
-        let group = make_group(device, &layout, &uniforms, &tiles, &index, &sampler);
-        LightBinding { layout, group, uniforms, sampler, tiles, index, generation: 0, map }
+        LightBinding { uniforms, sampler, tiles, index, generation: 0, map }
     }
 
     /// The tiles of a file: one texture with the tiles in rows, and one with the tile of each
@@ -186,7 +178,6 @@ impl LightBinding {
         let tiles = texture(device, queue, "distant lights, the tiles", atlas_width, atlas_height, wgpu::TextureFormat::Rgba8Unorm, &atlas);
         let index_bytes: Vec<u8> = index.iter().flat_map(|value| value.to_le_bytes()).collect();
         let index = texture(device, queue, "distant lights, the tile of each cell", width, height, wgpu::TextureFormat::R32Sint, &index_bytes);
-        self.group = make_group(device, &self.layout, &self.uniforms, &tiles, &index, &self.sampler);
         (self.tiles, self.index) = (tiles, index);
         self.generation += 1;
         self.map.origin = [min_x as f32, min_y as f32, width as f32, height as f32];
@@ -217,19 +208,6 @@ fn texture(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, width: u32, 
             data,
         )
         .create_view(&Default::default())
-}
-
-fn make_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniforms: &wgpu::Buffer, tiles: &wgpu::TextureView, index: &wgpu::TextureView, sampler: &wgpu::Sampler) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("distant lights, baked"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tiles) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(index) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(sampler) },
-        ],
-    })
 }
 
 /// What the file has.
@@ -653,8 +631,9 @@ mod tests {
 
     #[test]
     fn the_baked_code_names_its_group() {
-        let code = baked_wgsl(2);
-        assert!(code.contains("@group(2) @binding(1)"));
+        let code = baked_wgsl_at(2, 5);
+        assert!(code.contains("@group(2) @binding(6)"));
         assert!(!code.contains("GROUP"));
+        assert!(!code.contains("@binding(B"));
     }
 }
