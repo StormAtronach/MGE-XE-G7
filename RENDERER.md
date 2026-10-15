@@ -139,6 +139,10 @@ adapter and the one in use.
 - The screenshot key (PrintScreen, or the macro) writes the picture as on Direct3D 9: the
   folder, the name and the format of the screenshot settings. The status text of MGE XE and
   its frame rate counter show in the upper left corner, as on Direct3D 9.
+- The distant statics and the grass fade in over 1 s when they arrive (after a load, a
+  teleport, or as you travel), where Direct3D 9 shows them at once. The time is the
+  parameter "Distant statics: fade-in time" of the renderer's parameters window (row
+  "water (renderer)"); 0 turns the fade off until the game ends.
 - "Pause world rendering in menus" (`menu_caching` under `[runtime]`, off at the start)
   works as on Direct3D 9: in a menu the picture of the world stays still, and the renderer
   does less work, until a click.

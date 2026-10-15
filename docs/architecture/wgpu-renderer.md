@@ -222,14 +222,20 @@ colour, `Float16x2` uv); instance 80 bytes (locations 4-8); indices `Uint16`. Dr
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
 | 0 | distant lights, baked | as above | frame |
-| 1 | distant statics | 0 uniform (VF), 1 storage palettes (V), 2 sampler (F) | set (main, mirror, shadow 0, shadow 1) |
+| 1 | distant statics | 0 uniform (VF), 1 storage palettes (V), 2 sampler (F), 3 storage arrivals (V) | set (main, mirror, shadow 0, shadow 1) |
 | 2 | distant statics, textures | 0 texture (F) | texture |
 
+The fade-in (2026-10-15): binding 3 has the arrival time of each subset (real time of the
+helper; written in `take_arrivals`), the instance data has the subset number in `subset.w`,
+and the uniforms have `fade` (now, fade time from the tunable `statics.fade`; 0 in a
+replay). The statics shader multiplies the handoff dissolve by the share that is in.
+
 **"distant statics shadow"**: the same pipeline layout; its WGSL uses groups 1 and 2 only.
-R16Float target.
+R16Float target. Its casters fade in with the same threshold.
 
 **"grass"** (fill, lines): group 0 "grass" (uniform, sampler; frame), group 1 the statics
-texture layout (texture run). Instance 48 bytes (locations 4-6).
+texture layout (texture run). Instance 64 bytes (locations 4-7; 7.x is the share of the
+subset that is in, computed on the CPU).
 
 **"distant statics, cull"** (compute, `renderer/statics/cull.rs`; entries `cull` and
 `compact`, workgroup 256). Group 0, one per set: 0 uniform, 1-5 storage read (places,
