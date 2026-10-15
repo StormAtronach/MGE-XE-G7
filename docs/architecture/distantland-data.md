@@ -7,7 +7,7 @@ the formats involved. Companion to [`ARCHITECTURE.md`](../../ARCHITECTURE.md) §
 
 | File | Format | Producer | Consumers |
 | --- | --- | --- | --- |
-| `version` | 1 byte; must equal `MGE_DL_VERSION` (21). Every other value is rejected | generator | d3d8.dll (`dlshare.cpp`), host (`loading.rs`), wgpu helper (`version_problem` in `renderer.rs`), MGEXEgui (`read_version`) |
+| `version` | 1 byte; must equal `MGE_DL_VERSION` (22). Every other value is rejected | generator | d3d8.dll (`dlshare.cpp`), host (`loading.rs`), wgpu helper (`version_problem` in `renderer.rs`), MGEXEgui (`read_version`) |
 | `generation_state.bin` | complete-or-absent state and required-artifact inventory | generator | Rust host (`open_output_snapshot`) |
 | `generation_report.toml` | advisory metrics, warnings, contract results, and bounded stage timings | generator | users and profiling tools only |
 | `terrain.bin` | `XELAND02`, see [`terrain-bin.md`](terrain-bin.md) | generator | d3d8.dll (geometry upload), host (quadtree metadata) |

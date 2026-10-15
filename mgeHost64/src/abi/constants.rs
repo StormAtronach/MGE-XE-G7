@@ -44,7 +44,7 @@ pub const REFLECTIVE_WATER: Dword = 1 << 20;
 pub const REFLECT_NEAR: Dword = 1 << 21;
 pub const REFLECT_SKY: Dword = 1 << 25;
 /// On-disk distant-land asset version expected by this host build.
-pub const MGE_DL_VERSION: u8 = 21;
+pub const MGE_DL_VERSION: u8 = 22;
 /// Terrain file magic for `terrain.bin`.
 pub const TERRAIN_FILE_MAGIC: [u8; 8] = *b"XELAND02";
 /// Terrain file version.

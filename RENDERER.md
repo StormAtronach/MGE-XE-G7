@@ -113,11 +113,10 @@ adapter and the one in use.
   hidden, for example the Ghostfence after the end of the main quest.
 - Distant lights at night: each placed light of the exterior has a glow far away, in the
   colour of its light, and the land and the distant statics get the light of the lamps near
-  them. They come from the file `distantland\lights.data`, which this build of the generator
-  writes. Distant land made by an earlier test build has no such file and is still drawn,
-  without the lights: generate the distant land once with this build. Without the file,
-  `nirender-host.log` has the line `distant lights: none`. The MGE XE GUI has no option for
-  them yet; to turn them off, set `distant_lights = false` (or `bake_lights = false` for the
+  them. They come from the file `distantland\lights.data`, which the generator of this build
+  writes; distant land made by an earlier build is refused (see below), so generate it again.
+  Without the file, `nirender-host.log` has the line `distant lights: none`. The MGE XE GUI
+  has no option for them yet; to turn them off, set `distant_lights = false` (or `bake_lights = false` for the
   glows only) under `[generation.settings]` in `mgeXE.toml`, and generate again.
 - The light of each pixel uses the lights of the game: each light keeps its colour and its
   whole falloff. To get the lights as MGE XE on Direct3D 9 decodes them, set

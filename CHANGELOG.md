@@ -44,6 +44,9 @@
 
 - Distant statics use about 23% less video memory and disk space.
 - Interiors with no name are ignored and no longer add their contents to the exterior world spaces.
+- The generator writes `distantland\lights.data`: the placed exterior lights and their light on
+  the land, for the distant lights of the wgpu renderer. Distant land must be generated again
+  (`MGE_DL_VERSION` 22).
 
 ### Fixed
 
