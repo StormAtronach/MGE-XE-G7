@@ -543,7 +543,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile) -> Glows {
         ],
     });
     let cull_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
+        label: Some("distant lights, cull"),
         layout: &cull_layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: cull_uniforms.as_entire_binding() },
@@ -553,7 +553,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile) -> Glows {
         ],
     });
     let cull_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant lights, cull"), source: wgpu::ShaderSource::Wgsl(CULL_SHADER.into()) });
-    let cull_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&cull_layout)], immediate_size: 0 });
+    let cull_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant lights, cull"), bind_group_layouts: &[Some(&cull_layout)], immediate_size: 0 });
     let cull = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("distant lights, cull"),
         layout: Some(&cull_pipeline_layout),
@@ -568,12 +568,12 @@ fn make_glows(scene: &SceneView, file: &LightsFile) -> Glows {
         entries: &[entry(0, draw_stages, wgpu::BufferBindingType::Uniform), entry(1, wgpu::ShaderStages::VERTEX, wgpu::BufferBindingType::Storage { read_only: true })],
     });
     let draw_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
+        label: Some("distant lights, glows"),
         layout: &draw_layout,
         entries: &[wgpu::BindGroupEntry { binding: 0, resource: view_uniforms.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: list.as_entire_binding() }],
     });
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant lights, glows"), source: wgpu::ShaderSource::Wgsl(GLOW_SHADER.into()) });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&draw_layout)], immediate_size: 0 });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant lights, glows"), bind_group_layouts: &[Some(&draw_layout)], immediate_size: 0 });
     let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
     let draw = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant lights, glows"),

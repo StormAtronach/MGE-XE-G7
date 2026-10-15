@@ -148,7 +148,7 @@ impl Caustics {
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("caustics"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("caustics"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         // In the pass of the world: no test of the depth and no write, and the stencil of the
         // dry spaces for the cut. The blend multiplies the target: colour * target + target *
         // colour.
@@ -209,7 +209,7 @@ impl Caustics {
         values[32..36].copy_from_slice(&[strength, frame.near_view_range, frame.fog_near.0, frame.fog_near.1]);
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
+            label: Some("caustics"),
             layout: &self.layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },

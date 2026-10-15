@@ -111,7 +111,7 @@ impl Blend {
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blend"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("blend"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blend"),
             layout: Some(&pipeline_layout),
@@ -151,7 +151,7 @@ impl Blend {
         ];
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
+            label: Some("blend"),
             layout: &self.layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },

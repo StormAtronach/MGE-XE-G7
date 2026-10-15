@@ -1040,7 +1040,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         count: None,
     };
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: None,
+        label: Some("distant land"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -1066,21 +1066,21 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         entries.push(wgpu::BindGroupEntry { binding: index as u32 + 1, resource: wgpu::BindingResource::TextureView(view) });
     }
     entries.push(wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&sampler) });
-    let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("distant land"), layout: &layout, entries: &entries });
     let mirror_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("distant land mirror"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     entries[0] = wgpu::BindGroupEntry { binding: 0, resource: mirror_uniforms.as_entire_binding() };
-    let mirror_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries });
+    let mirror_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("distant land mirror"), layout: &layout, entries: &entries });
     let shadow_uniforms: [wgpu::Buffer; 2] = core::array::from_fn(|_| device.create_buffer(&wgpu::BufferDescriptor { label: Some("distant land shadow"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
     let shadow_groups: [wgpu::BindGroup; 2] = core::array::from_fn(|i| {
         entries[0] = wgpu::BindGroupEntry { binding: 0, resource: shadow_uniforms[i].as_entire_binding() };
-        device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries })
+        device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("distant land shadow"), layout: &layout, entries: &entries })
     });
     let source = format!("{SHADER}{FOG_FUNCTION}{}", distant_lights::baked_wgsl(1));
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     // The land and its mirror have the baked light of the distant lights in group 1; the
     // shadow map does not.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout), Some(light_layout)], immediate_size: 0 });
-    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land"), bind_group_layouts: &[Some(&layout), Some(light_layout)], immediate_size: 0 });
+    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land shadow"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
     let make_pipeline = |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1161,12 +1161,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
             continue;
         }
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
+            label: Some("distant land, vertices"),
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
+            label: Some("distant land, indexes"),
             contents: bytemuck::cast_slice(&mesh.triangles),
             usage: wgpu::BufferUsages::INDEX,
         });
@@ -1998,6 +1998,7 @@ impl Extension for DistantLand {
         // The terrain is for an exterior; an interior cell has the statics of its own world
         // space over the clear colour.
         if !scene.interior {
+            pass.push_debug_group("distant land");
             pass.set_pipeline(gpu.pipeline_for(scene));
             pass.set_bind_group(0, &gpu.group, &[]);
             pass.set_bind_group(1, &light_group, &[]);
@@ -2011,6 +2012,7 @@ impl Extension for DistantLand {
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
                 drawn += 1;
             }
+            pass.pop_debug_group();
         }
         self.meshes_drawn += drawn;
         self.frames += 1;
@@ -2202,7 +2204,9 @@ impl Extension for DistantLand {
                 fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
                 time: game_time(self.environment, self.started),
             };
+            pass.push_debug_group("distant statics");
             statics.draw(scene, pass, &frame, 0);
+            pass.pop_debug_group();
             // The water among the distant statics, for `draw_held`: in an exterior, above the
             // water, as `flushWaterVolumes` of the Direct3D 9 path has it. The game has the
             // cell of the camera and the eight around it.
@@ -2213,7 +2217,9 @@ impl Extension for DistantLand {
             }
         }
         if let Some(lights) = self.lights.as_mut().filter(|_| glows) {
+            pass.push_debug_group("distant lights");
             lights.draw(pass);
+            pass.pop_debug_group();
         }
         true
     }

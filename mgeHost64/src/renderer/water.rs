@@ -374,7 +374,7 @@ impl Water {
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
         let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water"),
@@ -491,7 +491,7 @@ impl Water {
             })
             .collect();
         let level_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water reflection level"), source: wgpu::ShaderSource::Wgsl(LEVEL_SHADER.into()) });
-        let level_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&level_layout)], immediate_size: 0 });
+        let level_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water reflection level"), bind_group_layouts: &[Some(&level_layout)], immediate_size: 0 });
         let level_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water reflection level"),
             layout: Some(&level_pipeline_layout),

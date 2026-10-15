@@ -460,7 +460,7 @@ impl Culling {
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics, cull"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant statics, cull"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let make = |entry: &str| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("distant statics, cull"),
@@ -558,7 +558,7 @@ impl Culling {
                     wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
                 );
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
+                    label: Some("distant statics, cull of a world"),
                     layout: &self.layout,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
@@ -631,7 +631,7 @@ impl Culling {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull counts") });
         for (at, buffers) in world.sets.iter().enumerate() {
             let start = world.ranges.len() as u64 * 4;
             encoder.copy_buffer_to_buffer(&buffers.counts, start, &read, at as u64 * size, size);

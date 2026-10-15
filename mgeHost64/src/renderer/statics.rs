@@ -1508,8 +1508,8 @@ impl Statics {
                 }
                 Geometry::Pool(slot)
             } else {
-                let vertices = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &arrival.vertices, usage: wgpu::BufferUsages::VERTEX });
-                let indexes = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &arrival.indexes, usage: wgpu::BufferUsages::INDEX });
+                let vertices = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("distant static, vertices"), contents: &arrival.vertices, usage: wgpu::BufferUsages::VERTEX });
+                let indexes = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("distant static, indexes"), contents: &arrival.indexes, usage: wgpu::BufferUsages::INDEX });
                 Geometry::Own { vertices, indexes }
             };
             self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size });
@@ -2118,7 +2118,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         ..Default::default()
     });
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: None,
+        label: Some("distant statics"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -2136,7 +2136,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         ],
     });
     let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: None,
+        label: Some("distant statics, textures"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -2150,7 +2150,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
     });
     let groups = uniform_buffers.each_ref().map(|uniforms| {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
+            label: Some("distant statics"),
             layout: &layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
@@ -2194,7 +2194,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
             }
         };
         textures.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
+            label: Some("distant statics, textures"),
             layout: &texture_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
         }));
@@ -2208,7 +2208,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     // Group 2: the baked light of the distant lights (`distant_lights::LightBinding`).
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
+        label: Some("distant statics"),
         bind_group_layouts: &[Some(&layout), Some(&texture_layout), Some(light_layout)],
         immediate_size: 0,
     });
@@ -2338,7 +2338,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         mapped_at_creation: false,
     });
     let grass_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: None,
+        label: Some("grass"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -2350,7 +2350,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         ],
     });
     let grass_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
+        label: Some("grass"),
         layout: &grass_layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: grass_uniforms.as_entire_binding() },
@@ -2359,7 +2359,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
     });
     let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("grass"), source: wgpu::ShaderSource::Wgsl(GRASS_SHADER.into()) });
     let grass_pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&grass_layout), Some(&texture_layout)], immediate_size: 0 });
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("grass"), bind_group_layouts: &[Some(&grass_layout), Some(&texture_layout)], immediate_size: 0 });
     let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4];
     let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("grass"),
