@@ -99,8 +99,38 @@ adapter and the one in use.
   start): for an author who edits a `.fx` or a `.wgsl` beside the game. The result, with the
   error of a shader that does not compile, is in the Parameters window and in
   `mgeXE-shaders.txt` in the Morrowind folder.
+- The post shaders run also when the distant land is off. Outside the distant land they get
+  the fog of the game, as on Direct3D 9.
+- Water volumes: the water surfaces that mods add (lakes, ponds, wells, the water in a
+  boat's hold) are drawn as water, near the camera and among the distant statics. The dry
+  spaces that a mod reports (the inside of a boat's hold) have no water. A mod can give a
+  surface a water shader of its own (`Data Files/shaders/water/<name>.wgsl`). Three options
+  under `[distant_land.water]` put more light on the surfaces, each off at the start:
+  `volume_shadows`, `volume_point_lights` and `volume_caustics`.
+- The vis groups of the distant statics: a group of distant statics that the game hides is
+  hidden, for example the Ghostfence after the end of the main quest.
+- Distant lights at night: each placed light of the exterior has a glow far away, in the
+  colour of its light, and the land and the distant statics get the light of the lamps near
+  them. They come from the file `distantland\lights.data`. The generator writes it with the
+  settings `distant_lights` and `bake_lights` under `[generation.settings]` of `mgeXE.toml`,
+  both on at the start. Generate the distant land once with this build to get the file.
+  Without it there are no distant lights, and `nirender-host.log` has the line
+  `distant lights: none`.
+- The light of each pixel uses the lights of the game: each light keeps its colour and its
+  whole falloff. To get the lights as MGE XE on Direct3D 9 decodes them, set
+  `per_pixel_original_lights = true` under `[distant_land]`.
+- The GPU chooses the distant statics in view. The CPU of the renderer does less work for
+  them. A GPU without the features for this (`nirender-host.log`: `the places are chosen
+  on the CPU`) gets the same picture from the CPU.
+- The merged distant statics stay under a limit of GPU memory. The limit comes from the
+  memory budget of the GPU on Vulkan. Without a budget (Direct3D 12, or a driver without
+  the extension) the limit is `statics_fallback_cap_mb` under `[distant_land]`: 1024 MB at
+  the start, `0` for no limit. When the limit is full, a far static can show late.
 - With `automatic_rebuild = true` under `[distant_land]`, the distant land is made again at
   the start when the load order or the generation settings changed, as with Direct3D 9.
+- Distant land data that this build cannot read (made by an older or newer MGE XE) is not
+  drawn. The distant land is off for the session, and the F10 panel and `nirender-host.log`
+  tell you to generate the distant land again in the MGE XE GUI.
 - While the game sends no picture for more than half a second (at its start, when it loads),
   a small line turns in the lower right corner of the window. The game is not stopped.
 - Alt+F4 closes the game, with either renderer. The game does not ask and does not save.
@@ -113,8 +143,8 @@ adapter and the one in use.
 - An interior that behaves as an exterior (the Mournhold plazas and some mod cells) is
   drawn with its distant statics, shadows and sky. A plain interior cell that has distant
   statics in the generated data gets its statics and grass, with the fog of the game.
-- No water volumes (the surfaces that mods add). The caustics under the water are drawn
-  (`caustics_intensity` of `mgeXE.toml`), without the dry spaces of a boat's hold.
+- The dry spaces among the distant statics are not cut: far away, a boat's hold can show
+  water. Near the camera they are cut.
 - The grass does not receive shadows.
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
   `Morrowind.ini` names under `[Inventory]`; Direct3D 9 draws it wrong.
@@ -152,3 +182,7 @@ mouse pointer of the menus follows your hand late, send us this line.
    `nirender-host.log` name the versions.
 3. If the game does not start or shows nothing: set `renderer_wgpu = false`, start again,
    and send the same logs.
+4. If a message box says that the graphics device was lost (the driver was reset, or it
+   stopped), the renderer cannot draw any more. Quit the game and start it again, and send
+   `nirender-host.log`. A fault of the GPU that is not a loss does not stop the game: a
+   part of the picture can be missing, and `nirender-host.log` has lines `gpu error`.
