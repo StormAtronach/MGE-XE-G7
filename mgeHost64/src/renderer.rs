@@ -598,7 +598,7 @@ struct Uniforms {
     inscatter: vec4f,
     sun_altitude: vec4f,
 }
-@group(1) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(0) var<uniform> u: Uniforms;
 
 struct Out {
     @builtin(position) position: vec4f,
@@ -1077,10 +1077,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
     });
     let source = format!("{SHADER}{FOG_FUNCTION}{}", distant_lights::baked_wgsl(0));
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    // Group 0: the baked light of the distant lights, the same for the frame (the shadow map
-    // has none); group 1: the uniforms and the textures of the pass.
+    // Group 0: the baked light of the distant lights, the same for the frame; group 1: the
+    // uniforms and the textures of the pass. The shadow map has no light: the pass is its
+    // group 0.
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land"), bind_group_layouts: &[Some(light_layout), Some(&layout)], immediate_size: 0 });
-    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land shadow"), bind_group_layouts: &[None, Some(&layout)], immediate_size: 0 });
+    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land shadow"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
     let make_pipeline = |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2079,7 +2080,7 @@ impl Extension for DistantLand {
                 // of the Direct3D 9 path has it.
                 if !scene.interior {
                     pass.set_pipeline(&gpu.shadow_pipeline);
-                    pass.set_bind_group(1, &gpu.shadow_groups[layer], &[]);
+                    pass.set_bind_group(0, &gpu.shadow_groups[layer], &[]);
                     for mesh in &gpu.meshes {
                         let inside = layer_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
                         if !inside {
