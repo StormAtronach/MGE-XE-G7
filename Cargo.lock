@@ -2959,6 +2959,7 @@ dependencies = [
  "jpeg-encoder",
  "png",
  "pollster",
+ "rustc-hash 2.1.3",
  "wgpu",
  "winit",
 ]

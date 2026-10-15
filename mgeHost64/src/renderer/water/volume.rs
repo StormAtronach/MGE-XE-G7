@@ -1333,7 +1333,7 @@ impl Volumes {
                 pass.set_vertex_buffer(1, self.defaults.slice(..));
                 pass.set_index_buffer(held.indexes.slice(..), wgpu::IndexFormat::Uint16);
                 for &(first, count) in &held.parts {
-                    pass.draw_indexed(first..first + count, 0, 0..1);
+                    pass.draw_indexed(first..first + count, held.base_vertex, 0..1);
                 }
             }
         }
