@@ -1144,6 +1144,13 @@ namespace Deviceless {
     // A game was loaded since the last environment record: flag 256 of the next one. The
     // helper then says when the distant land around the camera is there.
     static bool gameLoaded = false;
+    // The helper said that the distant statics around the camera are there for the place of
+    // the wait of a game load (message 1, Arrived, with the number of that wait): the wait
+    // (waitForDistantLand) ends on it. An answer for an earlier place does not end it.
+    static bool distantLandArrived = false;
+    static UINT waitSerial = 0;
+    // The frames that the game showed: a wait counts the frames of its loading bar.
+    static unsigned presentCount = 0;
     static bool mainView = false;
     // The position of the camera of the world, from its last view matrix.
     static float eye[3] = { 0, 0, 0 };
@@ -1556,23 +1563,108 @@ namespace Deviceless {
         CloseHandle(h);
     }
 
+    // The place of a wait for the distant land: record 10 (PREFETCH_ID in
+    // mgeHost64/src/renderer.rs). The helper streams for it in the frames of the loading
+    // screen, which have no world.
+    struct Prefetch {
+        UINT version;
+        // The number of the wait: the helper gives it back with its answer.
+        UINT serial;
+        float position[3];
+        // Empty for the exterior.
+        char interiorName[64];
+    };
+    static const UINT PrefetchId = 10;
+    static const DWORD WaitLimitMs = 15000;
+
+    // distant_land.wait_on_load: the game stays in its load, with its loading bar, until the
+    // helper says that the distant statics around the player are there, or WaitLimitMs. As
+    // DistantLand::drainUploadPump of the Direct3D 9 path holds the first load. The frames
+    // of the loading bar go to the helper, and the plugin gives the answer of the helper at
+    // their end (Deviceless::message).
+    static void waitForDistantLand(MWBridge* mwBridge) {
+        float position[3] = {};
+        if (!mwBridge->tryGetPlayerPosition(position)) {
+            LOG::logline("-- wgpu renderer: no position of the player after the load; no wait for the distant land");
+            return;
+        }
+        Prefetch prefetch = {};
+        prefetch.version = 1;
+        prefetch.serial = ++waitSerial;
+        std::memcpy(prefetch.position, position, sizeof(position));
+        if (!mwBridge->IsExterior()) {
+            if (const char* name = mwBridge->getInteriorName()) {
+                std::strncpy(prefetch.interiorName, name, sizeof(prefetch.interiorName) - 1);
+            }
+        }
+        distantLandArrived = false;
+        sendToRenderer(PrefetchId, &prefetch, sizeof(prefetch));
+
+        // The loading bar, as drainUploadPump has it: its label is put back after the wait.
+        const bool hadLoadingBar = mwBridge->isLoadingBar();
+        std::string savedLabel;
+        const bool snapshotOk = hadLoadingBar && mwBridge->getLoadingBarLabel(savedLabel);
+        const bool mayOwnLabel = !hadLoadingBar || snapshotOk;
+        char label[64];
+        const char* loadingMessage = *(const char**)mwBridge->getGMSTPointer(602);
+        int firstWordLength = 0;
+        for (const char* c = loadingMessage; *c && *c != ' '; ++c) {
+            ++firstWordLength;
+        }
+        std::snprintf(label, sizeof(label), "%.*s MGE XE distant land...", firstWordLength, loadingMessage);
+
+        const DWORD start = GetTickCount();
+        const unsigned presentsBefore = presentCount;
+        bool shown = false;
+        while (!distantLandArrived) {
+            const DWORD waited = GetTickCount() - start;
+            if (waited >= WaitLimitMs) {
+                break;
+            }
+            const float progress = 100.0f * float(waited) / float(WaitLimitMs);
+            if (!shown && mayOwnLabel) {
+                mwBridge->showLoadingBar(label, progress);
+            } else {
+                mwBridge->updateLoadingScreen(progress);
+            }
+            shown = true;
+            Sleep(10);
+        }
+        LOG::logline("-- wgpu renderer: the load waited %u ms (%u frames of the loading bar, a bar before: %d) for the distant land at (%.0f, %.0f, %.0f) in '%s'%s",
+                     unsigned(GetTickCount() - start), presentCount - presentsBefore, hadLoadingBar ? 1 : 0, position[0], position[1], position[2],
+                     prefetch.interiorName, distantLandArrived ? "" : ": no answer in time");
+        if (shown) {
+            if (!hadLoadingBar) {
+                mwBridge->destroyLoadingBar();
+            } else if (snapshotOk) {
+                mwBridge->setLoadingBarLabel(savedLabel.c_str());
+                mwBridge->renderLoadingFrame();
+            }
+        }
+    }
+
     // The game resolved the objects of a save or of a new game.
     static void onResolveDuringInit() {
         loadVisGroups();
         DistantLand::resolveDynamicVisGroups();
         visGroupsUnsent = true;
         gameLoaded = true;
+        if (Configuration.DistantLandWaitOnLoad) {
+            waitForDistantLand(MWBridge::get());
+        }
     }
 
     // The messages of the helper. 1: the distant land, version 1, then the reason
-    // (DistantLandReady::Reason). MESSAGE_DISTANT_LAND in mgeHost64/src/renderer.rs.
+    // (DistantLandReady::Reason), then the number of the wait it answers (0 for none).
+    // MESSAGE_DISTANT_LAND in mgeHost64/src/renderer.rs.
     void message(unsigned id, const void* data, unsigned length) {
         static const unsigned DistantLandId = 1;
         if (id == DistantLandId && length >= 8) {
-            UINT words[2];
-            std::memcpy(words, data, sizeof(words));
+            UINT words[3] = {};
+            std::memcpy(words, data, length >= 12 ? 12 : 8);
             if (words[0] == 1 && (words[1] == DistantLandReady::Loaded || words[1] == DistantLandReady::Arrived)) {
                 DistantLandReady::push(static_cast<DistantLandReady::Reason>(words[1]));
+                distantLandArrived |= words[1] == DistantLandReady::Arrived && words[2] != 0 && words[2] == waitSerial;
             }
         }
     }
@@ -1614,6 +1706,7 @@ namespace Deviceless {
 
     // The game showed a frame. The size is that of its back buffer.
     void present(unsigned width, unsigned height) {
+        ++presentCount;
         prepare();
         MGEhud::setScreenSize(width, height);
 

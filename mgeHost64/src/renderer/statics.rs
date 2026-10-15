@@ -1182,6 +1182,9 @@ pub struct Statics {
     /// The clock of the arrivals, and the time a subset takes to come in (0: no fade-in).
     clock: Instant,
     fade_seconds: f32,
+    /// The arrivals are those of a wait on the loading screen: they show complete when the
+    /// wait ends, with no fade-in.
+    prefetching: bool,
     grass_frames: u64,
     grass_drawn: u64,
     grass_cut: u64,
@@ -1265,6 +1268,7 @@ impl Statics {
             grass_draws: Vec::new(),
             clock: Instant::now(),
             fade_seconds: 1.0,
+            prefetching: false,
             grass_frames: 0,
             grass_drawn: 0,
             grass_cut: 0,
@@ -1608,7 +1612,7 @@ impl Statics {
     }
 
     /// Makes the buffers of the subsets that the reader thread has ready, for a part of a frame.
-    fn take_arrivals(&mut self, scene: &SceneView) {
+    fn take_arrivals(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let Some(arrivals) = self.arrivals.as_ref() else { return };
         let (mut count, mut bytes) = (0, 0);
         while self.synchronous || (count < ARRIVALS_IN_FRAME && bytes < ARRIVAL_BYTES_IN_FRAME) {
@@ -1638,7 +1642,7 @@ impl Statics {
             let s = &catalog.subsets[arrival.subset as usize];
             let geometry = if s.pooled() {
                 let Some(gpu) = self.gpu.as_mut() else { continue };
-                let Some(slot) = gpu.pools.put(scene.device, scene.queue, s.texture, &arrival.vertices, &arrival.indexes) else {
+                let Some(slot) = gpu.pools.put(device, queue, s.texture, &arrival.vertices, &arrival.indexes) else {
                     if !self.pool_full {
                         self.pool_full = true;
                         println!("distant statics: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn");
@@ -1647,17 +1651,17 @@ impl Statics {
                 };
                 if let Some(culling) = gpu.culling.as_ref() {
                     let entry = cull::Subset { first_index: slot.first_index, base_vertex: slot.base_vertex, faces: arrival.faces, resident: 1, _pad: [0; 2] };
-                    scene.queue.write_buffer(&culling.subsets, arrival.subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&entry));
+                    queue.write_buffer(&culling.subsets, arrival.subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&entry));
                 }
                 Geometry::Pool(slot)
             } else {
-                let vertices = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("distant static, vertices"), contents: &arrival.vertices, usage: wgpu::BufferUsages::VERTEX });
-                let indexes = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("distant static, indexes"), contents: &arrival.indexes, usage: wgpu::BufferUsages::INDEX });
+                let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("distant static, vertices"), contents: &arrival.vertices, usage: wgpu::BufferUsages::VERTEX });
+                let indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("distant static, indexes"), contents: &arrival.indexes, usage: wgpu::BufferUsages::INDEX });
                 Geometry::Own { vertices, indexes }
             };
-            let arrived = self.clock.elapsed().as_secs_f32();
+            let arrived = if self.prefetching { -1.0e9 } else { self.clock.elapsed().as_secs_f32() };
             if let Some(gpu) = self.gpu.as_ref() {
-                scene.queue.write_buffer(&gpu.arrivals, arrival.subset as u64 * 4, bytemuck::bytes_of(&arrived));
+                queue.write_buffer(&gpu.arrivals, arrival.subset as u64 * 4, bytemuck::bytes_of(&arrived));
             }
             self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size, arrived });
             self.resident_bytes += size;
@@ -1920,6 +1924,41 @@ impl Statics {
     /// The work of a frame before its draws: the load, the slots that are free again, the
     /// memory budget, the merged subsets that come and go, the arrivals. False when there is
     /// nothing to draw in the world space of the frame.
+    /// The merged subsets near enough to `eye` come to the GPU: the ones that are not there
+    /// and not asked for go into `wanted`.
+    fn want_near(&mut self, catalog: &Catalog, eye: [f32; 3]) {
+        let Some(world) = catalog.worlds.get(&self.world) else { return };
+        let admit = self.settings.draw_distance + CELL;
+        for &index in &world.merged {
+            let instance = &catalog.instances[index as usize];
+            if hidden(&self.shown, instance.group) {
+                continue;
+            }
+            if flat_distance(instance, eye) <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
+                self.wanted.push(instance.subset);
+            }
+        }
+    }
+
+    /// The work of a frame with no world (a loading screen) for the place where the camera
+    /// will be: the world space by its name (empty for the exterior) and the eye. The
+    /// subsets near it are asked for and taken as in a frame, so a wait on the loading screen
+    /// ends when they are there (`settled`).
+    pub fn prefetch(&mut self, scene: &SceneView, world: &[u8], eye: [f32; 3]) {
+        // At the first load of a session the catalog comes in a frame with no world.
+        self.finish_load(scene);
+        if !self.loaded() {
+            return;
+        }
+        self.set_world(world);
+        let Some(catalog) = self.catalog.clone() else { return };
+        self.admit_merged(&catalog, eye);
+        self.prefetching = true;
+        self.take_arrivals(scene.device, scene.queue);
+        self.prefetching = false;
+        self.want_near(&catalog, eye);
+    }
+
     fn frame_work(&mut self, scene: &SceneView, eye: [f32; 3], main: bool) -> bool {
         self.finish_load(scene);
         // The slots that went in the frame before are free: the draws that read them are done.
@@ -1938,21 +1977,13 @@ impl Statics {
             }
             self.admit_merged(&catalog, eye);
         }
-        self.take_arrivals(scene);
+        self.take_arrivals(scene.device, scene.queue);
         let Some(catalog) = self.catalog.clone() else { return false };
-        let Some(world) = catalog.worlds.get(&self.world) else { return false };
-        let admit = self.settings.draw_distance + CELL;
-        let retain = admit + CELL;
-        // The merged subsets near enough come to the GPU.
-        for &index in &world.merged {
-            let instance = &catalog.instances[index as usize];
-            if hidden(&self.shown, instance.group) {
-                continue;
-            }
-            if flat_distance(instance, eye) <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
-                self.wanted.push(instance.subset);
-            }
+        if !catalog.worlds.contains_key(&self.world) {
+            return false;
         }
+        self.want_near(&catalog, eye);
+        let retain = self.settings.draw_distance + CELL + CELL;
         // The merged subsets that are too far go away. The check is for all of them, because
         // the camera can go a long way in one frame.
         if self.frames % 30 == 0 {

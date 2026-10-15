@@ -144,13 +144,20 @@ const PICTURE_ID: u32 = 3;
 const STATUS_ID: u32 = 9;
 /// The message of the helper for MGE XE about the distant land (`Deviceless::message`):
 /// version 1, then 1 when the distant land of the session is loaded, 2 when after a game
-/// load or a jump of the camera the distant statics around the camera are there.
+/// load or a jump of the camera the distant statics around the camera are there; then the
+/// number of the wait that it answers (`PREFETCH_ID`), 0 for none.
 const MESSAGE_DISTANT_LAND: u32 = 1;
 const LOADED: u32 = 1;
 const ARRIVED: u32 = 2;
 /// The longest wait for the statics after a game load or a jump, from the end of the load
 /// of the data: then `ARRIVED` goes anyway, as the bootstrap of Direct3D 9 gives up.
 const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
+/// The place of a wait of a game load for the distant land (`Deviceless::waitForDistantLand`,
+/// `distant_land.wait_on_load`): version 1, the number of the wait, the position of the
+/// player, the name of the interior cell (64 bytes, empty for the exterior). The helper
+/// streams for it at the end of each frame until a world frame comes, and gives the number
+/// back with its `ARRIVED`.
+const PREFETCH_ID: u32 = 10;
 
 /// Runs the renderer with the distant land of MGE XE.
 pub fn run(mut arguments: Vec<String>) {
@@ -345,6 +352,10 @@ pub struct DistantLand {
     /// the world frames since then. The position of the camera in the last world frame.
     arrival: Option<(Instant, u32)>,
     last_eye: Option<[f32; 3]>,
+    /// The place of a wait of a game load (record 10): the world space and the eye, until a
+    /// world frame comes; and the number of the wait that `ARRIVED` answers (0 for none).
+    prefetch: Option<(Vec<u8>, [f32; 3])>,
+    arrival_serial: u32,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -723,6 +734,8 @@ impl DistantLand {
             loaded_said: false,
             arrival: None,
             last_eye: None,
+            prefetch: None,
+            arrival_serial: 0,
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -1592,8 +1605,10 @@ impl Extension for DistantLand {
         // A jump of the camera of more than 2 cells (a teleport) waits for the statics as a
         // game load does; each world frame counts for a wait.
         let eye = eye_of(&scene.view);
+        self.prefetch = None;
         if self.last_eye.is_some_and(|last| (eye[0] - last[0]).hypot(eye[1] - last[1]) > 2.0 * CELL) {
             self.arrival = Some((Instant::now(), 0));
+            self.arrival_serial = 0;
         }
         self.last_eye = Some(eye);
         if let Some((_, frames)) = self.arrival.as_mut() {
@@ -1870,11 +1885,11 @@ impl Extension for DistantLand {
     /// frames: the first one asks for the statics of the new place.
     fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
         let statics_loaded = self.statics.as_ref().is_none_or(|statics| statics.loaded());
-        let say = |reason: u32| (MESSAGE_DISTANT_LAND, [1u32, reason].iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
+        let say = |reason: u32, serial: u32| (MESSAGE_DISTANT_LAND, [1u32, reason, serial].iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
         if !self.loaded_said && self.enabled && self.loading.is_none() && self.gpu.is_some() && statics_loaded {
             self.loaded_said = true;
             println!("distant land: ready (loaded)");
-            self.messages_out.push(say(LOADED));
+            self.messages_out.push(say(LOADED, 0));
         }
         if let Some((since, frames)) = self.arrival {
             if self.loading.is_some() || !statics_loaded {
@@ -1882,11 +1897,35 @@ impl Extension for DistantLand {
                 self.arrival = Some((Instant::now(), frames));
             } else if frames >= 2 && (self.statics.as_ref().is_none_or(|statics| statics.settled()) || since.elapsed() >= ARRIVAL_TIMEOUT) {
                 self.arrival = None;
-                println!("distant land: ready (arrived) in {:.2} s", since.elapsed().as_secs_f32());
-                self.messages_out.push(say(ARRIVED));
+                println!("distant land: ready (arrived) in {:.2} s{}", since.elapsed().as_secs_f32(), if self.arrival_serial != 0 { format!(", wait {}", self.arrival_serial) } else { String::new() });
+                self.messages_out.push(say(ARRIVED, std::mem::take(&mut self.arrival_serial)));
             }
         }
         std::mem::take(&mut self.messages_out)
+    }
+
+    /// In a frame with no world (the loading screen of a wait), the statics stream for the
+    /// place of the wait; each frame counts for the wait.
+    fn after_frame(&mut self, scene: &SceneView) {
+        let Some((world, eye)) = self.prefetch.clone() else { return };
+        // At the first load of a session the data comes in a frame with no world: the loads
+        // are finished here, as in `frame` and `before_world`.
+        self.finish_generation();
+        let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+        if let Some(lights) = self.lights.as_mut() {
+            lights.poll(scene, binding, self.synchronous);
+        }
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_lights(&binding.layout, &binding.group);
+        }
+        self.finish_load(scene);
+        self.apply_settings();
+        if let Some(statics) = self.statics.as_mut() {
+            statics.prefetch(scene, &world, eye);
+        }
+        if let Some((_, frames)) = self.arrival.as_mut() {
+            *frames += 1;
+        }
     }
 
     fn pictures(&mut self) -> Vec<PictureRequest> {
@@ -1956,6 +1995,20 @@ impl Extension for DistantLand {
             }
             return;
         }
+        if id == PREFETCH_ID {
+            let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+            if let (Some(1), Some(serial), Some(x), Some(y), Some(z)) = (word(0), word(4), word(8), word(12), word(16)) {
+                let name = bytes.get(20..).map(statics::unpadded).unwrap_or(&[]).to_vec();
+                let eye = [f32::from_bits(x), f32::from_bits(y), f32::from_bits(z)];
+                println!("distant land: wait {serial} for the place ({:.0}, {:.0}, {:.0}) in '{}'", eye[0], eye[1], eye[2], String::from_utf8_lossy(&name));
+                self.prefetch = Some((name, eye));
+                self.arrival = Some((Instant::now(), 0));
+                self.arrival_serial = serial;
+                // The first world frame there is no jump.
+                self.last_eye = Some(eye);
+            }
+            return;
+        }
         if id == STATUS_ID {
             let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
             if let (Some(1), Some(warning), Some(ms), Some(text)) = (word(0), word(4), word(8), bytes.get(12..)) {
@@ -1999,8 +2052,9 @@ impl Extension for DistantLand {
             if (4..=6).contains(&environment.version) {
                 // A game was loaded (flag 256, in one record only): the wait for the statics
                 // starts. The record can come in a loading screen, which has no world frame.
-                if environment.flags & 256 != 0 {
+                if environment.flags & 256 != 0 && self.prefetch.is_none() {
                     self.arrival = Some((Instant::now(), 0));
+                    self.arrival_serial = 0;
                 }
                 self.environment = Some(environment);
             }
