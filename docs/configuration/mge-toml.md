@@ -36,8 +36,11 @@ diagnostics, parsing, and document mutation. Each executable consumes it
 directly:
 
 - `MGEXEgui.exe` uses the typed Rust API and targeted document saves.
-- `mgeHost64.exe` projects only the settings required by startup generation and
-  host-side culling.
+- `mgeHost64.exe` reads the document itself through the same crate. On Direct3D 9 it
+  uses the settings of startup generation and host-side culling. As the wgpu renderer
+  (`runtime.renderer_wgpu`) it also reads the distant land, water, fog, shadow, lighting
+  and shader settings when it starts. In the game, changes reach it as records of the
+  stream from `d3d8.dll` (settings and shader state), not from the file.
 - `d3d8.dll` calls a narrow Rust C ABI, then applies scalar values to
   the live C++ `Configuration` object through the binding table in
   `d3d8/cpp/mge/inidata.h`.
@@ -50,8 +53,9 @@ them into the runtime's legacy buffers only at the boundary.
 
 The DLL performs its read-only load during process initialization. It never
 creates or saves a file from `DllMain`; first-run creation and later writes use
-explicit save paths. The host is not a configuration service and remains
-optional when its distant-land responsibilities are not needed.
+explicit save paths. The host is not a configuration service. On Direct3D 9 it
+remains optional when its distant-land responsibilities are not needed; the wgpu
+renderer needs it, because it draws the picture.
 
 ## Enum spellings
 
@@ -112,6 +116,7 @@ the same mapping ten times.
 | `[Render State] UI Scaling` | `render.ui_scale` |
 | `[Render State] Window Align X` | `render.window_align_x` |
 | `[Render State] Window Align Y` | `render.window_align_y` |
+| (new, no INI key) | `render.camera_relative` |
 
 `render.indexed_skinning` has no obsolete INI predecessor. It enables the
 indexed bone-palette skinning path: MGE XE rebuilds Morrowind's skin partitions
@@ -172,6 +177,24 @@ still installed.
 | `Horizon Sample Spacing` | `distant_land.horizon.sample_spacing` |
 | `Horizon Adaptive Gate` | `distant_land.horizon.adaptive_gate` |
 | `Horizon Hierarchical March` | `distant_land.horizon.hierarchical_march` |
+| (new, no INI key) | `distant_land.native_depth_capture` |
+| (new, no INI key) | `distant_land.native_ppl_packets` |
+| (new, no INI key) | `distant_land.expanded_light_limit` |
+| (new, no INI key) | `distant_land.per_pixel_light_fade` |
+| (new, no INI key) | `distant_land.per_pixel_light_fade_radius` |
+
+`src/default.toml` describes each of these new keys, and `render.camera_relative` too.
+
+Two more keys have no obsolete INI predecessor and no C++ binding: only the wgpu renderer
+reads them.
+
+- `distant_land.per_pixel_original_lights` (default `false`): the wgpu renderer lights each
+  pixel with each light of the game in its own colour and with its whole falloff. `true`
+  decodes the lights as MGE XE on Direct3D 9 does.
+- `distant_land.water.blur_contact_hardening` (default `true`): with
+  `distant_land.water.blur_reflections`, a reflection is sharp where the thing meets the
+  water and its blur grows with distance from the water. `false` gives the even blur of
+  Direct3D 9.
 
 The host-only horizon setting with no obsolete C++ binding is
 `distant_land.horizon.rebuild_eye_threshold`.
@@ -258,15 +281,15 @@ the old GUI/runtime factor-of-1000 mismatch.
 The following bound values retain the legacy `DONT_SAVE` policy because the GUI,
 registry, or structured Rust model owns them:
 
-- startup gates: `runtime.disabled`, `runtime.mwse_disabled`, and
-  `runtime.proxy_only`;
+- startup gates: `runtime.disabled`, `runtime.mwse_disabled`,
+  `runtime.proxy_only`, and `runtime.renderer_wgpu`;
 - graphics/display selection fields;
 - screenshot format/path/name/suffix;
 - `distant_land.water_without_land`;
 - shader chain and all structured input collections.
 
 `d3d8/crates/config-contract-test` exports the real C++ binding table and verifies all
-134 rows against the Rust schema on the i686 target, including uniqueness,
+139 rows against the Rust schema on the i686 target, including uniqueness,
 storage widths, buffer capacities, `DONT_SAVE`, and default values.
 
 ## `Morrowind.ini`
