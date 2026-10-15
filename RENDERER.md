@@ -136,6 +136,12 @@ adapter and the one in use.
 - While the game sends no picture for more than half a second (at its start, when it loads),
   a small line turns in the lower right corner of the window. The game is not stopped.
 - Alt+F4 closes the game, with either renderer. The game does not ask and does not save.
+- The screenshot key (PrintScreen, or the macro) writes the picture as on Direct3D 9: the
+  folder, the name and the format of the screenshot settings. The status text of MGE XE and
+  its frame rate counter show in the upper left corner, as on Direct3D 9.
+- If the renderer program stops (`mgeHost64.exe` crashed or was ended), a message box says
+  so. The game cannot show a new picture after that: quit and start again, and send
+  `nirender-host.log` and `nirender.log`.
 
 ## Known issues
 

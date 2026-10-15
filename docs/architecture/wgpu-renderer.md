@@ -47,15 +47,16 @@ Morrowind.exe (32-bit)                                 mgeHost64.exe --live (64-
 | --- | --- | --- | --- |
 | 1 | environment (fog, sun, weather, scattering, camera flags) | no | every Present |
 | 2 | shader state (chain, enabled flags, variables) | no | on a change |
-| 3 | picture request (`mge.saveScreenshot`) | no | at Present |
+| 3 | picture request (`mge.saveScreenshot`, the screenshot macro) | no | at Present |
 | 4 | settings (`MGEFlags`, distances, water, lighting mode) | no | on a change |
 | 5 | tune text (`nirender.tune`) | no | from Lua |
 | 6 | water looks | yes | on a change |
 | 7 | water masks (dry spaces) | yes | on a change |
 | 8 | vis groups | yes | on a cell change or a load |
+| 9 | status text (`StatusOverlay::setStatus`): warning, ms to show, text | no | at Present after a new text |
 
 A kept record (bit `0x80000000`) stays in the stream, so a capture file holds it. Use kept
-records for state. The next free id is 9. The ids are constants at the top of `renderer.rs`
+records for state. The next free id is 10. The ids are constants at the top of `renderer.rs`
 and in `Deviceless`; each side names the other.
 
 ## 2. Device

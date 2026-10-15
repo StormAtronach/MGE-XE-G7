@@ -158,8 +158,9 @@ whole `mge` table. The calls work on the state in `d3d8.dll`; the namespace `Dev
 
 - record 1, the environment (fog, sun, weather, scattering, flags of the camera);
 - record 2, the shader state (the chain, the enabled flags, the variables), on a change;
-- record 3, a picture request (`saveScreenshot`);
-- record 4, the settings (`MGEFlags`, the distances, water, the lighting mode), on a change.
+- record 3, a picture request (`saveScreenshot`, the screenshot macro);
+- record 4, the settings (`MGEFlags`, the distances, water, the lighting mode), on a change;
+- record 9, the status text, after a new text.
 
 `DistantLand::init` returns false without a device, so `canRenderDistantLand()` is false and
 the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the distant land.
@@ -172,7 +173,8 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `render.*` features: shaders, shadows, grass, distantStatics, updateHDR, blurReflections, dynamicRipples, reflectiveWater, reflectNearStatics, reflectSky | followed (settings record) |
 | `render.*` features: exponentialFog, atmosphericScattering | followed (environment flags) |
 | `render.distantLand` | refused before the first frame; after it, followed only if the helper loaded the land at the start |
-| `render.*` features: reflectInterior, distantWater, pauseRenderingInMenus, fpsCounter, displayMessages, transparencyAA, noMWMGEBlending, noMWSunglare | the flag is stored, the helper does not use it (sun glare: each post shader's own `disable_sunglare`) |
+| `render.*` features: fpsCounter, displayMessages | followed: the helper draws the status text and the frame rate on the window (not in screenshots, as on Direct3D 9) |
+| `render.*` features: reflectInterior, distantWater, pauseRenderingInMenus, transparencyAA, noMWMGEBlending, noMWSunglare | the flag is stored, the helper does not use it (sun glare: each post shader's own `disable_sunglare`) |
 | crosshairAutoHide, UI scale, lighting mode | work |
 | `distantLandRenderConfig`: draw distance, static ends, caustics, wave height, interior fog end | followed (settings record) |
 | `distantLandRenderConfig`: fog and wind; `weather` fog, per-pixel lighting, wind, scattering, skylight scattering | followed (environment record) |
@@ -181,11 +183,13 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `shaders.hdrReactionSpeed` | followed |
 | `shaders.find`, `list`, `load` | placeholders parsed from the `.fx` of the chain; the helper runs the WGSL port; nil if the `.fx` is missing |
 | shader `enabled`, `orderPriority`, number variables (bool, int, float, vector, matrix, arrays), `reload()` | work (shader record; `reload()` makes the helper reload its WGSL) |
-| shader string variables | get and set return false |
+| shader string variables | work (the store keeps the text; the helper does not get it) |
 | old calls `enableShader`, `disableShader`, `setShaderFloat`, `setShaderLong` (opcodes 0x3AB0-0x3AB4) | write to the placeholder store |
-| `saveScreenshot` | after the first frame the helper writes the picture; before it, nothing |
-| `macros.takeScreenshot`, `macros.toggleDistantLand` | do nothing |
-| `macros.toggleStatusText`, `toggleFpsCounter`, `showLastMessage` | the flag changes; nothing draws it |
+| `saveScreenshot` | the helper writes the picture; a request before the first frame waits for it |
+| `macros.takeScreenshot` (and PrintScreen) | the helper writes the picture, with the name, folder and format of the settings |
+| `macros.toggleDistantLand` | does nothing |
+| `macros.toggleStatusText`, `toggleFpsCounter`, `showLastMessage` | work (record 9 and the settings record) |
+| the camera macros of the third person view | work (tested 2026-10-15) |
 | HUD calls | do nothing (no device; MWSE does not bind them) |
 
 The FFI exports outside the vtable (`MGE_HorizonGet/SetParam`, `MGE_WaterVolumesSet`,
