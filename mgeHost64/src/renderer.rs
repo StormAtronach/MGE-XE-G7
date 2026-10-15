@@ -374,6 +374,9 @@ pub struct DistantLand {
     /// `MGE_XE_GPU_TIME=1` (`gpu_time`); made at the first frame of a replay.
     gpu_time: Option<gpu_time::GpuTime>,
     gpu_time_made: bool,
+    /// `gpu lose device` of `nirender.tune`: the next frame destroys the device, the test of a
+    /// lost device.
+    lose_device: bool,
     /// How far from the camera the surfaces of water volumes reflect what is in the picture,
     /// in cells (`distant_land.water.volume_reflection_cells`); 0 for the sky only.
     volume_reflect_cells: f32,
@@ -710,6 +713,7 @@ impl DistantLand {
             near_static_end: settings.near_static_end * CELL,
             gpu_time: None,
             gpu_time_made: false,
+            lose_device: false,
             volume_reflect_cells: settings.water.volume_reflection_cells,
             volume_shadows: settings.water.volume_shadows,
             volume_point_lights: settings.water.volume_point_lights,
@@ -1810,6 +1814,10 @@ impl Extension for DistantLand {
             return;
         }
         if id == TUNE_ID {
+            if core::str::from_utf8(bytes).is_ok_and(|text| text.trim() == "gpu lose device") {
+                self.lose_device = true;
+                return;
+            }
             // `statics report <label>`: the work of the distant statics since the last report.
             if let Some(label) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("statics report")) {
                 if let Some(statics) = self.statics.as_mut() {
@@ -1873,6 +1881,10 @@ impl Extension for DistantLand {
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
         self.near_fog = None;
         self.cell_facts(scene);
+        if std::mem::take(&mut self.lose_device) {
+            println!("gpu: the device is destroyed for the test of a lost device");
+            nirender_wgpu::gpu::test_loss(scene.device);
+        }
         if self.synchronous && !self.gpu_time_made {
             self.gpu_time_made = true;
             self.gpu_time = gpu_time::GpuTime::new(scene.device, scene.queue);
