@@ -25,6 +25,14 @@ pub const BLUR_STRETCH: &str = "water.blur.stretch";
 /// The light of a glow under water: how much faster it loses the colours that the water has
 /// less of (the power of the ratio of the colours of the fog).
 pub const WATER_LIGHT_COLOUR: &str = "water.light.colour";
+/// The distant lights: the size of a glow as a part of the radius of its light.
+pub const GLOW_SIZE: &str = "lights.glow.size";
+/// The same: how bright a glow is at night.
+pub const GLOW_STRENGTH: &str = "lights.glow.strength";
+/// The same: the least size of a glow on the screen, in pixels.
+pub const GLOW_PIXELS: &str = "lights.glow.pixels";
+/// The same: how strong the baked light is on the land and the statics at night.
+pub const BAKED_STRENGTH: &str = "lights.baked.strength";
 
 #[derive(Default)]
 struct Tunable {
@@ -139,7 +147,7 @@ mod tests {
     #[test]
     fn the_file_has_each_parameter_of_the_code_with_a_range() {
         let tunables = Tunables::new();
-        for name in [BLUR_ANGLE, BLUR_WIND, BLUR_STRETCH, WATER_LIGHT_COLOUR] {
+        for name in [BLUR_ANGLE, BLUR_WIND, BLUR_STRETCH, WATER_LIGHT_COLOUR, GLOW_SIZE, GLOW_STRENGTH, GLOW_PIXELS, BAKED_STRENGTH] {
             let tunable = tunables.list.iter().find(|tunable| tunable.name == name).unwrap_or_else(|| panic!("no parameter {name} in the file"));
             assert!(!tunable.label.is_empty(), "{name} has no label");
             assert!(tunable.step > 0.0 && tunable.least < tunable.most, "{name} has no range");

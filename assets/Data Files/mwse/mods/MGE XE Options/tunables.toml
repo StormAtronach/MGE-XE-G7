@@ -48,3 +48,39 @@ start = 3.0
 least = 1.0
 most = 8.0
 step = 0.1
+
+[[parameter]]
+name = "lights.glow.size"
+label = "Distant lights: glow size"
+about = "The size of the glow of a distant light, as a part of the radius of the light."
+start = 1.2
+least = 0.1
+most = 3.0
+step = 0.05
+
+[[parameter]]
+name = "lights.glow.strength"
+label = "Distant lights: glow strength"
+about = "How bright the glow of a distant light is at night."
+start = 2.5
+least = 0.0
+most = 6.0
+step = 0.1
+
+[[parameter]]
+name = "lights.glow.pixels"
+label = "Distant lights: least glow size"
+about = "The least size of a glow on the screen, in pixels: a far light stays a point."
+start = 3.0
+least = 1.0
+most = 8.0
+step = 0.25
+
+[[parameter]]
+name = "lights.baked.strength"
+label = "Distant lights: light on the land"
+about = "How strong the baked light of the distant lights is on the land and the statics at night."
+start = 1.0
+least = 0.0
+most = 4.0
+step = 0.1

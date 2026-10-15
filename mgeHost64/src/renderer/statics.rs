@@ -987,7 +987,7 @@ struct Out {
     // again, as in the shader of MGE XE.
     let n = normalize(in.normal.xyz * 2.0 - 1.0);
     let normal = n.x * in.world0.xyz + n.y * in.world1.xyz + n.z * in.world2.xyz;
-    let light = u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + u.ambient.rgb + in.normal.w;
+    let light = u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + u.ambient.rgb + in.normal.w + baked_light(world);
     // The colour of a vertex has the bytes blue, green, red.
     out.color = in.color.bgr * light;
     out.coordinate = in.coordinate;
@@ -1061,6 +1061,10 @@ pub struct Statics {
     pool_full: bool,
     /// The sets that `prepare` chose for this frame.
     prepared: [bool; 4],
+    /// The bind group of the baked light of the distant lights, and its layout (group 2 of the
+    /// pipelines of the statics). The catalog loads when the layout is there.
+    light_layout: Option<wgpu::BindGroupLayout>,
+    light_group: Option<wgpu::BindGroup>,
     prepare_calls: u64,
     prepare_seconds: f64,
     /// The grass of the frame: texture, subset, record.
@@ -1138,6 +1142,8 @@ impl Statics {
             frame_ended: false,
             pool_full: false,
             prepared: [false; 4],
+            light_layout: None,
+            light_group: None,
             prepare_calls: 0,
             prepare_seconds: 0.0,
             grass_draws: Vec::new(),
@@ -1406,6 +1412,7 @@ impl Statics {
     }
 
     fn finish_load(&mut self, scene: &SceneView) {
+        let Some(light_layout) = self.light_layout.clone() else { return };
         let Some(receiver) = self.loading.as_ref() else { return };
         let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
         let Some(result) = result else { return };
@@ -1443,7 +1450,7 @@ impl Statics {
         }
         self.device = Some(scene.device.clone());
         self.queue = Some(scene.queue.clone());
-        self.gpu = Some(make_gpu(scene, &loaded));
+        self.gpu = Some(make_gpu(scene, &loaded, &light_layout));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();
         let for_reader = catalog.clone();
@@ -1688,6 +1695,14 @@ impl Statics {
         found
     }
 
+    /// The bind group of the baked light of the distant lights for the draws of this frame.
+    pub fn set_lights(&mut self, layout: &wgpu::BindGroupLayout, group: &wgpu::BindGroup) {
+        if self.light_layout.is_none() {
+            self.light_layout = Some(layout.clone());
+        }
+        self.light_group = Some(group.clone());
+    }
+
     /// Chooses the places of the sets of a frame on the GPU, in one command buffer before the
     /// passes that draw them, and does the work of the frame for the statics once: the main
     /// view first. A set chosen here is only drawn by `draw`; a set that is not here is chosen
@@ -1797,8 +1812,11 @@ impl Statics {
     }
 
     /// Binds what the draws of a set read: its pipeline, its uniforms and the places.
-    fn bind_set(gpu: &Gpu, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) {
+    fn bind_set(gpu: &Gpu, light_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) {
         let buffers = &gpu.sets[set];
+        if let Some(light_group) = light_group {
+            pass.set_bind_group(2, light_group, &[]);
+        }
         scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms_of(frame)));
         // Lines when the game draws in wireframe (see `SceneView::wireframe`), as MGE XE on
         // Direct3D 9 draws with the fill mode the engine left; the shadow map stays filled.
@@ -1809,9 +1827,9 @@ impl Statics {
     }
 
     /// The indirect draws of a set that the GPU chose.
-    fn draw_chosen(gpu: &Gpu, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
+    fn draw_chosen(gpu: &Gpu, light_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
         let Some(culling) = gpu.culling.as_ref() else { return 0 };
-        Self::bind_set(gpu, scene, pass, frame, set);
+        Self::bind_set(gpu, light_group, scene, pass, frame, set);
         let (pools, textures) = (&gpu.pools, &gpu.textures);
         culling.draw(set, pass, |pass, texture| {
             let Some((vertices, indexes)) = pools.buffers(texture) else { return false };
@@ -1830,7 +1848,7 @@ impl Statics {
         if self.prepared.get(set).copied().unwrap_or(false) {
             self.prepared[set] = false;
             let Some(gpu) = self.gpu.as_ref() else { return 0 };
-            return Self::draw_chosen(gpu, scene, pass, frame, set);
+            return Self::draw_chosen(gpu, self.light_group.as_ref(), scene, pass, frame, set);
         }
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         if !self.frame_work(scene, eye, set == 0) {
@@ -1847,7 +1865,7 @@ impl Statics {
                     culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
                 }
                 culling.run(scene.device, scene.queue, set, &cull_values(&settings, frame.planes, frame.eye, frame.fog_end));
-                return Self::draw_chosen(gpu, scene, pass, frame, set);
+                return Self::draw_chosen(gpu, self.light_group.as_ref(), scene, pass, frame, set);
             }
         }
 
@@ -1921,7 +1939,7 @@ impl Statics {
             return 0;
         }
         let Some(gpu) = self.gpu.as_ref() else { return 0 };
-        Self::bind_set(gpu, scene, pass, frame, set);
+        Self::bind_set(gpu, self.light_group.as_ref(), scene, pass, frame, set);
         let mut texture = u32::MAX;
         for &(draw_texture, subset, instance, faces) in &self.draws {
             let Some(Resident { geometry: Geometry::Pool(slot), .. }) = self.resident.get(&subset) else { continue };
@@ -2073,7 +2091,7 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
     }
 }
 
-fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
+fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLayout) -> Gpu {
     let device = scene.device;
     let catalog = &loaded.catalog;
     let make_uniforms = || {
@@ -2186,10 +2204,14 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Gpu {
         println!("distant statics: {} textures are white: {}", missing.len(), missing.iter().take(6).cloned().collect::<Vec<_>>().join("; "));
     }
 
-    let source = format!("{SHADER}{}", super::FOG_FUNCTION);
+    let source = format!("{SHADER}{}{}", super::FOG_FUNCTION, super::distant_lights::baked_wgsl(2));
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    let pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout), Some(&texture_layout)], immediate_size: 0 });
+    // Group 2: the baked light of the distant lights (`distant_lights::LightBinding`).
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&layout), Some(&texture_layout), Some(light_layout)],
+        immediate_size: 0,
+    });
     // A vertex of a statics file has 20 bytes: the position and the palette number as four
     // half floats, the normal, the colour, and the texture coordinate as two half floats.
     let vertex = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4, 3 => Float16x2];

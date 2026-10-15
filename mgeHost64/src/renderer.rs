@@ -34,6 +34,7 @@ use std::time::Instant;
 
 mod blend;
 mod caustics;
+mod distant_lights;
 mod gpu_time;
 mod post;
 mod post_jop;
@@ -326,6 +327,10 @@ pub struct DistantLand {
     /// a quarter of a cell or more.
     settings_told_distance: (f32, f32),
     statics: Option<statics::Statics>,
+    /// The distant lights (`lights.data`), and the bind group of their baked light that the
+    /// land and the statics read; `None` before the first frame.
+    lights: Option<distant_lights::DistantLights>,
+    light_binding: Option<distant_lights::LightBinding>,
     /// The shadow map, when the settings have shadows; `None` before the first frame. True
     /// when the map is made in this frame.
     shadow: Option<Shadow>,
@@ -536,7 +541,7 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 
     let footprint = max(length(ddx_patch), length(ddy_patch));
     let albedo = mix(near_albedo, far_albedo, smoothstep(0.5, 1.5, footprint));
-    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0);
+    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0) + baked_light(in.world);
     let lit = albedo * in.color * light;
 
     // In a reflection, only one side of the water plane: flags.y is the side, flags.z the plane.
@@ -677,6 +682,8 @@ impl DistantLand {
             settings_applied: None,
             settings_told_distance: (settings.draw_distance, settings.very_far_static_end),
             statics: None,
+            lights: None,
+            light_binding: None,
             shadow: None,
             shadow_in_frame: false,
             shadows_enabled: settings.shadows.enabled,
@@ -750,6 +757,7 @@ impl DistantLand {
             } else {
                 if statics_wanted {
                     land.statics = Some(statics::Statics::start(&document, folder.clone()));
+                    land.lights = Some(distant_lights::DistantLights::start(&folder));
                 }
                 thread::spawn(move || {
                     let _ = sender.send(load(&folder));
@@ -769,6 +777,7 @@ impl DistantLand {
         self.generation = None;
         if let Some(folder) = self.statics_after_generation.take() {
             let document = ConfigDocument::open(self.root.join(FILE_NAME));
+            self.lights = Some(distant_lights::DistantLights::start(&folder));
             let mut statics = statics::Statics::start(&document, folder);
             statics.set_groups(&self.vis_groups);
             self.statics = Some(statics);
@@ -781,7 +790,8 @@ impl DistantLand {
         let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
         let Some(result) = result else { return };
         self.loading = None;
-        match result.and_then(|loaded| make_gpu(scene, &loaded)) {
+        let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+        match result.and_then(|loaded| make_gpu(scene, &loaded, &binding.layout)) {
             Ok(gpu) => {
                 println!("distant land: {} terrain meshes on the GPU", gpu.meshes.len());
                 self.gpu = Some(gpu);
@@ -962,7 +972,7 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
     Ok(texture.create_view(&Default::default()))
 }
 
-fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
+fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLayout) -> Result<Gpu, String> {
     let device = scene.device;
     let textures = [
         dds_texture(scene, TERRAIN_ATLAS_FILE_NAME, &loaded.atlas)?,
@@ -1029,9 +1039,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
         entries[0] = wgpu::BindGroupEntry { binding: 0, resource: shadow_uniforms[i].as_entire_binding() };
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &entries })
     });
-    let source = format!("{SHADER}{FOG_FUNCTION}");
+    let source = format!("{SHADER}{FOG_FUNCTION}{}", distant_lights::baked_wgsl(1));
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+    // The land and its mirror have the baked light of the distant lights in group 1; the
+    // shadow map does not.
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout), Some(light_layout)], immediate_size: 0 });
+    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
     let make_pipeline = |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1079,7 +1092,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded) -> Result<Gpu, String> {
     let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land shadow"), source: wgpu::ShaderSource::Wgsl(LAND_SHADOW_SHADER.into()) });
     let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant land shadow"),
-        layout: Some(&pipeline_layout),
+        layout: Some(&shadow_layout),
         vertex: wgpu::VertexState {
             module: &shadow_module,
             entry_point: Some("vs"),
@@ -1847,6 +1860,15 @@ impl Extension for DistantLand {
             }
             return false;
         }
+        // The distant lights: the bind group of their baked light, the file when it comes, and
+        // the bind group for the statics.
+        let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+        if let Some(lights) = self.lights.as_mut() {
+            lights.poll(scene, binding, self.synchronous);
+        }
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_lights(&binding.layout, &binding.group);
+        }
         self.finish_load(scene);
         let Some(gpu) = self.gpu.as_ref() else { return false };
 
@@ -1919,6 +1941,11 @@ impl Extension for DistantLand {
             sun_altitude: scattering[4],
         };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        // The baked light of the distant lights: at night, in the exterior.
+        let night = distant_lights::night_of(scene.sun_color);
+        let Some(binding) = self.light_binding.as_mut() else { return false };
+        binding.set_strength(scene.queue, if scene.interior { 0.0 } else { self.tunables.get(tunables::BAKED_STRENGTH) * night });
+        let light_group = binding.group.clone();
 
         let planes = planes(&view_projection);
         let mut drawn = 0;
@@ -1927,6 +1954,7 @@ impl Extension for DistantLand {
         if !scene.interior {
             pass.set_pipeline(gpu.pipeline_for(scene));
             pass.set_bind_group(0, &gpu.group, &[]);
+            pass.set_bind_group(1, &light_group, &[]);
             for mesh in &gpu.meshes {
                 let inside = planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
                 if !inside {
@@ -1961,6 +1989,26 @@ impl Extension for DistantLand {
                 sets.push(statics::CullSet { set: 1, planes: Water::reflection_planes(&mirrored_view, &projection), eye, fog_end: fog_end.min(self.near_static_end) });
             }
             statics.prepare(scene, &sets);
+        }
+        // The glows of the distant lights at night, past the handoff to the game.
+        let glows = night > 0.0 && !scene.interior;
+        if let Some(lights) = self.lights.as_mut().filter(|_| glows) {
+            let fade_end = view_range - 1800.0;
+            lights.prepare(
+                scene,
+                &distant_lights::GlowFrame {
+                    view_projection,
+                    eye: uniforms.eye,
+                    planes,
+                    fog,
+                    flags: uniforms.flags,
+                    fade: [fade_end - 512.0, fade_end],
+                    draw_distance: self.draw_distance,
+                    time: game_time(self.environment, self.started),
+                    screen: [scene.target_size.0 as f32, scene.target_size.1 as f32, projection[5] * scene.target_size.1 as f32 * 0.5],
+                    glow: [self.tunables.get(tunables::GLOW_SIZE), self.tunables.get(tunables::GLOW_STRENGTH) * night, self.tunables.get(tunables::GLOW_PIXELS)],
+                },
+            );
         }
 
         // The shadow map: the land and the statics from the sun, in passes of their own
@@ -2045,6 +2093,7 @@ impl Extension for DistantLand {
             if !scene.interior && self.reflect_land {
                 mirror_pass.set_pipeline(gpu.mirror_pipeline_for(scene));
                 mirror_pass.set_bind_group(0, &gpu.mirror_group, &[]);
+                mirror_pass.set_bind_group(1, &light_group, &[]);
                 for mesh in &gpu.meshes {
                     let inside = mirror_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
                     if !inside {
@@ -2116,6 +2165,9 @@ impl Extension for DistantLand {
                 let loaded = [(x - 1.0) * CELL, (y - 1.0) * CELL, (x + 2.0) * CELL, (y + 2.0) * CELL];
                 self.far_water = statics.far_water(eye, &planes, loaded);
             }
+        }
+        if let Some(lights) = self.lights.as_mut().filter(|_| glows) {
+            lights.draw(pass);
         }
         true
     }
