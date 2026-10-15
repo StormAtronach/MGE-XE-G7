@@ -811,6 +811,9 @@ impl DistantLand {
                 println!("distant land: off: {problem}");
                 self.problem = Some(format!("distant land is off: {problem}"));
                 self.enabled = false;
+                // The statics and the lights can have started on the same data.
+                self.statics = None;
+                self.lights = None;
             }
         }
     }
@@ -845,7 +848,7 @@ impl Drop for DistantLand {
 }
 
 fn load(folder: &Path) -> Result<Loaded, String> {
-    if let Some(problem) = version_problem(folder) {
+    if let Some(problem) = version_problem(folder).or_else(|| statics::flags_problem_in(folder)) {
         return Err(problem);
     }
     let read = |name: &str| std::fs::read(folder.join(name)).map_err(|error| format!("{name}: {error}"));
@@ -1882,6 +1885,15 @@ impl Extension for DistantLand {
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
         self.near_fog = None;
         self.cell_facts(scene);
+        // Distant statics with subset flags that this build does not know: distant land is off
+        // for the session, as on Direct3D 9, and the data must be generated again.
+        if let Some(problem) = self.statics.as_ref().and_then(|statics| statics.rejected()).map(str::to_string) {
+            println!("distant land: off: {problem}");
+            self.problem = Some(format!("distant land is off: {problem}"));
+            self.enabled = false;
+            self.statics = None;
+            self.lights = None;
+        }
         if std::mem::take(&mut self.lose_device) {
             println!("gpu: the device is destroyed for the test of a lost device");
             nirender_wgpu::gpu::test_loss(scene.device);

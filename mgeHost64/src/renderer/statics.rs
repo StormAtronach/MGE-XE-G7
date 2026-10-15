@@ -289,7 +289,59 @@ fn transform(world: &[f32; 16], point: [f32; 3]) -> [f32; 3] {
 }
 
 /// Reads the tables of the 128 files and the places of `usage.data`.
-fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
+/// The subset flags that the generator writes and this build knows: alpha (0x01), a UV
+/// controller (0x02), water (0x04), water seen only from above (0x08) and a dry space (0x10).
+/// Direct3D 9 checks the same mask (`KnownFlagsMask`).
+const KNOWN_SUBSET_FLAGS: u32 = 0x1F;
+
+/// Why the catalog of the statics did not load.
+enum CatalogError {
+    /// A file is not there or cannot be read: no distant statics.
+    Missing(String),
+    /// The data has what this build does not know: distant land is off, and it must be
+    /// generated again.
+    Rejected(String),
+}
+
+impl From<String> for CatalogError {
+    fn from(problem: String) -> Self {
+        CatalogError::Missing(problem)
+    }
+}
+
+/// The problem with the flags of a subset, if there is one.
+fn flags_problem(flags: u32, file: &Path) -> Option<String> {
+    let unknown = flags & !KNOWN_SUBSET_FLAGS;
+    (unknown != 0).then(|| {
+        format!("a subset in {} has the flags {unknown:#x}, which this MGE XE does not know: generate distant land again in the MGE XE GUI", file.display())
+    })
+}
+
+/// The problem with the subset flags of the statics files in `folder` (the distant land
+/// folder), if there is one. It reads only the headers and the subset tables: for the loader
+/// of the land, which must not draw from data that the statics reject. A file that cannot be
+/// read is the problem of the loader of the statics, not of this check.
+pub(super) fn flags_problem_in(folder: &Path) -> Option<String> {
+    for shard in 0..SHARDS {
+        let path = folder.join("statics").join(format!("static_meshes_{shard:03}"));
+        let Ok(file) = File::open(&path) else { continue };
+        let mut header = [0u8; 160];
+        if file.seek_read(&mut header, 0).ok() != Some(160) || &header[0..8] != b"XESTAT06" {
+            continue;
+        }
+        let (subset_count, subset_table) = (word(&header, 36) as usize, long(&header, 56));
+        let mut table = vec![0u8; subset_count * 168];
+        if file.seek_read(&mut table, subset_table).ok() != Some(table.len()) {
+            continue;
+        }
+        if let Some(problem) = table.chunks_exact(168).find_map(|r| flags_problem(word(r, 72), &path)) {
+            return Some(problem);
+        }
+    }
+    None
+}
+
+fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogError> {
     let statics_folder = folder.join("statics");
     let mut statics: Vec<Static> = Vec::new();
     let mut subsets: Vec<Subset> = Vec::new();
@@ -305,7 +357,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
         let mut header = [0u8; 160];
         file.seek_read(&mut header, 0).map_err(|error| format!("{}: {error}", path.display()))?;
         if &header[0..8] != b"XESTAT06" || word(&header, 8) != 6 || word(&header, 16) != 52 || word(&header, 20) != 168 || word(&header, 24) != VERTEX as u32 {
-            return Err(format!("{} is not a statics file of version 6", path.display()));
+            return Err(format!("{} is not a statics file of version 6", path.display()).into());
         }
         let geometry = long(&header, 88) as usize;
         let mut tables = vec![0u8; geometry];
@@ -314,7 +366,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
         let (static_table, subset_table) = (long(&header, 40) as usize, long(&header, 56) as usize);
         let (component_table, palette_table) = (long(&header, 112) as usize, long(&header, 136) as usize);
         if subset_table + subset_count * 168 > geometry || static_table + static_count * 52 > geometry {
-            return Err(format!("{} has tables past its geometry", path.display()));
+            return Err(format!("{} has tables past its geometry", path.display()).into());
         }
         let subset_base = subsets.len() as u32;
 
@@ -327,6 +379,9 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
                 textures.len() as u32 - 1
             });
             let flags = word(r, 72);
+            if let Some(problem) = flags_problem(flags, &path) {
+                return Err(CatalogError::Rejected(problem));
+            }
             let water = if flags & 0x10 != 0 {
                 3
             } else if flags & 0x04 != 0 {
@@ -402,7 +457,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, String> {
     // their order.
     let usage = load_usage_data(&statics_folder.join("usage.data")).map_err(|error| format!("usage.data: {error}"))?;
     if usage.num_meshes as usize != statics.len() {
-        return Err(format!("usage.data is for {} statics and the files have {}", usage.num_meshes, statics.len()));
+        return Err(format!("usage.data is for {} statics and the files have {}", usage.num_meshes, statics.len()).into());
     }
     let mut instances: Vec<Instance> = Vec::new();
     let mut worlds: HashMap<Vec<u8>, World> = HashMap::new();
@@ -1027,7 +1082,7 @@ struct Out {
 
 pub struct Statics {
     settings: Settings,
-    loading: Option<Receiver<Result<Loaded, String>>>,
+    loading: Option<Receiver<Result<Loaded, CatalogError>>>,
     catalog: Option<Arc<Catalog>>,
     gpu: Option<Gpu>,
     requests: Option<Sender<u32>>,
@@ -1076,6 +1131,8 @@ pub struct Statics {
     drawn: u64,
     most_bytes: u64,
     failed: bool,
+    /// The data has what this build does not know (`CatalogError::Rejected`).
+    rejected: Option<String>,
     /// The loads complete before a frame, and all arrivals go to the GPU in the frame.
     pub synchronous: bool,
     /// The name of the world space of the frame: empty for the exterior.
@@ -1154,6 +1211,7 @@ impl Statics {
             drawn: 0,
             most_bytes: 0,
             failed: false,
+            rejected: None,
             synchronous: false,
             world: Vec::new(),
             shown: Vec::new(),
@@ -1223,6 +1281,11 @@ impl Statics {
     /// the group 0 first; 0 is a hidden group. A record for another number of groups than
     /// the catalog has is from other files (the generator made them again after MGE XE read
     /// its groups): it is not used.
+    /// Why the data was rejected, when it was: distant land must then be off.
+    pub fn rejected(&self) -> Option<&str> {
+        self.rejected.as_deref()
+    }
+
     pub fn set_groups(&mut self, shown: &[u8]) {
         self.groups_record = shown.to_vec();
         self.apply_groups();
@@ -1419,9 +1482,15 @@ impl Statics {
         self.loading = None;
         let loaded = match result {
             Ok(loaded) => loaded,
-            Err(problem) => {
+            Err(CatalogError::Missing(problem)) => {
                 println!("distant statics: not there: {problem}");
                 self.failed = true;
+                return;
+            }
+            Err(CatalogError::Rejected(problem)) => {
+                println!("distant statics: rejected: {problem}");
+                self.failed = true;
+                self.rejected = Some(problem);
                 return;
             }
         };
@@ -2406,9 +2475,18 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_from_budget, hidden, plan_merged};
+    use super::{cap_from_budget, flags_problem, hidden, plan_merged};
 
     const MB: u64 = 1 << 20;
+
+    #[test]
+    fn a_subset_flag_that_is_not_known_rejects_the_data() {
+        let file = std::path::Path::new("static_meshes_000");
+        assert_eq!(flags_problem(0x1F, file), None);
+        assert_eq!(flags_problem(0, file), None);
+        let problem = flags_problem(0x41, file).unwrap();
+        assert!(problem.contains("0x40") && problem.contains("generate distant land again"), "{problem}");
+    }
 
     #[test]
     fn the_cap_leaves_a_margin_of_an_eighth_of_the_budget() {
