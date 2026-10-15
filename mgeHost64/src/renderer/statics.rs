@@ -288,9 +288,9 @@ fn transform(world: &[f32; 16], point: [f32; 3]) -> [f32; 3] {
     core::array::from_fn(|i| point[0] * world[i] + point[1] * world[4 + i] + point[2] * world[8 + i] + world[12 + i])
 }
 
-/// Reads the tables of the 128 files and the places of `usage.data`.
 /// The subset flags that the generator writes and this build knows: alpha (0x01), a UV
-/// controller (0x02), water (0x04), water seen only from above (0x08) and a dry space (0x10).
+/// controller (0x02), water (0x04), water that reflects only the sky (0x08) and a dry space
+/// (0x10).
 /// Direct3D 9 checks the same mask (`KnownFlagsMask`).
 const KNOWN_SUBSET_FLAGS: u32 = 0x1F;
 
@@ -341,6 +341,7 @@ pub(super) fn flags_problem_in(folder: &Path) -> Option<String> {
     None
 }
 
+/// Reads the tables of the 128 files and the places of `usage.data`.
 fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogError> {
     let statics_folder = folder.join("statics");
     let mut statics: Vec<Static> = Vec::new();
@@ -1277,15 +1278,15 @@ impl Statics {
         self.grass_stats = SetStats::default();
     }
 
-    /// The state of the vis groups, from the record of MGE XE: a byte for each group, with
-    /// the group 0 first; 0 is a hidden group. A record for another number of groups than
-    /// the catalog has is from other files (the generator made them again after MGE XE read
-    /// its groups): it is not used.
     /// Why the data was rejected, when it was: distant land must then be off.
     pub fn rejected(&self) -> Option<&str> {
         self.rejected.as_deref()
     }
 
+    /// The state of the vis groups, from the record of MGE XE: a byte for each group, with
+    /// the group 0 first; 0 is a hidden group. A record for another number of groups than
+    /// the catalog has is from other files (the generator made them again after MGE XE read
+    /// its groups): it is not used.
     pub fn set_groups(&mut self, shown: &[u8]) {
         self.groups_record = shown.to_vec();
         self.apply_groups();
