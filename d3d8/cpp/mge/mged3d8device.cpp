@@ -10,6 +10,7 @@
 #include "camerarelative.h"
 #include "configuration.h"
 #include "distantland.h"
+#include "mgedinput.h"
 #include "morrowindskinning.h"
 #include "mwbridge.h"
 #include "postshaders.h"
@@ -1156,7 +1157,8 @@ namespace Deviceless {
     struct Environment {
         UINT version;
         // 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior
-        // that is like one.
+        // that is like one. 16: in a water volume. 32: in a dry space. 64: in a menu. 128:
+        // a mouse click in this frame.
         UINT flags;
         float nearViewRange;
         float fogStart, fogEnd;
@@ -1288,6 +1290,15 @@ namespace Deviceless {
         // The camera is in a dry space (MGE_WaterDrySet): it is not under water there.
         if (mwBridge->CameraDry()) {
             e.flags |= 32u;
+        }
+        // The game is in a menu, and the left mouse button was let go in this frame: the
+        // picture kept for a menu (runtime.menu_caching) ends after a click, as in
+        // DistantLand::postProcess.
+        if (mwBridge->IsMenu()) {
+            e.flags |= 64u;
+        }
+        if (MGEProxyDirectInput::mouseClick) {
+            e.flags |= 128u;
         }
 
         // The scattering of the atmosphere, as in DistantLand::adjustFog: the fog colour of

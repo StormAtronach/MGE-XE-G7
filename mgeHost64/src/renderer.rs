@@ -36,6 +36,7 @@ mod blend;
 mod caustics;
 mod distant_lights;
 mod gpu_time;
+mod menu_keep;
 mod post;
 mod post_jop;
 mod shadow;
@@ -49,7 +50,7 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
-use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
+use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status};
@@ -188,7 +189,8 @@ struct Environment {
     version: u32,
     /// 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior that
     /// is like one (`IntLikeExterior` of MGE XE). 16: the camera is in a water volume; the
-    /// level of the water is the top of the volume. 32: the camera is in a dry space.
+    /// level of the water is the top of the volume. 32: the camera is in a dry space. 64:
+    /// the game is in a menu. 128: a mouse click in this frame.
     flags: u32,
     near_view_range: f32,
     fog_start: f32,
@@ -352,6 +354,12 @@ pub struct DistantLand {
     /// frame with the water (it needs the wave texture).
     post: Option<Post>,
     post_enabled: bool,
+    /// The picture kept under a menu (`runtime.menu_caching`), and its state: a picture is
+    /// kept; this frame shows it (no work of distant land); this frame keeps a new one.
+    menu_keep: Option<menu_keep::MenuKeep>,
+    menu_kept: bool,
+    menu_reuse: bool,
+    menu_keeping: bool,
     post_chain: Vec<String>,
     /// `render.hdr_reaction_time`: the seconds that the HDR measure takes to follow the picture.
     hdr_reaction: f32,
@@ -707,6 +715,10 @@ impl DistantLand {
             shadow_resolution: settings.shadows.map_resolution,
             anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
             post: None,
+            menu_keep: None,
+            menu_kept: false,
+            menu_reuse: false,
+            menu_keeping: false,
             root: root.to_path_buf(),
             post_enabled: document.settings().render.enable_shaders,
             post_chain: document.settings().shaders.chain.clone(),
@@ -1553,6 +1565,16 @@ impl Extension for DistantLand {
         self.finish_load(scene);
         self.apply_settings();
         self.cell_facts(scene);
+        // The picture kept under a menu (`runtime.menu_caching`): a frame that shows it does
+        // no work of distant land; the frame that keeps a new one runs the post stage.
+        let flags = self.environment.map_or(0, |e| e.flags);
+        let caching = self.settings.is_some_and(|s| s.flags & USE_MENU_CACHING != 0) && flags & 64 != 0;
+        self.menu_kept &= caching;
+        self.menu_reuse = self.menu_kept;
+        self.menu_keeping = caching && !self.menu_kept;
+        if self.menu_reuse {
+            return FrameParameters { post: true, ..FrameParameters::default() };
+        }
         // The terrain and the water are for an exterior. The statics, the fog distances and
         // the blend are for a cell with a world space (`isDistantCell` of the Direct3D 9
         // path): an exterior, an interior that is like one, or a plain interior cell with
@@ -1671,7 +1693,7 @@ impl Extension for DistantLand {
             watched: (if water { 1 << 10 } else { 0 }) | (if no_glare { 1 << 8 } else { 0 }),
             values,
             texture,
-            post,
+            post: post || self.menu_keeping,
             // The surface of the water (the plane lies at the level less 1): what blends on
             // its far side goes into the picture before the water, so the water shows it,
             // and what blends on the side of the camera goes over the water.
@@ -1922,6 +1944,9 @@ impl Extension for DistantLand {
     }
 
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
+        if self.menu_reuse {
+            return false;
+        }
         self.near_fog = None;
         self.cell_facts(scene);
         // Distant statics with subset flags that this build does not know: distant land is off
@@ -2290,6 +2315,9 @@ impl Extension for DistantLand {
     /// The grass, at the end of the world scene of the game: with the projection and the
     /// depth of the game, as `renderStage1` of the Direct3D 9 path draws it.
     fn after_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
+        if self.menu_reuse {
+            return;
+        }
         // The grass of a cell with a world space, a plain interior cell among them, as
         // `renderStage1` of the Direct3D 9 path has it.
         if !self.enabled || !self.distant_cell {
@@ -2329,65 +2357,31 @@ impl Extension for DistantLand {
     /// The draws of the game near the end of their view range go into the distant land.
     /// The shader chain on the picture of the frame.
     fn post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
-        let (Some(post), Some(e)) = (self.post.as_mut(), self.environment) else { return };
-        let eye = eye_of(&scene.view);
-        let rows = |m: &[f32; 16]| -> [[f32; 4]; 4] { core::array::from_fn(|r| [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]]) };
-        // `sun_pos` of the environment is the `sunPos` of the Direct3D 9 path: the game side
-        // turned it at the horizon when the sun is not visible. The direction of the light is
-        // the opposite of the direction before that turn.
-        let sun_pos = e.sun_pos;
-        let mut light_source = sun_pos;
-        if e.sun_vis == 0.0 {
-            light_source[2] = -light_source[2];
+        // Under a menu: the kept picture, until a click; the frame after it draws again.
+        if self.menu_reuse {
+            if let Some(keep) = self.menu_keep.as_ref() {
+                keep.show(scene, encoder, target);
+            }
+            self.menu_kept &= self.environment.is_none_or(|e| e.flags & 128 == 0);
+            return;
         }
-        let sunvec = scene.sun_direction.unwrap_or(light_source.map(|v| -v));
-        let exponential = e.flags & 1 != 0;
-        let underwater = e.flags & 2 != 0;
-        // An exterior, or an interior cell with the flag "behaves like exterior" of the game
-        // (`Cell::isExteriorInterior`): `IntLikeExterior(true)` of MGE XE. `isInterior` of
-        // a shader is its opposite.
-        let like_exterior = e.flags & 4 != 0;
-        let sunvis = e.sun_vis + (1.0 - e.sun_vis) * 0.333 * e.nice_weather;
-        let fov = 2.0 * (1.0 / scene.projection[0].max(1e-6)).atan().to_degrees();
-        // The fog distances: those of distant land in a cell with distant land, else the fog
-        // of the game, as `DistantLand::adjustFog` of the Direct3D 9 path has them. The
-        // environment always has those of distant land.
-        let (fog_start, fog_end, fog_exp_start, fog_exp_divisor, fog_near_start, fog_near_end) = if self.enabled && self.distant_cell {
-            (e.fog_start, e.fog_end, e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end)
-        } else {
-            let exp_start = scene.fog_start / 4.4;
-            (scene.fog_start, scene.fog_end, exp_start, (scene.fog_end - exp_start) / 4.4, scene.fog_start, scene.fog_end)
-        };
-        let variables = Variables {
-            mview: rows(&scene.view),
-            mproj: rows(&scene.projection),
-            eyevec: [scene.view[2], scene.view[6], scene.view[10], sunvis],
-            eyepos: [eye[0], eye[1], eye[2], fov],
-            sunvec: [sunvec[0], sunvec[1], sunvec[2], e.time],
-            suncol: [scene.sun_color[0], scene.sun_color[1], scene.sun_color[2], if e.has_water != 0 { e.water_level } else { -1.0e9 }],
-            sunamb: [scene.sun_ambient[0] + scene.ambient[0], scene.sun_ambient[1] + scene.ambient[1], scene.sun_ambient[2] + scene.ambient[2], if like_exterior { 0.0 } else { 1.0 }],
-            sunpos: [sun_pos[0], sun_pos[1], sun_pos[2], if underwater { 1.0 } else { 0.0 }],
-            hdr: [1.0; 4],
-            fogcol: [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], if exponential { fog_exp_start } else { fog_start }],
-            fognearcol: [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2], if exponential { fog_exp_divisor } else { fog_end }],
-            fog_near: [fog_near_start, fog_near_end, 1.0 / scene.target_size.0.max(1) as f32, 1.0 / scene.target_size.1.max(1) as f32],
-            switches: [if exponential { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
-        };
-        // The flags of the environment, as `postProcess` of the Direct3D 9 path sets them: 1
-        // an interior that is not like an exterior, 2 an exterior, 4 an interior that
-        // behaves as an exterior, 8 under water, 16 above, 32 the sun visible, 64 not.
-        let flags = (if like_exterior { 0 } else { 1 })
-            | (if scene.interior { 0 } else { 2 })
-            | (if scene.interior && like_exterior { 4 } else { 0 })
-            | (if underwater { 8 } else { 16 })
-            | (if e.sun_vis >= 0.001 { 32 } else { 64 });
-        // The depth of the distant land and the distant statics is a part of the depth frame
-        // above the water only, as `DistantLand::renderDepth` of the Direct3D 9 path has
-        // it. The numbers are those of the projection of `before_world`. With distant land
-        // off there is no distant stage, and the depth of the game stands in for it.
-        let (near, far) = (NEAR - 1e-2, self.draw_distance.max(NEAR * 2.0));
-        let distant = (self.enabled && !underwater).then_some([far / (far - near), -near * far / (far - near)]);
-        post.run(scene, encoder, target, &variables, flags, distant);
+        // The first frame of a menu: the result goes into the kept picture, then to the
+        // target. Without post shaders the picture is kept as it is.
+        if self.menu_keeping {
+            let mut keep = self.menu_keep.take().unwrap_or_else(|| menu_keep::MenuKeep::new(scene));
+            let kept = keep.target(scene);
+            let chain = self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty());
+            if !(chain && self.run_post(scene, encoder, &kept)) {
+                if let Some(picture) = scene.picture {
+                    keep.copy(scene, encoder, picture, &kept);
+                }
+            }
+            keep.show(scene, encoder, target);
+            self.menu_keep = Some(keep);
+            self.menu_kept = true;
+            return;
+        }
+        self.run_post(scene, encoder, target);
     }
 
     /// Takes the surfaces of water volumes: a material that a mod marked with its specular
@@ -2491,6 +2485,71 @@ impl Extension for DistantLand {
 }
 
 impl DistantLand {
+    /// The chain of post shaders into `target`, with the values of the frame. False without
+    /// the chain or the environment.
+    fn run_post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
+        let (Some(post), Some(e)) = (self.post.as_mut(), self.environment) else { return false };
+        let eye = eye_of(&scene.view);
+        let rows = |m: &[f32; 16]| -> [[f32; 4]; 4] { core::array::from_fn(|r| [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]]) };
+        // `sun_pos` of the environment is the `sunPos` of the Direct3D 9 path: the game side
+        // turned it at the horizon when the sun is not visible. The direction of the light is
+        // the opposite of the direction before that turn.
+        let sun_pos = e.sun_pos;
+        let mut light_source = sun_pos;
+        if e.sun_vis == 0.0 {
+            light_source[2] = -light_source[2];
+        }
+        let sunvec = scene.sun_direction.unwrap_or(light_source.map(|v| -v));
+        let exponential = e.flags & 1 != 0;
+        let underwater = e.flags & 2 != 0;
+        // An exterior, or an interior cell with the flag "behaves like exterior" of the game
+        // (`Cell::isExteriorInterior`): `IntLikeExterior(true)` of MGE XE. `isInterior` of
+        // a shader is its opposite.
+        let like_exterior = e.flags & 4 != 0;
+        let sunvis = e.sun_vis + (1.0 - e.sun_vis) * 0.333 * e.nice_weather;
+        let fov = 2.0 * (1.0 / scene.projection[0].max(1e-6)).atan().to_degrees();
+        // The fog distances: those of distant land in a cell with distant land, else the fog
+        // of the game, as `DistantLand::adjustFog` of the Direct3D 9 path has them. The
+        // environment always has those of distant land.
+        let (fog_start, fog_end, fog_exp_start, fog_exp_divisor, fog_near_start, fog_near_end) = if self.enabled && self.distant_cell {
+            (e.fog_start, e.fog_end, e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end)
+        } else {
+            let exp_start = scene.fog_start / 4.4;
+            (scene.fog_start, scene.fog_end, exp_start, (scene.fog_end - exp_start) / 4.4, scene.fog_start, scene.fog_end)
+        };
+        let variables = Variables {
+            mview: rows(&scene.view),
+            mproj: rows(&scene.projection),
+            eyevec: [scene.view[2], scene.view[6], scene.view[10], sunvis],
+            eyepos: [eye[0], eye[1], eye[2], fov],
+            sunvec: [sunvec[0], sunvec[1], sunvec[2], e.time],
+            suncol: [scene.sun_color[0], scene.sun_color[1], scene.sun_color[2], if e.has_water != 0 { e.water_level } else { -1.0e9 }],
+            sunamb: [scene.sun_ambient[0] + scene.ambient[0], scene.sun_ambient[1] + scene.ambient[1], scene.sun_ambient[2] + scene.ambient[2], if like_exterior { 0.0 } else { 1.0 }],
+            sunpos: [sun_pos[0], sun_pos[1], sun_pos[2], if underwater { 1.0 } else { 0.0 }],
+            hdr: [1.0; 4],
+            fogcol: [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], if exponential { fog_exp_start } else { fog_start }],
+            fognearcol: [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2], if exponential { fog_exp_divisor } else { fog_end }],
+            fog_near: [fog_near_start, fog_near_end, 1.0 / scene.target_size.0.max(1) as f32, 1.0 / scene.target_size.1.max(1) as f32],
+            switches: [if exponential { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        };
+        // The flags of the environment, as `postProcess` of the Direct3D 9 path sets them: 1
+        // an interior that is not like an exterior, 2 an exterior, 4 an interior that
+        // behaves as an exterior, 8 under water, 16 above, 32 the sun visible, 64 not.
+        let flags = (if like_exterior { 0 } else { 1 })
+            | (if scene.interior { 0 } else { 2 })
+            | (if scene.interior && like_exterior { 4 } else { 0 })
+            | (if underwater { 8 } else { 16 })
+            | (if e.sun_vis >= 0.001 { 32 } else { 64 });
+        // The depth of the distant land and the distant statics is a part of the depth frame
+        // above the water only, as `DistantLand::renderDepth` of the Direct3D 9 path has
+        // it. The numbers are those of the projection of `before_world`. With distant land
+        // off there is no distant stage, and the depth of the game stands in for it.
+        let (near, far) = (NEAR - 1e-2, self.draw_distance.max(NEAR * 2.0));
+        let distant = (self.enabled && !underwater).then_some([far / (far - near), -near * far / (far - near)]);
+        post.run(scene, encoder, target, &variables, flags, distant);
+        true
+    }
+
     /// The facts of the cell of the frame, from the scene and from the environment. The
     /// world space of the statics is that of the cell: the exterior, or the interior cell
     /// by its name.

@@ -47,6 +47,9 @@ pub const REFLECT_SKY: Dword = 1 << 25;
 /// (`render.fps_counter`), which shows only with the status text.
 pub const DISPLAY_MESSAGES: Dword = 1 << 3;
 pub const FPS_COUNTER: Dword = 1 << 2;
+/// The picture of the world stays as it was at the first frame of a menu, until a click
+/// (`runtime.menu_caching`; the API calls it `pauseRenderingInMenus`).
+pub const USE_MENU_CACHING: Dword = 1 << 7;
 /// On-disk distant-land asset version expected by this host build.
 pub const MGE_DL_VERSION: u8 = 22;
 /// Terrain file magic for `terrain.bin`.

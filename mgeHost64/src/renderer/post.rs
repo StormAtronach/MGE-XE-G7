@@ -4436,7 +4436,7 @@ struct Quad {
 ";
 
 /// The copy of the result into the picture of the frame.
-const BLIT_SHADER: &str = "
+pub(super) const BLIT_SHADER: &str = "
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var source_sampler: sampler;
 
@@ -5193,7 +5193,7 @@ fn sampler(binding: u32, kind: wgpu::SamplerBindingType) -> wgpu::BindGroupLayou
     wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(kind), count: None }
 }
 
-fn full_screen_pipeline(device: &wgpu::Device, label: &str, source: &str, layout: &wgpu::BindGroupLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+pub(super) fn full_screen_pipeline(device: &wgpu::Device, label: &str, source: &str, layout: &wgpu::BindGroupLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[Some(layout)], immediate_size: 0 });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -5209,7 +5209,7 @@ fn full_screen_pipeline(device: &wgpu::Device, label: &str, source: &str, layout
     })
 }
 
-fn full_screen_pass<'a>(encoder: &'a mut wgpu::CommandEncoder, target: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>) -> wgpu::RenderPass<'a> {
+pub(super) fn full_screen_pass<'a>(encoder: &'a mut wgpu::CommandEncoder, target: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>) -> wgpu::RenderPass<'a> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("post"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
