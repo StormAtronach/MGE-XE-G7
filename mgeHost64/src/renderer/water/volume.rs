@@ -326,12 +326,12 @@ struct Lighting {
     // lights.
     origin: vec4f,
 }
-@group(1) @binding(0) var<uniform> lighting: Lighting;
-@group(1) @binding(1) var shadow_atlas: texture_2d<f32>;
-@group(1) @binding(2) var<storage, read> lights: array<Light>;
-@group(1) @binding(3) var<uniform> clusters: Clusters;
-@group(1) @binding(4) var<storage, read> cluster_table: array<vec2u>;
-@group(1) @binding(5) var<storage, read> cluster_indexes: array<u32>;
+@group(1) @binding(11) var<uniform> lighting: Lighting;
+@group(1) @binding(12) var shadow_atlas: texture_2d<f32>;
+@group(1) @binding(13) var<storage, read> lights: array<Light>;
+@group(1) @binding(14) var<uniform> clusters: Clusters;
+@group(1) @binding(15) var<storage, read> cluster_table: array<vec2u>;
+@group(1) @binding(16) var<storage, read> cluster_indexes: array<u32>;
 
 // How much of the sun reaches a place, 0 to 1: the shadow map of the frame, read as the draws
 // of the game read it (`extension_shade` of the renderer), so the water has the shadow of the
@@ -549,7 +549,7 @@ fn surface_look(surface: WaterSurface) -> WaterLook {
 
 // The time of the water, in seconds.
 fn water_time() -> f32 {
-    return u.eye.w;
+    return water.time.x;
 }
 
 // A colour with the fog of the shade on it.
@@ -568,14 +568,14 @@ fn glow_colour(tint: vec3f) -> vec3f {
 fn standard_ripple(surface: WaterSurface, look: WaterLook) -> vec3f {
     let texcoords = vec4f(surface.flat.xy / 3900.0, surface.flat.xy / 527.0);
     let distance = length(surface.world - u.eye.xyz);
-    let t = 0.4 * u.eye.w * look.speed;
-    let moved = look.drift * u.eye.w;
+    let t = 0.4 * water.time.x * look.speed;
+    let moved = look.drift * water.time.x;
     let scale = max(look.scale, 1e-3);
     let far = textureSample(waves, wave_sampler, vec3f(texcoords.xy / scale + fract(moved / 3900.0), t)).rg;
     var close = textureSample(waves, wave_sampler, vec3f(texcoords.zw / scale + fract(moved / 527.0), t)).rg;
-    if u.wave.w > 0.5 {
+    if water.wave.w > 0.5 {
         close += textureSampleLevel(rain, wave_sampler, texcoords.zw, 0.0).ba;
-        let at = (surface.flat.xy - u.wave.xy) / 1280.0;
+        let at = (surface.flat.xy - water.wave.xy) / 1280.0;
         if all(at >= vec2f(0.0)) && all(at <= vec2f(1.0)) {
             close += textureSampleLevel(player_waves, clamp_sampler, at, 0.0).ba;
         }
@@ -610,7 +610,7 @@ fn shade_water_rippled(surface: WaterSurface, look: WaterLook, ripple: vec3f) ->
     // of the sun.
     let sun = sunlight_at(surface.world);
     let deep = fog.a * depth_base_sun(tint, sun) * look.tint + fog.rgb;
-    let reffactor = (u.sun_col.w * dist + 0.1) * ripple.xy;
+    let reffactor = (water.sun_col.w * dist + 0.1) * ripple.xy;
     // The caustics on what is under a surface that faces up, where the sun reaches it: the
     // point under the surface is that of the depth along the ray of the eye.
     // A surface drawn without the depth test (the water of a well, under the ground) has no
@@ -618,10 +618,10 @@ fn shade_water_rippled(surface: WaterSurface, look: WaterLook, ripple: vec3f) ->
     var bed_light = 1.0;
     if lighting.sun.w > 0.0 && !no_depth {
         let first = max(0.0, ground_at(uv + reffactor.yx / w, far) - w);
-        let ray = first / max(dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z)), 1e-3);
+        let ray = first / max(dot(eye_vec, vec3f(water.view[0].z, water.view[1].z, water.view[2].z)), 1e-3);
         let bed = surface.world + eye_vec * ray;
         let under = vec3f(bed.xy, bed.z - surface.world.z);
-        bed_light = 1.0 + caustic_light(under, lighting.sun.xyz, u.eye.w, dist + ray, lighting.sun.w) * sun * clamp(4.0 * face.z - 3.0, 0.0, 1.0);
+        bed_light = 1.0 + caustic_light(under, lighting.sun.xyz, water.time.x, dist + ray, lighting.sun.w) * sun * clamp(4.0 * face.z - 3.0, 0.0, 1.0);
     }
     var below = Refraction(deep, 0.0, 4000.0);
     if !no_depth {
@@ -663,7 +663,7 @@ fn shade_water_rippled(surface: WaterSurface, look: WaterLook, ripple: vec3f) ->
     shade.ripple = ripple;
     shade.face = face;
     // From the difference of the view depths to the way along the ray.
-    shade.ray_depth = below.depth_first / max(dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z)), 1e-3);
+    shade.ray_depth = below.depth_first / max(dot(eye_vec, vec3f(water.view[0].z, water.view[1].z, water.view[2].z)), 1e-3);
     shade.water_depth = shade.ray_depth * abs(dot(eye_vec, face));
     shade.sun = sun;
     return shade;
@@ -681,7 +681,7 @@ fn finish_water(surface: WaterSurface, shade: WaterShade, look: WaterLook) -> ve
     var eye_vec = in.world - u.eye.xyz;
     let dist = length(eye_vec);
     eye_vec /= dist;
-    let uv = in.position.xy / u.size.xy;
+    let uv = in.position.xy / water.size.xy;
     let w = in.clip_w;
     // Water among the distant statics has no depth test of the pass: its depth is that of the
     // distant land, and the game's is another. It is behind what the game drew and behind the
@@ -701,7 +701,7 @@ fn finish_water(surface: WaterSurface, shade: WaterShade, look: WaterLook) -> ve
     let upward = select(facing, -facing, facing.z < 0.0);
     let flat = tilt_to(vec3f(-upward.x, -upward.y, upward.z), in.world - s.anchor.xyz) + s.anchor.xyz;
     // From under the water each surface has the look from below, as the plane has it.
-    if u.fog.w > 0.5 {
+    if water.modes.y > 0.5 {
         return underwater(uv, w, vec4f(flat.xy / 3900.0, flat.xy / 527.0), flat.xy, eye_vec, dist);
     }
     var surface: WaterSurface;
@@ -729,7 +729,7 @@ fn water_shader(surface: WaterSurface) -> vec4f {
 /// The shader of the surfaces with the water shader of the look: the shared shading, the
 /// entry points of a surface, and the function `water_shader`.
 fn shader_with(water: &str) -> String {
-    format!("{}{}{}{}", shading::COMMON, shading::CAUSTICS, VOLUME, water).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
+    format!("{}{}{}{}{}", super::super::view::wgsl(), shading::COMMON, shading::CAUSTICS, VOLUME, water).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
 }
 
 /// The shader of the surfaces with the standard look.
@@ -825,10 +825,9 @@ pub(super) struct Volumes {
     group: wgpu::BindGroup,
     /// Zeros for the inputs that a vertex does not have.
     defaults: wgpu::Buffer,
-    /// The group of the light of the frame (`VolumeLight`), its values, and what it has in
-    /// place of a part that the frame does not have: a texture of one texel, and empty lights
-    /// and clusters.
-    light_layout: wgpu::BindGroupLayout,
+    /// The light of the frame (`VolumeLight`) in the water group: its values, and what the
+    /// group has in place of a part that the frame does not have: a texture of one texel, and
+    /// empty lights and clusters.
     lighting: wgpu::Buffer,
     no_shadow: wgpu::TextureView,
     no_lights: [wgpu::Buffer; 4],
@@ -840,8 +839,9 @@ pub(super) struct Volumes {
 }
 
 impl Volumes {
-    /// `frame_layout` is that of the group of the shared shading (`Water::layout`).
-    pub fn new(scene: &SceneView, frame_layout: &wgpu::BindGroupLayout) -> Volumes {
+    /// `view_layout` is that of the view group (`view.rs`), `frame_layout` that of the group
+    /// of the shared shading (`Water::layout`, with `light_layout_entries`).
+    pub fn new(scene: &SceneView, view_layout: &wgpu::BindGroupLayout, frame_layout: &wgpu::BindGroupLayout) -> Volumes {
         let device = scene.device;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water volume"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
         let mesh_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -870,21 +870,11 @@ impl Volumes {
                 count: None,
             }],
         });
-        let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty, count: None };
-        let uniform = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None };
-        let storage = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None };
-        let light_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("water volume light"),
-            entries: &[
-                entry(0, uniform),
-                entry(1, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                entry(2, storage),
-                entry(3, uniform),
-                entry(4, storage),
-                entry(5, storage),
-            ],
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("water volume"),
+            bind_group_layouts: &[Some(view_layout), Some(frame_layout), Some(&mesh_layout), Some(&surface_layout)],
+            immediate_size: 0,
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water volume"), bind_group_layouts: &[Some(frame_layout), Some(&light_layout), Some(&mesh_layout), Some(&surface_layout)], immediate_size: 0 });
         let lighting = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume light"), size: size_of::<Lighting>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         use wgpu::util::DeviceExt;
         let no_shadow = device
@@ -951,7 +941,6 @@ impl Volumes {
             used: 0,
             group,
             defaults,
-            light_layout,
             lighting,
             no_shadow,
             no_lights,
@@ -962,8 +951,46 @@ impl Volumes {
         }
     }
 
-    /// Writes the values of the light of the frame and makes its group.
-    fn light_group(&self, scene: &SceneView, light: &VolumeLight) -> wgpu::BindGroup {
+    /// The entries of the light of the frame in the layout of the water group: bindings 11 to
+    /// 16, for the fragments.
+    pub fn light_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty, count: None };
+        let uniform = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None };
+        let storage = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None };
+        [
+            entry(11, uniform),
+            entry(12, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+            entry(13, storage),
+            entry(14, uniform),
+            entry(15, storage),
+            entry(16, storage),
+        ]
+    }
+
+    /// The entries of the light of the frame in the water group (`light_layout_entries`).
+    /// With a light, its values are written; without one (the plane, which reads none of it),
+    /// the group has the texture of one texel and the empty lights.
+    pub fn light_entries<'a>(&'a self, scene: &SceneView, light: Option<&VolumeLight<'a>>) -> [wgpu::BindGroupEntry<'a>; 6] {
+        let [no_lights, no_clusters, no_table, no_indexes] = &self.no_lights;
+        let (atlas, buffers) = match light {
+            Some(light) => {
+                self.write_light(scene, light);
+                (light.shadow.map_or(&self.no_shadow, |(atlas, ..)| atlas), light.lights.map_or([no_lights, no_clusters, no_table, no_indexes], |l| [l.lights, l.clusters, l.table, l.indexes]))
+            }
+            None => (&self.no_shadow, [no_lights, no_clusters, no_table, no_indexes]),
+        };
+        [
+            wgpu::BindGroupEntry { binding: 11, resource: self.lighting.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(atlas) },
+            wgpu::BindGroupEntry { binding: 13, resource: buffers[0].as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 14, resource: buffers[1].as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 15, resource: buffers[2].as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 16, resource: buffers[3].as_entire_binding() },
+        ]
+    }
+
+    /// Writes the values of the light of the frame.
+    fn write_light(&self, scene: &SceneView, light: &VolumeLight) {
         let mut values = <Lighting as bytemuck::Zeroable>::zeroed();
         let mut bits = 0;
         if let Some((_, layers, rcp)) = light.shadow {
@@ -979,21 +1006,6 @@ impl Volumes {
         let d = light.sun_direction;
         values.sun = [d[0], d[1], d[2], light.caustics];
         scene.queue.write_buffer(&self.lighting, 0, bytemuck::bytes_of(&values));
-        let atlas = light.shadow.map_or(&self.no_shadow, |(atlas, ..)| atlas);
-        let [no_lights, no_clusters, no_table, no_indexes] = &self.no_lights;
-        let buffers = light.lights.map_or([no_lights, no_clusters, no_table, no_indexes], |l| [l.lights, l.clusters, l.table, l.indexes]);
-        nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
-            label: Some("water volume light"),
-            layout: &self.light_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.lighting.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(atlas) },
-                wgpu::BindGroupEntry { binding: 2, resource: buffers[0].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: buffers[1].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: buffers[2].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: buffers[3].as_entire_binding() },
-            ],
-        })
     }
 
     /// The start of a frame: no slots are used.
@@ -1189,7 +1201,7 @@ impl Volumes {
     /// faces of the dry spaces behind it are counted, and then they are drawn outside
     /// (`flushWaterVolumes`). The far water is not cut.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>, light: &VolumeLight, dry: Option<&super::dry::Dry>) -> usize {
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>, dry: Option<&super::dry::Dry>) -> usize {
         let surfaces: Vec<&HeldDraw> = held.iter().filter(|h| marked(h.facts.specular_power)).collect();
         if surfaces.is_empty() && far.is_empty() {
             return 0;
@@ -1265,9 +1277,10 @@ impl Volumes {
         }
         scene.queue.write_buffer(&self.surfaces, base * SLOT, &bytes);
         let lines = scene.wireframe && scene.device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
-        let light_group = self.light_group(scene, light);
-        pass.set_bind_group(0, frame_group, &[]);
-        pass.set_bind_group(1, &light_group, &[]);
+        // The view and the water group with the light of the frame: the same for all surfaces
+        // and for the dry spaces, whose pipelines have these two groups.
+        pass.set_bind_group(0, view, &[]);
+        pass.set_bind_group(1, frame_group, &[]);
         if !far.is_empty() {
             for (index, water) in far.iter().enumerate() {
                 let shader = self.shader_of(&water.look);
@@ -1293,14 +1306,10 @@ impl Volumes {
         for &(depth_only, cut) in passes {
             if cut {
                 if let Some(dry) = dry {
-                    pass.set_bind_group(0, frame_group, &[]);
                     dry.zero(pass);
                     dry.count_behind(pass);
                 }
             }
-            // The light is the same for all surfaces; set again after the dry spaces, whose
-            // pipelines have the water group only.
-            pass.set_bind_group(1, &light_group, &[]);
             for (index, held) in surfaces.iter().enumerate() {
                 let index = far.len() + index;
                 let layout = &held.layout;

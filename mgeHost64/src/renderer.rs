@@ -815,6 +815,17 @@ impl DistantLand {
         }
     }
 
+    /// Writes the game view of the frame (`view::GAME`, the projection of the game) for the
+    /// grass, the water and the caustics. In each frame with a world: the water draws in a cell
+    /// without the distant land too.
+    fn write_game_view(&mut self, scene: &SceneView) {
+        let game_view = self.frame_view(scene, multiply(&scene.view, &scene.projection));
+        let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+        let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
+        views.refresh(scene.device, binding);
+        views.write(scene.queue, view::GAME, &game_view);
+    }
+
     /// The distant lights: the bind group of their baked light, the file when it comes, and
     /// the view groups with that light, for the statics too.
     fn poll_lights(&mut self, scene: &SceneView) {
@@ -1601,7 +1612,8 @@ impl Extension for DistantLand {
         // of MGE XE, which draws its water there too, with a flat reflection).
         let water_cell = self.enabled && self.environment.is_some_and(|e| e.has_water != 0) && (land || scene.interior);
         if (water_cell || (self.enabled && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
-            match Water::new(scene, &self.waves) {
+            let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
+            match Water::new(scene, &self.waves, &views.layout) {
                 Ok(water) => self.water = Some(water),
                 Err(problem) => {
                     println!("water: {problem}; no water");
@@ -1612,6 +1624,7 @@ impl Extension for DistantLand {
         let water = water_cell && self.water.is_some();
         if let Some(water) = self.water.as_mut() {
             if let Some(corners) = self.water_masks.take() {
+                println!("water: {} triangles of dry spaces", corners.len() / 3);
                 water.set_masks(scene, &corners);
             }
         }
@@ -2035,6 +2048,7 @@ impl Extension for DistantLand {
         }
         self.near_fog = None;
         self.cell_facts(scene);
+        self.write_game_view(scene);
         // Distant statics with subset flags that this build does not know: distant land is off
         // for the session, as on Direct3D 9, and the data must be generated again.
         if let Some(problem) = self.statics.as_ref().and_then(|statics| statics.rejected()).map(str::to_string) {
@@ -2306,9 +2320,6 @@ impl Extension for DistantLand {
         }
         let view_projection = multiply(&scene.view, &scene.projection);
         let eye = eye_of(&scene.view);
-        let game_view = self.frame_view(scene, view_projection);
-        let Some(views) = self.view_binding.as_ref() else { return };
-        views.write(scene.queue, view::GAME, &game_view);
         let environment = self.environment;
         let (sun_mult, ambient_mult) = environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
@@ -2401,17 +2412,18 @@ impl Extension for DistantLand {
             let caustics_frame = self.water_frame(scene).map(|w| caustics::CausticsFrame {
                 water_level: w.water_level,
                 time: w.time,
-                sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
                 sun_vis: w.sun_vis,
                 fog_color_far: w.fog_color_far,
                 near_view_range: self.environment.map_or(7168.0, |e| e.near_view_range),
-                fog_near: self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end)),
             });
-            if let (Some(water), Some(caustics_frame)) = (self.water.as_mut(), caustics_frame) {
+            let views = self.view_binding.as_ref();
+            if let (Some(water), Some(caustics_frame), Some(views)) = (self.water.as_mut(), caustics_frame, views) {
                 let intensity = self.caustics_intensity;
-                let caustics = self.caustics.get_or_insert_with(|| caustics::Caustics::new(scene, intensity, Water::dry_cut()));
+                let caustics = self.caustics.get_or_insert_with(|| caustics::Caustics::new(scene, intensity, Water::dry_cut(), &views.layout));
                 caustics.intensity = intensity;
-                water.draw_sea_caustics(scene, pass, &frame, self.ripples.as_ref(), caustics, &caustics_frame);
+                if let Some(game_view) = views.groups().get(view::GAME) {
+                    water.draw_sea_caustics(scene, pass, game_view, &frame, self.ripples.as_ref(), caustics, &caustics_frame);
+                }
             }
         }
         let far = std::mem::take(&mut self.far_water);
@@ -2444,8 +2456,9 @@ impl Extension for DistantLand {
         // the top of the volume is not drawn.
         let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
         let frame = self.water_frame(scene).filter(|_| !(in_volume && self.volumes_drawn));
-        if let (Some(water), Some(frame)) = (self.water.as_mut(), frame.as_ref()) {
-            water.draw(scene, pass, frame, self.ripples.as_ref());
+        let game_view = self.view_binding.as_ref().and_then(|views| views.groups().get(view::GAME));
+        if let (Some(water), Some(frame), Some(game_view)) = (self.water.as_mut(), frame.as_ref(), game_view) {
+            water.draw(scene, pass, game_view, frame, self.ripples.as_ref());
         }
         // The debug view of the shadow map again: the water is drawn over that corner.
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
@@ -2606,7 +2619,8 @@ impl DistantLand {
                 Err(problem) => println!("water shader {name}: the standard look in its place: {problem}"),
             }
         }
-        water.draw_volumes(scene, pass, frame, self.ripples.as_ref(), held, far, &look, &self.water_looks, &light)
+        let Some(game_view) = self.view_binding.as_ref().and_then(|views| views.groups().get(view::GAME)) else { return 0 };
+        water.draw_volumes(scene, pass, game_view, frame, self.ripples.as_ref(), held, far, &look, &self.water_looks, &light)
     }
 
     /// What the water needs from the environment of the frame, or `None` without water in
@@ -2720,9 +2734,7 @@ impl DistantLand {
                 sky_color: fog,
                 fog_color_far: fog,
                 nice_weather: 0.0,
-                scattering: None,
                 wind: e.wind,
-                fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
                 draw_distance: self.draw_distance,
                 land_projection: self.land_projection(scene),
                 camera_dry: e.flags & 32 != 0,
@@ -2735,23 +2747,6 @@ impl DistantLand {
         }
         self.gpu.as_ref()?;
         let sun_pos = e.sun_pos;
-        let scattering = (e.flags & 12 == 12).then(|| {
-            let far = e.sky_scatter_far;
-            let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
-            let altitude = (1.0 + e.sun_pos[2]).powi(10);
-            [
-                [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], e.nice_weather],
-                [sky[0], sky[1], sky[2], 1.0],
-                [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
-                [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
-                [
-                    2.8 + 4.3 / altitude.max(1e-6),
-                    (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
-                    (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
-                    0.0,
-                ],
-            ]
-        });
         Some(WaterFrame {
             water_level: e.water_level,
             underwater,
@@ -2762,9 +2757,7 @@ impl DistantLand {
             sky_color: e.sky_col,
             fog_color_far: e.fog_col_far,
             nice_weather: e.nice_weather,
-            scattering,
             wind: e.wind,
-            fog_exp: (e.fog_exp_start, e.fog_exp_divisor),
             draw_distance: self.draw_distance,
             land_projection: self.land_projection(scene),
             camera_dry: e.flags & 32 != 0,

@@ -4,27 +4,25 @@
 //! and `XE Common.fx`. The plane in place of the water plane of the game (`water.rs`) and the
 //! surfaces of water volumes (`volume.rs`) have their own entry points after this source.
 
-/// The values of a frame for the water shader. The names are those of the uniforms of
+/// The values of a frame for the water shader (`water` in group 1; the game view of the view
+/// group has the camera, the fog and the scattering). The names are those of the uniforms of
 /// `XE Mod Water.fx`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(in crate::renderer) struct Uniforms {
-    pub view_projection: [f32; 16],
     pub view: [f32; 16],
     /// The translation of the plane: the camera's x and y, and the water level.
     pub world: [f32; 4],
-    /// The camera, and the time of the simulation.
-    pub eye: [f32; 4],
+    /// x: the time of the simulation.
+    pub time: [f32; 4],
     /// The direction to the sun, and its visibility.
     pub sun_pos: [f32; 4],
     /// The colour of the sun with its visibility in it, and the wind factor.
     pub sun_col: [f32; 4],
     /// The sky colour, and the good weather value.
     pub sky_col: [f32; 4],
-    /// The far fog colour, and 1 when the scattering is on.
-    pub fog_col_far: [f32; 4],
-    /// The start and the divisor of the exponential fog; z the debug term; w 1 under water.
-    pub fog: [f32; 4],
+    /// x: the debug term (`MGE_XE_WATER_DEBUG`); y: 1 under water.
+    pub modes: [f32; 4],
     /// The two numbers of the depth of the projection of the game, for the distance of a
     /// pixel from its depth; then the most height for its width of the blur that is sharp
     /// at the waterline.
@@ -33,11 +31,6 @@ pub(in crate::renderer) struct Uniforms {
     /// the blur of the reflection: 0 for none, 1 for the six reads of MGE XE, 2 for the
     /// blur that is sharp at the waterline.
     pub size: [f32; 4],
-    /// The scattering: as the terrain has it.
-    pub sky: [f32; 4],
-    pub outscatter: [f32; 4],
-    pub inscatter: [f32; 4],
-    pub sun_altitude: [f32; 4],
     /// The dynamic waves: the world position of the corner of the texture of the ripples
     /// of the player, the wave height, and 1 when the dynamic waves are on.
     pub wave: [f32; 4],
@@ -79,43 +72,41 @@ pub(in crate::renderer) fn caustic_strength(intensity: f32, sun_vis: f32, fog_co
     0.05 * intensity * (0.75 * sunlight + 0.35 * sky).clamp(0.0, 1.0)
 }
 
-/// The WGSL of the shared shading: the uniforms and the textures of the frame in group 0,
-/// and the functions.
+/// The WGSL of the shared shading: the values and the textures of the frame for the water in
+/// group 1, and the functions. The shader starts with the view group (`view::wgsl`).
 pub(super) const COMMON: &str = "
-struct Uniforms {
-    view_projection: mat4x4f,
+// The view group (`view.rs`, group 0) comes before this code: the game view in `u`, with the
+// camera, the exponential fog (`u.fog.xy`), the far fog colour (`u.fog_color`) and the
+// scattering (`u.sky.w` 1 when it is on). The values of the water are in `water`, group 1.
+struct Water {
     view: mat4x4f,
     world: vec4f,
-    eye: vec4f,
+    time: vec4f,
     sun_pos: vec4f,
     sun_col: vec4f,
     sky_col: vec4f,
-    fog_col_far: vec4f,
-    fog: vec4f,
+    modes: vec4f,
     projection: vec4f,
     size: vec4f,
-    sky: vec4f,
-    outscatter: vec4f,
-    inscatter: vec4f,
-    sun_altitude: vec4f,
     wave: vec4f,
     mirror: vec4f,
     land: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var reflection: texture_2d<f32>;
-@group(0) @binding(2) var clamp_sampler: sampler;
-@group(0) @binding(3) var waves: texture_3d<f32>;
-@group(0) @binding(4) var wave_sampler: sampler;
-@group(0) @binding(5) var picture: texture_2d<f32>;
-@group(0) @binding(6) var depth: texture_depth_2d;
+@group(1) @binding(0) var<uniform> water: Water;
+@group(1) @binding(1) var reflection: texture_2d<f32>;
+@group(1) @binding(2) var clamp_sampler: sampler;
+@group(1) @binding(3) var waves: texture_3d<f32>;
+@group(1) @binding(4) var wave_sampler: sampler;
+@group(1) @binding(5) var picture: texture_2d<f32>;
+@group(1) @binding(6) var depth: texture_depth_2d;
 // The ripples of the rain and of the player (ripples.rs); flat without the dynamic waves.
-@group(0) @binding(7) var rain: texture_2d<f32>;
-@group(0) @binding(8) var player_waves: texture_2d<f32>;
+@group(1) @binding(7) var rain: texture_2d<f32>;
+@group(1) @binding(8) var player_waves: texture_2d<f32>;
 // The depth of the mirror pass: how far the thing in the reflection is.
-@group(0) @binding(9) var mirror_depth: texture_depth_2d;
+@group(1) @binding(9) var mirror_depth: texture_depth_2d;
 // The depth of the distant land (`SceneView::before_depth`); 1 everywhere without it.
-@group(0) @binding(10) var land_depth: texture_depth_2d;
+@group(1) @binding(10) var land_depth: texture_depth_2d;
+// Bindings 11 to 16: the light of the frame for the surfaces of water volumes (`volume.rs`).
 
 // fogColourWater: the exponential fog with the scattering of the atmosphere. rgb is the
 // colour that the fog adds, a is what is left of the colour of the thing.
@@ -123,9 +114,9 @@ fn fog_water(direction: vec3f, distance: f32) -> vec4f {
     var fog_distance = (distance - u.fog.x) / max(u.fog.y, 1.0);
     let fog = clamp(exp(-fog_distance), 0.0, 1.0);
     fog_distance = clamp(0.224 * fog_distance, 0.0, 1.0);
-    var added = u.fog_col_far.rgb * (1.0 - fog);
-    if u.fog_col_far.w > 0.5 && u.sky_col.w > 0.001 && u.eye.z > -1.0 {
-        let sun_cos = dot(direction, u.sun_pos.xyz);
+    var added = u.fog_color.rgb * (1.0 - fog);
+    if u.sky.w > 0.5 && water.sky_col.w > 0.001 && u.eye.z > -1.0 {
+        let sun_cos = dot(direction, water.sun_pos.xyz);
         let mie = (1.58 / (1.24 - sun_cos)) * u.sun_altitude.z;
         let rayleigh = 1.0 - 0.09 * mie;
         let air = 1.33 * exp(-2.0 * clamp(direction.z, 0.0, 1.0));
@@ -133,21 +124,21 @@ fn fog_water(direction: vec3f, distance: f32) -> vec4f {
         var lost = air * sun_scatter * (u.sun_altitude.x + 0.7 * mie);
         lost = (1.0 - exp(-fog_distance * lost)) / lost;
         let scattered = (0.125 * mie + u.sky.rgb * rayleigh) * lost * (1.17 * air + 0.89) * u.sun_altitude.y;
-        added = mix(added, scattered, u.sky_col.w);
+        added = mix(added, scattered, water.sky_col.w);
     }
     return vec4f(added, fog);
 }
 
 // getFinalWaterNormal: two reads of the wave texture, the far one past 8000 units.
 fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
-    let t = 0.4 * u.eye.w;
+    let t = 0.4 * water.time.x;
     let far = textureSample(waves, wave_sampler, vec3f(texcoords.xy, t)).rg;
     var close = textureSample(waves, wave_sampler, vec3f(texcoords.zw, t)).rg;
-    if u.wave.w > 0.5 {
+    if water.wave.w > 0.5 {
         // The ripples of the rain repeat over the water. Those of the player are in the
         // world around the player, and nothing outside of their texture (a border of 0).
         close += textureSampleLevel(rain, wave_sampler, texcoords.zw, 0.0).ba;
-        let at = (world_xy - u.wave.xy) / 1280.0;
+        let at = (world_xy - water.wave.xy) / 1280.0;
         if all(at >= vec2f(0.0)) && all(at <= vec2f(1.0)) {
             close += textureSampleLevel(player_waves, clamp_sampler, at, 0.0).ba;
         }
@@ -160,12 +151,12 @@ fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
 // the game. Very far where the game drew nothing.
 fn distance_at(uv: vec2f) -> f32 {
     let size = vec2i(textureDimensions(depth));
-    let at = clamp(vec2i(uv * u.size.xy), vec2i(0), size - 1);
+    let at = clamp(vec2i(uv * water.size.xy), vec2i(0), size - 1);
     let d = textureLoad(depth, at, 0);
     if d >= 1.0 {
         return 1e30;
     }
-    return u.projection.y / (d - u.projection.x);
+    return water.projection.y / (d - water.projection.x);
 }
 
 // The same for the distant land, which has a projection of its own.
@@ -176,7 +167,7 @@ fn land_distance_at(uv: vec2f) -> f32 {
     if d >= 1.0 {
         return 1e30;
     }
-    return u.land.y / (d - u.land.x);
+    return water.land.y / (d - water.land.x);
 }
 
 // The view depth of the nearest thing at a point of the picture: what the game drew, and
@@ -198,7 +189,7 @@ fn mirror_way(uv: vec2f, w: f32) -> f32 {
     let size = vec2i(textureDimensions(mirror_depth));
     let at = clamp(vec2i(uv * vec2f(size)), vec2i(0), size - 1);
     let d = textureLoad(mirror_depth, at, 0);
-    return max(0.0, u.mirror.y / (d - u.mirror.x) - w);
+    return max(0.0, water.mirror.y / (d - water.mirror.x) - w);
 }
 
 // The blur that is sharp at the waterline. The water is not flat, so each point of it
@@ -209,7 +200,7 @@ fn mirror_way(uv: vec2f, w: f32) -> f32 {
 fn reflection_soft(uv: vec2f, w: f32, stretch: f32) -> vec3f {
     // The radius for a thing that is very far, in the picture: the angle of the cone
     // times the width of an angle.
-    let widest = u.mirror.w * 0.5 * u.mirror.z * vec2f(1.0, stretch * u.size.x / u.size.y);
+    let widest = water.mirror.w * 0.5 * water.mirror.z * vec2f(1.0, stretch * water.size.x / water.size.y);
     // The nearest thing around the place sets the blur: the sky behind the edge of a tree
     // must not blur that edge.
     var way = mirror_way(uv, w);
@@ -230,12 +221,12 @@ fn reflection_soft(uv: vec2f, w: f32, stretch: f32) -> vec3f {
 }
 
 fn reflection_at(uv: vec2f, w: f32, stretch: f32) -> vec3f {
-    if u.size.w > 1.5 {
+    if water.size.w > 1.5 {
         return reflection_soft(uv, w, stretch);
     }
     var color = textureSampleLevel(reflection, clamp_sampler, uv, 0.0).rgb;
-    if u.size.w > 0.5 {
-        let radius = 0.006 * clamp(0.11 + w / 6000.0, 0.0, 1.0) * vec2f(1.0, u.size.x / u.size.y);
+    if water.size.w > 0.5 {
+        let radius = 0.006 * clamp(0.11 + w / 6000.0, 0.0, 1.0) * vec2f(1.0, water.size.x / water.size.y);
         color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(0.60, 0.10), 0.0).rgb;
         color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(0.30, -0.21), 0.0).rgb;
         color += textureSampleLevel(reflection, clamp_sampler, uv + radius * vec2f(0.96, -0.03), 0.0).rgb;
@@ -256,9 +247,9 @@ fn depth_base(tint: vec3f) -> vec3f {
 // The same, with the share of the sun in it: 0 in the shadow of a thing, 1 in the sun.
 fn depth_base_sun(tint: vec3f, sun: f32) -> vec3f {
     if max(tint.r, max(tint.g, tint.b)) >= 0.5 / 255.0 {
-        return (0.05 * sun * u.sun_col.rgb + 0.085 * (2.0 * u.sky_col.rgb + u.fog_col_far.rgb)) * tint;
+        return (0.05 * sun * water.sun_col.rgb + 0.085 * (2.0 * water.sky_col.rgb + u.fog_color.rgb)) * tint;
     }
-    return sun * u.sun_col.rgb * vec3f(0.03, 0.04, 0.05) + (2.0 * u.sky_col.rgb + u.fog_col_far.rgb) * vec3f(0.075, 0.08, 0.085);
+    return sun * water.sun_col.rgb * vec3f(0.03, 0.04, 0.05) + (2.0 * water.sky_col.rgb + u.fog_color.rgb) * vec3f(0.075, 0.08, 0.085);
 }
 
 fn deep_color(fog: vec4f, tint: vec3f) -> vec3f {
@@ -280,9 +271,9 @@ fn transmission(tint: vec3f, depth: f32) -> vec3f {
 // goes into the sky colour above it, with the scattering of the atmosphere.
 fn sky_color(direction: vec3f) -> vec3f {
     let up = 1.0 - pow(clamp(1.0 - 2.22 * clamp(direction.z - 0.075, 0.0, 1.0), 0.0, 1.0), 1.15);
-    var color = mix(u.fog_col_far.rgb, u.sky_col.rgb, up);
-    if u.fog_col_far.w > 0.5 && u.sky_col.w > 0.001 && u.eye.z > -1.0 {
-        let sun_cos = dot(direction, u.sun_pos.xyz);
+    var color = mix(u.fog_color.rgb, water.sky_col.rgb, up);
+    if u.sky.w > 0.5 && water.sky_col.w > 0.001 && u.eye.z > -1.0 {
+        let sun_cos = dot(direction, water.sun_pos.xyz);
         let mie = (1.58 / (1.24 - sun_cos)) * u.sun_altitude.z;
         let rayleigh = 1.0 - 0.09 * mie;
         let air = 1.33 * exp(-2.0 * clamp(direction.z, 0.0, 1.0));
@@ -290,7 +281,7 @@ fn sky_color(direction: vec3f) -> vec3f {
         var lost = air * sun_scatter * (u.sun_altitude.x + 0.7 * mie);
         lost = (1.0 - exp(-lost)) / lost;
         let scattered = (0.125 * mie + u.sky.rgb * rayleigh) * lost * (1.17 * air + 0.89) * u.sun_altitude.y;
-        color = mix(color, scattered, u.sky_col.w);
+        color = mix(color, scattered, water.sky_col.w);
     }
     return color;
 }
@@ -401,7 +392,7 @@ fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f
         var refracted = textureSample(picture, clamp_sampler, new_uv).rgb * light;
         depth_of = max(0.0, ground_at(new_uv, with_land) - w);
         // From a difference of the depth to a distance along the ray.
-        depth_of /= dot(eye_vec, vec3f(u.view[0].z, u.view[1].z, u.view[2].z));
+        depth_of /= dot(eye_vec, vec3f(water.view[0].z, water.view[1].z, water.view[2].z));
         refracted *= transmission(tint, depth_of * 800.0 / clarity) * look_tint;
         depth_of += 300.0 * (0.95 - normal.z);
         let depthscale = clamp(exp(-depth_of / clarity), 0.0, 1.0);
@@ -413,8 +404,8 @@ fn refraction(uv: vec2f, w: f32, reffactor: vec2f, eye_vec: vec3f, normal: vec3f
 
 // The light of the sun that the water mirrors to the eye.
 fn sun_glint(eye_vec: vec3f, normal: vec3f, fog_a: f32) -> vec3f {
-    let vdotr = clamp(1.0025 * dot(-eye_vec, reflect(-u.sun_pos.xyz, normal)), 0.0, 1.0);
-    return u.sun_col.rgb * (pow(vdotr, 170.0) + 0.07 * pow(vdotr, 4.0)) * fog_a;
+    let vdotr = clamp(1.0025 * dot(-eye_vec, reflect(-water.sun_pos.xyz, normal)), 0.0, 1.0);
+    return water.sun_col.rgb * (pow(vdotr, 170.0) + 0.07 * pow(vdotr, 4.0)) * fog_a;
 }
 
 // UnderwaterPS: the water seen from below, at a place of the picture (`uv`, at the view
@@ -422,15 +413,30 @@ fn sun_glint(eye_vec: vec3f, normal: vec3f, fog_a: f32) -> vec3f {
 fn underwater(uv: vec2f, w: f32, texcoords: vec4f, world_xy: vec2f, eye_vec: vec3f, dist: f32) -> vec4f {
     let fog = clamp(exp(-dist / 4096.0), 0.0, 1.0);
     let normal = -water_normal(texcoords, dist, world_xy);
-    let reffactor = 2.0 * (u.sun_col.w * dist + 0.1) * normal.xy;
+    let reffactor = 2.0 * (water.sun_col.w * dist + 0.1) * normal.xy;
     var refracted = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
-    refracted = mix(u.fog_col_far.rgb, refracted, exp(-dist / 500.0));
+    refracted = mix(u.fog_color.rgb, refracted, exp(-dist / 500.0));
     let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w, 1.0);
     // With the total reflection of the inside of the water.
     let fresnel = pow(clamp(1.12 - 0.65 * dot(-eye_vec, normal), 0.0, 1.0), 8.0);
     let result = mix(refracted, reflected, fresnel);
-    let refract_sun = dot(-eye_vec, normalize(-u.sun_pos.xyz + normal));
-    let spec = u.sun_col.rgb * pow(max(refract_sun, 0.0), 6.0) * fog;
+    let refract_sun = dot(-eye_vec, normalize(-water.sun_pos.xyz + normal));
+    let spec = water.sun_col.rgb * pow(max(refract_sun, 0.0), 6.0) * fog;
     return vec4f(result + spec, 1.0);
 }
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_water_struct_has_the_size_of_its_wgsl() {
+        // A matrix and eleven vectors of four numbers.
+        assert_eq!(size_of::<Uniforms>(), 4 * (16 + 11 * 4));
+        let water = &COMMON[COMMON.find("struct Water {").unwrap()..];
+        let water = &water[..water.find('}').unwrap()];
+        assert_eq!(water.matches(": vec4f,").count(), 11);
+        assert_eq!(water.matches(": mat4x4f,").count(), 1);
+    }
+}

@@ -15,24 +15,25 @@
 use nirender_wgpu::{SceneView, wgpu};
 
 const SHADER: &str = "
-struct Uniforms {
+// The view group (`view.rs`, group 0) comes before this code: the game view in `u`, with the
+// camera, the direction of the sun and the linear fog of the near cells (`u.fog.zw`). The
+// values of the caustics are in `c`, group 1.
+struct Caustics {
     view: mat4x4f,
     // The two numbers of the projection for the width and the height, and the two that
     // give the depth.
     projection: vec4f,
     // The size of the picture, and the length of the blend into the distant land.
     size: vec4f,
-    // The camera, and the level of the water.
-    eye: vec4f,
-    // The direction that the light of the sun goes in, and the time of the waves.
-    sun: vec4f,
-    // The strength, the view range of the game, and the start and the end of its fog.
+    // x: the level of the water; y: the time of the waves.
+    water: vec4f,
+    // x: the strength; y: the view range of the game.
     values: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var depth: texture_depth_2d;
-@group(0) @binding(2) var waves: texture_3d<f32>;
-@group(0) @binding(3) var wave_sampler: sampler;
+@group(1) @binding(0) var<uniform> c: Caustics;
+@group(1) @binding(1) var depth: texture_depth_2d;
+@group(1) @binding(2) var waves: texture_3d<f32>;
+@group(1) @binding(3) var wave_sampler: sampler;
 
 struct Corner {
     @builtin(position) position: vec4f,
@@ -54,26 +55,26 @@ struct Corner {
     if d >= 1.0 {
         discard;
     }
-    let z = u.projection.w / (d - u.projection.z);
-    if z > u.values.y {
+    let z = c.projection.w / (d - c.projection.z);
+    if z > c.values.y {
         discard;
     }
     // The point of the pixel in the world: the ray of the pixel for a unit of view depth.
-    let ndc = position.xy / u.size.xy * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
-    let ray = vec3f(u.view[0].z, u.view[1].z, u.view[2].z)
-        + (ndc.x / u.projection.x) * vec3f(u.view[0].x, u.view[1].x, u.view[2].x)
-        + (ndc.y / u.projection.y) * vec3f(u.view[0].y, u.view[1].y, u.view[2].y);
+    let ndc = position.xy / c.size.xy * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
+    let ray = vec3f(c.view[0].z, c.view[1].z, c.view[2].z)
+        + (ndc.x / c.projection.x) * vec3f(c.view[0].x, c.view[1].x, c.view[2].x)
+        + (ndc.y / c.projection.y) * vec3f(c.view[0].y, c.view[1].y, c.view[2].y);
     var under = u.eye.xyz + ray * z;
-    under.z -= u.eye.w;
+    under.z -= c.water.x;
     if under.z > 0.0 {
         discard;
     }
-    let fog = clamp((u.values.w - z) / (u.values.w - u.values.z), 0.0, 1.0);
+    let fog = clamp((u.fog.w - z) / (u.fog.w - u.fog.z), 0.0, 1.0);
     // The blend takes the picture of the game into the distant land over the last stretch
     // before the view range (`blend.rs`, drawn before this pass): the caustics go out with it.
-    let bound = u.values.y - u.size.z;
-    let kept = 1.0 - clamp((blend_distance(depth, at, u.projection.zw, u.projection.xy, u.size.xy, bound) - bound) / u.size.z, 0.0, 1.0);
-    let factor = 1.0 + caustic_light(under, u.sun.xyz, u.sun.w, z, u.values.x) * fog * kept;
+    let bound = c.values.y - c.size.z;
+    let kept = 1.0 - clamp((blend_distance(depth, at, c.projection.zw, c.projection.xy, c.size.xy, bound) - bound) / c.size.z, 0.0, 1.0);
+    let factor = 1.0 + caustic_light(under, u.sun_direction.xyz, c.water.y, z, c.values.x) * fog * kept;
     // The draw `step` multiplies by the part of the factor between 2^step and 2^(step+1); the
     // first one by all of it to 2, a darker pixel too.
     let low = exp2(f32(in.step));
@@ -92,7 +93,7 @@ fn draws(strength: f32) -> u32 {
 }
 
 fn shader() -> String {
-    format!("{}{}{}", SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
+    format!("{}{}{}{}", super::view::wgsl(), SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
 }
 
 /// What the caustics need from the frame.
@@ -100,13 +101,10 @@ pub struct CausticsFrame {
     pub water_level: f32,
     /// The time of the waves, as the water has it.
     pub time: f32,
-    /// The direction that the light of the sun goes in.
-    pub sun_direction: [f32; 3],
     pub sun_vis: f32,
     pub fog_color_far: [f32; 3],
-    /// The view range of the game, and the start and the end of its fog.
+    /// The view range of the game (the game view has the start and the end of its fog).
     pub near_view_range: f32,
-    pub fog_near: (f32, f32),
 }
 
 pub struct Caustics {
@@ -125,7 +123,9 @@ pub struct Caustics {
 
 impl Caustics {
     /// `cut` is the stencil test of a pixel outside the dry spaces (`water::Water::dry_cut`).
-    pub fn new(scene: &SceneView, intensity: f32, cut: wgpu::StencilState) -> Self {
+    /// `view_layout` is that of the view group (`view.rs`), group 0 of the pipeline: the
+    /// caller binds the group of the game view.
+    pub fn new(scene: &SceneView, intensity: f32, cut: wgpu::StencilState, view_layout: &wgpu::BindGroupLayout) -> Self {
         let device = scene.device;
         let texture = |binding, sample_type, dimension| wgpu::BindGroupLayoutEntry {
             binding,
@@ -148,7 +148,7 @@ impl Caustics {
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("caustics"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("caustics"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("caustics"), bind_group_layouts: &[Some(view_layout), Some(&layout)], immediate_size: 0 });
         // In the pass of the world: no test of the depth and no write, and the stencil of the
         // dry spaces for the cut. The blend multiplies the target: colour * target + target *
         // colour.
@@ -182,7 +182,7 @@ impl Caustics {
         };
         let pipeline = make_pipeline(Default::default());
         let pipeline_cut = make_pipeline(cut);
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("caustics"), size: 64 + 5 * 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("caustics"), size: 64 + 4 * 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let wave_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -198,15 +198,13 @@ impl Caustics {
     /// `waves` the wave texture of the water. With `cut`, only outside the dry spaces: the
     /// caller has their count in the stencil.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, depth: &wgpu::TextureView, waves: &wgpu::TextureView, frame: &CausticsFrame, cut: bool) {
-        let eye = super::eye_of(&scene.view);
         let strength = super::water::caustic_strength(self.intensity, frame.sun_vis, frame.fog_color_far);
-        let mut values = [0.0f32; 16 + 20];
+        let mut values = [0.0f32; 16 + 16];
         values[..16].copy_from_slice(&scene.view);
         values[16..20].copy_from_slice(&[scene.projection[0], scene.projection[5], scene.projection[10], scene.projection[14]]);
         values[20..24].copy_from_slice(&[scene.target_size.0 as f32, scene.target_size.1 as f32, super::blend::ZONE, 0.0]);
-        values[24..28].copy_from_slice(&[eye[0], eye[1], eye[2], frame.water_level]);
-        values[28..32].copy_from_slice(&[frame.sun_direction[0], frame.sun_direction[1], frame.sun_direction[2], frame.time]);
-        values[32..36].copy_from_slice(&[strength, frame.near_view_range, frame.fog_near.0, frame.fog_near.1]);
+        values[24..28].copy_from_slice(&[frame.water_level, frame.time, 0.0, 0.0]);
+        values[28..32].copy_from_slice(&[strength, frame.near_view_range, 0.0, 0.0]);
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
         let group = nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
             label: Some("caustics"),
@@ -220,7 +218,7 @@ impl Caustics {
         });
         pass.set_pipeline(if cut { &self.pipeline_cut } else { &self.pipeline });
         pass.set_stencil_reference(0);
-        pass.set_bind_group(0, &group, &[]);
+        pass.set_bind_group(1, &group, &[]);
         pass.draw(0..3, 0..draws(strength));
         self.frames += 1;
     }

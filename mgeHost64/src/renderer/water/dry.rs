@@ -43,7 +43,7 @@ struct Mask {
     var out: Mask;
     out.world = world;
     out.position = u.view_projection * vec4f(world, 1.0);
-    out.position.z = out.position.w * u.land.z + u.land.w;
+    out.position.z = out.position.w * water.land.z + water.land.w;
     return out;
 }
 
@@ -57,7 +57,7 @@ struct Mask {
 
 // Only the faces on the far side of the plane of the sea (the level less 1) from the eye.
 @fragment fn fs_mask_plane(in: Mask) -> @location(0) vec4f {
-    let level = u.world.z - 1.0;
+    let level = water.world.z - 1.0;
     if (in.world.z - level) * (u.eye.z - level) > 0.0 {
         discard;
     }
@@ -66,7 +66,7 @@ struct Mask {
 ";
 
 fn shader() -> String {
-    format!("{}{}", shading::COMMON, DRY)
+    format!("{}{}{}", super::super::view::wgsl(), shading::COMMON, DRY)
 }
 
 pub(super) struct Dry {
@@ -78,11 +78,12 @@ pub(super) struct Dry {
 }
 
 impl Dry {
-    /// `frame_layout` is that of the group of the shared shading (`Water::layout`).
-    pub fn new(scene: &SceneView, frame_layout: &wgpu::BindGroupLayout) -> Dry {
+    /// `view_layout` is that of the view group (`view.rs`), `frame_layout` that of the group of
+    /// the shared shading (`Water::layout`).
+    pub fn new(scene: &SceneView, view_layout: &wgpu::BindGroupLayout, frame_layout: &wgpu::BindGroupLayout) -> Dry {
         let device = scene.device;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water dry spaces"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water dry spaces"), bind_group_layouts: &[Some(frame_layout)], immediate_size: 0 });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water dry spaces"), bind_group_layouts: &[Some(view_layout), Some(frame_layout)], immediate_size: 0 });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
         let make = |vertex: &str, fragment: &str, depth: wgpu::CompareFunction, operation: wgpu::StencilOperation, with_corners: bool, bias: wgpu::DepthBiasState| {
             let face = wgpu::StencilFaceState { compare: wgpu::CompareFunction::Always, fail_op: operation, depth_fail_op: wgpu::StencilOperation::Keep, pass_op: operation };

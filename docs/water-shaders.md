@@ -135,8 +135,9 @@ with the message of the compiler.
 | `finish_water(surface, shade, look)` | The last steps: glow and opacity |
 | `fog_apply(colour, fog)`, `water_time()` | The fog of the shade on a colour; the time of the water in seconds |
 
-The rest of the shared shading can be used too (`u` for the values of the frame,
-`reflect_scene`, `sky_color`), but it can change; the names above are the interface.
+The rest of the shared shading can be used too (`u` for the view of the frame: the camera,
+the fog, the sun and the scattering; `water` for the values of the water; `reflect_scene`,
+`sky_color`), but it can change; the names above are the interface.
 
 `textureSample` needs uniform control flow in WGSL. Read the textures before a branch that
 depends on the pixel, or use `textureSampleLevel` in it, and use `select` for a choice of

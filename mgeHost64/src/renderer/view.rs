@@ -2,12 +2,11 @@
 //! group for each view of the frame (the main view, the mirror of the water, the two layers of
 //! the shadow map, the game view). It has the values of the view (`View`, the uniform `u` of a
 //! shader) and the baked light of the distant lights (`baked_light`, from `LightBinding`). The
-//! values of one pipeline only (the terrain of the land, the view range of a handoff) are in
-//! its group 1. The land, the statics (with their shadow casters), the glows and the grass
-//! take it; the number of a view is the number of a set of the statics.
-//!
-//! Not there yet (plan D1, step by step): the water, the caustics and the volumes have a
-//! group 0 of their own.
+//! values of one pipeline only (the terrain of the land, the view range of a handoff, the
+//! light of the frame on the water volumes) are in its group 1. The pipelines that draw into
+//! the world take it: the land, the statics (with their shadow casters), the glows, the grass,
+//! the water plane, the dry spaces, the caustics and the water volumes. The number of a view
+//! is the number of a set of the statics.
 
 use nirender_wgpu::wgpu;
 

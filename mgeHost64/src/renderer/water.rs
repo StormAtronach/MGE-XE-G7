@@ -47,7 +47,7 @@ pub(super) use shading::{CAUSTICS, caustic_strength};
 
 /// The shader of the plane: the shared shading and the entry points of the plane.
 fn shader() -> String {
-    format!("{}{}", shading::COMMON, PLANE)
+    format!("{}{}{}", super::view::wgsl(), shading::COMMON, PLANE)
 }
 
 /// The entry points of the plane, after the shared shading.
@@ -66,16 +66,16 @@ struct Out {
 
 @vertex fn vs(@location(0) local: vec3f) -> Out {
     var out: Out;
-    var world = local + u.world.xyz;
+    var world = local + water.world.xyz;
     var lowered = 0.0;
-    if u.wave.w > 0.5 {
+    if water.wave.w > 0.5 {
         // WaterVS with DYNAMIC_RIPPLES: the waves move the plane, most between 200 and
         // 6400 units from the camera.
-        let t = 0.4 * u.eye.w;
+        let t = 0.4 * water.time.x;
         let height = textureSampleLevel(waves, wave_sampler, vec3f(world.xy / 1104.0, t), 0.0).a;
         let height2 = textureSampleLevel(waves, wave_sampler, vec3f(world.xy / 3900.0, t), 0.0).a;
         let dist = length(u.eye.xyz - world);
-        let add = u.wave.z * (mix(height, height2, clamp(dist / 8000.0, 0.0, 1.0)) - 0.5) * clamp(1.0 - dist / 6400.0, 0.0, 1.0) * clamp(dist / 200.0, 0.0, 1.0);
+        let add = water.wave.z * (mix(height, height2, clamp(dist / 8000.0, 0.0, 1.0)) - 0.5) * clamp(1.0 - dist / 6400.0, 0.0, 1.0) * clamp(dist / 200.0, 0.0, 1.0);
         world.z += add;
         lowered = abs(add);
         out.probe = height;
@@ -90,7 +90,7 @@ struct Out {
     // the distant land, as on Direct3D 9, where MGE XE moves the far plane of the game there.
     // The near plane stays that of the game. The depth that the pixel writes is that of the
     // game (see `fs`).
-    out.position.z = out.position.w * u.land.z + u.land.w;
+    out.position.z = out.position.w * water.land.z + water.land.w;
     out.clip_w = out.position.w;
     // The point of the reflection is not above the plane.
     out.clamped = (u.view_projection * vec4f(world.xy, world.z - lowered, 1.0)).xyw;
@@ -105,20 +105,20 @@ struct Pixel {
 @fragment fn fs(in: Out) -> Pixel {
     // The distant land in front of the water hides it. The renderer cleared its depth for the
     // game, so the test is here; the test against the draws of the game is that of the pass.
-    if in.clip_w > land_distance_at(in.position.xy / u.size.xy) * 1.0005 + 1.0 {
+    if in.clip_w > land_distance_at(in.position.xy / water.size.xy) * 1.0005 + 1.0 {
         discard;
     }
     var out: Pixel;
     out.color = plane_color(in);
     // The depth in the range of the game: what blends after the water tests it. Past the far
     // plane of the game it is the far end.
-    out.depth = clamp(u.projection.x + u.projection.y / in.clip_w, 0.0, 1.0);
+    out.depth = clamp(water.projection.x + water.projection.y / in.clip_w, 0.0, 1.0);
     return out;
 }
 
 fn plane_color(in: Out) -> vec4f {
     // The end of the plane in an interior and under the water.
-    if u.size.z > 0.0 && in.clip_w > u.size.z {
+    if water.size.z > 0.0 && in.clip_w > water.size.z {
         discard;
     }
     var eye_vec = in.world - u.eye.xyz;
@@ -126,26 +126,26 @@ fn plane_color(in: Out) -> vec4f {
     eye_vec /= dist;
     // The position of the pixel in the picture. The offsets of the shader are in the
     // projected space: here they are divided by the clip w of the pixel.
-    let uv = in.position.xy / u.size.xy;
+    let uv = in.position.xy / water.size.xy;
     let w = in.clip_w;
-    if u.fog.w > 0.5 {
+    if water.modes.y > 0.5 {
         return underwater(uv, w, in.texcoords, in.world.xy, eye_vec, dist);
     }
     let fog = fog_water(eye_vec, dist);
     let normal = water_normal(in.texcoords, dist, in.world.xy);
-    let reffactor = (u.sun_col.w * dist + 0.1) * normal.xy;
+    let reffactor = (water.sun_col.w * dist + 0.1) * normal.xy;
     let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0), true, 1.0);
     let refracted = below.color;
     // With the dynamic waves the reflection is read at the point that is not above the plane.
     var reflect_uv = uv;
     var reflect_w = w;
-    if u.wave.w > 0.5 {
+    if water.wave.w > 0.5 {
         reflect_w = in.clamped.z;
         reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / reflect_w, 0.5 - 0.5 * in.clamped.y / reflect_w);
     }
     // A flat look at the water makes the blur taller: 1 from straight above, and at most
     // the number of the parameter.
-    let stretch = clamp(1.0 / max(abs(eye_vec.z), 0.05), 1.0, max(u.projection.z, 1.0));
+    let stretch = clamp(1.0 / max(abs(eye_vec.z), 0.05), 1.0, max(water.projection.z, 1.0));
     var reflected = reflection_at(reflect_uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / reflect_w, reflect_w, stretch);
     reflected = mix(fog.rgb, reflected, fog.a);
     var adjust = mix(vec3f(0.0, 0.0, 0.1), normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
@@ -155,25 +155,25 @@ fn plane_color(in: Out) -> vec4f {
     result += sun_glint(eye_vec, normal, fog.a);
     result = mix(result, refracted, below.shore * fog.a);
     // A look at one term, for a test: MGE_XE_WATER_DEBUG.
-    if u.fog.z == 1.0 {
+    if water.modes.x == 1.0 {
         return vec4f(reflected, 1.0);
-    } else if u.fog.z == 2.0 {
+    } else if water.modes.x == 2.0 {
         return vec4f(refracted, 1.0);
-    } else if u.fog.z == 3.0 {
+    } else if water.modes.x == 3.0 {
         return vec4f(vec3f(below.depth_first / 1000.0), 1.0);
-    } else if u.fog.z == 4.0 {
+    } else if water.modes.x == 4.0 {
         return vec4f(vec3f(fresnel), 1.0);
-    } else if u.fog.z == 5.0 {
+    } else if water.modes.x == 5.0 {
         return vec4f(vec3f(fog.a), 1.0);
-    } else if u.fog.z == 6.0 {
+    } else if water.modes.x == 6.0 {
         return vec4f(vec3f(dist / 10000.0), 1.0);
-    } else if u.fog.z == 7.0 {
+    } else if water.modes.x == 7.0 {
         return vec4f(normal * 0.5 + 0.5, 1.0);
-    } else if u.fog.z == 8.0 {
+    } else if water.modes.x == 8.0 {
         return vec4f(vec3f(w / 10000.0), 1.0);
-    } else if u.fog.z == 9.0 {
+    } else if water.modes.x == 9.0 {
         // Red: the height that the vertices read. Green: the same read for the pixel.
-        let here = textureSampleLevel(waves, wave_sampler, vec3f(in.world.xy / 1104.0, 0.4 * u.eye.w), 0.0).a;
+        let here = textureSampleLevel(waves, wave_sampler, vec3f(in.world.xy / 1104.0, 0.4 * water.time.x), 0.0).a;
         return vec4f(in.probe, here, 0.0, 1.0);
     }
     return vec4f(result, 1.0);
@@ -192,10 +192,7 @@ pub struct WaterFrame {
     pub sky_color: [f32; 3],
     pub fog_color_far: [f32; 3],
     pub nice_weather: f32,
-    pub scattering: Option<[[f32; 4]; 5]>,
     pub wind: [f32; 2],
-    /// The start and the divisor of the exponential fog.
-    pub fog_exp: (f32, f32),
     /// The draw distance of the distant land, in units.
     pub draw_distance: f32,
     /// The projection of the distant land (`DistantLand::land_projection`): the water
@@ -315,8 +312,9 @@ pub struct Water {
 
 impl Water {
     /// Makes the plane, the pipeline and the reflection target. `waves` is the DDS file of
-    /// the wave texture, a volume of 32-bit pixels.
-    pub fn new(scene: &SceneView, waves: &[u8]) -> Result<Water, String> {
+    /// the wave texture, a volume of 32-bit pixels. `view_layout` is that of the view group
+    /// (`view.rs`), group 0 of each pipeline of the water.
+    pub fn new(scene: &SceneView, waves: &[u8], view_layout: &wgpu::BindGroupLayout) -> Result<Water, String> {
         let device = scene.device;
         let waves = wave_texture(scene, waves)?;
         let (vertices, indexes) = coarse_disc();
@@ -351,9 +349,7 @@ impl Water {
             count: None,
         };
         let sampler = |binding, kind| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(kind), count: None };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("water"),
-            entries: &[
+        let mut entries = vec![
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -371,10 +367,12 @@ impl Water {
                 texture(8, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
                 texture(9, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
                 texture(10, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
-            ],
-        });
+        ];
+        // The light of the frame, for the surfaces of water volumes.
+        entries.extend(volume::Volumes::light_layout_entries());
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("water"), entries: &entries });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water"), bind_group_layouts: &[Some(view_layout), Some(&layout)], immediate_size: 0 });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
         let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water"),
@@ -409,8 +407,8 @@ impl Water {
         let pipeline_cut = make_pipeline(wgpu::PolygonMode::Fill, dry::outside());
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let volume_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let volumes = volume::Volumes::new(scene, &layout);
-        let dry = dry::Dry::new(scene, &layout);
+        let volumes = volume::Volumes::new(scene, view_layout, &layout);
+        let dry = dry::Dry::new(scene, view_layout, &layout);
         // Between two levels too: the blur that is sharp at the waterline reads the levels
         // of the reflection. Each other read names the first level.
         let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -679,39 +677,34 @@ impl Water {
         planes(&multiply(mirrored_view, projection))
     }
 
-    /// Writes the values of the frame and makes the group of the shared shading: the values,
-    /// the reflection, the waves, the picture and the depth of the scene. `ripples` has the
-    /// textures of the dynamic waves; they count when the frame has a wave height. The values
-    /// go into `uniforms`. `None` without the depth, or without the picture unless `picture`
-    /// is false (a draw that does not read it: the count of the dry spaces).
-    fn frame_group(&self, scene: &SceneView, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, uniforms_buffer: &wgpu::Buffer, picture: bool) -> Option<wgpu::BindGroup> {
+    /// Writes the values of the frame and makes the group of the shared shading (group 1): the
+    /// values, the reflection, the waves, the picture and the depth of the scene, and the
+    /// light of the frame for the surfaces of water volumes (`light`; none for the plane).
+    /// `ripples` has the textures of the dynamic waves; they count when the frame has a wave
+    /// height. The values go into `uniforms`. `None` without the depth, or without the
+    /// picture unless `picture` is false (a draw that does not read it: the count of the dry
+    /// spaces).
+    fn frame_group(&self, scene: &SceneView, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, uniforms_buffer: &wgpu::Buffer, picture: bool, light: Option<&VolumeLight>) -> Option<wgpu::BindGroup> {
         let depth = scene.depth?;
         let picture = if picture { scene.picture? } else { &self.flat };
         let dynamic = frame.wave_height.zip(ripples);
         let eye = super::eye_of(&scene.view);
         let sunlight = 1.0 - (1.0 - frame.sun_vis).powi(2);
         let wind_factor = ((frame.wind[0] * frame.wind[0] + frame.wind[1] * frame.wind[1]).sqrt() + 1.5) / 140.0;
-        let scattering = frame.scattering.unwrap_or([[0.0; 4]; 5]);
         let uniforms = Uniforms {
-            view_projection: multiply(&scene.view, &scene.projection),
             view: scene.view,
             world: [eye[0], eye[1], frame.water_level, 0.0],
-            eye: [eye[0], eye[1], eye[2], frame.time],
+            time: [frame.time, 0.0, 0.0, 0.0],
             sun_pos: [frame.sun_pos[0], frame.sun_pos[1], frame.sun_pos[2], frame.sun_vis],
             sun_col: [frame.sun_color[0] * sunlight, frame.sun_color[1] * sunlight, frame.sun_color[2] * sunlight, wind_factor],
             sky_col: [frame.sky_color[0], frame.sky_color[1], frame.sky_color[2], frame.nice_weather],
-            fog_col_far: [frame.fog_color_far[0], frame.fog_color_far[1], frame.fog_color_far[2], if frame.scattering.is_some() { 1.0 } else { 0.0 }],
-            fog: [frame.fog_exp.0, frame.fog_exp.1, self.debug, if frame.underwater { 1.0 } else { 0.0 }],
+            modes: [self.debug, if frame.underwater { 1.0 } else { 0.0 }, 0.0, 0.0],
             projection: [scene.projection[10], scene.projection[14], frame.blur_tune[2], 0.0],
             size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), match (frame.blur_reflections, frame.blur_contact) {
                 (false, _) => 0.0,
                 (true, false) => 1.0,
                 (true, true) => 2.0,
             }],
-            sky: scattering[1],
-            outscatter: scattering[2],
-            inscatter: scattering[3],
-            sun_altitude: scattering[4],
             wave: dynamic.map_or([0.0; 4], |(height, ripples)| [ripples.origin[0], ripples.origin[1], height, 1.0]),
             mirror: {
                 let projection = Self::far_projection(scene, frame.draw_distance);
@@ -728,6 +721,7 @@ impl Water {
             },
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let light_entries = self.volumes.light_entries(scene, light);
         let group = nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
             label: Some("water"),
             layout: &self.layout,
@@ -743,15 +737,22 @@ impl Water {
                 wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.player_view())) },
                 wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&self.reflection_depth_read) },
                 wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(scene.before_depth.unwrap_or(&self.no_land)) },
+                light_entries[0].clone(),
+                light_entries[1].clone(),
+                light_entries[2].clone(),
+                light_entries[3].clone(),
+                light_entries[4].clone(),
+                light_entries[5].clone(),
             ],
         });
         Some(group)
     }
 
-    /// Draws the plane in place of the water plane of the game. `ripples` has the
-    /// textures of the dynamic waves; they count when the frame has a wave height.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>) {
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms, true) else { return };
+    /// Draws the plane in place of the water plane of the game. `view` is the group of the
+    /// game view. `ripples` has the textures of the dynamic waves; they count when the frame
+    /// has a wave height.
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>) {
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms, true, None) else { return };
         let dynamic = frame.wave_height.zip(ripples);
         // The dry spaces cut the plane, but not from under the water (`renderStageWater`).
         let cut = self.dry.any() && !frame.underwater;
@@ -762,7 +763,8 @@ impl Water {
             // not sure. The plane is edge-on and is left out.
             return;
         }
-        pass.set_bind_group(0, &group, &[]);
+        pass.set_bind_group(0, view, &[]);
+        pass.set_bind_group(1, &group, &[]);
         if cut {
             self.dry.zero(pass);
             self.dry.count_plane(pass);
@@ -791,17 +793,17 @@ impl Water {
 
 impl Water {
     /// Draws the surfaces of water volumes among the shapes that the renderer held for the
-    /// extension, with the picture and the depth of the scene so far. Returns the number
-    /// drawn.
+    /// extension, with the picture and the depth of the scene so far. `view` is the group of
+    /// the game view. Returns the number drawn.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], far: &[FarWater], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>, light: &VolumeLight) -> usize {
+    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], far: &[FarWater], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>, light: &VolumeLight) -> usize {
         if far.is_empty() && !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
             return 0;
         }
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms, true) else { return 0 };
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light)) else { return 0 };
         // The dry spaces cut the surfaces near the camera, but not from under the water.
         let dry = (self.dry.any() && !frame.underwater).then_some(&self.dry);
-        self.volumes.draw(scene, pass, &group, held, far, look, looks, light, dry)
+        self.volumes.draw(scene, pass, view, &group, held, far, look, looks, dry)
     }
 
     /// The stencil test of a pixel outside the dry spaces, for a pass that the count cuts.
@@ -813,17 +815,20 @@ impl Water {
     /// the faces of the dry spaces behind the depth of the game are counted first, so a point
     /// inside one (the floor of a hold under the level of the sea) has none, wherever the eye
     /// is. Reads the depth of the game only: the caustics multiply the picture by a blend.
-    pub fn draw_sea_caustics(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, caustics: &mut super::caustics::Caustics, caustics_frame: &super::caustics::CausticsFrame) {
+    /// `view` is the group of the game view.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_sea_caustics(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, caustics: &mut super::caustics::Caustics, caustics_frame: &super::caustics::CausticsFrame) {
         let Some(depth) = scene.depth else { return };
-        let group = self.dry.any().then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms, false)).flatten();
+        let group = self.dry.any().then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None)).flatten();
+        pass.set_bind_group(0, view, &[]);
         if let Some(group) = group.as_ref() {
-            pass.set_bind_group(0, group, &[]);
+            pass.set_bind_group(1, group, &[]);
             self.dry.zero(pass);
             self.dry.count_behind(pass);
         }
         caustics.draw(scene, pass, depth, &self.waves, caustics_frame, group.is_some());
         if let Some(group) = group.as_ref() {
-            pass.set_bind_group(0, group, &[]);
+            pass.set_bind_group(1, group, &[]);
             self.dry.zero(pass);
         }
     }
