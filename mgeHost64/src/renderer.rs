@@ -400,6 +400,9 @@ pub struct DistantLand {
     /// The bytes of the last record of the vis groups, for statics that start after it.
     vis_groups: Vec<u8>,
     waves: Vec<u8>,
+    /// Why distant land is off when its data did not load (e.g. a data version that this
+    /// build does not read), for the debug overlay.
+    problem: Option<String>,
     started: Instant,
     meshes_drawn: u64,
     frames: u64,
@@ -719,6 +722,7 @@ impl DistantLand {
             water_masks: None,
             vis_groups: Vec::new(),
             waves: Vec::new(),
+            problem: None,
             started: Instant::now(),
             meshes_drawn: 0,
             frames: 0,
@@ -757,7 +761,8 @@ impl DistantLand {
                     let _ = sender.send(load(&folder));
                 });
             } else {
-                if statics_wanted {
+                // Data of another version: `load` gives the problem, and no statics start.
+                if statics_wanted && version_problem(&folder).is_none() {
                     land.statics = Some(statics::Statics::start(&document, folder.clone()));
                     land.lights = Some(distant_lights::DistantLights::start(&folder));
                 }
@@ -777,7 +782,7 @@ impl DistantLand {
             return;
         }
         self.generation = None;
-        if let Some(folder) = self.statics_after_generation.take() {
+        if let Some(folder) = self.statics_after_generation.take().filter(|folder| version_problem(folder).is_none()) {
             let document = ConfigDocument::open(self.root.join(FILE_NAME));
             self.lights = Some(distant_lights::DistantLights::start(&folder));
             let mut statics = statics::Statics::start(&document, folder);
@@ -799,7 +804,8 @@ impl DistantLand {
                 self.gpu = Some(gpu);
             }
             Err(problem) => {
-                println!("distant land: not there: {problem}");
+                println!("distant land: off: {problem}");
+                self.problem = Some(format!("distant land is off: {problem}"));
                 self.enabled = false;
             }
         }
@@ -835,6 +841,9 @@ impl Drop for DistantLand {
 }
 
 fn load(folder: &Path) -> Result<Loaded, String> {
+    if let Some(problem) = version_problem(folder) {
+        return Err(problem);
+    }
     let read = |name: &str| std::fs::read(folder.join(name)).map_err(|error| format!("{name}: {error}"));
     Ok(Loaded {
         terrain: load_terrain_file(&folder.join(TERRAIN_FILE_NAME)).map_err(|error| format!("{TERRAIN_FILE_NAME}: {error}"))?,
@@ -844,6 +853,27 @@ fn load(folder: &Path) -> Result<Loaded, String> {
         patch_albedo: read(TERRAIN_PATCH_ALBEDO_FILE_NAME)?,
         blend_patterns: read(TERRAIN_BLEND_PATTERNS_FILE_NAME)?,
     })
+}
+
+/// What is wrong with the `version` byte of the distant land data in `folder` for this
+/// build, if anything. The startup generation (only with `automatic_rebuild`), the GUI and
+/// the Direct3D 9 path check the same byte; without this, data of another version loads.
+fn version_problem(folder: &Path) -> Option<String> {
+    version_byte_problem(std::fs::read(folder.join("version")).ok().as_deref())
+}
+
+fn version_byte_problem(bytes: Option<&[u8]>) -> Option<String> {
+    let needed = crate::abi::constants::MGE_DL_VERSION;
+    match bytes {
+        Some(&[version]) if version == needed => None,
+        Some(&[version]) if version > needed => Some(format!(
+            "the data is version {version}, from a newer MGE XE, and this MGE XE reads version {needed}: update MGE XE, or generate distant land again in the MGE XE GUI"
+        )),
+        Some(&[version]) => Some(format!(
+            "the data is version {version}, and this MGE XE reads version {needed}: generate distant land again in the MGE XE GUI"
+        )),
+        _ => Some("the file distantland\\version is missing or not one byte: generate distant land in the MGE XE GUI".to_string()),
+    }
 }
 
 fn word(bytes: &[u8], at: usize) -> u32 {
@@ -1472,7 +1502,7 @@ impl Extension for DistantLand {
     }
 
     fn overlay_lines(&self) -> Vec<String> {
-        self.tunables.lines()
+        self.problem.iter().cloned().chain(self.tunables.lines()).collect()
     }
 
     fn anisotropy(&self) -> u16 {
@@ -2674,6 +2704,24 @@ impl DistantLand {
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade, original })
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    use crate::abi::constants::MGE_DL_VERSION;
+
+    #[test]
+    fn only_the_version_of_this_build_loads() {
+        assert_eq!(version_byte_problem(Some(&[MGE_DL_VERSION])), None);
+        let old = version_byte_problem(Some(&[MGE_DL_VERSION - 1])).unwrap();
+        assert!(old.contains(&format!("version {}", MGE_DL_VERSION - 1)) && old.contains("generate distant land again"), "{old}");
+        let newer = version_byte_problem(Some(&[MGE_DL_VERSION + 1])).unwrap();
+        assert!(newer.contains("newer MGE XE") && newer.contains("update MGE XE"), "{newer}");
+        assert!(version_byte_problem(None).unwrap().contains("missing"));
+        assert!(version_byte_problem(Some(&[])).is_some());
+        assert!(version_byte_problem(Some(&[MGE_DL_VERSION, 0])).is_some());
     }
 }
 
