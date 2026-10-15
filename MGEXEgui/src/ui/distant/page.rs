@@ -532,6 +532,16 @@ impl GuiApp {
             ),
             t!("distant.wait_on_load_tip"),
         );
+        // The looks of the grass shader of Remiros' Groundcover (wgpu renderer only).
+        let enabled = self.settings.mge.distant_land.enabled;
+        let grass = &mut self.settings.mge.distant_land.grass;
+        for (value, label, tip) in [
+            (&mut grass.soft_end, t!("distant.grass_soft_end"), t!("distant.grass_soft_end_tip")),
+            (&mut grass.vertex_color_sway, t!("distant.grass_vertex_color_sway"), t!("distant.grass_vertex_color_sway_tip")),
+            (&mut grass.wrap_lighting, t!("distant.grass_wrap_lighting"), t!("distant.grass_wrap_lighting_tip")),
+        ] {
+            tooltip(ui.add_enabled(enabled, egui::Checkbox::new(value, label)), tip);
+        }
         ui.add_space(6.0);
 
         // Enable rules, matching the legacy grey-out behaviour:

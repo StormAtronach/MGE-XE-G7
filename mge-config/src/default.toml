@@ -192,6 +192,16 @@ interior_end = 2.0
 # Constant wind for grass in interiors, which have no weather. Same units as
 # the per-weather wind factors, clamped to 0..1; 0 leaves only the idle shimmer.
 interior_wind = 0.075
+# The looks of the grass shader of Remiros' Groundcover (wgpu renderer only).
+# The grass sinks into the ground near the end of its range, at a distance that
+# varies, so that it ends without a line.
+soft_end = false
+# The red of the vertex colour of a grass mesh weights its sway (a root that
+# stays), and with wrap_lighting chooses the parts that get the wrap light.
+vertex_color_sway = false
+# The sun light wraps past the side of a blade, and some comes through from the
+# back.
+wrap_lighting = false
 
 # Sun-shadow controls.
 [distant_land.shadows]

@@ -629,11 +629,21 @@ pub struct GrassSettings {
     /// per-weather wind factors. In the same units as the exterior wind vector those factors
     /// scale, so `0.0` leaves interior grass with only the shader's faint idle shimmer.
     pub interior_wind: f32,
+    /// The wgpu renderer: the grass sinks into the ground near the end of its range, at a
+    /// distance that a noise moves, so that it ends without a line (the grass shader of
+    /// Remiros' Groundcover).
+    pub soft_end: bool,
+    /// The wgpu renderer: the red of the vertex colour of a grass mesh weights its sway, and
+    /// with `wrap_lighting` chooses the parts that get the wrap light (Remiros' Groundcover).
+    pub vertex_color_sway: bool,
+    /// The wgpu renderer: the sun lights the grass with a light that wraps past the side of a
+    /// blade, and 0.4 of it comes through from the back (Remiros' Groundcover).
+    pub wrap_lighting: bool,
 }
 
 impl Default for GrassSettings {
     fn default() -> Self {
-        Self { interior_wind: 0.075 }
+        Self { interior_wind: 0.075, soft_end: false, vertex_color_sway: false, wrap_lighting: false }
     }
 }
 

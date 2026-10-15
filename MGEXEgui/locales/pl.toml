@@ -59,10 +59,16 @@ interior = "Wnętrza"
 enabled = "Użyj odległego terenu"
 auto_rebuild = "Automatycznie przebudowuje nieaktualny odległy teren podczas uruchamiania gry."
 wait_on_load = "Czekaj na ekranie ładowania na odległy teren (renderer wgpu)."
+grass_soft_end = "Trawa: łagodny koniec (Remiros' Groundcover, renderer wgpu)."
+grass_vertex_color_sway = "Trawa: kolor wierzchołków określa kołysanie (Remiros' Groundcover, renderer wgpu)."
+grass_wrap_lighting = "Trawa: oświetlenie otulające (Remiros' Groundcover, renderer wgpu)."
 
 enabled_tip = "Wyświetla teren i obiekty poza standardowym zasięgiem widzenia Morrowinda."
 auto_rebuild_tip = "Ponownie generuje odległy teren przy starcie, gdy zapisane zadanie nie pasuje do zainstalowanej zawartości."
 wait_on_load_tip = "Po wczytaniu gry ekran ładowania pozostaje, dopóki odległe obiekty wokół gracza nie będą gotowe (najwyżej 15 s), jak w Direct3D 9 przy pierwszym wczytaniu. Bez tej opcji pojawiają się stopniowo po wczytaniu."
+grass_soft_end_tip = "Blisko końca zasięgu trawa zapada się w ziemię w zmiennej odległości, więc kończy się bez wyraźnej linii."
+grass_vertex_color_sway_tip = "Czerwień koloru wierzchołków modelu trawy określa, jak bardzo dana część się kołysze: część bez czerwieni stoi w miejscu. Z oświetleniem otulającym tylko części z czerwienią je otrzymują. Dla modeli trawy z kolorami wierzchołków, jak Remiros' Groundcover."
+grass_wrap_lighting_tip = "Światło słońca otula krawędź źdźbła, a część światła przechodzi od tyłu."
 
 [distant.blocked]
 format = "Wygenerowane dane mają format %{version}, którego ta wersja MGE XE nie obsługuje. Najpierw uruchom generator odległego terenu."
