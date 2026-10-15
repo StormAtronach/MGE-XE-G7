@@ -11,6 +11,9 @@ API for MWSE/Lua.
 This document is the architecture reference. Subsystem deep-dives live in
 [`docs/architecture/`](docs/architecture/):
 
+- [`wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) - the wgpu renderer (the default):
+  processes, stream records, device, the frame, every pipeline with its bind groups, and the
+  conventions for a change.
 - [`render-pipeline.md`](docs/architecture/render-pipeline.md) — anatomy of a rendered frame:
   scene detection, render stages, draw-call recording, shaders.
 - [`ipc.md`](docs/architecture/ipc.md) — the 32↔64-bit shared-memory RPC protocol and
@@ -67,8 +70,16 @@ A configured installation runs up to three processes:
 | --- | --- | --- | --- |
 | `d3d8.dll` | `d3d8` — empty `cdylib` shim; `build.rs` compiles the C++ in crate-local `cpp/` via `cc` | Win32 | The runtime. Loaded by Morrowind in place of the system d3d8.dll. All rendering, game-memory patching, input, and scripting support. |
 | `dinput8.dll` | `dinput8` — same pattern, one C++ file | Win32 | Tiny shim: forwards `DirectInput8Create` to `d3d8.dll`, which hosts the real input wrapper. |
-| `mgeHost64.exe` | `mgeHost64` cargo crate (Rust) | x64 | Helper process. Long-lived IPC host (visibility culling for the runtime) and automatic startup distant-land generation. Links the `distantland` crate for generation. No UI. |
+| `mgeHost64.exe` | `mgeHost64` cargo crate (Rust) | x64 | Helper process. On Direct3D 9: long-lived IPC host (visibility culling for the runtime) and automatic startup distant-land generation. With `--live`: the wgpu renderer, drawing into the game's window. With `--replay`: draws a capture file into a picture, for tests. Links the `distantland` crate for generation. |
 | `MGEXEgui.exe` | `MGEXEgui` cargo crate (Rust/egui) | x64 | Configuration GUI. Edits game-root `mgeXE.toml`, structured input macros, and the shader chain through `mge-config`; uses targeted native profile calls for selected `Morrowind.ini` preferences; and owns distant-land configuration and generation in-process via `distantland`. |
+
+The diagram above is MGE XE on Direct3D 9. With `[runtime] renderer_wgpu = true` (the
+default) the processes differ: `d3d8.dll` makes no Direct3D device (namespace `Deviceless`),
+the MWSE plugin `nirender.dll` gives the game its Direct3D 8 and streams each frame through
+shared memory, and `mgeHost64.exe --live` draws the frame with wgpu, with the distant land,
+water, shadows and post shaders of MGE XE. There is no IPC host in that mode. See
+[`docs/architecture/wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) and, for players,
+[`RENDERER.md`](RENDERER.md).
 
 `d3d8.dll` and `dinput8.dll` must stay 32-bit because Morrowind is a 32-bit process.
 `mgeHost64.exe` and `MGEXEgui.exe` are deliberately 64-bit; only code loaded into the game
@@ -80,7 +91,7 @@ process must remain Win32.
 | --- | --- | --- | --- |
 | `mgeXE.toml` | MGEXEgui (and `MGEAPI::saveConfig`) | d3d8.dll and mgeHost64 through `mge-config`; distantland loader for the owned job table | Versioned MGE XE settings plus the independently versioned `[generation]` job. Parseable documents load known values tolerantly and normalize on save; malformed TOML remains read-only. Every existing save also completes the owned schema: entries the file omits are inserted from the embedded template with its comments, existing entries keep their comments, values, and order, and `[generation]` plus unknown root tables are untouched. Opening a document never writes. Restore Defaults preserves the raw generation table; exported copies omit it. The old `MGE3\MGE.ini` is ignored and never migrated, overwritten, or deleted. |
 | `MGE3\MGE XE Default Statics Classifiers.toml` | shipped assets | generator | Default global distant-land overrides, enabled in new generation jobs and written as a commented example of the mod-metadata schema. External GUI localization files are intentionally not supported in this schema revision. |
-| `Data Files\distantland\…` | MGEXEgui, or mgeHost64 startup generation (journaled in-place, one exclusive writer) | d3d8.dll + mgeHost64 host | Generated distant-land data set. See [distantland-data.md](docs/architecture/distantland-data.md). |
+| `Data Files\distantland\…` | MGEXEgui, or mgeHost64 startup generation (committed in place, one exclusive writer) | d3d8.dll + mgeHost64 host | Generated distant-land data set. See [distantland-data.md](docs/architecture/distantland-data.md). |
 | `Data Files\shaders\core` / `core-mods` / `XEshaders` | shipped assets / users | d3d8.dll | Core HLSL effects, core shader-mod overlays, and user post-process shaders. Compiled at runtime, not into the DLL. |
 | `mgeXE.log`, `mgeHost64*.log` | runtime / host | users, MGEXEgui log viewer | Diagnostics. |
 
@@ -347,12 +358,13 @@ Three shader systems coexist:
 
 ## 5. mgeHost64 (the 64-bit host)
 
-Rust crate `mgeHost64/`. One binary,
-one mode, one launcher:
+Rust crate `mgeHost64/`. One binary, three modes (`main` in `mgeHost64/src/main.rs`):
 
 | Invocation | Behaviour |
 | --- | --- |
-| four hex handles as the whole command line | **IPC host**: services RPC commands from `d3d8.dll` until the game exits. A worker thread runs the startup-generation policy alongside it (may regenerate distant land or disable it for the session). |
+| four hex handles as the whole command line | **IPC host** (Direct3D 9): services RPC commands from `d3d8.dll` until the game exits. A worker thread runs the startup-generation policy alongside it (may regenerate distant land or disable it for the session). |
+| `--live <name>` | **wgpu renderer**: launched by the `nirender` MWSE plugin; draws the stream of the shared memory with that name into the game's window until the stream ends. Logs to `nirender-host.log`. See [`wgpu-renderer.md`](docs/architecture/wgpu-renderer.md). |
+| `--replay <capture> <picture.png> [--frame N]` | Draws a capture file into a picture with the distant land of the current folder: the same picture each time, for tests. |
 | anything else, including no arguments | Rejected by `win::parse_startup_handles` with a message naming the likely cause, logged to `mgeHost64.log`; exits 1. The host is not meant to be run by hand. |
 
 The native Win32 configuration wizard that used to live here behind `--configure` was deleted
@@ -411,7 +423,11 @@ Key contracts:
   metadata. Loaded by the 32-bit client for dynamic-vis groups and by the 64-bit host for
   placements/quadtrees.
 - Mod authors influence generation via per-plugin `-metadata.toml` files
-  ([guide](mod-metadata-guide.md)) and legacy `.ovr` classifier files.
+  ([guide](docs/mod-metadata-guide.md)) and legacy `.ovr` classifier files.
+- `lights.data` (`XELIGHT1` v2) - the exterior light sources and their baked light, for the
+  distant lights of the wgpu renderer only. Outside the `generation_state.bin` inventory.
+- With the wgpu renderer, the helper reads `version`, `terrain.bin` and its textures, the
+  shards, `usage.data` and `lights.data` itself, with no IPC client.
 
 Generation runs through `distantland::ensure_generated`, called in-process by
 `MGEXEgui.exe`'s generator window or by `mgeHost64.exe`'s startup-generation worker. Output commits
@@ -478,6 +494,10 @@ These constants gate interop and must move together:
 | `terrain.bin` layout | `d3d8/cpp/mge/dlformat.h` (`TerrainBin`) + static asserts | `mgeHost64/src/abi/terrain.rs`, `distantland` writer, [`terrain-bin.md`](docs/architecture/terrain-bin.md) |
 | Fixed `static_meshes_000..127` v6 layout/order | `d3d8/cpp/mge/dlformat.h` (`StaticMeshesBin`), `d3d8/cpp/mge/distantinit.cpp` | `distantland` writer; client loader builds concatenated `DistantSubset` records consumed by host `state/loading.rs` |
 | UV-bound palette cap (128) | `distantland` `UV_BOUND_PALETTE_CAP`, `dlformat.h` `StaticMeshesBin::MaxPaletteEntries` | `uvBoundPalette[128]` in `assets/Data Files/shaders/core/XE Common.fx`. Rust and C++ disagreeing fails at load; HLSL disagreeing does not, so all three sites cross-reference each other |
+| Subset flag mask (`0x1F`) | `dlformat.h` `KnownFlagsMask`, `distantland` `static_mesh_writer.rs` | `KNOWN_SUBSET_FLAGS` in `mgeHost64/src/renderer/statics.rs`; a new bit needs an `MGE_DL_VERSION` bump |
+| `terrain_occlusion.bin` (`XEOCCL02` v2) | `distantland` `terrain_occlusion.rs` | `mgeHost64/src/abi/occlusion.rs`, [`horizon-occlusion-asset.md`](docs/architecture/horizon-occlusion-asset.md) |
+| `lights.data` (`XELIGHT1` v2) | `distantland/src/generation/lights.rs` (`LIGHTS_VERSION`) | `read` in `mgeHost64/src/renderer/distant_lights.rs` (its own copy of the version and the tile side; no shared test), [`distantland-data.md`](docs/architecture/distantland-data.md) section 4a |
+| Stream extension record ids (1-8) | `Deviceless` in `d3d8/cpp/mge/mged3d8device.cpp` | the `*_ID` constants of `mgeHost64/src/renderer.rs`, [`wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) |
 | Host exit codes | `mgeHost64/src/error.rs` | C++ launcher interpretation |
 | Core shader passes/variables | `d3d8/cpp/mge/distantshader.h`, `distantland.h` handles | `assets/Data Files/shaders/core/*.fx` |
 
@@ -497,13 +517,15 @@ Every doc in the repository. The runtime deep-dives are also linked from the top
 | [`README.md`](README.md) | User-facing overview and install instructions. |
 | [`BUILD.md`](BUILD.md) | Prerequisites, targets, profiles, packaging, deployment. Source of truth for building. |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes. |
+| [`RENDERER.md`](RENDERER.md) | The wgpu renderer for testers: the switch, requirements, what it does, known issues, how to report. |
 | `ARCHITECTURE.md` | This reference. |
 
 ### Runtime deep-dives ([`docs/architecture/`](docs/architecture/))
 
 | Doc | What it is |
 | --- | --- |
-| [`render-pipeline.md`](docs/architecture/render-pipeline.md) | Frame anatomy: scene detection, render stages, draw-call recording, shaders. |
+| [`wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) | The wgpu renderer: processes, stream records, device, frame order, every pipeline and its bind groups, conventions, the open layout review. |
+| [`render-pipeline.md`](docs/architecture/render-pipeline.md) | Frame anatomy on Direct3D 9: scene detection, render stages, draw-call recording, shaders. |
 | [`ipc.md`](docs/architecture/ipc.md) | The 32↔64-bit shared-memory RPC protocol and cross-process vectors. |
 | [`shadows.md`](docs/architecture/shadows.md) | Two-cascade ESM sun shadows: atlas, cascade fitting, casters vs receivers, config and runtime control. |
 | [`distantland-data.md`](docs/architecture/distantland-data.md) | Generated data set under `Data Files\distantland`: inventory, producers, consumers, formats. |
@@ -525,6 +547,14 @@ Every doc in the repository. The runtime deep-dives are also linked from the top
 | --- | --- |
 | [`mge-toml.md`](docs/configuration/mge-toml.md) | Persistent configuration schema, ownership, load/write behavior, and legacy-key inventory. |
 | [`localization.md`](docs/gui/localization.md) | Embedded GUI catalogs, locale resolution, key contract, and contributor workflow. |
+
+### Mod authors
+
+| Doc | What it is |
+| --- | --- |
+| [`mod-metadata-guide.md`](docs/mod-metadata-guide.md) | Per-plugin `-metadata.toml` files that steer distant-land generation. |
+| [`water-shaders.md`](docs/water-shaders.md) | The WGSL interface of mod water shaders for the wgpu renderer. |
+| [`POST_SHADERS.md`](mgeHost64/POST_SHADERS.md) | Post shaders on the wgpu renderer: the WGSL ports and the interface for mod shaders. |
 
 ### Distant-land generator ([`distantland/`](distantland/))
 
