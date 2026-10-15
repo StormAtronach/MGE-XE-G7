@@ -1595,6 +1595,8 @@ namespace Deviceless {
                 MWPatches::patchExpandedLightLimit();
             }
             MWPatches::patchResolveDuringInit(&onResolveDuringInit);
+            // As the proxy device at its first scene of the loaded game.
+            StatusOverlay::setStatus(XE_VERSION_STRING);
         }
         if (mwBridge->IsLoaded()) {
             updateFrameLogic(mwBridge);
@@ -1607,6 +1609,7 @@ namespace Deviceless {
         }
         sendSettings();
         sendPictureRequests();
+        StatusOverlay::sendToRenderer();
     }
 
     // The game sets its view or its projection. The matrix is changed in place, as the

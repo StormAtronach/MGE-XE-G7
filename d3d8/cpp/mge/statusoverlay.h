@@ -15,4 +15,6 @@ namespace StatusOverlay {
     void setStatus(const char* s, int priority = PriorityNormal);
     void setFPS(float fps);
     void showLastStatus();
+    // The wgpu renderer mode: sends a new status text to the helper, which draws it.
+    void sendToRenderer();
 };

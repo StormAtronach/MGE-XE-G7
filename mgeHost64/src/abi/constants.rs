@@ -43,6 +43,10 @@ pub const BLUR_REFLECTIONS: Dword = 1 << 27;
 pub const REFLECTIVE_WATER: Dword = 1 << 20;
 pub const REFLECT_NEAR: Dword = 1 << 21;
 pub const REFLECT_SKY: Dword = 1 << 25;
+/// The status text of MGE XE in the window (`render.messages`), and the frame rate under it
+/// (`render.fps_counter`), which shows only with the status text.
+pub const DISPLAY_MESSAGES: Dword = 1 << 3;
+pub const FPS_COUNTER: Dword = 1 << 2;
 /// On-disk distant-land asset version expected by this host build.
 pub const MGE_DL_VERSION: u8 = 22;
 /// Terrain file magic for `terrain.bin`.

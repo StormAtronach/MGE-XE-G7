@@ -30,7 +30,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod blend;
 mod caustics;
@@ -49,10 +49,10 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
-use crate::abi::constants::{BLUR_REFLECTIONS, DYNAMIC_RIPPLES, REFLECTIVE_WATER, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
+use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView};
+use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status};
 use water::{Water, WaterFrame};
 use post::{Post, Variables};
 use shadow::Shadow;
@@ -137,6 +137,10 @@ impl Settings {
 /// The record of MGE XE for a picture file that a mod asked for (`mge.saveScreenshot`): the
 /// version 1, 1 for a picture with the interface of the game, the path.
 const PICTURE_ID: u32 = 3;
+/// The status text of MGE XE (`Deviceless::sendStatus`): the version 1, 1 for a warning or an
+/// error, the time to show it in ms, the text. The stream does not keep it: a capture file
+/// has no status text.
+const STATUS_ID: u32 = 9;
 
 /// Runs the renderer with the distant land of MGE XE.
 pub fn run(mut arguments: Vec<String>) {
@@ -317,6 +321,11 @@ pub struct DistantLand {
     shader_states_new: Vec<String>,
     /// The picture files that a mod asked for and that the renderer did not take yet.
     pictures: Vec<PictureRequest>,
+    /// The last status text of MGE XE: the text, true for a warning or an error, and the
+    /// time at which it goes away.
+    status: Option<(String, bool, Instant)>,
+    /// The time of the last status text in the log.
+    status_logged: Option<Instant>,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -683,6 +692,8 @@ impl DistantLand {
             shader_states: Vec::new(),
             shader_states_new: Vec::new(),
             pictures: Vec::new(),
+            status: None,
+            status_logged: None,
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -1513,6 +1524,17 @@ impl Extension for DistantLand {
         self.problem.iter().cloned().chain(self.tunables.lines()).collect()
     }
 
+    /// The status text and the frame rate of MGE XE, as `StatusOverlay::show` draws them on
+    /// Direct3D 9: nothing without `render.messages`.
+    fn status(&self) -> Status {
+        let flags = self.settings.map_or(0, |settings| settings.flags);
+        if flags & DISPLAY_MESSAGES == 0 {
+            return Status::default();
+        }
+        let message = self.status.as_ref().filter(|(_, _, until)| Instant::now() < *until).map(|(text, warning, _)| (text.clone(), *warning));
+        Status { message, frame_rate: flags & FPS_COUNTER != 0 }
+    }
+
     fn anisotropy(&self) -> u16 {
         self.anisotropy
     }
@@ -1850,6 +1872,23 @@ impl Extension for DistantLand {
                 } else {
                     self.pictures.push(PictureRequest { path, with_ui: with_ui != 0 });
                 }
+            }
+            return;
+        }
+        if id == STATUS_ID {
+            let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+            if let (Some(1), Some(warning), Some(ms), Some(text)) = (word(0), word(4), word(8), bytes.get(12..)) {
+                let text = String::from_utf8_lossy(&text[..text.iter().position(|c| *c == 0).unwrap_or(text.len())]).into_owned();
+                let now = Instant::now();
+                // A key that the player holds can give a new text in each frame (the camera
+                // macros): the log gets 4 texts in a second at most. A text shown again
+                // (`showLastMessage`) is not logged again.
+                let again = self.status.as_ref().is_some_and(|(last, _, _)| *last == text);
+                if !again && self.status_logged.is_none_or(|logged| now - logged >= Duration::from_millis(250)) {
+                    println!("status: {text}");
+                    self.status_logged = Some(now);
+                }
+                self.status = Some((text, warning != 0, now + Duration::from_millis(ms.into())));
             }
             return;
         }
