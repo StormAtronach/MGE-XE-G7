@@ -10,6 +10,7 @@
 #include "camerarelative.h"
 #include "configuration.h"
 #include "distantland.h"
+#include "distantlandready.h"
 #include "mgedinput.h"
 #include "morrowindskinning.h"
 #include "mwbridge.h"
@@ -1140,6 +1141,9 @@ void sendToRenderer(UINT id, const void* data, UINT length);
 
 namespace Deviceless {
     static bool ready = false;
+    // A game was loaded since the last environment record: flag 256 of the next one. The
+    // helper then says when the distant land around the camera is there.
+    static bool gameLoaded = false;
     static bool mainView = false;
     // The position of the camera of the world, from its last view matrix.
     static float eye[3] = { 0, 0, 0 };
@@ -1158,7 +1162,7 @@ namespace Deviceless {
         UINT version;
         // 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior
         // that is like one. 16: in a water volume. 32: in a dry space. 64: in a menu. 128:
-        // a mouse click in this frame.
+        // a mouse click in this frame. 256: a game was loaded.
         UINT flags;
         float nearViewRange;
         float fogStart, fogEnd;
@@ -1299,6 +1303,11 @@ namespace Deviceless {
         }
         if (MGEProxyDirectInput::mouseClick) {
             e.flags |= 128u;
+        }
+        // A game was loaded: the helper says when the distant land is there.
+        if (gameLoaded) {
+            e.flags |= 256u;
+            gameLoaded = false;
         }
 
         // The scattering of the atmosphere, as in DistantLand::adjustFog: the fog colour of
@@ -1552,6 +1561,20 @@ namespace Deviceless {
         loadVisGroups();
         DistantLand::resolveDynamicVisGroups();
         visGroupsUnsent = true;
+        gameLoaded = true;
+    }
+
+    // The messages of the helper. 1: the distant land, version 1, then the reason
+    // (DistantLandReady::Reason). MESSAGE_DISTANT_LAND in mgeHost64/src/renderer.rs.
+    void message(unsigned id, const void* data, unsigned length) {
+        static const unsigned DistantLandId = 1;
+        if (id == DistantLandId && length >= 8) {
+            UINT words[2];
+            std::memcpy(words, data, sizeof(words));
+            if (words[0] == 1 && (words[1] == DistantLandReady::Loaded || words[1] == DistantLandReady::Arrived)) {
+                DistantLandReady::push(static_cast<DistantLandReady::Reason>(words[1]));
+            }
+        }
     }
 
     static void scanVisGroups(MWBridge* mwBridge) {

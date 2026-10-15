@@ -195,6 +195,14 @@ extern "C" void __cdecl MGE_StreamTransform(UINT state, float* matrix, UINT targ
     }
 }
 
+// The nirender plugin calls this for each message of the extension in the helper, at the end
+// of a frame of the game. See Deviceless::message.
+extern "C" void __cdecl MGE_StreamMessage(UINT id, const void* data, UINT length) {
+    if (isMW && Configuration.RendererWgpu && data) {
+        Deviceless::message(id, data, length);
+    }
+}
+
 extern "C" void* _stdcall FakeDirect3DCreate(UINT version) {
     // Wrap Morrowind only, not TESCS
     if (isMW && Configuration.RendererWgpu) {

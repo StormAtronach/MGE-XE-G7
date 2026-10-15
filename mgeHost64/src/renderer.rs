@@ -142,6 +142,15 @@ const PICTURE_ID: u32 = 3;
 /// error, the time to show it in ms, the text. The stream does not keep it: a capture file
 /// has no status text.
 const STATUS_ID: u32 = 9;
+/// The message of the helper for MGE XE about the distant land (`Deviceless::message`):
+/// version 1, then 1 when the distant land of the session is loaded, 2 when after a game
+/// load or a jump of the camera the distant statics around the camera are there.
+const MESSAGE_DISTANT_LAND: u32 = 1;
+const LOADED: u32 = 1;
+const ARRIVED: u32 = 2;
+/// The longest wait for the statics after a game load or a jump, from the end of the load
+/// of the data: then `ARRIVED` goes anyway, as the bootstrap of Direct3D 9 gives up.
+const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Runs the renderer with the distant land of MGE XE.
 pub fn run(mut arguments: Vec<String>) {
@@ -328,6 +337,14 @@ pub struct DistantLand {
     status: Option<(String, bool, Instant)>,
     /// The time of the last status text in the log.
     status_logged: Option<Instant>,
+    /// The messages for MGE XE of this frame (`Extension::messages`).
+    messages_out: Vec<(u32, Vec<u8>)>,
+    /// `LOADED` was said.
+    loaded_said: bool,
+    /// After a game load or a jump of the camera: the start of the wait for the statics, and
+    /// the world frames since then. The position of the camera in the last world frame.
+    arrival: Option<(Instant, u32)>,
+    last_eye: Option<[f32; 3]>,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -702,6 +719,10 @@ impl DistantLand {
             pictures: Vec::new(),
             status: None,
             status_logged: None,
+            messages_out: Vec::new(),
+            loaded_said: false,
+            arrival: None,
+            last_eye: None,
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -1565,6 +1586,16 @@ impl Extension for DistantLand {
         self.finish_load(scene);
         self.apply_settings();
         self.cell_facts(scene);
+        // A jump of the camera of more than 2 cells (a teleport) waits for the statics as a
+        // game load does; each world frame counts for a wait.
+        let eye = eye_of(&scene.view);
+        if self.last_eye.is_some_and(|last| (eye[0] - last[0]).hypot(eye[1] - last[1]) > 2.0 * CELL) {
+            self.arrival = Some((Instant::now(), 0));
+        }
+        self.last_eye = Some(eye);
+        if let Some((_, frames)) = self.arrival.as_mut() {
+            *frames += 1;
+        }
         // The picture kept under a menu (`runtime.menu_caching`): a frame that shows it does
         // no work of distant land; the frame that keeps a new one runs the post stage.
         let flags = self.environment.map_or(0, |e| e.flags);
@@ -1830,6 +1861,31 @@ impl Extension for DistantLand {
     }
 
 
+    /// The events of the distant land for MGE XE (`distantLandReady` of its Lua), at the end
+    /// of a frame: `LOADED` one time when the data of the session is loaded; `ARRIVED` after a
+    /// game load or a jump when the statics near the camera are there. A wait needs two world
+    /// frames: the first one asks for the statics of the new place.
+    fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
+        let statics_loaded = self.statics.as_ref().is_none_or(|statics| statics.loaded());
+        let say = |reason: u32| (MESSAGE_DISTANT_LAND, [1u32, reason].iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
+        if !self.loaded_said && self.enabled && self.loading.is_none() && self.gpu.is_some() && statics_loaded {
+            self.loaded_said = true;
+            println!("distant land: ready (loaded)");
+            self.messages_out.push(say(LOADED));
+        }
+        if let Some((since, frames)) = self.arrival {
+            if self.loading.is_some() || !statics_loaded {
+                // The wait counts from the end of the load of the data.
+                self.arrival = Some((Instant::now(), frames));
+            } else if frames >= 2 && (self.statics.as_ref().is_none_or(|statics| statics.settled()) || since.elapsed() >= ARRIVAL_TIMEOUT) {
+                self.arrival = None;
+                println!("distant land: ready (arrived) in {:.2} s", since.elapsed().as_secs_f32());
+                self.messages_out.push(say(ARRIVED));
+            }
+        }
+        std::mem::take(&mut self.messages_out)
+    }
+
     fn pictures(&mut self) -> Vec<PictureRequest> {
         std::mem::take(&mut self.pictures)
     }
@@ -1938,6 +1994,11 @@ impl Extension for DistantLand {
             raw[..length].copy_from_slice(&bytes[..length]);
             let environment: Environment = bytemuck::pod_read_unaligned(&raw);
             if (4..=6).contains(&environment.version) {
+                // A game was loaded (flag 256, in one record only): the wait for the statics
+                // starts. The record can come in a loading screen, which has no world frame.
+                if environment.flags & 256 != 0 {
+                    self.arrival = Some((Instant::now(), 0));
+                }
                 self.environment = Some(environment);
             }
         }

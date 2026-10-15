@@ -4,6 +4,7 @@
 #include "support/log.h"
 #include "configuration.h"
 #include "distantland.h"
+#include "distantlandready.h"
 #include "distantshader.h"
 #include "dlformat.h"
 #include "dlmapping.h"
@@ -89,6 +90,8 @@ bool DistantLand::staticsUploaded = false;
 
 DistantLand::UploadPhase DistantLand::uploadPhase = DistantLand::UploadPhase::None;
 bool DistantLand::pumpActive = false;
+bool DistantLand::arrivalPending = false;
+int DistantLand::arrivalStartedMs = 0;
 bool DistantLand::pumpDraining = false;
 bool DistantLand::worldResolved = false;
 bool DistantLand::uploadComplete = false;
@@ -1918,12 +1921,49 @@ std::uint32_t quantizeViewHeadingBin(const D3DXVECTOR4& eye) {
 
 // End-of-frame residency tick, after rendering has ended. Admission is always safe here; the
 // eviction fallback runs only on frames that never reached renderStage0 (menu/load screens).
+void DistantLand::expectArrival() {
+    arrivalPending = true;
+    arrivalStartedMs = HighResolutionTimer::getMilliseconds();
+}
+
+// A jump of the camera of more than 2 cells (a teleport, coc, travel) waits for the statics
+// around it as a game load does.
+void DistantLand::noteCameraForArrival() {
+    static D3DXVECTOR3 last;
+    static bool lastValid = false;
+    float position[3] = {};
+    if (!MWBridge::get()->tryGetPlayerPosition(position)) {
+        return;
+    }
+    const D3DXVECTOR3 now(position[0], position[1], position[2]);
+    const D3DXVECTOR3 moved = now - last;
+    if (lastValid && D3DXVec3Length(&moved) > 2.0f * 8192.0f) {
+        expectArrival();
+    }
+    last = now;
+    lastValid = true;
+}
+
+void DistantLand::checkArrival() {
+    if (!arrivalPending) {
+        return;
+    }
+    const bool quiet = DistantLoaders::residencyQuiescent();
+    if (quiet || HighResolutionTimer::getMilliseconds() - arrivalStartedMs >= kArrivalTimeoutMs) {
+        arrivalPending = false;
+        DistantLandReady::push(DistantLandReady::Arrived);
+    }
+}
+
 void DistantLand::tickResidency(bool stage0RanThisFrame) {
     if (!canRenderDistantLand()) {
         return;
     }
     sampleMergedStreamingCap();
+    noteCameraForArrival();
     if (!DistantLoaders::residencyActive()) {
+        // All statics are on the GPU: nothing to wait for.
+        checkArrival();
         return;
     }
     DistantLoaders::noteResidencyPresent();
@@ -1954,6 +1994,8 @@ void DistantLand::tickResidency(bool stage0RanThisFrame) {
         kResidencyAdmitBudgetBytes,
         kResidencyAdmitBudgetResources
     );
+    // After the plan of this frame: a jump has its requests queued by now.
+    checkArrival();
 }
 
 // Advance the upload pump by one budgeted slice. Driven from Present across idle
@@ -2212,6 +2254,10 @@ void DistantLand::pumpUploadTick(int budgetMs) {
         isDistantLandLoaded = true;
         LOG::logline("-- Distant land upload pump complete");
         finalizeUploadIfReady();
+        // The load screen was held until the statics near the camera were there.
+        DistantLandReady::push(DistantLandReady::Loaded);
+        DistantLandReady::push(DistantLandReady::Arrived);
+        arrivalPending = false;
         break;
 
     case UploadPhase::None:

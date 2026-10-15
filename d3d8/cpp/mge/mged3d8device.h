@@ -55,4 +55,6 @@ namespace Deviceless {
     // interface of the game. The format is that of the extension of the path.
     void requestPicture(const char* path, bool withUI);
     void transform(unsigned state, D3DMATRIX* matrix, bool targetIsBackBuffer);
+    // A message of the extension in the helper (Extension::messages of the crate).
+    void message(unsigned id, const void* data, unsigned length);
 }

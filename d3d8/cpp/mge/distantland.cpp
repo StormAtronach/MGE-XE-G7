@@ -113,6 +113,7 @@ void DistantLand::onResolveDuringInit() {
         }
         // Arm only: the next load-screen Present starts the epoch and performs bounded work.
         DistantLoaders::armLiveLoadResidencyTransition(resolvedDestination);
+        expectArrival();
     }
 }
 

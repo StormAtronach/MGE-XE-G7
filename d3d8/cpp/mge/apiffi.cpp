@@ -13,6 +13,7 @@
 
 #include "configuration.h"
 #include "distantland.h"
+#include "distantlandready.h"
 #include "mwbridge.h"
 #include "waterlook.h"
 
@@ -110,6 +111,12 @@ extern "C" {
     void MGE_WaterDrySet(int dry) {
         MWBridge::get()->setCameraDry(dry != 0);
         DistantLand::cameraInDrySpace = dry != 0;
+    }
+
+    // The next reason of the event distantLandReady (DistantLandReady::Reason), or 0. The Lua
+    // of MGE XE calls it in each frame and triggers the event for each reason.
+    int MGE_DistantLandReadyNext() {
+        return DistantLandReady::next();
     }
 
 }

@@ -7,6 +7,7 @@
 local gui = require("MGE XE Options.gui")
 local shaderparams = require("MGE XE Options.shaderparams")
 local hotreload = require("MGE XE Options.hotreload")
+require("MGE XE Options.events")
 local i18n = mwse.loadTranslations("MGE XE Options")
 
 -- MCM

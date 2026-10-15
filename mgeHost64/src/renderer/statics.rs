@@ -1106,6 +1106,8 @@ pub struct Statics {
     most_merged: u64,
     evicted: u64,
     capped_frames: u64,
+    /// The last admission left wanted subsets waiting for the cap and asked for none.
+    cap_waiting: bool,
     /// The draws of the frame: texture, subset, instance, triangles.
     draws: Vec<(u32, u32, u32, u32)>,
     /// The device and its queue, for the pools and the culling outside a draw.
@@ -1194,6 +1196,7 @@ impl Statics {
             most_merged: 0,
             evicted: 0,
             capped_frames: 0,
+            cap_waiting: false,
             draws: Vec::new(),
             device: None,
             queue: None,
@@ -1276,6 +1279,18 @@ impl Statics {
         }
         self.set_stats = [SetStats::default(); 4];
         self.grass_stats = SetStats::default();
+    }
+
+    /// The catalog is loaded.
+    pub fn loaded(&self) -> bool {
+        self.loading.is_none() && self.catalog.is_some()
+    }
+
+    /// The subsets near the camera are on the GPU: none is asked for from the reader thread,
+    /// and none is wanted that the cap would let in. Subsets that wait for the cap count as
+    /// there: they come when the camera comes nearer.
+    pub fn settled(&self) -> bool {
+        self.loaded() && self.requested.is_empty() && (self.wanted.is_empty() || self.cap_waiting)
     }
 
     /// Why the data was rejected, when it was: distant land must then be off.
@@ -1468,6 +1483,7 @@ impl Statics {
                 self.evicted += 1;
             }
         }
+        self.cap_waiting = waiting && admit.is_empty();
         for subset in admit {
             self.requested.insert(subset);
             let _ = requests.send(subset);

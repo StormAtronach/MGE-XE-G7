@@ -356,6 +356,15 @@ public:
     // End-of-frame residency tick. `stage0RanThisFrame` selects the eviction boundary:
     // renderStage0 already evicted, so this only admits; otherwise both run here.
     static void tickResidency(bool stage0RanThisFrame);
+    // The reason Arrived of the event distantLandReady (distantlandready.h): a game load or a
+    // jump of the camera starts a wait, which ends when the residency is quiet near the
+    // camera, or after kArrivalTimeoutMs.
+    static void expectArrival();
+    static void noteCameraForArrival();
+    static void checkArrival();
+    static bool arrivalPending;
+    static int arrivalStartedMs;
+    static constexpr int kArrivalTimeoutMs = 10000;
     // Eviction boundary at the entry of renderStage0, before this frame's cull queries.
     static void evictResidencyAtStage0();
     static bool beginStaticsPhase();
