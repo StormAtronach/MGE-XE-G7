@@ -810,6 +810,8 @@ pub(super) struct Volumes {
     white: wgpu::TextureView,
     clear: wgpu::TextureView,
     plain_mesh: wgpu::BindGroup,
+    /// The mesh groups of the water shaders of mods in this frame, by their two textures.
+    mesh_groups: HashMap<(wgpu::TextureView, wgpu::TextureView), wgpu::BindGroup>,
     pipeline_layout: wgpu::PipelineLayout,
     surface_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<Key, wgpu::RenderPipeline>,
@@ -940,6 +942,7 @@ impl Volumes {
             white,
             clear,
             plain_mesh,
+            mesh_groups: HashMap::new(),
             pipeline_layout,
             surface_layout,
             pipelines: HashMap::new(),
@@ -996,6 +999,7 @@ impl Volumes {
     /// The start of a frame: no slots are used.
     pub fn start_frame(&mut self) {
         self.used = 0;
+        self.mesh_groups.clear();
     }
 
     /// True when the water shader of this name has been asked for before.
@@ -1038,10 +1042,16 @@ impl Volumes {
 
     /// The textures of a held mesh for a water shader: its base map, and the first of its
     /// other maps (a dark, detail or decal map).
-    fn mesh_group(&self, device: &wgpu::Device, held: &HeldDraw) -> wgpu::BindGroup {
-        let base = held.maps.iter().find(|m| m.map == nirender_wgpu::material::BASE).map_or(&self.white, |m| &*m.texture);
-        let second = held.maps.iter().filter(|m| m.map != nirender_wgpu::material::BASE).min_by_key(|m| m.map).map_or(&self.clear, |m| &*m.texture);
-        Self::mesh_group_of(device, &self.mesh_layout, &self.mesh_sampler, base, second)
+    fn mesh_group(&mut self, device: &wgpu::Device, held: &HeldDraw) -> wgpu::BindGroup {
+        let base = held.maps.iter().find(|m| m.map == nirender_wgpu::material::BASE).map_or(&self.white, |m| &*m.texture).clone();
+        let second = held.maps.iter().filter(|m| m.map != nirender_wgpu::material::BASE).min_by_key(|m| m.map).map_or(&self.clear, |m| &*m.texture).clone();
+        self.cached_mesh_group(device, base, second)
+    }
+
+    /// The mesh group of two textures, made once in a frame.
+    fn cached_mesh_group(&mut self, device: &wgpu::Device, base: wgpu::TextureView, second: wgpu::TextureView) -> wgpu::BindGroup {
+        let (layout, sampler) = (&self.mesh_layout, &self.mesh_sampler);
+        self.mesh_groups.entry((base, second)).or_insert_with_key(|(base, second)| Self::mesh_group_of(device, layout, sampler, base, second)).clone()
     }
 
     /// A buffer of `count` slots and its group.
@@ -1265,7 +1275,7 @@ impl Volumes {
                 pass.set_pipeline(self.pipeline(scene.device, key));
                 // A water shader of a mod has the base texture of the baked mesh.
                 let mesh = match (&water.texture, shader) {
-                    (Some(texture), 1..) => Self::mesh_group_of(scene.device, &self.mesh_layout, &self.mesh_sampler, texture, &self.clear),
+                    (Some(texture), 1..) => self.cached_mesh_group(scene.device, texture.clone(), self.clear.clone()),
                     _ => self.plain_mesh.clone(),
                 };
                 pass.set_bind_group(2, &mesh, &[]);
