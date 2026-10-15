@@ -54,9 +54,10 @@ Morrowind.exe (32-bit)                                 mgeHost64.exe --live (64-
 | 7 | water masks (dry spaces) | yes | on a change |
 | 8 | vis groups | yes | on a cell change or a load |
 | 9 | status text (`StatusOverlay::setStatus`): warning, ms to show, text | no | at Present after a new text |
+| 10 | the place of a wait of a game load (`distant_land.wait_on_load`): version, serial, position, interior name | no | at the resolve hook of a load |
 
 A kept record (bit `0x80000000`) stays in the stream, so a capture file holds it. Use kept
-records for state. The next free id is 10. The ids are constants at the top of `renderer.rs`
+records for state. The next free id is 11. The ids are constants at the top of `renderer.rs`
 and in `Deviceless`; each side names the other.
 
 The environment flags (record 1): 1 exponential fog, 2 under water, 4 an exterior or an
@@ -73,7 +74,13 @@ reads it at each frame end and calls `MGE_StreamMessage(id, data, length)` of `d
 
 | Id | Message | Sent |
 | --- | --- | --- |
-| 1 | distant land: version 1, reason 1 loaded / 2 arrived | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` (or after 10 s) |
+| 1 | distant land: version 1, reason 1 loaded / 2 arrived, the serial of the wait it answers (0 none) | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` (or after 10 s) |
+
+The wait of a game load (`Deviceless::waitForDistantLand`): the game sends record 10 and
+draws its loading bar until `ARRIVED` with that serial comes back (or 15 s). The frames of
+the loading bar have no world: the crate calls `Extension::after_frame(scene)` at the end of
+each live frame, and there the helper finishes its loads and streams the statics near the
+place (`Statics::prefetch`; those arrivals show with no fade-in).
 
 `d3d8.dll` queues the reasons (`distantlandready.h`, also filled by the Direct3D 9 path); the
 Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export

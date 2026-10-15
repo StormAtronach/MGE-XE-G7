@@ -143,6 +143,11 @@ adapter and the one in use.
   teleport, or as you travel), where Direct3D 9 shows them at once. The time is the
   parameter "Distant statics: fade-in time" of the renderer's parameters window (row
   "water (renderer)"); 0 turns the fade off until the game ends.
+- To have the distant land complete when a loaded game starts, as MGE XE on Direct3D 9 does
+  at the first load: "Wait on the loading screen for the distant land" in the Distant Land
+  page of the MGE XE GUI (`wait_on_load = true` under `[distant_land]`). The loading screen
+  then stays until the distant statics around you are there, at most 15 s. Teleports do not
+  wait; their statics fade in.
 - "Pause world rendering in menus" (`menu_caching` under `[runtime]`, off at the start)
   works as on Direct3D 9: in a menu the picture of the world stays still, and the renderer
   does less work, until a click.
