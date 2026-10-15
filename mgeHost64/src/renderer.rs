@@ -75,7 +75,7 @@ const TUNE_ID: u32 = 5;
 const WATER_LOOKS_ID: u32 = 6;
 /// The triangles of the dry spaces (`MGE_WaterMasksSet`), kept as the looks are.
 const WATER_MASKS_ID: u32 = 7;
-/// The state of the vis groups of the distant statics (`Deviceless::sendVisGroups`), kept
+/// The state of the vis groups of the distant statics (`Deviceless::scanVisGroups`), kept
 /// as the looks are: version 1, the number of groups with the group 0, then a byte for each
 /// group, 0 for a hidden one.
 const VIS_GROUPS_ID: u32 = 8;
@@ -730,11 +730,13 @@ impl DistantLand {
             settings.fog.above_water_start,
             settings.fog.above_water_end
         );
-        if land.enabled && land.water_enabled {
+        // The wave texture is for the water and for the post shaders. The post shaders run
+        // with distant land off too, as on the Direct3D 9 path.
+        if (land.enabled && land.water_enabled) || land.post_enabled {
             // The wave texture: in the game folder (the mod of MGE XE in the file system of
             // Mod Organizer), or beside this program for a replay.
             land.waves = data_file(root, "textures/MGE/water_NRM.dds").unwrap_or_default();
-            if land.waves.is_empty() {
+            if land.waves.is_empty() && land.enabled {
                 println!("water: the wave texture water_NRM.dds was not found; no water");
                 land.water_enabled = false;
             }
@@ -1545,18 +1547,20 @@ impl Extension for DistantLand {
                 );
             }
         }
-        // The chain of post shaders runs in an interior too, as it does with MGE XE on
-        // Direct3D 9: its wave texture is that of the water, or one of its own when the
-        // frame has no water object (the first frame is in an interior).
+        // The chain of post shaders runs in an interior and with distant land off too, as it
+        // does with MGE XE on Direct3D 9: its wave texture is that of the water, or one of its
+        // own when the frame has no water object. Without the file the shaders get a flat
+        // wave texture: a shader that reads it is wrong, but the chain still runs.
         if self.post_enabled && self.post.is_none() {
             let waves = match self.water.as_ref() {
-                Some(water) => Some(water.waves()),
-                None => water::wave_texture(scene, &self.waves).ok(),
+                Some(water) => water.waves(),
+                None => water::wave_texture(scene, &self.waves).unwrap_or_else(|problem| {
+                    println!("post: {problem}; the shaders get a flat wave texture");
+                    water::flat_wave_texture(scene)
+                }),
             };
-            if let Some(waves) = waves {
-                let root = self.root.clone();
-                self.post = Some(Post::new(scene, &self.post_chain, waves, &|name| data_file(&root, name), self.hdr_reaction));
-            }
+            let root = self.root.clone();
+            self.post = Some(Post::new(scene, &self.post_chain, waves, &|name| data_file(&root, name), self.hdr_reaction));
         }
         // The shaders that a mod loaded or changed since the last frame.
         if let Some(post) = self.post.as_mut() {
@@ -2263,9 +2267,10 @@ impl Extension for DistantLand {
             | (if e.sun_vis >= 0.001 { 32 } else { 64 });
         // The depth of the distant land and the distant statics is a part of the depth frame
         // above the water only, as `DistantLand::renderDepth` of the Direct3D 9 path has
-        // it. The numbers are those of the projection of `before_world`.
+        // it. The numbers are those of the projection of `before_world`. With distant land
+        // off there is no distant stage, and the depth of the game stands in for it.
         let (near, far) = (NEAR - 1e-2, self.draw_distance.max(NEAR * 2.0));
-        let distant = (!underwater).then_some([far / (far - near), -near * far / (far - near)]);
+        let distant = (self.enabled && !underwater).then_some([far / (far - near), -near * far / (far - near)]);
         post.run(scene, encoder, target, &variables, flags, distant);
     }
 

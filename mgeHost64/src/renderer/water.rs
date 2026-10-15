@@ -889,6 +889,29 @@ pub(super) fn wave_texture(scene: &SceneView, dds: &[u8]) -> Result<wgpu::Textur
     Ok(texture.create_view(&Default::default()))
 }
 
+/// A wave texture of one flat normal (0, 0, 1), for the post shaders when water_NRM.dds is
+/// missing or not readable.
+pub(super) fn flat_wave_texture(scene: &SceneView) -> wgpu::TextureView {
+    use wgpu::util::DeviceExt;
+    let texture = scene.device.create_texture_with_data(
+        scene.queue,
+        &wgpu::TextureDescriptor {
+            label: Some("water waves, flat"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::MipMajor,
+        // B, G, R, A: the normal (0.5, 0.5, 1) of a texel.
+        &[255, 128, 128, 255],
+    );
+    texture.create_view(&Default::default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
