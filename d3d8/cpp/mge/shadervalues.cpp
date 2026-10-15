@@ -241,6 +241,8 @@ void parseFile(const std::string& path, ShaderValues& result, std::map<std::stri
             }
         } else if (depth == 0 && c == ';') {
             auto words = tokens(statement);
+            // The statement as it is written: the start value of a string.
+            const std::string written = statement;
             statement.clear();
             ++i;
 
@@ -332,6 +334,21 @@ void parseFile(const std::string& path, ShaderValues& result, std::map<std::stri
 
                 if (letter == 's') {
                     variable.type = 's';
+                    // The text in quotation marks after `name =`.
+                    const auto after = [&](size_t from) { return written.find_first_not_of(" \t\r\n", from); };
+                    for (size_t named = written.find(variable.name); named != std::string::npos; named = written.find(variable.name, named + 1)) {
+                        const size_t end = named + variable.name.size();
+                        if ((named > 0 && isNameChar(written[named - 1])) || (end < written.size() && isNameChar(written[end]))) {
+                            continue;
+                        }
+                        const size_t equals = after(end);
+                        const size_t open = (equals != std::string::npos && written[equals] == '=') ? after(equals + 1) : std::string::npos;
+                        const size_t close = (open != std::string::npos && written[open] == '"') ? written.find('"', open + 1) : std::string::npos;
+                        if (close != std::string::npos) {
+                            variable.text = written.substr(open + 1, close - open - 1);
+                            break;
+                        }
+                    }
                 } else if (!array) {
                     variable.type = letter;
                     variable.values.assign(columns, 0.0f);
@@ -394,4 +411,18 @@ size_t ShaderValues::get(const char* name, float* out, size_t count) {
         out[n] = variable->values[n];
     }
     return variable->values.size();
+}
+
+const char* ShaderValues::getString(const char* name) {
+    ShaderVariable* variable = find(name);
+    return (variable && variable->type == 's') ? variable->text.c_str() : nullptr;
+}
+
+bool ShaderValues::setString(const char* name, const char* value) {
+    ShaderVariable* variable = find(name);
+    if (!variable || variable->type != 's' || !value) {
+        return false;
+    }
+    variable->text = value;
+    return true;
 }

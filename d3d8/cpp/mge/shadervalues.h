@@ -15,11 +15,14 @@ struct ShaderVariable {
     std::string name;
     // The type letter of MGEAPI::shaderGetVariableInfo: b, i, f for one value; B, I, F for
     // an array of them; 2, 3, 4 for a vector; V for an array of vectors; m for a matrix;
-    // s for a string (kept without a value).
+    // s for a string.
     char type;
     // The values, as floats: the default of the file, then what the mod set. A vector of
     // an array V has 4 values.
     std::vector<float> values;
+    // The value of a string: the default of the file, then what the mod set. The renderer
+    // does not get it: no port reads a string.
+    std::string text;
     // The mod set the variable. Only such a variable goes to the renderer: a variable
     // that no mod set keeps the default of the port.
     bool set;
@@ -57,4 +60,9 @@ struct ShaderValues {
     // Copies the values of a variable into `out`, at most `count`. Returns the number of
     // values the variable has, 0 for a name the file does not have.
     size_t get(const char* name, float* out, size_t count);
+    // The value of a string variable, or null for a name that is not a string of the file.
+    // The text stays valid until the variable is set again.
+    const char* getString(const char* name);
+    // Sets a string variable. Returns false for a name that is not a string of the file.
+    bool setString(const char* name, const char* value);
 };

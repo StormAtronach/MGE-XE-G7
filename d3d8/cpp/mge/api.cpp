@@ -465,8 +465,7 @@ namespace api {
             }
             const ShaderVariable& variable = shader->values->variables[index];
             std::snprintf(out_info->name, sizeof(out_info->name), "%s", variable.name.c_str());
-            // A string has no value in the store: the type that a caller skips.
-            out_info->valueType = (variable.type == 's') ? 'x' : variable.type;
+            out_info->valueType = variable.type;
             return true;
         }
         auto param_handle = shader->effect->GetParameter(0, index);
@@ -606,7 +605,12 @@ namespace api {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
             // The wgpu renderer mode: the variable is in the store of the shader.
-            return false;
+            const char* text = shader->values ? shader->values->getString(variableName) : nullptr;
+            if (!text) {
+                return false;
+            }
+            *out_value = text;
+            return true;
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
@@ -809,7 +813,7 @@ namespace api {
         auto shader = static_cast<MGEShader*>(handle);
         if (!shader->effect) {
             // The wgpu renderer mode: the variable is in the store of the shader.
-            return false;
+            return shader->values && shader->values->setString(variableName, value);
         }
         auto param_handle = shader->effect->GetParameterByName(0, variableName);
 
