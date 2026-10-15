@@ -33,7 +33,8 @@ const TEXEL: u32 = 4;
 const GLOW_WORDS: u64 = 8;
 
 /// The baked light for a shader of the land or of the statics: `GROUP` is the number of the
-/// bind group of `LightBinding` in that shader. `baked_light(world)` is the light at a place.
+/// bind group with the bindings of `LightBinding` in that shader, and `B0` to `B3` their
+/// numbers. `baked_light(world)` is the light at a place.
 const BAKED_WGSL: &str = "
 struct LightMap {
     // The first cell of the texture of the tiles of the cells, and its size in cells.
@@ -41,10 +42,10 @@ struct LightMap {
     // x: the strength (0 for none). y: the tiles in a row of the texture of the tiles.
     values: vec4f,
 }
-@group(GROUP) @binding(0) var<uniform> light_map: LightMap;
-@group(GROUP) @binding(1) var light_tiles: texture_2d<f32>;
-@group(GROUP) @binding(2) var light_index: texture_2d<i32>;
-@group(GROUP) @binding(3) var light_sampler: sampler;
+@group(GROUP) @binding(B0) var<uniform> light_map: LightMap;
+@group(GROUP) @binding(B1) var light_tiles: texture_2d<f32>;
+@group(GROUP) @binding(B2) var light_index: texture_2d<i32>;
+@group(GROUP) @binding(B3) var light_sampler: sampler;
 
 fn baked_light(world: vec3f) -> vec3f {
     if light_map.values.x <= 0.0 {
@@ -69,9 +70,14 @@ fn baked_light(world: vec3f) -> vec3f {
 }
 ";
 
-/// `BAKED_WGSL` for the bind group `group`.
+/// `BAKED_WGSL` for the bind group `group`, with the bindings 0 to 3 of `LightBinding`.
 pub fn baked_wgsl(group: u32) -> String {
-    BAKED_WGSL.replace("GROUP", &group.to_string())
+    baked_wgsl_at(group, 0)
+}
+
+/// `BAKED_WGSL` for the bind group `group`, with the bindings from `first` (`LightBinding::layout_entries`).
+pub fn baked_wgsl_at(group: u32, first: u32) -> String {
+    (0..4).fold(BAKED_WGSL.replace("GROUP", &group.to_string()), |code, i| code.replace(&format!("B{i}"), &(first + i).to_string()))
 }
 
 #[repr(C)]
@@ -88,31 +94,49 @@ pub struct LightBinding {
     pub group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    tiles: wgpu::TextureView,
+    index: wgpu::TextureView,
+    /// One more each time the tiles change, so that a group with these bindings
+    /// (`entries`) is made again.
+    pub generation: u64,
     map: MapUniforms,
 }
 
 impl LightBinding {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> LightBinding {
+    /// The layout of the four bindings of the baked light, from the binding `first`.
+    pub fn layout_entries(first: u32) -> [wgpu::BindGroupLayoutEntry; 4] {
         let texture_entry = |binding: u32, sample_type: wgpu::TextureSampleType| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("distant lights, baked"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
-                texture_entry(1, wgpu::TextureSampleType::Float { filterable: true }),
-                texture_entry(2, wgpu::TextureSampleType::Sint),
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
-            ],
-        });
+        [
+            wgpu::BindGroupLayoutEntry {
+                binding: first,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            texture_entry(first + 1, wgpu::TextureSampleType::Float { filterable: true }),
+            texture_entry(first + 2, wgpu::TextureSampleType::Sint),
+            wgpu::BindGroupLayoutEntry { binding: first + 3, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+        ]
+    }
+
+    /// The four bindings of the baked light, from the binding `first`, for a group of another
+    /// layout.
+    pub fn entries(&self, first: u32) -> [wgpu::BindGroupEntry<'_>; 4] {
+        [
+            wgpu::BindGroupEntry { binding: first, resource: self.uniforms.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: first + 1, resource: wgpu::BindingResource::TextureView(&self.tiles) },
+            wgpu::BindGroupEntry { binding: first + 2, resource: wgpu::BindingResource::TextureView(&self.index) },
+            wgpu::BindGroupEntry { binding: first + 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+        ]
+    }
+
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> LightBinding {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("distant lights, baked"), entries: &Self::layout_entries(0) });
         let map = MapUniforms { origin: [0.0, 0.0, 1.0, 1.0], values: [0.0, TILES_IN_ROW as f32, 0.0, 0.0] };
         let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant lights, baked"),
@@ -128,7 +152,7 @@ impl LightBinding {
         let tiles = texture(device, queue, "distant lights, the tiles", 1, 1, wgpu::TextureFormat::Rgba8Unorm, &[0; 4]);
         let index = texture(device, queue, "distant lights, the tile of each cell", 1, 1, wgpu::TextureFormat::R32Sint, &(-1i32).to_le_bytes());
         let group = make_group(device, &layout, &uniforms, &tiles, &index, &sampler);
-        LightBinding { layout, group, uniforms, sampler, map }
+        LightBinding { layout, group, uniforms, sampler, tiles, index, generation: 0, map }
     }
 
     /// The tiles of a file: one texture with the tiles in rows, and one with the tile of each
@@ -163,6 +187,8 @@ impl LightBinding {
         let index_bytes: Vec<u8> = index.iter().flat_map(|value| value.to_le_bytes()).collect();
         let index = texture(device, queue, "distant lights, the tile of each cell", width, height, wgpu::TextureFormat::R32Sint, &index_bytes);
         self.group = make_group(device, &self.layout, &self.uniforms, &tiles, &index, &self.sampler);
+        (self.tiles, self.index) = (tiles, index);
+        self.generation += 1;
         self.map.origin = [min_x as f32, min_y as f32, width as f32, height as f32];
     }
 

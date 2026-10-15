@@ -2434,7 +2434,8 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         println!("distant statics: {} textures are white: {}", missing.len(), missing.iter().take(6).cloned().collect::<Vec<_>>().join("; "));
     }
 
-    let source = format!("{SHADER}{}{}", super::FOG_FUNCTION, super::distant_lights::baked_wgsl(0));
+    // The view range for `fog_of` is `u.eye.w` of the set.
+    let source = format!("{SHADER}{}\nfn fog_range() -> f32 {{\n    return u.eye.w;\n}}\n{}", super::FOG_FUNCTION, super::distant_lights::baked_wgsl(0));
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     // Group 0: the baked light of the distant lights (`distant_lights::LightBinding`), the
     // same for the frame; group 1: the uniforms of the set; group 2: the textures of a draw.

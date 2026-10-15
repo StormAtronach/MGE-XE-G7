@@ -43,6 +43,7 @@ mod shadow;
 mod statics;
 mod ripples;
 mod tunables;
+mod view;
 mod water;
 
 use distantland::mge_xe::distant_terrain::{
@@ -277,15 +278,13 @@ struct Gpu {
     /// The land in the mirror of the water: one side only.
     mirror_pipeline: wgpu::RenderPipeline,
     mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
+    /// Group 1 of the land (`LandUniforms` and the textures), the same in the main view and
+    /// in the mirror; group 0 is the view group (`view::ViewBinding`).
     group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
-    /// The same with other uniforms: for the reflection of the land in the water.
-    mirror_group: wgpu::BindGroup,
-    mirror_uniforms: wgpu::Buffer,
-    /// The depth of the land from the sun, for the two layers of the shadow map.
+    /// The depth of the land from the sun, for the two layers of the shadow map: the view
+    /// group only.
     shadow_pipeline: wgpu::RenderPipeline,
-    shadow_groups: [wgpu::BindGroup; 2],
-    shadow_uniforms: [wgpu::Buffer; 2],
     meshes: Vec<Mesh>,
     /// The numbers of the header of `terrain.bin` for the shader.
     terrain: [f32; 4],
@@ -370,6 +369,9 @@ pub struct DistantLand {
     /// land and the statics read; `None` before the first frame.
     lights: Option<distant_lights::DistantLights>,
     light_binding: Option<distant_lights::LightBinding>,
+    /// The view group (group 0) of the pipelines of MGE XE that take it; `None` before the
+    /// first frame.
+    view_binding: Option<view::ViewBinding>,
     /// The shadow map, when the settings have shadows; `None` before the first frame. True
     /// when the map is made in this frame.
     shadow: Option<Shadow>,
@@ -459,12 +461,11 @@ pub struct DistantLand {
     frames: u64,
 }
 
+/// The values of the land only, group 1 of its shader. Those of the view are in the view
+/// group (`view::View`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
-    view_projection: [f32; 16],
-    /// The position of the camera, and the view range of the game.
-    eye: [f32; 4],
+struct LandUniforms {
     /// The world origin of the terrain, and 1 over the size of the material map.
     terrain: [f32; 4],
     /// Of the atlas: the logical tile size, the gutter, the physical tile size, the tiles in a row.
@@ -473,46 +474,19 @@ struct Uniforms {
     atlas_more: [f32; 4],
     /// Of the patterns: the tile size, the gutter, the physical size, the patterns in a row.
     patterns: [f32; 4],
-    fog_color: [f32; 4],
-    /// The exponential fog: its start and its divisor. The linear fog: its start and its end.
-    fog: [f32; 4],
-    /// x: 1 for the exponential fog past the view range. In a reflection: y the side of the
-    /// water plane to keep (1 above, -1 below), z the plane (the water level less 1).
-    flags: [f32; 4],
-    sun_direction: [f32; 4],
-    sun_color: [f32; 4],
-    ambient: [f32; 4],
-    /// The scattering: the position of the sun and the good weather value; the sky colour
-    /// with the far scatter colour in it and 1 when the scattering is on; the two scatter
-    /// colours; the three values of the height of the sun.
-    sun_pos: [f32; 4],
-    sky: [f32; 4],
-    outscatter: [f32; 4],
-    inscatter: [f32; 4],
-    sun_altitude: [f32; 4],
+    /// x: the view range of the game.
+    range: [f32; 4],
 }
 
 const SHADER: &str = "
-struct Uniforms {
-    view_projection: mat4x4f,
-    eye: vec4f,
+struct Land {
     terrain: vec4f,
     atlas: vec4f,
     atlas_more: vec4f,
     patterns: vec4f,
-    fog_color: vec4f,
-    fog: vec4f,
-    flags: vec4f,
-    sun_direction: vec4f,
-    sun_color: vec4f,
-    ambient: vec4f,
-    sun_pos: vec4f,
-    sky: vec4f,
-    outscatter: vec4f,
-    inscatter: vec4f,
-    sun_altitude: vec4f,
+    range: vec4f,
 }
-@group(1) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(0) var<uniform> land: Land;
 @group(1) @binding(1) var atlas: texture_2d<f32>;
 @group(1) @binding(2) var material: texture_2d<f32>;
 @group(1) @binding(3) var material_flags: texture_2d<f32>;
@@ -541,15 +515,20 @@ struct Out {
         // landBias: the land goes down near the camera, so that a mesh with less detail
         // does not come through the land of the game.
         let distance = length(world - u.eye.xyz);
-        world.z += -1.0 - 2.0 * max(0.0, u.eye.w - 1152.0 - distance);
+        world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
     }
     out.position = u.view_projection * vec4f(world, 1.0);
     out.normal = normal.xyz * 2.0 - 1.0;
     // The colour of a vertex has the bytes blue, green, red.
     out.color = color.bgr;
-    out.local = world.xy - u.terrain.xy;
+    out.local = world.xy - land.terrain.xy;
     out.world = world;
     return out;
+}
+
+// The view range of the game, for the fog (`fog_of`).
+fn fog_range() -> f32 {
+    return land.range.x;
 }
 
 fn byte_of(value: f32) -> f32 {
@@ -557,17 +536,17 @@ fn byte_of(value: f32) -> f32 {
 }
 
 fn atlas_uv(id: f32, patch_uv: vec2f) -> vec2f {
-    let tile_y = floor(id / u.atlas.w);
-    let origin = vec2f(id - tile_y * u.atlas.w, tile_y) * u.atlas.z;
-    return (origin + u.atlas.y + patch_uv * u.atlas.x) * u.atlas_more.xy;
+    let tile_y = floor(id / land.atlas.w);
+    let origin = vec2f(id - tile_y * land.atlas.w, tile_y) * land.atlas.z;
+    return (origin + land.atlas.y + patch_uv * land.atlas.x) * land.atlas_more.xy;
 }
 
 fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
-    let rows = floor((u.atlas_more.z - 1.0) / u.patterns.w) + 1.0;
-    let inverse_size = 1.0 / vec2f(u.patterns.w * u.patterns.z, rows * u.patterns.z);
-    let tile_y = floor(id / u.patterns.w);
-    let origin = vec2f(id - tile_y * u.patterns.w, tile_y) * u.patterns.z;
-    return (origin + u.patterns.y + patch_uv * u.patterns.x) * inverse_size;
+    let rows = floor((land.atlas_more.z - 1.0) / land.patterns.w) + 1.0;
+    let inverse_size = 1.0 / vec2f(land.patterns.w * land.patterns.z, rows * land.patterns.z);
+    let tile_y = floor(id / land.patterns.w);
+    let origin = vec2f(id - tile_y * land.patterns.w, tile_y) * land.patterns.z;
+    return (origin + land.patterns.y + patch_uv * land.patterns.x) * inverse_size;
 }
 
 @fragment fn fs(in: Out) -> @location(0) vec4f {
@@ -576,9 +555,9 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     let ddx_patch = dpdx(patch_coord);
     let ddy_patch = dpdy(patch_coord);
     let patch_uv = fract(patch_coord);
-    let ddx_atlas = ddx_patch * u.atlas.x * u.atlas_more.xy;
-    let ddy_atlas = ddy_patch * u.atlas.x * u.atlas_more.xy;
-    let far_albedo = textureSample(patch_albedo, smooth_sampler, patch_coord * u.terrain.zw).rgb;
+    let ddx_atlas = ddx_patch * land.atlas.x * land.atlas_more.xy;
+    let ddy_atlas = ddy_patch * land.atlas.x * land.atlas_more.xy;
+    let far_albedo = textureSample(patch_albedo, smooth_sampler, patch_coord * land.terrain.zw).rgb;
 
     let size = vec2i(textureDimensions(material));
     let cell = clamp(vec2i(floor(patch_coord)), vec2i(0), size - vec2i(1));
@@ -586,7 +565,7 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     let flags_sample = textureLoad(material_flags, cell, 0);
     let base_id = byte_of(material_sample.r) + 256.0 * byte_of(material_sample.g);
     let decal_id = byte_of(material_sample.b) + 256.0 * byte_of(material_sample.a);
-    let pattern_id = min(byte_of(flags_sample.r), max(u.atlas_more.z - 1.0, 0.0));
+    let pattern_id = min(byte_of(flags_sample.r), max(land.atlas_more.z - 1.0, 0.0));
     let has_decal = byte_of(flags_sample.g) % 2.0;
     let base = textureSampleGrad(atlas, smooth_sampler, atlas_uv(base_id, patch_uv), ddx_atlas, ddy_atlas).rgb;
     let decal = textureSampleGrad(atlas, smooth_sampler, atlas_uv(decal_id, patch_uv), ddx_atlas, ddy_atlas).rgb;
@@ -609,7 +588,7 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 /// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
 /// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
 /// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
-/// `sun_altitude`.
+/// `sun_altitude`, and the shader a function `fog_range()`, the view range of the game.
 /// The bytes of a file under `Data Files`: in the game folder (the mods of Mod Organizer are
 /// in its file system), in `MGE_XE_GAME_DIR`, or beside this program (for a replay).
 fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
@@ -625,29 +604,8 @@ fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
 }
 
 /// The casters of the shadow map: `ShadowVS` and `ShadowPS` of `XE Shadowmap.fx` for the
-/// land. The uniforms are those of the land (the matrix of the layer in `view_projection`).
+/// land. It has the view group only (the matrix of the layer in `view_projection`).
 const LAND_SHADOW_SHADER: &str = "
-struct Uniforms {
-    view_projection: mat4x4f,
-    eye: vec4f,
-    terrain: vec4f,
-    atlas: vec4f,
-    atlas_more: vec4f,
-    patterns: vec4f,
-    fog_color: vec4f,
-    fog: vec4f,
-    flags: vec4f,
-    sun_direction: vec4f,
-    sun_color: vec4f,
-    ambient: vec4f,
-    sun_pos: vec4f,
-    sky: vec4f,
-    outscatter: vec4f,
-    inscatter: vec4f,
-    sun_altitude: vec4f,
-}
-@group(0) @binding(0) var<uniform> u: Uniforms;
-
 struct Out {
     @builtin(position) position: vec4f,
     @location(0) depth: f32,
@@ -676,7 +634,7 @@ fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
     let linear = clamp((u.fog.w - distance) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
     let fog_distance = (distance - u.fog.x) / max(u.fog.y, 1.0);
     let exponential = clamp(exp(-fog_distance), 0.0, 1.0);
-    let fog = select(linear, exponential, u.flags.x > 0.5 && distance > u.eye.w);
+    let fog = select(linear, exponential, u.flags.x > 0.5 && distance > fog_range());
     // fogColourScatter: the light that the air adds, in good weather and over the water.
     var added = u.fog_color.rgb * (1.0 - fog);
     if u.sky.w > 0.5 && u.sun_pos.w > 0.001 && u.eye.z > -1.0 {
@@ -746,6 +704,7 @@ impl DistantLand {
             statics: None,
             lights: None,
             light_binding: None,
+            view_binding: None,
             shadow: None,
             shadow_in_frame: false,
             shadows_enabled: settings.shadows.enabled,
@@ -862,8 +821,8 @@ impl DistantLand {
         let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
         let Some(result) = result else { return };
         self.loading = None;
-        let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
-        match result.and_then(|loaded| make_gpu(scene, &loaded, &binding.layout)) {
+        let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
+        match result.and_then(|loaded| make_gpu(scene, &loaded, &views.layout)) {
             Ok(gpu) => {
                 println!("distant land: {} terrain meshes on the GPU", gpu.meshes.len());
                 self.gpu = Some(gpu);
@@ -1072,7 +1031,7 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
     Ok(texture.create_view(&Default::default()))
 }
 
-fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLayout) -> Result<Gpu, String> {
+fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLayout) -> Result<Gpu, String> {
     let device = scene.device;
     let textures = [
         dds_texture(scene, TERRAIN_ATLAS_FILE_NAME, &loaded.atlas)?,
@@ -1089,7 +1048,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
     });
     let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("distant land"),
-        size: size_of::<Uniforms>() as u64,
+        size: size_of::<LandUniforms>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -1131,21 +1090,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
     }
     entries.push(wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&sampler) });
     let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("distant land"), layout: &layout, entries: &entries });
-    let mirror_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("distant land mirror"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-    entries[0] = wgpu::BindGroupEntry { binding: 0, resource: mirror_uniforms.as_entire_binding() };
-    let mirror_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("distant land mirror"), layout: &layout, entries: &entries });
-    let shadow_uniforms: [wgpu::Buffer; 2] = core::array::from_fn(|_| device.create_buffer(&wgpu::BufferDescriptor { label: Some("distant land shadow"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
-    let shadow_groups: [wgpu::BindGroup; 2] = core::array::from_fn(|i| {
-        entries[0] = wgpu::BindGroupEntry { binding: 0, resource: shadow_uniforms[i].as_entire_binding() };
-        device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("distant land shadow"), layout: &layout, entries: &entries })
-    });
-    let source = format!("{SHADER}{FOG_FUNCTION}{}", distant_lights::baked_wgsl(0));
+    let source = format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl());
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    // Group 0: the baked light of the distant lights, the same for the frame; group 1: the
-    // uniforms and the textures of the pass. The shadow map has no light: the pass is its
-    // group 0.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land"), bind_group_layouts: &[Some(light_layout), Some(&layout)], immediate_size: 0 });
-    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land shadow"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+    // Group 0: the view group (the view of the pass and the baked light); group 1: the values
+    // and the textures of the land. The shadow map has the view group only.
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land"), bind_group_layouts: &[Some(view_layout), Some(&layout)], immediate_size: 0 });
+    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land shadow"), bind_group_layouts: &[Some(view_layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
     let make_pipeline = |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1190,7 +1140,8 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
     let mirror_pipeline_lines = lines.then(|| make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Line));
 
     // The casters of the shadow map: the land with the depth from the sun.
-    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land shadow"), source: wgpu::ShaderSource::Wgsl(LAND_SHADOW_SHADER.into()) });
+    let shadow_source = format!("{}{LAND_SHADOW_SHADER}", view::wgsl());
+    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant land shadow"), source: wgpu::ShaderSource::Wgsl(shadow_source.into()) });
     let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant land shadow"),
         layout: Some(&shadow_layout),
@@ -1252,11 +1203,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, light_layout: &wgpu::BindGroupLa
         mirror_pipeline_lines,
         group,
         uniforms,
-        mirror_group,
-        mirror_uniforms,
         shadow_pipeline,
-        shadow_groups,
-        shadow_uniforms,
         meshes,
         terrain: [terrain.world_origin.x, terrain.world_origin.y, 1.0 / material[0].max(1) as f32, 1.0 / material[1].max(1) as f32],
         atlas: [terrain.logical_tile_size as f32, terrain.gutter_size as f32, terrain.physical_tile_size as f32, terrain.tiles_per_row.max(1) as f32],
@@ -2174,16 +2121,15 @@ impl Extension for DistantLand {
                 ];
             }
         }
-        let uniforms = Uniforms {
+        // The eye with the view range of the game, as the statics and the glows take it.
+        let eye_range = [eye[0], eye[1], eye[2], view_range];
+        let flags = [exponential as u32 as f32, 0.0, 0.0, 0.0];
+        let main_view = view::View {
             view_projection,
-            eye: [eye[0], eye[1], eye[2], view_range],
-            terrain: gpu.terrain,
-            atlas: gpu.atlas,
-            atlas_more: gpu.atlas_more,
-            patterns: gpu.patterns,
+            eye: [eye[0], eye[1], eye[2], 0.0],
             fog_color,
             fog,
-            flags: [exponential as u32 as f32, 0.0, 0.0, 0.0],
+            flags,
             sun_direction: [sun[0], sun[1], sun[2], 0.0],
             sun_color: [sun_color[0], sun_color[1], sun_color[2], 0.0],
             ambient: [ambient[0], ambient[1], ambient[2], 0.0],
@@ -2193,12 +2139,15 @@ impl Extension for DistantLand {
             inscatter: scattering[3],
             sun_altitude: scattering[4],
         };
-        scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        let land = LandUniforms { terrain: gpu.terrain, atlas: gpu.atlas, atlas_more: gpu.atlas_more, patterns: gpu.patterns, range: [view_range, 0.0, 0.0, 0.0] };
+        scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
         // The baked light of the distant lights: at night, in the exterior.
         let night = distant_lights::night_of(scene.sun_color);
         let Some(binding) = self.light_binding.as_mut() else { return false };
         binding.set_strength(scene.queue, if scene.interior { 0.0 } else { self.tunables.get(tunables::BAKED_STRENGTH) * night });
-        let light_group = binding.group.clone();
+        self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device)).refresh(scene.device, binding);
+        let Some(views) = self.view_binding.as_ref() else { return false };
+        views.write(scene.queue, view::MAIN, &main_view);
 
         let planes = planes(&view_projection);
         let mut drawn = 0;
@@ -2207,7 +2156,7 @@ impl Extension for DistantLand {
         if !scene.interior {
             pass.push_debug_group("distant land");
             pass.set_pipeline(gpu.pipeline_for(scene));
-            pass.set_bind_group(0, &light_group, &[]);
+            pass.set_bind_group(0, views.group(view::MAIN), &[]);
             pass.set_bind_group(1, &gpu.group, &[]);
             for mesh in &gpu.meshes {
                 let inside = planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
@@ -2230,9 +2179,9 @@ impl Extension for DistantLand {
         // the passes that draw them.
         let water_frame = self.water_frame(scene);
         if let Some(statics) = self.statics.as_mut() {
-            let eye = [uniforms.eye[0], uniforms.eye[1], uniforms.eye[2], 0.0];
+            let eye = [eye[0], eye[1], eye[2], 0.0];
             let fog_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end);
-            let mut sets = vec![statics::CullSet { set: 0, planes, eye: uniforms.eye, fog_end }];
+            let mut sets = vec![statics::CullSet { set: 0, planes, eye: eye_range, fog_end }];
             if let Some(shadow) = self.shadow.as_ref().filter(|_| self.shadow_in_frame) {
                 for layer in 0..2 {
                     sets.push(statics::CullSet { set: 2 + layer, planes: crate::renderer::planes(&shadow.viewproj[layer]), eye, fog_end: 1.0e9 });
@@ -2253,10 +2202,10 @@ impl Extension for DistantLand {
                 scene,
                 &distant_lights::GlowFrame {
                     view_projection,
-                    eye: uniforms.eye,
+                    eye: eye_range,
                     planes,
                     fog,
-                    flags: uniforms.flags,
+                    flags,
                     fade: [fade_end - 512.0, fade_end],
                     draw_distance: self.draw_distance,
                     time: game_time(self.environment, self.started),
@@ -2277,16 +2226,14 @@ impl Extension for DistantLand {
             for layer in 0..2 {
                 shadow.set_layer(&mut pass, layer);
                 let viewproj = shadow.viewproj[layer];
-                let mut layer_uniforms = uniforms;
-                layer_uniforms.view_projection = viewproj;
-                layer_uniforms.flags[1] = 0.0;
-                scene.queue.write_buffer(&gpu.shadow_uniforms[layer], 0, bytemuck::bytes_of(&layer_uniforms));
+                let layer_view = view::View { view_projection: viewproj, ..main_view };
+                views.write(scene.queue, view::SHADOW[layer], &layer_view);
                 let layer_planes = crate::renderer::planes(&viewproj);
                 // The terrain casts a shadow in an exterior, as `renderShadowLayerGeneric`
                 // of the Direct3D 9 path has it.
                 if !scene.interior {
                     pass.set_pipeline(&gpu.shadow_pipeline);
-                    pass.set_bind_group(0, &gpu.shadow_groups[layer], &[]);
+                    pass.set_bind_group(0, views.group(view::SHADOW[layer]), &[]);
                     for mesh in &gpu.meshes {
                         let inside = layer_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
                         if !inside {
@@ -2300,13 +2247,13 @@ impl Extension for DistantLand {
                 if let Some(statics) = self.statics.as_mut() {
                     let layer_frame = statics::Frame {
                         view_projection: viewproj,
-                        eye: [uniforms.eye[0], uniforms.eye[1], uniforms.eye[2], 0.0],
+                        eye: [eye[0], eye[1], eye[2], 0.0],
                         fog_color,
                         fog,
-                        flags: layer_uniforms.flags,
-                        sun_direction: uniforms.sun_direction,
-                        sun_color: uniforms.sun_color,
-                        ambient: uniforms.ambient,
+                        flags: layer_view.flags,
+                        sun_direction: main_view.sun_direction,
+                        sun_color: main_view.sun_color,
+                        ambient: main_view.ambient,
                         scattering,
                         planes: layer_planes,
                         fog_end: 1.0e9,
@@ -2338,21 +2285,20 @@ impl Extension for DistantLand {
                 timer.start(&mut encoder);
             }
             let (mut mirror_pass, mirrored_view, far_projection) = water.begin_reflection(scene, &mut encoder, frame);
-            let mut mirror_uniforms = uniforms;
-            mirror_uniforms.view_projection = multiply(&mirrored_view, &far_projection);
+            let mut mirror_view = view::View { view_projection: multiply(&mirrored_view, &far_projection), ..main_view };
             // Only the side of the water plane that the mirror shows.
-            mirror_uniforms.flags[1] = if frame.underwater { -1.0 } else { 1.0 };
+            mirror_view.flags[1] = if frame.underwater { -1.0 } else { 1.0 };
             // With the dynamic waves the plane can be lower by half of the wave height:
             // the cut moves to the side that the mirror does not show.
-            mirror_uniforms.flags[2] = frame.water_level - 1.0 - mirror_uniforms.flags[1] * 0.5 * frame.wave_height.unwrap_or(0.0);
-            scene.queue.write_buffer(&gpu.mirror_uniforms, 0, bytemuck::bytes_of(&mirror_uniforms));
+            mirror_view.flags[2] = frame.water_level - 1.0 - mirror_view.flags[1] * 0.5 * frame.wave_height.unwrap_or(0.0);
+            views.write(scene.queue, view::MIRROR, &mirror_view);
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
             // path) with `reflect_land`; an interior cell reflects its statics only.
             if !scene.interior && self.reflect_land {
                 mirror_pass.set_pipeline(gpu.mirror_pipeline_for(scene));
-                mirror_pass.set_bind_group(0, &light_group, &[]);
-                mirror_pass.set_bind_group(1, &gpu.mirror_group, &[]);
+                mirror_pass.set_bind_group(0, views.group(view::MIRROR), &[]);
+                mirror_pass.set_bind_group(1, &gpu.group, &[]);
                 for mesh in &gpu.meshes {
                     let inside = mirror_planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
                     if !inside {
@@ -2371,14 +2317,14 @@ impl Extension for DistantLand {
             let statics_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end).min(self.near_static_end);
             if let Some(statics) = self.statics.as_mut().filter(|_| reflect_statics) {
                 let mirror_frame = statics::Frame {
-                    view_projection: mirror_uniforms.view_projection,
-                    eye: [uniforms.eye[0], uniforms.eye[1], uniforms.eye[2], 0.0],
+                    view_projection: mirror_view.view_projection,
+                    eye: [eye[0], eye[1], eye[2], 0.0],
                     fog_color,
                     fog,
-                    flags: mirror_uniforms.flags,
-                    sun_direction: uniforms.sun_direction,
-                    sun_color: uniforms.sun_color,
-                    ambient: uniforms.ambient,
+                    flags: mirror_view.flags,
+                    sun_direction: main_view.sun_direction,
+                    sun_color: main_view.sun_color,
+                    ambient: main_view.ambient,
                     scattering,
                     planes: mirror_planes,
                     fog_end: statics_end,
@@ -2406,13 +2352,13 @@ impl Extension for DistantLand {
         if let Some(statics) = self.statics.as_mut() {
             let frame = statics::Frame {
                 view_projection,
-                eye: uniforms.eye,
+                eye: eye_range,
                 fog_color,
                 fog,
-                flags: uniforms.flags,
-                sun_direction: uniforms.sun_direction,
-                sun_color: uniforms.sun_color,
-                ambient: uniforms.ambient,
+                flags,
+                sun_direction: main_view.sun_direction,
+                sun_color: main_view.sun_color,
+                ambient: main_view.ambient,
                 scattering,
                 planes,
                 fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
