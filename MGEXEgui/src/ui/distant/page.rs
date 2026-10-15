@@ -525,6 +525,13 @@ impl GuiApp {
             ),
             t!("distant.auto_rebuild_tip"),
         );
+        tooltip(
+            ui.add_enabled(
+                self.settings.mge.distant_land.enabled,
+                egui::Checkbox::new(&mut self.settings.mge.distant_land.wait_on_load, t!("distant.wait_on_load")),
+            ),
+            t!("distant.wait_on_load_tip"),
+        );
         ui.add_space(6.0);
 
         // Enable rules, matching the legacy grey-out behaviour:

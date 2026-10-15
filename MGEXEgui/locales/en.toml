@@ -59,7 +59,9 @@ interior = "Interior"
 enabled = "Use Distant Land"
 enabled_tip = "Renders landscape and objects beyond Morrowind's normal view distance."
 auto_rebuild = "Automatically rebuild outdated distant land at game startup."
+wait_on_load = "Wait on the loading screen for the distant land (wgpu renderer)."
 auto_rebuild_tip = "Regenerates distant land at game startup when the saved generation job no longer matches the installed content."
+wait_on_load_tip = "After a game load, the loading screen stays until the distant statics around the player are there (at most 15 s), as on Direct3D 9 at the first load. Without it they fade in after the load."
 
 [distant.blocked]
 format = "Generated data is format %{version}, which this version of MGE XE cannot use. Run the distant land generator first."

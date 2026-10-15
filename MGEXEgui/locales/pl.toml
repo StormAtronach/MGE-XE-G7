@@ -58,9 +58,11 @@ interior = "Wnętrza"
 [distant]
 enabled = "Użyj odległego terenu"
 auto_rebuild = "Automatycznie przebudowuje nieaktualny odległy teren podczas uruchamiania gry."
+wait_on_load = "Czekaj na ekranie ładowania na odległy teren (renderer wgpu)."
 
 enabled_tip = "Wyświetla teren i obiekty poza standardowym zasięgiem widzenia Morrowinda."
 auto_rebuild_tip = "Ponownie generuje odległy teren przy starcie, gdy zapisane zadanie nie pasuje do zainstalowanej zawartości."
+wait_on_load_tip = "Po wczytaniu gry ekran ładowania pozostaje, dopóki odległe obiekty wokół gracza nie będą gotowe (najwyżej 15 s), jak w Direct3D 9 przy pierwszym wczytaniu. Bez tej opcji pojawiają się stopniowo po wczytaniu."
 
 [distant.blocked]
 format = "Wygenerowane dane mają format %{version}, którego ta wersja MGE XE nie obsługuje. Najpierw uruchom generator odległego terenu."

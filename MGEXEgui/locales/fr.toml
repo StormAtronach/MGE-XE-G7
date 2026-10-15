@@ -58,9 +58,11 @@ interior = "Intérieur"
 [distant]
 enabled = "Utiliser les paysages distants"
 auto_rebuild = "Reconstruit automatiquement les paysages distants obsolètes au démarrage du jeu."
+wait_on_load = "Attendre les paysages distants sur l'écran de chargement (moteur wgpu)."
 
 enabled_tip = "Affiche le terrain et les objets au-delà de la distance de vue normale de Morrowind."
 auto_rebuild_tip = "Régénère les paysages distants au démarrage lorsque la tâche enregistrée ne correspond plus au contenu installé."
+wait_on_load_tip = "Après le chargement d'une partie, l'écran de chargement reste jusqu'à ce que les objets distants autour du joueur soient prêts (15 s au plus), comme sous Direct3D 9 au premier chargement. Sans cette option, ils apparaissent en fondu après le chargement."
 
 [distant.blocked]
 format = "Les données générées utilisent le format %{version}, incompatible avec cette version de MGE XE. Exécutez d’abord le générateur de paysages distants."

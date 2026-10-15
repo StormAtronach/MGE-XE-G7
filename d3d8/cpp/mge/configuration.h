@@ -107,6 +107,8 @@ struct ConfigurationStruct {
     float UIScale;
     int WindowAlignX, WindowAlignY;
     bool AutomaticDistantLandRebuild;
+    // The wgpu renderer: the loading screen of a game load waits for the distant statics.
+    bool DistantLandWaitOnLoad;
     bool EnableNativeDepthCapture;
     bool EnableNativePplPackets;
     // Restart-required: the engine patch it authorizes cannot be undone for

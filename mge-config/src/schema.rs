@@ -481,6 +481,9 @@ impl Default for RuntimeSettings {
 pub struct DistantLandSettings {
     pub enabled: bool,
     pub automatic_rebuild: bool,
+    /// The wgpu renderer: after a game load the loading screen stays until the distant
+    /// statics around the player are there, or 15 s.
+    pub wait_on_load: bool,
     pub native_depth_capture: bool,
     pub native_ppl_packets: bool,
     pub expanded_light_limit: bool,
@@ -517,6 +520,7 @@ impl Default for DistantLandSettings {
         Self {
             enabled: false,
             automatic_rebuild: false,
+            wait_on_load: false,
             native_depth_capture: true,
             native_ppl_packets: true,
             expanded_light_limit: false,

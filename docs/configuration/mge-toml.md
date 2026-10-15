@@ -182,6 +182,7 @@ still installed.
 | (new, no INI key) | `distant_land.expanded_light_limit` |
 | (new, no INI key) | `distant_land.per_pixel_light_fade` |
 | (new, no INI key) | `distant_land.per_pixel_light_fade_radius` |
+| (new, no INI key) | `distant_land.wait_on_load` |
 
 `src/default.toml` describes each of these new keys, and `render.camera_relative` too.
 
@@ -289,7 +290,7 @@ registry, or structured Rust model owns them:
 - shader chain and all structured input collections.
 
 `d3d8/crates/config-contract-test` exports the real C++ binding table and verifies all
-139 rows against the Rust schema on the i686 target, including uniqueness,
+140 rows against the Rust schema on the i686 target, including uniqueness,
 storage widths, buffer capacities, `DONT_SAVE`, and default values.
 
 ## `Morrowind.ini`

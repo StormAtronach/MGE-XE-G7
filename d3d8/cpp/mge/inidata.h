@@ -28,6 +28,7 @@ const iniSetting iniSettings[] = {
 
     BIT(Configuration.MGEFlags, USE_DISTANT_LAND_BIT, "distant_land.enabled", 0),
     NUM(Configuration.AutomaticDistantLandRebuild, t_bool, "distant_land.automatic_rebuild", 0),
+    NUM(Configuration.DistantLandWaitOnLoad, t_bool, "distant_land.wait_on_load", 0),
     NUM(Configuration.EnableNativeDepthCapture, t_bool, "distant_land.native_depth_capture", 0),
     NUM(Configuration.EnableNativePplPackets, t_bool, "distant_land.native_ppl_packets", 0),
     NUM(Configuration.ExpandedLightLimit, t_bool, "distant_land.expanded_light_limit", 0),

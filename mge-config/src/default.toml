@@ -98,6 +98,10 @@ crosshair_autohide = false
 enabled = false
 # Regenerate automatically when the saved generation job requires it.
 automatic_rebuild = false
+# The wgpu renderer: after a game load, keep the loading screen until the distant statics
+# around the player are on the GPU (at most 15 s), as MGE XE on Direct3D 9 does at the first
+# load. Without it they fade in after the load.
+wait_on_load = false
 # Read the scene's real depth buffer instead of redrawing geometry to approximate
 # it. Removes about half the depth pass, and fixes objects vanishing from
 # distant-land scenes when they use multi-texturing effects such as darkmaps with
