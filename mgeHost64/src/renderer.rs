@@ -819,10 +819,10 @@ impl DistantLand {
     /// the view groups with that light, for the statics too.
     fn poll_lights(&mut self, scene: &SceneView) {
         let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
-        if let Some(lights) = self.lights.as_mut() {
-            lights.poll(scene, binding, self.synchronous);
-        }
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
+        if let Some(lights) = self.lights.as_mut() {
+            lights.poll(scene, binding, &views.layout, self.synchronous);
+        }
         views.refresh(scene.device, binding);
         if let Some(statics) = self.statics.as_mut() {
             statics.set_views(views);
@@ -862,6 +862,7 @@ impl Drop for DistantLand {
             if self.environment.is_some() { "from the game with each frame" } else { "from mgeXE.toml" }
         );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
+        println!("distant lights: {} frames with glows", self.lights.as_ref().map_or(0, |lights| lights.frames));
         println!(
             "water: {} frames, {} reflections, {} frames with caustics, {} surfaces of water volumes, {} far water draws",
             self.water.as_ref().map_or(0, |w| w.frames),
@@ -2200,11 +2201,8 @@ impl Extension for DistantLand {
             lights.prepare(
                 scene,
                 &distant_lights::GlowFrame {
-                    view_projection,
                     eye: eye_range,
                     planes,
-                    fog,
-                    flags,
                     fade: [fade_end - 512.0, fade_end],
                     draw_distance: self.draw_distance,
                     time: game_time(self.environment, self.started),
@@ -2338,7 +2336,7 @@ impl Extension for DistantLand {
         }
         if let Some(lights) = self.lights.as_mut().filter(|_| glows) {
             pass.push_debug_group("distant lights");
-            lights.draw(pass);
+            lights.draw(pass, views.group(view::MAIN));
             pass.pop_debug_group();
         }
         true

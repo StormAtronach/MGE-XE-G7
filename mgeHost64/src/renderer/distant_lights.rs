@@ -318,20 +318,19 @@ fn cull(@builtin(global_invocation_id) id: vec3u) {
 }
 ";
 
+/// The glows in the main view: after the view group (`view::wgsl`).
 const GLOW_SHADER: &str = "
-struct View {
-    view_projection: mat4x4f,
-    eye: vec4f,
-    fog: vec4f,
-    flags: vec4f,
+struct Glow {
+    // x: the view range of the game.
+    range: vec4f,
     // x: the size as a part of the radius, y: the strength, z: the least size in pixels,
     // w: the most size in pixels.
     glow: vec4f,
     // x, y: the size of the picture; z: the pixels of one unit at a distance of one unit.
     screen: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: View;
-@group(0) @binding(1) var<storage, read> glows: array<vec4f>;
+@group(1) @binding(0) var<uniform> g: Glow;
+@group(1) @binding(1) var<storage, read> glows: array<vec4f>;
 
 struct Out {
     @builtin(position) position: vec4f,
@@ -345,7 +344,7 @@ fn fog_left(world: vec3f) -> f32 {
     let distance = length(world - u.eye.xyz);
     let linear = clamp((u.fog.w - distance) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
     let exponential = clamp(exp(-(distance - u.fog.x) / max(u.fog.y, 1.0)), 0.0, 1.0);
-    return select(linear, exponential, u.flags.x > 0.5 && distance > u.eye.w);
+    return select(linear, exponential, u.flags.x > 0.5 && distance > g.range.x);
 }
 
 @vertex fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Out {
@@ -354,15 +353,15 @@ fn fog_left(world: vec3f) -> f32 {
     let look = glows[instance * 2u + 1u];
     var clip = u.view_projection * vec4f(place.xyz, 1.0);
     let w = max(clip.w, 1.0);
-    let wanted = place.w * u.glow.x * u.screen.z / w;
-    let pixels = clamp(wanted, u.glow.z, u.glow.w);
+    let wanted = place.w * g.glow.x * g.screen.z / w;
+    let pixels = clamp(wanted, g.glow.z, g.glow.w);
     // A glow drawn larger than it is gives the light of its size, not more.
     let dim = clamp(wanted / pixels, 0.25, 1.0);
     let corner = corners[vertex];
     var out: Out;
-    out.position = vec4f(clip.xy + corner * pixels * 2.0 / u.screen.xy * clip.w, clip.zw);
+    out.position = vec4f(clip.xy + corner * pixels * 2.0 / g.screen.xy * clip.w, clip.zw);
     out.corner = corner;
-    out.color = look.rgb * look.w * dim * u.glow.y * fog_left(place.xyz);
+    out.color = look.rgb * look.w * dim * g.glow.y * fog_left(place.xyz);
     return out;
 }
 
@@ -385,25 +384,21 @@ struct CullUniforms {
     counts: [u32; 4],
 }
 
+/// Group 1 of the glows: `Glow` of `GLOW_SHADER`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ViewUniforms {
-    view_projection: [f32; 16],
-    eye: [f32; 4],
-    fog: [f32; 4],
-    flags: [f32; 4],
+struct GlowUniforms {
+    range: [f32; 4],
     glow: [f32; 4],
     screen: [f32; 4],
 }
 
-/// The values of a frame for the glows.
+/// The values of a frame for the glows. Those of the view (the matrix, the fog) are in the
+/// view group of the main view.
 pub struct GlowFrame {
-    pub view_projection: [f32; 16],
     /// The camera, and the view range of the game in w.
     pub eye: [f32; 4],
     pub planes: [[f32; 4]; 6],
-    pub fog: [f32; 4],
-    pub flags: [f32; 4],
     /// Where a glow starts (the handoff to the game) and where it is whole.
     pub fade: [f32; 2],
     pub draw_distance: f32,
@@ -421,8 +416,9 @@ struct Glows {
     cull_uniforms: wgpu::Buffer,
     args: wgpu::Buffer,
     draw: wgpu::RenderPipeline,
+    /// Group 1 of the draw: the values of the glows (`GlowUniforms`) and the list.
     draw_group: wgpu::BindGroup,
-    view_uniforms: wgpu::Buffer,
+    values: wgpu::Buffer,
     sources: u32,
 }
 
@@ -444,8 +440,9 @@ impl DistantLights {
         DistantLights { loading: Some(receiver), glows: None, frames: 0 }
     }
 
-    /// Takes the file when it has been read: the baked light into `binding`, and the glows.
-    pub fn poll(&mut self, scene: &SceneView, binding: &mut LightBinding, synchronous: bool) {
+    /// Takes the file when it has been read: the baked light into `binding`, and the glows,
+    /// whose pipeline takes the view group of `view_layout`.
+    pub fn poll(&mut self, scene: &SceneView, binding: &mut LightBinding, view_layout: &wgpu::BindGroupLayout, synchronous: bool) {
         let Some(receiver) = self.loading.as_ref() else { return };
         let result = if synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
         let Some(result) = result else { return };
@@ -460,7 +457,7 @@ impl DistantLights {
         println!("distant lights: {} light sources, {} lit cells baked", file.source_count, file.tiles.len());
         binding.set_tiles(scene.device, scene.queue, &file);
         if file.source_count > 0 {
-            self.glows = Some(make_glows(scene, &file));
+            self.glows = Some(make_glows(scene, &file, view_layout));
         }
     }
 
@@ -476,15 +473,12 @@ impl DistantLights {
         scene.queue.write_buffer(&glows.cull_uniforms, 0, bytemuck::bytes_of(&cull));
         // Six corners for each glow; the cull adds the glows.
         scene.queue.write_buffer(&glows.args, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
-        let view = ViewUniforms {
-            view_projection: frame.view_projection,
-            eye: frame.eye,
-            fog: frame.fog,
-            flags: frame.flags,
+        let values = GlowUniforms {
+            range: [frame.eye[3], 0.0, 0.0, 0.0],
             glow: [frame.glow[0], frame.glow[1], frame.glow[2], 64.0],
             screen: [frame.screen[0], frame.screen[1], frame.screen[2], 0.0],
         };
-        scene.queue.write_buffer(&glows.view_uniforms, 0, bytemuck::bytes_of(&view));
+        scene.queue.write_buffer(&glows.values, 0, bytemuck::bytes_of(&values));
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant lights, cull") });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("distant lights, cull"), timestamp_writes: None });
@@ -497,16 +491,17 @@ impl DistantLights {
     }
 
     /// Draws the glows chosen in `prepare` into the pass: after the land and the statics,
-    /// against their depth.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>) {
+    /// against their depth. `view` is the view group of the main view.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup) {
         let Some(glows) = self.glows.as_ref() else { return };
         pass.set_pipeline(&glows.draw);
-        pass.set_bind_group(0, &glows.draw_group, &[]);
+        pass.set_bind_group(0, view, &[]);
+        pass.set_bind_group(1, &glows.draw_group, &[]);
         pass.draw_indirect(&glows.args, 0);
     }
 }
 
-fn make_glows(scene: &SceneView, file: &LightsFile) -> Glows {
+fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGroupLayout) -> Glows {
     let device = scene.device;
     let sources = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant lights, the sources"),
@@ -529,7 +524,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile) -> Glows {
         device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: size as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
     };
     let cull_uniforms = uniform_buffer("distant lights, cull", size_of::<CullUniforms>());
-    let view_uniforms = uniform_buffer("distant lights, glows", size_of::<ViewUniforms>());
+    let values = uniform_buffer("distant lights, glows", size_of::<GlowUniforms>());
     let entry = |binding: u32, stage: wgpu::ShaderStages, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: stage,
@@ -574,10 +569,12 @@ fn make_glows(scene: &SceneView, file: &LightsFile) -> Glows {
     let draw_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("distant lights, glows"),
         layout: &draw_layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: view_uniforms.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: list.as_entire_binding() }],
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: values.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: list.as_entire_binding() }],
     });
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant lights, glows"), source: wgpu::ShaderSource::Wgsl(GLOW_SHADER.into()) });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant lights, glows"), bind_group_layouts: &[Some(&draw_layout)], immediate_size: 0 });
+    let source = format!("{}{GLOW_SHADER}", super::view::wgsl());
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant lights, glows"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+    // Group 0: the view group of the main view; group 1: the glows.
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant lights, glows"), bind_group_layouts: &[Some(view_layout), Some(&draw_layout)], immediate_size: 0 });
     let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
     let draw = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant lights, glows"),
@@ -605,7 +602,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile) -> Glows {
         multiview_mask: None,
         cache: None,
     });
-    Glows { cull, cull_group, cull_uniforms, args, draw, draw_group, view_uniforms, sources: file.source_count }
+    Glows { cull, cull_group, cull_uniforms, args, draw, draw_group, values, sources: file.source_count }
 }
 
 /// How much of the night there is, from the colour of the sun of the frame: 1 at night, 0 in
