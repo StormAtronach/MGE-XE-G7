@@ -2076,70 +2076,14 @@ impl Extension for DistantLand {
         let projection = self.land_projection(scene);
         let view_projection = multiply(&scene.view, &projection);
         let eye = eye_of(&scene.view);
-
+        let main_view = self.frame_view(scene, view_projection);
         // The fog: from the game with this frame, or the linear fog of the settings.
-        // A plain interior cell has the linear fog of the game on the statics
-        // (`StaticInteriorVS`), not the exponential curve.
-        let (view_range, fog, exponential, near_fog, sun_mult, ambient_mult) = match self.environment {
-            Some(e) => (
-                e.near_view_range,
-                [e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end],
-                e.flags & 1 != 0 && e.flags & 2 == 0 && self.like_exterior,
-                (e.fog_near_start, e.fog_near_end),
-                e.light_sun_mult,
-                e.light_amb_mult,
-            ),
-            None => (0.0, [0.0, 1.0, self.settings_fog.0, self.settings_fog.1], false, self.settings_fog, 1.0, 1.0),
+        let (view_range, near_fog) = match self.environment {
+            Some(e) => (e.near_view_range, (e.fog_near_start, e.fog_near_end)),
+            None => (0.0, self.settings_fog),
         };
-        let sun = scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]);
-        let (sun_color, ambient) = match scene.sun_direction {
-            // The ambient light of the terrain shader is that of the sun and that of the scene.
-            Some(_) => (scene.sun_color.map(|c| c * sun_mult), core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult)),
-            // Without a sun in the draw of the game: the colour of the terrain as it is.
-            None => ([0.0; 3], [1.0; 3]),
-        };
-        // The far fog colour is that of the weather. The fog colour of the game is the near
-        // one: MGE XE changes it for the scattering.
-        let mut fog_color = scene.fog_color;
-        let mut scattering = [[0.0f32; 4]; 5];
-        if let Some(e) = self.environment.filter(|e| e.flags & 4 != 0) {
-            fog_color = [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 1.0];
-            if e.flags & 8 != 0 {
-                let far = e.sky_scatter_far;
-                let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
-                let altitude = (1.0 + e.sun_pos[2]).powi(10);
-                scattering = [
-                    [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], e.nice_weather],
-                    [sky[0], sky[1], sky[2], 1.0],
-                    [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
-                    [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
-                    [
-                        2.8 + 4.3 / altitude.max(1e-6),
-                        (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
-                        (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
-                        0.0,
-                    ],
-                ];
-            }
-        }
         // The eye with the view range of the game, as the statics and the glows take it.
         let eye_range = [eye[0], eye[1], eye[2], view_range];
-        let flags = [exponential as u32 as f32, 0.0, 0.0, 0.0];
-        let main_view = view::View {
-            view_projection,
-            eye: [eye[0], eye[1], eye[2], 0.0],
-            fog_color,
-            fog,
-            flags,
-            sun_direction: [sun[0], sun[1], sun[2], 0.0],
-            sun_color: [sun_color[0], sun_color[1], sun_color[2], 0.0],
-            ambient: [ambient[0], ambient[1], ambient[2], 0.0],
-            sun_pos: scattering[0],
-            sky: scattering[1],
-            outscatter: scattering[2],
-            inscatter: scattering[3],
-            sun_altitude: scattering[4],
-        };
         let land = LandUniforms { terrain: gpu.terrain, atlas: gpu.atlas, atlas_more: gpu.atlas_more, patterns: gpu.patterns, range: [view_range, 0.0, 0.0, 0.0] };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
         // The baked light of the distant lights: at night, in the exterior.
@@ -2357,23 +2301,26 @@ impl Extension for DistantLand {
         if !self.enabled || !self.distant_cell {
             return;
         }
-        let Some(statics) = self.statics.as_mut() else { return };
+        if self.statics.is_none() {
+            return;
+        }
         let view_projection = multiply(&scene.view, &scene.projection);
         let eye = eye_of(&scene.view);
+        let game_view = self.frame_view(scene, view_projection);
+        let Some(views) = self.view_binding.as_ref() else { return };
+        views.write(scene.queue, view::GAME, &game_view);
         let environment = self.environment;
-        // The grass has the linear fog of the near cells, with their fog colour.
-        let (fog_start, fog_end) = environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end));
         let (sun_mult, ambient_mult) = environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
-        let sun = scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]);
         let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
         let frame = statics::GrassFrame {
-            view_projection,
             // The view range of the game is the end of the grass. Without it from the game,
             // the default of the game with distant land: 7168 units.
             eye: [eye[0], eye[1], eye[2], environment.map_or(7168.0, |e| e.near_view_range)],
+            // The grass has the linear fog of the near cells (in the game view), with their
+            // fog colour.
             fog_color: scene.fog_color,
-            fog: [fog_start, fog_end, 0.0, 0.0],
-            sun_direction: [sun[0], sun[1], sun[2], 0.0],
+            // The light of the sun of the game, also in a frame without its direction (the
+            // land then has none).
             sun_color: [scene.sun_color[0] * sun_mult, scene.sun_color[1] * sun_mult, scene.sun_color[2] * sun_mult, 0.0],
             ambient: [ambient[0], ambient[1], ambient[2], 0.0],
             wind: environment.map_or([0.0; 4], |e| [e.wind[0], e.wind[1], e.time, 0.0]),
@@ -2392,6 +2339,7 @@ impl Extension for DistantLand {
             .filter(|_| self.tunables.get(tunables::GRASS_SHADOW) > 0.5),
             look: self.grass_look,
         };
+        let Some(statics) = self.statics.as_mut() else { return };
         statics.draw_grass(scene, pass, &frame);
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
             shadow.draw_debug(pass);
@@ -2680,6 +2628,70 @@ impl DistantLand {
         projection[10] = far / (far - near);
         projection[14] = -near * far / (far - near);
         projection
+    }
+
+    /// The values of a view of the frame (`view::View`) for its view and projection: the
+    /// main view of the land, or the game view with the projection of the game.
+    fn frame_view(&self, scene: &SceneView, view_projection: [f32; 16]) -> view::View {
+        let eye = eye_of(&scene.view);
+        // The fog: from the game with this frame, or the linear fog of the settings.
+        // A plain interior cell has the linear fog of the game on the statics
+        // (`StaticInteriorVS`), not the exponential curve.
+        let (fog, exponential, sun_mult, ambient_mult) = match self.environment {
+            Some(e) => (
+                [e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end],
+                e.flags & 1 != 0 && e.flags & 2 == 0 && self.like_exterior,
+                e.light_sun_mult,
+                e.light_amb_mult,
+            ),
+            None => ([0.0, 1.0, self.settings_fog.0, self.settings_fog.1], false, 1.0, 1.0),
+        };
+        let sun = scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]);
+        let (sun_color, ambient) = match scene.sun_direction {
+            // The ambient light of the terrain shader is that of the sun and that of the scene.
+            Some(_) => (scene.sun_color.map(|c| c * sun_mult), core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult)),
+            // Without a sun in the draw of the game: the colour of the terrain as it is.
+            None => ([0.0; 3], [1.0; 3]),
+        };
+        // The far fog colour is that of the weather. The fog colour of the game is the near
+        // one: MGE XE changes it for the scattering.
+        let mut fog_color = scene.fog_color;
+        let mut scattering = [[0.0f32; 4]; 5];
+        if let Some(e) = self.environment.filter(|e| e.flags & 4 != 0) {
+            fog_color = [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 1.0];
+            if e.flags & 8 != 0 {
+                let far = e.sky_scatter_far;
+                let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
+                let altitude = (1.0 + e.sun_pos[2]).powi(10);
+                scattering = [
+                    [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], e.nice_weather],
+                    [sky[0], sky[1], sky[2], 1.0],
+                    [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
+                    [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
+                    [
+                        2.8 + 4.3 / altitude.max(1e-6),
+                        (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
+                        (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
+                        0.0,
+                    ],
+                ];
+            }
+        }
+        view::View {
+            view_projection,
+            eye: [eye[0], eye[1], eye[2], 0.0],
+            fog_color,
+            fog,
+            flags: [exponential as u32 as f32, 0.0, 0.0, 0.0],
+            sun_direction: [sun[0], sun[1], sun[2], 0.0],
+            sun_color: [sun_color[0], sun_color[1], sun_color[2], 0.0],
+            ambient: [ambient[0], ambient[1], ambient[2], 0.0],
+            sun_pos: scattering[0],
+            sky: scattering[1],
+            outscatter: scattering[2],
+            inscatter: scattering[3],
+            sun_altitude: scattering[4],
+        }
     }
 
     /// What the surfaces of water volumes need: as `water_frame`, in a cell without water too.

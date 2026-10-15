@@ -6,7 +6,7 @@
 // with a 4 x 4 dither (the fade-in of the distant statics).
 //
 // Three looks of the grass shader of Remiros' Groundcover are options, off at the start
-// (`[distant_land.grass]` in mgeXE.toml, `u.look`):
+// (`[distant_land.grass]` in mgeXE.toml, `g.look`):
 // - x, `soft_end`: near the end of the grass a blade sinks into the ground. The band starts
 //   at 5300 / 7300 of the end of the grass, and a noise moves it for each vertex.
 // - y, `vertex_color_sway`: the red of the vertex colour weights the sway, so a part with
@@ -18,14 +18,15 @@
 // scaled to the range of the frame. The looks are Remiros' work; he approved their
 // inclusion in MGE XE (2026-10-15).
 
-struct Uniforms {
-    view_projection: mat4x4f,
-    // xyz: the camera; w: the end of the grass (the view range of the game).
-    eye: vec4f,
+// The view group (`view.rs`, group 0) comes before this code: the game view in `u`, with the
+// linear fog of the near cells in `u.fog.zw`. The values of the grass are in group 1.
+struct Grass {
+    // x: the end of the grass (the view range of the game).
+    range: vec4f,
+    // The fog colour of the near cells.
     fog_color: vec4f,
-    // x, y: the start and the end of the linear fog of the near cells.
-    fog: vec4f,
-    sun_direction: vec4f,
+    // The light of the sun of the game and the ambient light, also in a frame without a
+    // direction of the sun (the view has none of them then).
     sun_color: vec4f,
     ambient: vec4f,
     // xy: the wind; z: the time of the game.
@@ -45,11 +46,11 @@ struct Uniforms {
     // x: soft end, y: vertex colour sway, z: wrap lighting (1 on).
     look: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var base_sampler: sampler;
-@group(0) @binding(2) var shadow_atlas: texture_2d<f32>;
-@group(0) @binding(3) var shadow_sampler: sampler;
-@group(1) @binding(0) var base_texture: texture_2d<f32>;
+@group(1) @binding(0) var<uniform> g: Grass;
+@group(1) @binding(1) var base_sampler: sampler;
+@group(1) @binding(2) var shadow_atlas: texture_2d<f32>;
+@group(1) @binding(3) var shadow_sampler: sampler;
+@group(2) @binding(0) var base_texture: texture_2d<f32>;
 
 struct In {
     @location(0) position: vec4f,
@@ -90,14 +91,14 @@ const BACK_LIGHT: f32 = 0.4;
 // shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
 // the pixel; a positive number when the map has nothing nearer to the sun.
 fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
-    let margin = vec3f(1.0 - 8.0 * u.esm.w, 1.0 - 8.0 * u.esm.w, 1.0);
+    let margin = vec3f(1.0 - 8.0 * g.esm.w, 1.0 - 8.0 * g.esm.w, 1.0);
     if all(abs(s0) < margin) {
         let uv = vec2f(0.5 + 0.5 * s0.x, 0.5 - 0.5 * s0.y);
-        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r / u.esm.z - s0.z;
+        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r / g.esm.z - s0.z;
     }
     if all(abs(s1) < margin) {
         let uv = vec2f(0.5 + 0.5 * s1.x, 0.5 - 0.5 * s1.y);
-        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r / u.esm.z - s1.z;
+        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r / g.esm.z - s1.z;
     }
     return 1e-6;
 }
@@ -105,21 +106,21 @@ fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
 // grassDisplacement: the wind in four waves, and the grass that the player pushes away. The
 // height of a vertex in its model is the weight.
 fn displacement(world: vec3f, height: f32) -> vec2f {
-    let time = u.wind.z;
-    let speed = length(u.wind.xy);
-    let displace = 2.0 * u.wind.xy + 0.1;
+    let time = g.wind.z;
+    let speed = length(g.wind.xy);
+    let displace = 2.0 * g.wind.xy + 0.1;
     var harmonics = vec2f(0.0);
     harmonics += (1.0 - 0.10 * speed) * sin(1.0 * time + world.xy / 1104.0);
     harmonics += (1.0 - 0.04 * speed) * cos(2.0 * time + world.xy / 751.0);
     harmonics += (1.0 + 0.14 * speed) * sin(3.0 * time + world.xy / 526.0);
     harmonics += (1.0 + 0.28 * speed) * sin(5.0 * time + world.xy / 209.0);
     var stomp = vec2f(0.0);
-    if u.foot.w > 0.5 {
-        var d = length(world.xy - u.foot.xy);
-        let above = 0.06 * max(0.0, u.foot.z - world.z - 60.0);
+    if g.foot.w > 0.5 {
+        var d = length(world.xy - g.foot.xy);
+        let above = 0.06 * max(0.0, g.foot.z - world.z - 60.0);
         d += above * above;
         if d < 150.0 {
-            stomp = (60.0 / max(d, 0.001) - 0.4) * (world.xy - u.foot.xy);
+            stomp = (60.0 / max(d, 0.001) - 0.4) * (world.xy - g.foot.xy);
         }
     }
     return clamp(0.02 * height, 0.0, 1.0) * (harmonics * displace + stomp);
@@ -141,13 +142,13 @@ fn bnoise(x: f32) -> f32 {
     let red = in.color.z;
     // The soft end: how far the vertex sinks, from its distance before the wind moves it.
     var sink = 0.0;
-    if u.look.x > 0.5 {
-        let scale = u.eye.w / 7300.0;
+    if g.look.x > 0.5 {
+        let scale = g.range.x / 7300.0;
         let distance = length(world - u.eye.xyz) - 1900.0 * scale * clamp(bnoise(world.x + world.y), 0.0, 1.0);
         sink = 100.0 * smoothstep(5300.0 * scale, 7300.0 * scale, distance);
     }
     var moved = displacement(world, in.position.z);
-    if u.look.y > 0.5 {
+    if g.look.y > 0.5 {
         moved *= red;
     }
     world = vec3f(world.xy + moved, world.z - sink);
@@ -159,8 +160,8 @@ fn bnoise(x: f32) -> f32 {
     // The light of the sun for the side that the camera sees.
     let facing = dot(normal, -u.sun_direction.xyz) * -sign(dot(to_vertex, normal));
     var lambert: f32;
-    if u.look.z > 0.5 {
-        if u.look.y < 0.5 || red > 0.5 {
+    if g.look.z > 0.5 {
+        if g.look.y < 0.5 || red > 0.5 {
             // Remiros' wrap light, and the light through the back.
             lambert = pow(clamp((facing + WRAP_W) / (1.0 + WRAP_W), 0.0, 1.0), WRAP_N) * (WRAP_N + 1.0) / (2.0 * (1.0 + WRAP_W)) + max(0.0, -facing) * BACK_LIGHT;
         } else {
@@ -175,16 +176,16 @@ fn bnoise(x: f32) -> f32 {
             lambert *= -0.3;
         }
     }
-    out.color = u.sun_color.rgb * lambert + u.ambient.rgb;
+    out.color = g.sun_color.rgb * lambert + g.ambient.rgb;
     out.coordinate = in.coordinate;
     // fogMWScalar: the linear fog of the near cells.
-    out.fog = clamp((u.fog.y - length(to_vertex)) / max(u.fog.y - u.fog.x, 1.0), 0.0, 1.0);
+    out.fog = clamp((u.fog.w - length(to_vertex)) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
     out.fade = in.fade.x;
     // shadowSunEstimate of the light of the blade.
-    let x = lambert * u.shadow.y;
-    out.light = x / (u.shade.w + x);
-    let s0 = u.shadow_layer0 * vec4f(world, 1.0);
-    let s1 = u.shadow_layer1 * vec4f(world, 1.0);
+    let x = lambert * g.shadow.y;
+    out.light = x / (g.shade.w + x);
+    let s0 = g.shadow_layer0 * vec4f(world, 1.0);
+    let s1 = g.shadow_layer1 * vec4f(world, 1.0);
     out.shadow0 = vec3f(s0.xy, s0.z / s0.w);
     out.shadow1 = vec3f(s1.xy, s1.z / s1.w);
     return out;
@@ -198,17 +199,17 @@ fn bnoise(x: f32) -> f32 {
     }
     var color = texel.rgb * in.color;
     // The shadow, as GrassPS: shadowESM times the light of the sun, towards shadecolor.
-    if u.shadow.x > 0.5 {
+    if g.shadow.x > 0.5 {
         let dz = shadow_delta(in.shadow0, in.shadow1);
-        var v = (1.0 - clamp(exp(u.esm.x * dz + u.esm.y), 0.0, 1.0)) * in.light;
-        if u.shadow.w > 0.5 {
+        var v = (1.0 - clamp(exp(g.esm.x * dz + g.esm.y), 0.0, 1.0)) * in.light;
+        if g.shadow.w > 0.5 {
             // As the ground under the blade (RenderShadowsPS): the fade at the edge of the
             // outer layer, and the fog weakens the shadow.
             let edge = clamp(25.0 * (1.0 - abs(in.shadow1.xy)), vec2f(0.0), vec2f(1.0));
             let fogatt = in.fog * in.fog;
-            v *= edge.x * edge.y * select(clamp(4.0 * fogatt, 0.0, 1.0), fogatt, u.shadow.z > 0.5);
+            v *= edge.x * edge.y * select(clamp(4.0 * fogatt, 0.0, 1.0), fogatt, g.shadow.z > 0.5);
         }
-        color *= 1.0 - v * u.shade.rgb;
+        color *= 1.0 - v * g.shade.rgb;
     }
-    return vec4f(mix(u.fog_color.rgb, color, in.fog), 1.0);
+    return vec4f(mix(g.fog_color.rgb, color, in.fog), 1.0);
 }

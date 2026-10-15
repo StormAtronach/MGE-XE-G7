@@ -752,14 +752,11 @@ struct Gpu {
 /// The values of a frame for the grass.
 #[derive(Clone)]
 pub struct GrassFrame {
-    /// The view and the projection of the game.
-    pub view_projection: [f32; 16],
     /// The position of the camera, and the view range of the game: the end of the grass.
     pub eye: [f32; 4],
-    /// The fog colour of the near cells, and the start and the end of their linear fog.
+    /// The fog colour of the near cells (the game view has the start and the end of their
+    /// linear fog).
     pub fog_color: [f32; 4],
-    pub fog: [f32; 4],
-    pub sun_direction: [f32; 4],
     pub sun_color: [f32; 4],
     pub ambient: [f32; 4],
     /// The smooth wind, and the time of the game in z.
@@ -795,11 +792,9 @@ pub struct GrassShadow {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GrassUniforms {
-    view_projection: [f32; 16],
-    eye: [f32; 4],
+    /// x: the end of the grass.
+    range: [f32; 4],
     fog_color: [f32; 4],
-    fog: [f32; 4],
-    sun_direction: [f32; 4],
     sun_color: [f32; 4],
     ambient: [f32; 4],
     wind: [f32; 4],
@@ -1645,6 +1640,7 @@ impl Statics {
             }
         }
         let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else { return };
+        let Some(view) = self.view_groups.get(super::view::GAME) else { return };
         let Some(world) = catalog.worlds.get(&self.world) else { return };
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
@@ -1693,11 +1689,8 @@ impl Statics {
         let records: Vec<f32> = self.grass_draws.iter().flat_map(|draw| draw.2.into_iter().chain([draw.3, 0.0, 0.0, 0.0])).collect();
         scene.queue.write_buffer(&gpu.grass_records, 0, bytemuck::cast_slice(&records));
         let uniforms = GrassUniforms {
-            view_projection: frame.view_projection,
-            eye: frame.eye,
+            range: [view_range, 0.0, 0.0, 0.0],
             fog_color: frame.fog_color,
-            fog: frame.fog,
-            sun_direction: frame.sun_direction,
             sun_color: frame.sun_color,
             ambient: frame.ambient,
             wind: frame.wind,
@@ -1715,7 +1708,8 @@ impl Statics {
         scene.queue.write_buffer(&gpu.grass_uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         pass.set_pipeline(if scene.wireframe { gpu.grass_pipeline_lines.as_ref().unwrap_or(&gpu.grass_pipeline) } else { &gpu.grass_pipeline });
-        pass.set_bind_group(0, &gpu.grass_group, &[]);
+        pass.set_bind_group(0, view, &[]);
+        pass.set_bind_group(1, &gpu.grass_group, &[]);
         pass.set_vertex_buffer(1, gpu.grass_records.slice(..));
         // One draw for each run of places with the same subset.
         let mut start = 0;
@@ -1726,7 +1720,7 @@ impl Statics {
                 end += 1;
             }
             if let Some(Resident { geometry: Geometry::Own { vertices, indexes }, faces, .. }) = self.resident.get(&subset) {
-                pass.set_bind_group(1, &gpu.textures[texture as usize], &[]);
+                pass.set_bind_group(2, &gpu.textures[texture as usize], &[]);
                 pass.set_vertex_buffer(0, vertices.slice(..));
                 pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..faces[0] * 3, 0, start as u32..end as u32);
@@ -2546,9 +2540,13 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             .create_view(&Default::default()),
     );
     let grass_group = make_grass_group(device, &grass_layout, &grass_uniforms, &sampler, &no_shadow, &grass_shadow_sampler);
-    let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("grass"), source: wgpu::ShaderSource::Wgsl(GRASS_SHADER.into()) });
-    let grass_pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("grass"), bind_group_layouts: &[Some(&grass_layout), Some(&texture_layout)], immediate_size: 0 });
+    let grass_source = format!("{}{GRASS_SHADER}", super::view::wgsl());
+    let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("grass"), source: wgpu::ShaderSource::Wgsl(grass_source.into()) });
+    let grass_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("grass"),
+        bind_group_layouts: &[Some(view_layout), Some(&grass_layout), Some(&texture_layout)],
+        immediate_size: 0,
+    });
     let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
     let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("grass"),

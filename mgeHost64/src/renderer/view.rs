@@ -1,24 +1,26 @@
 //! The view group: group 0 of the pipelines of MGE XE, with one layout for all of them and one
 //! group for each view of the frame (the main view, the mirror of the water, the two layers of
-//! the shadow map). It has the values of the view (`View`, the uniform `u` of a shader) and the
-//! baked light of the distant lights (`baked_light`, from `LightBinding`). The values of one
-//! pipeline only (the terrain of the land, the view range of a handoff) are in its group 1.
-//! The land and the statics (with their shadow casters) take it; the number of a view is the
-//! number of a set of the statics.
+//! the shadow map, the game view). It has the values of the view (`View`, the uniform `u` of a
+//! shader) and the baked light of the distant lights (`baked_light`, from `LightBinding`). The
+//! values of one pipeline only (the terrain of the land, the view range of a handoff) are in
+//! its group 1. The land, the statics (with their shadow casters), the glows and the grass
+//! take it; the number of a view is the number of a set of the statics.
 //!
-//! Not there yet (plan D1, step by step): the glows, the grass, the water, the caustics and
-//! the volumes have a group 0 of their own; the game view (the projection of the game, for the
-//! grass and the water) is not a view here yet.
+//! Not there yet (plan D1, step by step): the water, the caustics and the volumes have a
+//! group 0 of their own.
 
 use nirender_wgpu::wgpu;
 
 use super::distant_lights::{self, LightBinding};
 
-/// The views of a frame, and the group of each.
+/// The views of a frame, and the group of each. The main view and its mirror have the
+/// projection of the land (a far plane at the draw distance); the game view has the
+/// projection of the game, for the draws at the end of the world scene of the game.
 pub const MAIN: usize = 0;
 pub const MIRROR: usize = 1;
 pub const SHADOW: [usize; 2] = [2, 3];
-const VIEWS: usize = 4;
+pub const GAME: usize = 4;
+const VIEWS: usize = 5;
 
 /// The values of a view; the layout of `View` in `wgsl()`.
 #[repr(C)]
