@@ -168,7 +168,11 @@ adapter and the one in use.
   statics in the generated data gets its statics and grass, with the fog of the game.
 - The dry spaces among the distant statics are not cut: far away, a boat's hold can show
   water. Near the camera they are cut.
-- The grass does not receive shadows.
+- The grass receives the shadows of the distant land and the distant statics, as on
+  Direct3D 9. Where the shadow map ends (about 4000 units ahead) and in the fog, its shadow
+  fades as the shadow on the ground under it does; Direct3D 9 ends it at once. The
+  parameter "Grass: shadow" of the renderer's parameters window chooses: 2 (as the ground),
+  1 (as Direct3D 9), 0 (no shadow on the grass).
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
   `Morrowind.ini` names under `[Inventory]`; Direct3D 9 draws it wrong.
 - The three new shaders have first settings and no keys in `mgeXE.toml` yet.

@@ -240,8 +240,10 @@ replay). The statics shader multiplies the handoff dissolve by the share that is
 **"distant statics shadow"**: the same pipeline layout; its WGSL uses groups 1 and 2 only.
 R16Float target. Its casters fade in with the same threshold.
 
-**"grass"** (fill, lines): group 0 "grass" (uniform, sampler; frame), group 1 the statics
-texture layout (texture run). Instance 64 bytes (locations 4-7; 7.x is the share of the
+**"grass"** (fill, lines): group 0 "grass" (uniform, sampler, the shadow atlas and its
+clamp sampler; frame), group 1 the statics texture layout (texture run). The uniform has
+the two world-to-layer matrices of the shadow map; the atlas is a 1 x 1 texture until the
+session has a shadow map. Instance 64 bytes (locations 4-7; 7.x is the share of the
 subset that is in, computed on the CPU).
 
 **"distant statics, cull"** (compute, `renderer/statics/cull.rs`; entries `cull` and
