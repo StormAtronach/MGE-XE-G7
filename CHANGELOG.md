@@ -108,8 +108,9 @@ detail are in [README.md](README.md).
   with transparency.
 - Native per-pixel lighting, on by default (`native_ppl_packets`). Lighting data goes straight to
   the GPU instead of through the legacy shader path.
-- Up to 32 lights per object, opt-in (`expanded_light_limit`). Needs `native_ppl_packets` to reach
-  per-pixel-lit objects.
+- Up to 32 lights per object, on by default (`expanded_light_limit`): fewer light seams between
+  neighbouring meshes. With Direct3D 9 it needs `native_ppl_packets` to reach per-pixel-lit
+  objects.
 - BC7 texture support, for finer detail and compatibility with OpenMW mods.
 - Indexed skinning for meshes, opt-in and undertested (`indexed_skinning`).
 - Native GUI with a dark theme, a tabbed generator window, four languages (EN/FR/PL/RU), a built-in

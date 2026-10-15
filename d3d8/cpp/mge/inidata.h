@@ -31,7 +31,7 @@ const iniSetting iniSettings[] = {
     NUM(Configuration.DistantLandWaitOnLoad, t_bool, "distant_land.wait_on_load", 0),
     NUM(Configuration.EnableNativeDepthCapture, t_bool, "distant_land.native_depth_capture", 0),
     NUM(Configuration.EnableNativePplPackets, t_bool, "distant_land.native_ppl_packets", 0),
-    NUM(Configuration.ExpandedLightLimit, t_bool, "distant_land.expanded_light_limit", 0),
+    NUM(Configuration.ExpandedLightLimit, t_bool, "distant_land.expanded_light_limit", 1),
     BIT(Configuration.MGEFlags, USE_DISTANT_STATICS_BIT, "distant_land.statics", 0),
     BIT(Configuration.MGEFlags, USE_DISTANT_WATER_BIT, "distant_land.water_without_land", DONT_SAVE),
     BIT(Configuration.MGEFlags, REFLECTIVE_WATER_BIT, "distant_land.water.reflect_land", 0),

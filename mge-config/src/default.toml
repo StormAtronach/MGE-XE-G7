@@ -110,10 +110,11 @@ native_depth_capture = true
 # Submit supported Morrowind per-pixel-lighting draws directly to DXVK. Also
 # required for expanded_light_limit to reach per-pixel-lit objects.
 native_ppl_packets = true
-# Raise the engine's per-node local light limit from 8 to 32. Requires a
-# renderer that reports the expanded limit; ignored otherwise. With per-pixel
-# lighting this also needs native_ppl_packets set to true.
-expanded_light_limit = false
+# Raise the engine's per-node local light limit from 8 to 32: fewer light seams
+# between neighbouring meshes. The wgpu renderer always supports it. With
+# Direct3D 9 it needs a renderer that reports the expanded limit (ignored
+# otherwise), and with per-pixel lighting also native_ppl_packets set to true.
+expanded_light_limit = true
 # A fresh configuration deliberately starts with distant statics disabled.
 statics = false
 # Permit replacement water even when distant land is disabled.

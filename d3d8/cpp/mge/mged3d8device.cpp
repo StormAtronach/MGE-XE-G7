@@ -1721,6 +1721,12 @@ namespace Deviceless {
             if (Configuration.ExpandedLightLimit) {
                 MWPatches::patchExpandedLightLimit();
             }
+            // As on Direct3D 9: the engine attaches a light out to where the per-pixel fade
+            // of the renderer ends. Without it a mesh past the radius of a light gets none of
+            // it while its neighbour fades: a light seam.
+            if (Configuration.PerPixelLightFade) {
+                MWPatches::patchLightAttachRadius(&FixedFunctionShader::lightAttachRadius);
+            }
             MWPatches::patchResolveDuringInit(&onResolveDuringInit);
             // As the proxy device at its first scene of the loaded game.
             StatusOverlay::setStatus(XE_VERSION_STRING);

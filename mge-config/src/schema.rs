@@ -523,7 +523,7 @@ impl Default for DistantLandSettings {
             wait_on_load: false,
             native_depth_capture: true,
             native_ppl_packets: true,
-            expanded_light_limit: false,
+            expanded_light_limit: true,
             statics: false,
             water_without_land: true,
             render_grass: true,
