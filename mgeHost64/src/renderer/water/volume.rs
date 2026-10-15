@@ -1288,6 +1288,9 @@ impl Volumes {
                     dry.count_behind(pass);
                 }
             }
+            // The light is the same for all surfaces; set again after the dry spaces, whose
+            // pipelines have the water group only.
+            pass.set_bind_group(1, &light_group, &[]);
             for (index, held) in surfaces.iter().enumerate() {
                 let index = far.len() + index;
                 let layout = &held.layout;
@@ -1307,7 +1310,6 @@ impl Volumes {
                 pass.set_bind_group(2, &mesh, &[]);
                 pass.set_stencil_reference(if stencil.is_some() { held.stencil[2] } else { 0 });
                 pass.set_bind_group(3, &self.group, &[((base + index as u64) * SLOT) as u32]);
-                pass.set_bind_group(1, &light_group, &[]);
                 pass.set_vertex_buffer(0, held.vertices.slice(..));
                 pass.set_vertex_buffer(1, self.defaults.slice(..));
                 pass.set_index_buffer(held.indexes.slice(..), wgpu::IndexFormat::Uint16);
