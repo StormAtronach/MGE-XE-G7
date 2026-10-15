@@ -104,18 +104,21 @@ adapter and the one in use.
 - Water volumes: the water surfaces that mods add (lakes, ponds, wells, the water in a
   boat's hold) are drawn as water, near the camera and among the distant statics. The dry
   spaces that a mod reports (the inside of a boat's hold) have no water. A mod can give a
-  surface a water shader of its own (`Data Files/shaders/water/<name>.wgsl`). Three options
-  under `[distant_land.water]` put more light on the surfaces, each off at the start:
-  `volume_shadows`, `volume_point_lights` and `volume_caustics`.
+  surface a water shader of its own (`Data Files/shaders/water/<name>.wgsl`).
+- More light on water volumes: three options under `[distant_land.water]`, each off at the
+  start. `volume_shadows`: the shadows of distant land fall on the surface.
+  `volume_point_lights`: the lamps and fires of the game glint in it. `volume_caustics`: the
+  light pattern of ripples on what is under it.
 - The vis groups of the distant statics: a group of distant statics that the game hides is
   hidden, for example the Ghostfence after the end of the main quest.
 - Distant lights at night: each placed light of the exterior has a glow far away, in the
   colour of its light, and the land and the distant statics get the light of the lamps near
-  them. They come from the file `distantland\lights.data`. The generator writes it with the
-  settings `distant_lights` and `bake_lights` under `[generation.settings]` of `mgeXE.toml`,
-  both on at the start. Generate the distant land once with this build to get the file.
-  Without it there are no distant lights, and `nirender-host.log` has the line
-  `distant lights: none`.
+  them. They come from the file `distantland\lights.data`, which this build of the generator
+  writes. Distant land made by an earlier test build has no such file and is still drawn,
+  without the lights: generate the distant land once with this build. Without the file,
+  `nirender-host.log` has the line `distant lights: none`. The MGE XE GUI has no option for
+  them yet; to turn them off, set `distant_lights = false` (or `bake_lights = false` for the
+  glows only) under `[generation.settings]` in `mgeXE.toml`, and generate again.
 - The light of each pixel uses the lights of the game: each light keeps its colour and its
   whole falloff. To get the lights as MGE XE on Direct3D 9 decodes them, set
   `per_pixel_original_lights = true` under `[distant_land]`.
