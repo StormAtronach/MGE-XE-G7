@@ -2242,6 +2242,15 @@ impl Extension for DistantLand {
         let like_exterior = e.flags & 4 != 0;
         let sunvis = e.sun_vis + (1.0 - e.sun_vis) * 0.333 * e.nice_weather;
         let fov = 2.0 * (1.0 / scene.projection[0].max(1e-6)).atan().to_degrees();
+        // The fog distances: those of distant land in a cell with distant land, else the fog
+        // of the game, as `DistantLand::adjustFog` of the Direct3D 9 path has them. The
+        // environment always has those of distant land.
+        let (fog_start, fog_end, fog_exp_start, fog_exp_divisor, fog_near_start, fog_near_end) = if self.enabled && self.distant_cell {
+            (e.fog_start, e.fog_end, e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end)
+        } else {
+            let exp_start = scene.fog_start / 4.4;
+            (scene.fog_start, scene.fog_end, exp_start, (scene.fog_end - exp_start) / 4.4, scene.fog_start, scene.fog_end)
+        };
         let variables = Variables {
             mview: rows(&scene.view),
             mproj: rows(&scene.projection),
@@ -2252,9 +2261,9 @@ impl Extension for DistantLand {
             sunamb: [scene.sun_ambient[0] + scene.ambient[0], scene.sun_ambient[1] + scene.ambient[1], scene.sun_ambient[2] + scene.ambient[2], if like_exterior { 0.0 } else { 1.0 }],
             sunpos: [sun_pos[0], sun_pos[1], sun_pos[2], if underwater { 1.0 } else { 0.0 }],
             hdr: [1.0; 4],
-            fogcol: [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], if exponential { e.fog_exp_start } else { e.fog_start }],
-            fognearcol: [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2], if exponential { e.fog_exp_divisor } else { e.fog_end }],
-            fog_near: [e.fog_near_start, e.fog_near_end, 1.0 / scene.target_size.0.max(1) as f32, 1.0 / scene.target_size.1.max(1) as f32],
+            fogcol: [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], if exponential { fog_exp_start } else { fog_start }],
+            fognearcol: [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2], if exponential { fog_exp_divisor } else { fog_end }],
+            fog_near: [fog_near_start, fog_near_end, 1.0 / scene.target_size.0.max(1) as f32, 1.0 / scene.target_size.1.max(1) as f32],
             switches: [if exponential { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
         };
         // The flags of the environment, as `postProcess` of the Direct3D 9 path sets them: 1
