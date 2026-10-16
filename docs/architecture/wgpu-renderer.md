@@ -200,7 +200,7 @@ pool (16 MB); the draw names its first index. Since 2026-10-16 (plan 0.5 entries
 
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
-| 0 | extension frame | 0 uniform `FrameParameters` (512 B), 1 texture (shadow atlas or white), 2 sampler, 3 uniform cluster grid, 4-5 storage cluster table and indexes, 6 storage lights of the frame, 7 storage bone palette (V), 8 storage records of the draws (`array<Draw>`, VF) | frame |
+| 0 | extension frame | 0 uniform `FrameParameters` (512 B), 1 texture (shadow atlas or white), 2 sampler, 3 uniform cluster grid, 4-5 storage cluster table and indexes, 6 storage lights of the frame, 7 storage bone palette (V), 8 storage records of the draws (`array<Draw>`, VF), 9 storage light indexes of the retained instances, 10 uniform `Scene` of a view (256 B, a dynamic offset: every set of group 0 passes one), 11 storage lights of the retained instances | frame |
 | 1 | draw texture arrays (an adapter with binding arrays) | 0 `binding_array<texture_2d>` of the frame's textures (4096 at most), 1 `binding_array<sampler>` (64) (F); a stage reads by the slots in its record | pass (a variant for a pass into a rendered texture of the game) |
 | 1, 2 | draw samplers, draw textures (without binding arrays, or `MGE_XE_ARRAYS=0`) | 0-5 sampler, 0-5 texture per stage (F) | material |
 
@@ -209,6 +209,21 @@ reference and the buffers of slot 0 and the index buffer; slots 1 and 2 once a p
 is `draw_indexed(first index.., base vertex, first instance..)`: its record is read by
 `draws[instance.record]` in both stages. A copy of a draw (clipped at a water plane, replayed
 into a reflection) takes a record and instances from the end of the room of the frame.
+
+**retained instances** (plan 0.5 entry T4, 2026-10-16, `host/src/retained.rs`): the shapes
+the plugin retains (mode gpu) have a record and an instance in a segment at the start of
+the record and instance buffers that stays from frame to frame. Their record has bits in
+`light_range.w`: 2 the world matrix from the instance, 4 the matrices, fog, ambient light,
+pixel step, clip plane and the extension's shade values from the `Scene` uniform of the
+view (binding 10), 8 the lights through the indexes (binding 9) into their own table
+(binding 11), which the extension shades once a frame as the lights of one opaque draw of
+the world. At the start of the world and in each replayed view the helper tests the bounds
+against the planes of the view on the CPU and draws the instances in view with one
+`multi_draw_indexed_indirect` for each bucket (pipeline, stencil reference, pool buffers,
+and without the arrays the textures), before the draws of the game. The extension's shader
+text reads the record through `draw_view()`, `draw_fog()`, `draw_counts_w()`,
+`draw_extension(i)`, `light_at(at)` and the like (the crate rewrites `draw.view` and the
+others when the shader is made), so a retained draw gets the values of its view.
 
 **"screen draw"**: film frames and screen-space draws. Group 0: texture, sampler (F); a new
 group per draw. Depth test always, no depth write.

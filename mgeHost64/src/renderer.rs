@@ -1386,7 +1386,7 @@ fn extension_shade(in: VertexOut) -> vec4f {
     var first = draw.light_range.x;
     var count = draw.light_range.y;
     var clustered = false;
-    if draw.light_range.w != 0u {
+    if (draw.light_range.w & 1u) != 0u {
         let view_z = (draw.view * vec4f(in.world_position, 1.0)).z;
         let cluster = cluster_lights(in.clip.xy, view_z);
         if clusters.grid.w != 0u {
