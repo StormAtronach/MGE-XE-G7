@@ -121,6 +121,9 @@ adapter and the one in use.
 - The light of each pixel uses the lights of the game: each light keeps its colour and its
   whole falloff. To get the lights as MGE XE on Direct3D 9 decodes them, set
   `per_pixel_original_lights = true` under `[distant_land]`.
+- Each per-pixel point light fades to zero before 1.75 times its radius
+  (`per_pixel_light_fade`, on by default since this build; `per_pixel_light_fade_radius`).
+  A `mgeXE.toml` written by an older build keeps its own value.
 - `clustered_lights = true` under `[distant_land]` (off by default): each pixel takes its
   lights from the clusters of the view. The picture is the same; it can pay with many lights
   for each object, and costs CPU time otherwise.

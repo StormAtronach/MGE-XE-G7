@@ -180,8 +180,8 @@ still installed.
 | (new, no INI key) | `distant_land.native_depth_capture` |
 | (new, no INI key) | `distant_land.native_ppl_packets` |
 | (new, no INI key) | `distant_land.expanded_light_limit` |
-| (new, no INI key) | `distant_land.per_pixel_light_fade` |
-| (new, no INI key) | `distant_land.per_pixel_light_fade_radius` |
+| (new, no INI key) | `distant_land.per_pixel_light_fade` (default `true` since 2026-10-16) |
+| (new, no INI key) | `distant_land.per_pixel_light_fade_radius` (default `1.75`, the radius multiplier of OpenMW) |
 | (new, no INI key) | `distant_land.wait_on_load` |
 
 `src/default.toml` describes each of these new keys, and `render.camera_relative` too.

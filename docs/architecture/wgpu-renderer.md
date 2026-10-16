@@ -220,10 +220,30 @@ view (binding 10), 8 the lights through the indexes (binding 9) into their own t
 the world. At the start of the world and in each replayed view the helper tests the bounds
 against the planes of the view on the CPU and draws the instances in view with one
 `multi_draw_indexed_indirect` for each bucket (pipeline, stencil reference, pool buffers,
-and without the arrays the textures), before the draws of the game. The extension's shader
+and without the arrays the textures), before the draws of the game. The order, since
+2026-10-16: the buckets without blending and without an alpha test go first, front to
+back by their nearest draw, and their draws go front to back. The buckets with an alpha
+test follow. The blended buckets keep the order they were made in, so a base pass comes
+before its blend pass. `MGE_XE_ORDER=buckets` gives the order of the buckets alone, for
+an A/B. The extension's shader
 text reads the record through `draw_view()`, `draw_fog()`, `draw_counts_w()`,
 `draw_extension(i)`, `light_at(at)` and the like (the crate rewrites `draw.view` and the
 others when the shader is made), so a retained draw gets the values of its view.
+
+The records of the retained instances come from `nirender-plugin/src/instance_stream.rs`
+(the tags are in `src/capture.rs`): 23 INSTANCE, the geometry, material, class, flags,
+rotation, translation and colours of a shape; 24 INSTANCE_DRAW, a draw of it in the place
+of a SHAPE; 25 INSTANCE_DELETE; 26 INSTANCE_LIGHTS, the keys of its lights; 27
+INSTANCE_STATE, hidden or visible; 28 RETAINED_SCENE, the ambient light and the fog of the
+scene. The plugin sends a record only when the shape changed.
+
+Switches for an A/B, never for a player: `MGE_XE_RETAINED=0` (the helper ignores the
+instance records), `MGE_XE_ORDER=buckets`, `MGE_XE_CLUSTERS=0/1` (overrides
+`distant_land.clustered_lights`), `MGE_XE_INDIRECT=0`, `MGE_XE_ARRAYS=0`. In the plugin:
+`NIRENDER_RETAINED=off|dual|on|gpu` (default gpu), `NIRENDER_LANDSCAPE=0`,
+`NIRENDER_ACTORS=0`, `NIRENDER_ANIMATED=0` (that class stays on the engine's path),
+`NIRENDER_SKIP=0` (the engine displays the retained shapes too), `NIRENDER_PORT_TIMING=1`
+(times each live port call). MSOC is not supported with this renderer (RENDERER.md).
 
 **"screen draw"**: film frames and screen-space draws. Group 0: texture, sampler (F); a new
 group per draw. Depth test always, no depth write.
