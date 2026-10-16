@@ -240,7 +240,7 @@ scene. The plugin sends a record only when the shape changed.
 Switches for an A/B, never for a player: `MGE_XE_RETAINED=0` (the helper ignores the
 instance records), `MGE_XE_ORDER=buckets`, `MGE_XE_CLUSTERS=0/1` (overrides
 `distant_land.clustered_lights`), `MGE_XE_INDIRECT=0`, `MGE_XE_ARRAYS=0`. In the plugin:
-`NIRENDER_RETAINED=off|dual|on|gpu` (default gpu), `NIRENDER_LANDSCAPE=0`,
+`NIRENDER_RETAINED=off|dual|gpu` (default gpu), `NIRENDER_LANDSCAPE=0`,
 `NIRENDER_ACTORS=0`, `NIRENDER_ANIMATED=0` (that class stays on the engine's path),
 `NIRENDER_SKIP=0` (the engine displays the retained shapes too), `NIRENDER_PORT_TIMING=1`
 (times each live port call). MSOC is not supported with this renderer (RENDERER.md).
