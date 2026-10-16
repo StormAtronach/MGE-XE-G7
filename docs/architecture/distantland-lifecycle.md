@@ -38,7 +38,7 @@ partially initialized resources are still released.
 
 ## Startup path
 
-At `Direct3DCreate8` time, `d3d8.dll` attempts to launch `mgeHost64.exe` when
+At `Direct3DCreate8` time, `d3d8.dll` attempts to launch `numidium.exe` when
 MGE is enabled, proxy-only mode is disabled, distant land is enabled, and the
 executable exists. This early launch is not gated on automatic generation being
 configured; the host decides whether generation is needed. The same process

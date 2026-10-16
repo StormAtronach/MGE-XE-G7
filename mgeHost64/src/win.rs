@@ -28,8 +28,8 @@ pub struct StartupHandles {
 }
 
 /// Explains startup-handle failures caused by manual launches or mismatched binaries.
-const NOT_LAUNCHED_BY_MGE_HINT: &str = "mgeHost64.exe is launched automatically by MGE-XE's d3d8.dll and is not meant to be run directly; \
-     if this appeared after updating MGE XE, your mgeHost64.exe is out of date and should be replaced so \
+const NOT_LAUNCHED_BY_MGE_HINT: &str = "numidium.exe is launched automatically by MGE-XE's d3d8.dll and is not meant to be run directly; \
+     if this appeared after updating MGE XE, your numidium.exe is out of date and should be replaced so \
      it matches d3d8.dll and MGEXEgui.exe.";
 
 /// The parent launches the host with only four handle tokens and no `argv[0]`.

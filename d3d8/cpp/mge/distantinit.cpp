@@ -2010,7 +2010,7 @@ void DistantLand::pumpUploadTick(int budgetMs) {
     case UploadPhase::HostWait:
         if (ipcClient.launchState() == IPC::Client::Inactive) {
             invalidateWorldSpaceCache();
-            if (!ipcClient.launchServer("mgeHost64.exe")) {
+            if (!ipcClient.launchServer("numidium.exe")) {
                 failUpload();
                 return;
             }

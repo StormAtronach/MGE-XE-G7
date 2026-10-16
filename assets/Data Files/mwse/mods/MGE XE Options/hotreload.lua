@@ -17,7 +17,7 @@
 local this = {}
 
 local lfs = require("lfs")
-local nirender = include("nirender")
+local nirender = include("akulakhan") or include("nirender")
 
 local statusPath = "mgeXE-shaders.txt"
 local shaderFolder = "Data Files\\shaders\\XEshaders\\"

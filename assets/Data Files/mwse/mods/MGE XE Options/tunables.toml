@@ -4,7 +4,7 @@
 # - the parameters window of the MGE XE options reads it for its sliders (the row
 #   "water (renderer)" of the shader list opens it). A post shader has a file of the same
 #   form beside it: XEshaders/<name>.toml.
-# A change of this file needs a new build of mgeHost64.exe: the two must have the same list.
+# A change of this file needs a new build of numidium.exe: the two must have the same list.
 #
 # The values that a person sets are not saved. A value that is good goes into this file as
 # the new start value.

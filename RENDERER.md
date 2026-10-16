@@ -2,9 +2,13 @@
 
 This build of MGE XE G7 carries a second renderer. With it on, the game draws nothing with
 Direct3D: the `nirender` MWSE plugin gives the game a Direct3D 8 of its own, turns each
-draw of the game into a record, and the program `mgeHost64.exe` draws the records with
+draw of the game into a record, and the program `numidium.exe` draws the records with
 wgpu (Vulkan or Direct3D 12) into the window of the game, together with the distant land,
 the water, the shadows and the post shaders of MGE XE.
+
+The names (2026-10-17): Numidium is the helper (`numidium.exe`, `mgeHost64.exe` before) and
+Akulakhan the plugin (`akulakhan.dll`, `nirender.dll` before). The Lua module of the plugin is
+`akulakhan`; `nirender` stays an alias of it once the plugin's mod has loaded.
 
 It is a test build. Read the known issues before you report one.
 
@@ -53,7 +57,7 @@ adapter and the one in use.
 - Everything that MGE XE G7 needs (see `MGE XE Readme.md`): a GPU with Vulkan 1.3, 64-bit
   Windows 10 or 11.
 - MWSE 2.1, a build of 2026 or later. The plugin loads as an MWSE plugin
-  (`Data Files/MWSE/lib/nirender.dll`, `Data Files/MWSE/mods/nirender/main.lua`); with a mod
+  (`Data Files/MWSE/lib/akulakhan.dll`, `Data Files/MWSE/mods/nirender/main.lua`); with a mod
   manager, check that it does not leave `.dll` files out.
 - The Morrowind Code Patch, 2.5 beta 19 or later as shipped with recent MWSE. The plugin
   replaces 301 functions of the game's renderer with its own code and follows the changes
@@ -64,10 +68,10 @@ adapter and the one in use.
   `renderer_wgpu = false` to get MGE XE with its distant land back until the cause is
   known.
 - Another mod that changes the renderer code of the game (not its Lua) has the same effect.
-- When `mgeHost64.exe` or `MWSE.dll` is not in the Morrowind folder, MGE XE runs on
+- When `numidium.exe` or `MWSE.dll` is not in the Morrowind folder, MGE XE runs on
   Direct3D 9 as without the switch, and `mgeXE.log` names the file. A virus scanner can
   take a program away, and an archive can be extracted in part.
-- When the plugin `Data Files/MWSE/lib/nirender.dll` is missing, the game runs on
+- When the plugin `Data Files/MWSE/lib/akulakhan.dll` is missing, the game runs on
   Direct3D 9 through the proxy for that session, without the distant land, and `mgeXE.log`
   says so.
 - The same fallback applies when the Lua side of the plugin does not run (the Lua of MWSE
@@ -166,7 +170,7 @@ adapter and the one in use.
 - For mod authors: the event `distantLandReady` tells when the distant land is loaded and
   when it is there around the camera after a load or a teleport (see
   `docs/architecture/mwse-api.md`). It works on Direct3D 9 too.
-- If the renderer program stops (`mgeHost64.exe` crashed or was ended), a message box says
+- If the renderer program stops (`numidium.exe` crashed or was ended), a message box says
   so. The game cannot show a new picture after that: quit and start again, and send
   `nirender-host.log` and `nirender.log`.
 

@@ -36,7 +36,7 @@ diagnostics, parsing, and document mutation. Each executable consumes it
 directly:
 
 - `MGEXEgui.exe` uses the typed Rust API and targeted document saves.
-- `mgeHost64.exe` reads the document itself through the same crate. On Direct3D 9 it
+- `numidium.exe` reads the document itself through the same crate. On Direct3D 9 it
   uses the settings of startup generation and host-side culling. As the wgpu renderer
   (`runtime.renderer_wgpu`) it also reads the distant land, water, fog, shadow, lighting
   and shader settings when it starts. In the game, changes reach it as records of the

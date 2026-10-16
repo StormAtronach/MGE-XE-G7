@@ -14,7 +14,7 @@ return {
 	["ShaderError"] = "the shader does not compile.",
 	["ShaderSeeMessage"] = "The full text is in MWSE.log.",
 	["ShaderSeeLog"] = "The shader was not reloaded. See mgeXE.log.",
-	["ShaderNoAnswer"] = "no answer from the renderer, so the result is not known. An mgeHost64.exe older than these options gives no answer.",
+	["ShaderNoAnswer"] = "no answer from the renderer, so the result is not known. An numidium.exe older than these options gives no answer.",
 
     ["MsgLoaded"] = "Config loaded.",
     ["MsgSaved"] = "Config saved.",

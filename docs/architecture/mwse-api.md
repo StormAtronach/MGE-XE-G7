@@ -151,7 +151,7 @@ reads by member offset, so it is not a local edit.
 ## On the wgpu renderer
 
 With `[runtime] renderer_wgpu = true`, MGE XE makes no Direct3D device. The `nirender` MWSE
-plugin gives the game its Direct3D 8, and `mgeHost64.exe` draws the picture (see
+plugin gives the game its Direct3D 8, and `numidium.exe` draws the picture (see
 [RENDERER.md](../../RENDERER.md)). The API object is still pushed to MWSE, and MWSE binds the
 whole `mge` table. The calls work on the state in `d3d8.dll`; the namespace `Deviceless`
 (`mge/mged3d8device.cpp`) sends that state to the helper as records each frame:

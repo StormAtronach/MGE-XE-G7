@@ -74,7 +74,7 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             // `Data Files` that is there looks missing. The plugin below `Data Files` is
             // examined later, when the game asks for its Direct3D 8.
             static const char* const parts[] = {
-                "mgeHost64.exe",
+                "numidium.exe",
                 "MWSE.dll",
             };
             const char* missing = nullptr;
@@ -136,7 +136,7 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
 
 
 // The Direct3D 8 of the nirender plugin: an object that makes no Direct3D device. The plugin
-// sends the draws of the game as a stream, and mgeHost64.exe draws the stream with wgpu.
+// sends the draws of the game as a stream, and numidium.exe draws the stream with wgpu.
 // Returns null when the plugin is not there.
 // The function of the nirender plugin that puts data of MGE XE into its stream, or null.
 static void (__cdecl * streamExtension)(UINT id, const void* data, UINT length) = nullptr;
@@ -157,11 +157,11 @@ static void* createStreamedD3D(UINT version) {
     std::string folder(path, length);
 
     // The plugin starts the program that this variable names as its renderer.
-    SetEnvironmentVariableA("NIRENDER_HOST_EXE", (folder + "mgeHost64.exe").c_str());
+    SetEnvironmentVariableA("NIRENDER_HOST_EXE", (folder + "numidium.exe").c_str());
 
-    HMODULE plugin = LoadLibraryA((folder + "Data Files\\MWSE\\lib\\nirender.dll").c_str());
+    HMODULE plugin = LoadLibraryA((folder + "Data Files\\MWSE\\lib\\akulakhan.dll").c_str());
     if (!plugin) {
-        LOG::logline("!! wgpu renderer: Data Files\\MWSE\\lib\\nirender.dll did not load");
+        LOG::logline("!! wgpu renderer: Data Files\\MWSE\\lib\\akulakhan.dll did not load");
         return nullptr;
     }
     typedef void* (__cdecl * CreateProc) (UINT);

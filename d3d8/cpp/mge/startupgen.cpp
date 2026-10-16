@@ -79,8 +79,8 @@ namespace StartupGeneration {
         }
 
         char exePath[MAX_PATH];
-        if (!pathJoin(exePath, sizeof(exePath), root, "mgeHost64.exe") || !fileExists(exePath)) {
-            LOG::logline("Startup generation skipped: mgeHost64.exe is missing");
+        if (!pathJoin(exePath, sizeof(exePath), root, "numidium.exe") || !fileExists(exePath)) {
+            LOG::logline("Startup generation skipped: numidium.exe is missing");
             launchState = LaunchState::Skipped;
             return;
         }

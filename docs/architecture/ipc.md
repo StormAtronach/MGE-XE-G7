@@ -1,4 +1,4 @@
-# IPC: d3d8.dll ↔ mgeHost64.exe
+# IPC: d3d8.dll ↔ numidium.exe
 
 The 32-bit runtime offloads distant-land state and visibility culling to the 64-bit host
 over shared memory. Companion to [`ARCHITECTURE.md`](../../ARCHITECTURE.md) §6.
@@ -19,7 +19,7 @@ Code:
 - two auto-reset events (`rpcStart`, `rpcComplete`),
 - a duplicated handle to the client process (so the host can detect client death).
 
-It then spawns `mgeHost64.exe` with those four handles formatted as hex on the command
+It then spawns `numidium.exe` with those four handles formatted as hex on the command
 line (`"%p %p %p %p"` = sharedMem, clientProcess, rpcStartEvent, rpcCompleteEvent),
 inheritable handles enabled. The host parses them back in `win::parse_startup_handles`.
 
@@ -41,7 +41,7 @@ fails gracefully.
 
 The client launches the host on two paths. `FakeDirect3DCreate` calls
 `StartupGeneration::launchEarlyHost` unconditionally for Morrowind; that function skips only
-when MGE is disabled, proxy-only mode is on, distant land is off, or `mgeHost64.exe` is
+when MGE is disabled, proxy-only mode is on, distant land is off, or `numidium.exe` is
 missing. Whether generation is configured is not consulted here — the host's own worker
 thread decides that. The same process then stays around as the IPC host. If the early launch
 was skipped or failed, the upload pump's `HostWait` phase launches it lazily.

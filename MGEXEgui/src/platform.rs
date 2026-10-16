@@ -113,7 +113,7 @@ pub fn max_texture_dimension() -> Option<u32> {
 }
 
 pub fn validate_root(root: &Path) -> Result<()> {
-    let required_files = ["Morrowind.exe", "Morrowind.ini", "mgeHost64.exe", "d3d8.dll", "dinput8.dll"];
+    let required_files = ["Morrowind.exe", "Morrowind.ini", "numidium.exe", "d3d8.dll", "dinput8.dll"];
     let missing = required_files
         .into_iter()
         .filter(|path| !root.join(path).is_file())

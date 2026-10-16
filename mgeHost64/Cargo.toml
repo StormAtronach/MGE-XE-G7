@@ -1,4 +1,6 @@
 [package]
+# The binary is numidium.exe (the owner's name for the helper, 2026-10-17); the crate and its
+# folder keep the name mgeHost64.
 name = "mgeHost64"
 version.workspace = true
 edition = "2024"
@@ -45,3 +47,7 @@ features = [
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "numidium"
+path = "src/main.rs"

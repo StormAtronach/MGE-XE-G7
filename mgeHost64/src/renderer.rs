@@ -1543,7 +1543,7 @@ fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
 
 impl Extension for DistantLand {
     fn name(&self) -> String {
-        format!("mgeHost64 v{}", env!("CARGO_PKG_VERSION"))
+        format!("numidium v{}", env!("CARGO_PKG_VERSION"))
     }
 
     fn overlay_lines(&self) -> Vec<String> {

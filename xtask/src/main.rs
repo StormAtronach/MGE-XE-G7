@@ -317,8 +317,8 @@ fn cmd_build(root: &Path, mode: BuildMode) {
         (&dll_target_dir, "d3d8.pdb"),
         (&dll_target_dir, "dinput8.dll"),
         (&dll_target_dir, "dinput8.pdb"),
-        (&exe_target_dir, "mgeHost64.exe"),
-        (&exe_target_dir, "mgeHost64.pdb"),
+        (&exe_target_dir, "numidium.exe"),
+        (&exe_target_dir, "numidium.pdb"),
         (&exe_target_dir, "MGEXEgui.exe"),
     ];
 
@@ -359,7 +359,7 @@ fn collect_plugin(root: &Path, out_dir: &Path, build: bool) -> bool {
     if build {
         run(cargo().arg("build").arg("--release").current_dir(&plugin));
     }
-    let dll = plugin.join("target/i686-pc-windows-msvc/release/nirender.dll");
+    let dll = plugin.join("target/i686-pc-windows-msvc/release/akulakhan.dll");
     let lua = plugin.join("mod/MWSE/mods/nirender/main.lua");
     if !dll.exists() || !lua.exists() {
         return false;
@@ -368,7 +368,7 @@ fn collect_plugin(root: &Path, out_dir: &Path, build: bool) -> bool {
     let mods = out_dir.join("Data Files/MWSE/mods/nirender");
     fs::create_dir_all(&lib).unwrap();
     fs::create_dir_all(&mods).unwrap();
-    fs::copy(&dll, lib.join("nirender.dll")).unwrap();
+    fs::copy(&dll, lib.join("akulakhan.dll")).unwrap();
     fs::copy(&lua, mods.join("main.lua")).unwrap();
     true
 }
@@ -398,7 +398,7 @@ fn cmd_dist(root: &Path, mode: BuildMode) {
 
     // PDBs are deliberately not shipped; crash reports come back as raw addresses.
     let built = root.join("bin").join(format!("MSVC-{}", mode.config_name()));
-    for name in ["d3d8.dll", "dinput8.dll", "mgeHost64.exe", "MGEXEgui.exe"] {
+    for name in ["d3d8.dll", "dinput8.dll", "numidium.exe", "MGEXEgui.exe"] {
         let src = built.join(name);
         if !src.exists() {
             eprintln!("error: {} was not produced by the build", src.display());
@@ -477,8 +477,8 @@ fn cmd_deploy(root: &Path, mode: BuildMode, morrowind_dir: Option<PathBuf>) {
         "d3d8.pdb",
         "dinput8.dll",
         "dinput8.pdb",
-        "mgeHost64.exe",
-        "mgeHost64.pdb",
+        "numidium.exe",
+        "numidium.pdb",
         "MGEXEgui.exe",
     ];
     for name in &binaries {

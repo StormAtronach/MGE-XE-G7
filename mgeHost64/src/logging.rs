@@ -84,7 +84,7 @@ fn install_panic_hook() {
                 .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
                 .unwrap_or_else(|| "<unknown>".to_string());
 
-            tracing::error!(panic_message = payload, panic_location = location, "mgeHost64 panicked");
+            tracing::error!(panic_message = payload, panic_location = location, "numidium panicked");
         }));
     });
 }

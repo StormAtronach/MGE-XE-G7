@@ -121,7 +121,7 @@ draw distances can see 2x improvements around dense modded cells.
 ## The wgpu renderer (test build)
 
 This build carries a second renderer, and it is on by default. The game draws through the
-`nirender` MWSE plugin and `mgeHost64.exe` with wgpu instead of Direct3D. The archive
+`nirender` MWSE plugin and `numidium.exe` with wgpu instead of Direct3D. The archive
 includes the plugin. To go back to Direct3D 9, set `renderer_wgpu = false` under
 `[runtime]` of `mgeXE.toml`. The switch, the requirements, the known issues and how to
 report a problem are in `MGE XE Renderer Readme.md`.
@@ -186,7 +186,7 @@ errors. Post-process shaders should be fine.
 
 ## Uninstall
 
-Delete `d3d8.dll`, `d3d9.dll`, `dinput8.dll`, `MGEXEgui.exe`, `mgeHost64.exe`,
+Delete `d3d8.dll`, `d3d9.dll`, `dinput8.dll`, `MGEXEgui.exe`, `numidium.exe`,
 `mgeXE.toml`, `mge3\MGE XE Default Statics Classifiers.toml`, and `Data
 Files\distantland`.
 

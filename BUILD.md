@@ -67,7 +67,7 @@ cargo xtask compdb               # regenerate compile_commands.json for clangd/S
 | --- | --- | --- | --- |
 | `d3d8.dll` | `d3d8` | `i686-pc-windows-msvc` | Main injected DLL; intercepts D3D8 and contains the rendering code |
 | `dinput8.dll` | `dinput8` | `i686-pc-windows-msvc` | DirectInput shim that redirects into `d3d8.dll` |
-| `mgeHost64.exe` | `mgeHost64` | `x86_64-pc-windows-msvc` | Headless IPC/culling host and startup distant-land generator |
+| `numidium.exe` | `mgeHost64` | `x86_64-pc-windows-msvc` | Headless IPC/culling host and startup distant-land generator |
 | `MGEXEgui.exe` | `MGEXEgui` | `x86_64-pc-windows-msvc` | Native Rust/egui configuration and distant-land GUI |
 
 `d3d8/crates/dl-contract-test` is an additional i686 console harness that validates generated

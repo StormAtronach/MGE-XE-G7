@@ -34,7 +34,7 @@ local this = {}
 
 local lfs = require("lfs")
 local hotreload = require("MGE XE Options.hotreload")
-local nirender = include("nirender")
+local nirender = include("akulakhan") or include("nirender")
 
 local builtinPath = "Data Files\\MWSE\\mods\\MGE XE Options\\tunables.toml"
 local shaderFolder = "Data Files\\shaders\\XEshaders\\"

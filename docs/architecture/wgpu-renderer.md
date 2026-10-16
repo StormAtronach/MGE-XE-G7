@@ -1,7 +1,7 @@
 # The wgpu renderer
 
 With `[runtime] renderer_wgpu = true` (the default) MGE XE makes no Direct3D device. The game's
-draws go as records through shared memory to `mgeHost64.exe --live`, which draws them with
+draws go as records through shared memory to `numidium.exe --live`, which draws them with
 wgpu (Vulkan or Direct3D 12) together with everything MGE XE adds. This page is the
 architecture of that renderer: the processes, the frame, every pipeline with its bind groups,
 and the conventions that a change must keep. The player's view is in
@@ -11,16 +11,16 @@ The page cites functions and types, not line numbers. Two repositories take part
 
 - this repository: `d3d8.dll` (namespace `Deviceless`) and the helper `mgeHost64`
   (`mgeHost64/src/renderer.rs` and `mgeHost64/src/renderer/`);
-- `nirender-plugin`, a sibling checkout: the MWSE plugin `nirender.dll` (32-bit) and the crate
+- `nirender-plugin`, a sibling checkout: the MWSE plugin `akulakhan.dll` (32-bit) and the crate
   `nirender_wgpu` (`host/`, 64-bit), which `mgeHost64` links by path.
 
 ## 1. Processes
 
 ```text
-Morrowind.exe (32-bit)                                 mgeHost64.exe --live (64-bit)
+Morrowind.exe (32-bit)                                 numidium.exe --live (64-bit)
 +------------------------------------------+          +--------------------------------------+
 | game code -- Direct3D 8 calls -->        |          | nirender_wgpu (crate)                |
-|   nirender.dll (MWSE plugin)             |  shared  |   device, surface, window            |
+|   akulakhan.dll (MWSE plugin)             |  shared  |   device, surface, window            |
 |     ports of the renderer functions      |  memory  |   replay of the game's draws         |
 |     records of each frame  ------------------ring---->  trait Extension, SceneView        |
 | d3d8.dll (MGE XE, Deviceless)            |          |   overlay (F10), capture, errors     |
@@ -31,7 +31,7 @@ Morrowind.exe (32-bit)                                 mgeHost64.exe --live (64-
                                                       +--------------------------------------+
 ```
 
-- `d3d8.dll` loads `Data Files\MWSE\lib\nirender.dll` and hands the game the plugin's own
+- `d3d8.dll` loads `Data Files\MWSE\lib\akulakhan.dll` and hands the game the plugin's own
   `IDirect3D8`. The plugin replaces the engine's renderer functions, writes each frame as
   records into the ring, and starts the helper.
 - `Deviceless::present` (`d3d8/cpp/mge/mged3d8device.cpp`) adds MGE XE's own state as extension

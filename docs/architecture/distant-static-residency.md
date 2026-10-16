@@ -207,7 +207,7 @@ actually being drawn rather than planner overhead.
 
 ## Deployment interlocks
 
-- **Deploy `d3d8.dll` and `mgeHost64.exe` together.** `DistantSubset` is 144 B and there is no ABI
+- **Deploy `d3d8.dll` and `numidium.exe` together.** `DistantSubset` is 144 B and there is no ABI
   handshake; a mismatched pair misreads the catalog.
 - **`cargo xtask deploy` installs the bundled stock DXVK `d3d9.dll` over a custom build.** Restore
   the custom one afterwards or the budget interop is silently absent and every session takes the
@@ -232,7 +232,7 @@ Understood and accepted; each fails soft.
   when memory later frees. Never observed in practice, but it is why the cap must be conservative:
   guessing high once costs geometry for the session rather than a few frames of pop-in. Making it
   retryable is what would let the cap policy be looser.
-- **Killing `mgeHost64.exe` mid-transition leaves Morrowind in a permanent busy hang** rather than
+- **Killing `numidium.exe` mid-transition leaves Morrowind in a permanent busy hang** rather than
   crashing or recovering. It needs the host to be killed deliberately. If revisited, the wanted
   shape is a fatal log plus intentional termination, not recovery machinery.
 - **Host RAM is a separate, unaddressed scaling problem.** `read_distant_statics` builds quadtrees

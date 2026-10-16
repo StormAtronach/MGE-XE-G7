@@ -50,7 +50,7 @@ A configured installation runs up to three processes:
 │ Morrowind.exe (32-bit)           │ ───────────────────────────────┐
 │                                  │                                ▼
 │  d3d8.dll   (MGE XE runtime)     │   shared memory   ┌─────────────────────────┐
-│   ├─ proxydx: D3D8→D3D9 proxy    │ ◄───────────────► │ mgeHost64.exe (64-bit)  │
+│   ├─ proxydx: D3D8→D3D9 proxy    │ ◄───────────────► │ numidium.exe (64-bit)  │
 │   ├─ DistantLand renderer        │   RPC events      │  ├─ IPC server          │
 │   ├─ MWBridge (memory access)    │                   │  ├─ quadtrees/culling   │
 │   ├─ MGEAPI → MWSE.dll (Lua)     │                   │  └─ startup generation  │
@@ -70,19 +70,19 @@ A configured installation runs up to three processes:
 | --- | --- | --- | --- |
 | `d3d8.dll` | `d3d8` — empty `cdylib` shim; `build.rs` compiles the C++ in crate-local `cpp/` via `cc` | Win32 | The runtime. Loaded by Morrowind in place of the system d3d8.dll. All rendering, game-memory patching, input, and scripting support. |
 | `dinput8.dll` | `dinput8` — same pattern, one C++ file | Win32 | Tiny shim: forwards `DirectInput8Create` to `d3d8.dll`, which hosts the real input wrapper. |
-| `mgeHost64.exe` | `mgeHost64` cargo crate (Rust) | x64 | Helper process. On Direct3D 9: long-lived IPC host (visibility culling for the runtime) and automatic startup distant-land generation. With `--live`: the wgpu renderer, drawing into the game's window. With `--replay`: draws a capture file into a picture, for tests. Links the `distantland` crate for generation. |
+| `numidium.exe` | `mgeHost64` cargo crate (Rust) | x64 | Helper process. On Direct3D 9: long-lived IPC host (visibility culling for the runtime) and automatic startup distant-land generation. With `--live`: the wgpu renderer, drawing into the game's window. With `--replay`: draws a capture file into a picture, for tests. Links the `distantland` crate for generation. |
 | `MGEXEgui.exe` | `MGEXEgui` cargo crate (Rust/egui) | x64 | Configuration GUI. Edits game-root `mgeXE.toml`, structured input macros, and the shader chain through `mge-config`; uses targeted native profile calls for selected `Morrowind.ini` preferences; and owns distant-land configuration and generation in-process via `distantland`. |
 
 The diagram above is MGE XE on Direct3D 9. With `[runtime] renderer_wgpu = true` (the
 default) the processes differ: `d3d8.dll` makes no Direct3D device (namespace `Deviceless`),
-the MWSE plugin `nirender.dll` gives the game its Direct3D 8 and streams each frame through
-shared memory, and `mgeHost64.exe --live` draws the frame with wgpu, with the distant land,
+the MWSE plugin `akulakhan.dll` gives the game its Direct3D 8 and streams each frame through
+shared memory, and `numidium.exe --live` draws the frame with wgpu, with the distant land,
 water, shadows and post shaders of MGE XE. There is no IPC host in that mode. See
 [`docs/architecture/wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) and, for players,
 [`RENDERER.md`](RENDERER.md).
 
 `d3d8.dll` and `dinput8.dll` must stay 32-bit because Morrowind is a 32-bit process.
-`mgeHost64.exe` and `MGEXEgui.exe` are deliberately 64-bit; only code loaded into the game
+`numidium.exe` and `MGEXEgui.exe` are deliberately 64-bit; only code loaded into the game
 process must remain Win32.
 
 ### Files in a Morrowind install
@@ -109,7 +109,7 @@ process must remain Win32.
 | `d3d8/cpp/support/` | Logging, crash logger, PNG screenshot writer, high-resolution timer. |
 | `d3d8/crates/` | Private format contract test crates (`dl-contract-test`, `config-contract-test`). |
 | `dinput8/cpp/` | The standalone `dinput8.dll` shim. |
-| `mgeHost64/` | Rust crate for `mgeHost64.exe`. |
+| `mgeHost64/` | Rust crate for `numidium.exe`. |
 | `distantland/` | Distant-land generator. A subtree, not a nested workspace — it and the crates under `distantland/crates/` are all root-workspace members. Has its own `ARCHITECTURE.md`. |
 | `MGEXEgui/` | Rust/egui GUI crate. |
 | `mge-config/` | Shared config schema and TOML document layer crate. |
@@ -430,7 +430,7 @@ Key contracts:
   shards, `usage.data` and `lights.data` itself, with no IPC client.
 
 Generation runs through `distantland::ensure_generated`, called in-process by
-`MGEXEgui.exe`'s generator window or by `mgeHost64.exe`'s startup-generation worker. Output commits
+`MGEXEgui.exe`'s generator window or by `numidium.exe`'s startup-generation worker. Output commits
 in place through the exclusive writer lock and sole `generation_state.bin`
 publication authority; journal/index, staging, quarantine, and directory promotion are retired.
 

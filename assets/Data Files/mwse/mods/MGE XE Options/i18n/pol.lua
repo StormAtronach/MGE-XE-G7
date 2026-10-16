@@ -14,7 +14,7 @@ return {
 	["ShaderError"] = "shader się nie kompiluje.",
 	["ShaderSeeMessage"] = "Pełny tekst jest w MWSE.log.",
 	["ShaderSeeLog"] = "Shader nie został przeładowany. Zobacz mgeXE.log.",
-	["ShaderNoAnswer"] = "brak odpowiedzi renderera, wynik nie jest znany. mgeHost64.exe starszy niż te opcje nie odpowiada.",
+	["ShaderNoAnswer"] = "brak odpowiedzi renderera, wynik nie jest znany. numidium.exe starszy niż te opcje nie odpowiada.",
 
     ["MsgLoaded"] = "Konfiguracja załadowana.",
     ["MsgSaved"] = "Zapisano konfigurację.",

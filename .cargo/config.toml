@@ -12,7 +12,7 @@ linker = "link.exe"
 # `d3d8/build.rs` passes to the C++ half.
 rustflags = ["-Ctarget-cpu=pentium4"]
 
-# Reaches only the x64 executables, mgeHost64.exe and MGEXEgui.exe. The baseline
+# Reaches only the x64 executables, numidium.exe and MGEXEgui.exe. The baseline
 # x86-64 target is SSE2, which silently drops the `target_feature = "sse4.1"`
 # path in distantland's terrain sampler, and nothing in the tree dispatches at
 # runtime to catch it. v2 is the smallest baseline that keeps that path. v3 was
