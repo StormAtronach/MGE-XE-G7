@@ -121,6 +121,9 @@ adapter and the one in use.
 - The light of each pixel uses the lights of the game: each light keeps its colour and its
   whole falloff. To get the lights as MGE XE on Direct3D 9 decodes them, set
   `per_pixel_original_lights = true` under `[distant_land]`.
+- `clustered_lights = true` under `[distant_land]` (off by default): each pixel takes its
+  lights from the clusters of the view. The picture is the same; it can pay with many lights
+  for each object, and costs CPU time otherwise.
 - The GPU chooses the distant statics in view. The CPU of the renderer does less work for
   them. A GPU without the features for this (`nirender-host.log`: `the places are chosen
   on the CPU`) gets the same picture from the CPU.
@@ -184,6 +187,9 @@ adapter and the one in use.
 - The three new shaders have first settings and no keys in `mgeXE.toml` yet.
 - After a capture with F11, the picture of the character in the inventory is empty until
   the inventory changes (put an item on or off).
+- MSOC (the occlusion culling mod for MWSE) is not supported with this renderer: switch it
+  off. It hides objects from the game itself, and this renderer draws what the game shows.
+  A cull on the GPU will take its place.
 - With `renderer_backend = "dx12"` the mouse pointer of the menus can follow the hand late.
 - Only tested at 1920 x 1080 on one machine (NVIDIA, Vulkan). Other GPU vendors, other
   resolutions, windowed modes and long sessions are not tested.

@@ -511,6 +511,10 @@ pub struct DistantLandSettings {
     /// them (one falloff number of each light dropped, some lights grey): the look before the
     /// wgpu renderer. Off: each light with its own colour and its whole falloff.
     pub per_pixel_original_lights: bool,
+    /// The wgpu renderer: a pixel takes its lights from the clusters of the view, with the
+    /// mask of the lights of its draw. The same picture as without them; the cost moves
+    /// from the GPU to the CPU of the renderer.
+    pub clustered_lights: bool,
     pub horizon: HorizonSettings,
     pub weather: WeatherSet,
 }
@@ -540,9 +544,10 @@ impl Default for DistantLandSettings {
             shadows: ShadowSettings::default(),
             per_pixel_lighting: false,
             per_pixel_mode: PerPixelMode::Always,
-            per_pixel_light_fade: false,
+            per_pixel_light_fade: true,
             per_pixel_light_fade_radius: 1.75,
             per_pixel_original_lights: false,
+            clustered_lights: false,
             horizon: HorizonSettings::default(),
             weather: WeatherSet::default(),
         }

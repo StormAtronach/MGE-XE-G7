@@ -186,7 +186,7 @@ still installed.
 
 `src/default.toml` describes each of these new keys, and `render.camera_relative` too.
 
-Five more keys have no obsolete INI predecessor and no C++ binding: only the wgpu renderer
+Six more keys have no obsolete INI predecessor and no C++ binding: only the wgpu renderer
 reads them.
 
 - `distant_land.grass.soft_end`, `distant_land.grass.vertex_color_sway` and
@@ -200,6 +200,11 @@ reads them.
 - `distant_land.per_pixel_original_lights` (default `false`): the wgpu renderer lights each
   pixel with each light of the game in its own colour and with its whole falloff. `true`
   decodes the lights as MGE XE on Direct3D 9 does.
+- `distant_land.clustered_lights` (default `false`): a pixel takes its lights from the
+  clusters of the view (tiles of the picture by slices of depth), with the mask of the
+  lights of its draw. The picture is the same either way; `false` lights each pixel from
+  the list of its draw. The environment variable `MGE_XE_CLUSTERS` (`0` or `1`) overrides
+  it, for tests.
 - `distant_land.water.blur_contact_hardening` (default `true`): with
   `distant_land.water.blur_reflections`, a reflection is sharp where the thing meets the
   water and its blur grows with distance from the water. `false` gives the even blur of

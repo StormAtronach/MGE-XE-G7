@@ -141,12 +141,16 @@ per_pixel_mode = "always"
 # quarter of that distance. 1.75 matches OpenMW. Lights are also attached to
 # objects out to that distance, so they no longer pop on and off as actors
 # and carried lights move. Works best with expanded_light_limit.
-per_pixel_light_fade = false
+per_pixel_light_fade = true
 per_pixel_light_fade_radius = 1.75
 # The wgpu renderer lights each pixel with the lights of the game: each light with
 # its own colour and its whole falloff. On: the lights as MGE XE on Direct3D 9
 # decodes them (the linear part of the falloff dropped, some lights grey).
 per_pixel_original_lights = false
+# The wgpu renderer: a pixel takes its lights from the clusters of the view, with
+# the mask of the lights of its draw. The picture is the same either way; they
+# can pay with many lights for each object, and cost CPU time otherwise.
+clustered_lights = false
 
 # Water reflection, simulation, and effect strengths.
 [distant_land.water]

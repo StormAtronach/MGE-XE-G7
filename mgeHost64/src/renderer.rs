@@ -310,6 +310,8 @@ pub struct DistantLand {
     /// The settings for the light for each pixel: on, only in interior cells, and the number
     /// that the radius of a light is multiplied with for its end (0: no end).
     per_pixel: (bool, bool, f32, bool),
+    /// `distant_land.clustered_lights`: `FrameParameters::clustered_lights`.
+    clustered_lights: bool,
     /// The world of the frame is in an interior cell.
     interior: bool,
     /// The cell of the frame is an exterior, or an interior that is like one: the fact of the
@@ -677,6 +679,7 @@ impl DistantLand {
                 if settings.per_pixel_light_fade { settings.per_pixel_light_fade_radius } else { 0.0 },
                 settings.per_pixel_original_lights,
             ),
+            clustered_lights: settings.clustered_lights,
             interior: false,
             like_exterior: true,
             distant_cell: true,
@@ -1731,6 +1734,7 @@ impl Extension for DistantLand {
             }),
             hold: self.volumes_ready || (self.enabled && self.water_enabled && self.water.is_none()),
             lights: self.volume_point_lights && near_volumes && self.volumes_ready,
+            clustered_lights: self.clustered_lights,
         }
     }
 
