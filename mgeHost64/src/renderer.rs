@@ -1735,6 +1735,8 @@ impl Extension for DistantLand {
             hold: self.volumes_ready || (self.enabled && self.water_enabled && self.water.is_none()),
             lights: self.volume_point_lights && near_volumes && self.volumes_ready,
             clustered_lights: self.clustered_lights,
+            // The far cascade of the shadow map: what it reaches animates in the game.
+            shadow_reach: if self.shadow_in_frame { shadow::RADII[1] } else { 0.0 },
         }
     }
 
