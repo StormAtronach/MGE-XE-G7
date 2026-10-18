@@ -27,8 +27,9 @@ transparency_antialiasing = true
 fov = 75.0
 # depth_pixel, depth_vertex, or range_vertex.
 fog_mode = "range_vertex"
-# Apply the configured post-processing shader chain.
-enable_shaders = false
+# Apply the configured post-processing shader chain (on in a new configuration, with the
+# chain of the tests of the wgpu renderer in the shaders table).
+enable_shaders = true
 # Rebuild skinned meshes with an indexed bone palette, cutting the number of
 # partition draws per actor. Requires the matching custom DXVK d3d9.dll; MGE XE
 # falls back to stock skinning when it is absent. Read once at process start, so

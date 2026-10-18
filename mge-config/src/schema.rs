@@ -400,7 +400,8 @@ impl Default for RenderSettings {
         Self {
             fov: 75.0,
             fog_mode: FogMode::RangeVertex,
-            enable_shaders: false,
+            // On in a new file, with the chain of `ShaderSettings::default` (2026-10-18).
+            enable_shaders: true,
             indexed_skinning: false,
             camera_relative: true,
             hdr_reaction_time: 2.0,
