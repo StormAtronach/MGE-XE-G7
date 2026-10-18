@@ -224,8 +224,7 @@ and without the arrays the textures), before the draws of the game. The order, s
 2026-10-16: the buckets without blending and without an alpha test go first, front to
 back by their nearest draw, and their draws go front to back. The buckets with an alpha
 test follow. The blended buckets keep the order they were made in, so a base pass comes
-before its blend pass. `MGE_XE_ORDER=buckets` gives the order of the buckets alone, for
-an A/B. The extension's shader
+before its blend pass. The extension's shader
 text reads the record through `draw_view()`, `draw_fog()`, `draw_counts_w()`,
 `draw_extension(i)`, `light_at(at)` and the like (the crate rewrites `draw.view` and the
 others when the shader is made), so a retained draw gets the values of its view.
@@ -237,9 +236,11 @@ of a SHAPE; 25 INSTANCE_DELETE; 26 INSTANCE_LIGHTS, the keys of its lights; 27
 INSTANCE_STATE, hidden or visible; 28 RETAINED_SCENE, the ambient light and the fog of the
 scene. The plugin sends a record only when the shape changed.
 
-Switches for an A/B, never for a player: `MGE_XE_RETAINED=0` (the helper ignores the
-instance records), `MGE_XE_ORDER=buckets`, `MGE_XE_CLUSTERS=0/1` (overrides
-`distant_land.clustered_lights`), `MGE_XE_INDIRECT=0`, `MGE_XE_ARRAYS=0`. In the plugin:
+Switches for diagnostics and tests, never for a player (the A/B switches of finished
+steps retired at the review of checkpoint 4, nirender 6c8586d): `MGE_XE_RETAINED=0` (the
+helper ignores the instance records), `MGE_XE_CLUSTERS=0/1` (overrides
+`distant_land.clustered_lights`), `MGE_XE_INDIRECT=0`, `MGE_XE_ARRAY_CAP` and
+`MGE_XE_RECORD_LIMIT` (test limits). In the plugin:
 `NIRENDER_RETAINED=off|dual|gpu` (default gpu), `NIRENDER_LANDSCAPE=0`,
 `NIRENDER_ACTORS=0`, `NIRENDER_ANIMATED=0` (that class stays on the engine's path),
 `NIRENDER_SKIP=0` (the engine displays the retained shapes too), `NIRENDER_PORT_TIMING=1`
