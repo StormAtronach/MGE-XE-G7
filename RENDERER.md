@@ -52,6 +52,17 @@ renderer_backend = "dx12"
 The values are `auto`, `vulkan` and `dx12`. The first lines of `nirender-host.log` name the
 adapter and the one in use.
 
+The renderer keeps the textures of a frame in one list on the graphics card. Its room is
+`renderer_texture_slots` under `[runtime]`: `0` (the default) lets the renderer choose, what
+the card allows and at most 16384. If some textures of a place draw white and
+`nirender-host.log` has the line `texture slots: the room of ... is full`, raise it:
+
+```toml
+renderer_texture_slots = 32768
+```
+
+The F10 panel shows the slots in use in the line `textures`.
+
 ## A new settings file
 
 A new `mgeXE.toml` (MGE XE writes one when there is none) starts with the settings that we

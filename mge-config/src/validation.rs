@@ -277,6 +277,16 @@ pub(crate) fn validate_bounds(settings: &mut Settings) -> Result<Vec<Warning>, V
         ));
     }
 
+    // 0 is automatic; another room is 256 at least (the renderer needs it to start).
+    if settings.runtime.renderer_texture_slots != 0 {
+        clamp_u32(
+            &mut settings.runtime.renderer_texture_slots,
+            256,
+            1_048_576,
+            "runtime.renderer_texture_slots",
+            &mut warnings,
+        );
+    }
     clamp_f32(
         &mut settings.runtime.camera_x,
         -250.0,

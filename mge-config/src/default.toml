@@ -80,6 +80,11 @@ renderer_wgpu = true
 # The graphics API of the wgpu renderer: auto (the first choice for the machine), vulkan,
 # or dx12. Read by numidium.exe when it starts; nirender-host.log names the one in use.
 renderer_backend = "auto"
+# The room for the textures of a frame of the wgpu renderer: 0 lets the renderer choose
+# (what the graphics card allows, at most 16384), or the most slots, 256 to 1048576
+# (another value counts as 0). A texture past a full room draws white, and
+# nirender-host.log says so. Read by numidium.exe when it starts.
+renderer_texture_slots = 0
 # Skip intro movies.
 skip_intro = true
 # Cache menu backgrounds.

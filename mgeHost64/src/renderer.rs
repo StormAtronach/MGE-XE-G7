@@ -382,6 +382,8 @@ pub struct DistantLand {
     shadow_resolution: u32,
     /// The anisotropic filter of the settings (`graphics.anisotropy`): 1 is none.
     anisotropy: u16,
+    /// The room of the texture arrays (`runtime.renderer_texture_slots`): 0 is automatic.
+    texture_slots: u32,
     /// The post-processing chain, when the settings have shaders; `None` before the first
     /// frame with the water (it needs the wave texture).
     post: Option<Post>,
@@ -713,6 +715,7 @@ impl DistantLand {
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
             anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
+            texture_slots: document.settings().runtime.renderer_texture_slots,
             post: None,
             menu_keep: None,
             menu_kept: false,
@@ -1563,6 +1566,10 @@ impl Extension for DistantLand {
 
     fn anisotropy(&self) -> u16 {
         self.anisotropy
+    }
+
+    fn texture_slots(&self) -> u32 {
+        self.texture_slots
     }
 
     fn offline(&mut self) {

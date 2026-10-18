@@ -88,6 +88,7 @@ the same mapping ten times.
 | `[Misc] Only Proxy D3D8To9` | `runtime.proxy_only` |
 | (new, no INI key) | `runtime.renderer_wgpu` |
 | (new, no INI key) | `runtime.renderer_backend` |
+| (new, no INI key) | `runtime.renderer_texture_slots` |
 | `[Misc] Skip Intro Movies` | `runtime.skip_intro` |
 | `[Misc] Use Menu Background Caching` | `runtime.menu_caching` |
 | `[Misc] Customize 3rd Person Camera` | `runtime.custom_camera` |
@@ -197,6 +198,15 @@ reads them.
   0.4 of it comes through from the back. The shader is
   `mgeHost64/src/renderer/statics/grass.wgsl`.
 
+- `runtime.renderer_texture_slots` (default `0`): the room for the textures of a frame of
+  the wgpu renderer (its texture arrays). `0` lets the renderer choose: the room of the
+  graphics card, at most 16384. A number from 256 to 1048576 is the most slots (at most the
+  card's room); another value counts as `0`. The textures of the objects the renderer keeps
+  and the textures of the frame's other draws share the room; 256 slots stay for the latter.
+  A slot is freed when no object uses its texture, and free slots at the end of the room
+  go. A texture past a full room draws white, and `nirender-host.log` says so. The
+  environment variable `MGE_XE_ARRAY_CAP` overrides it, for tests. Read when numidium.exe
+  starts.
 - `distant_land.per_pixel_original_lights` (default `false`): the wgpu renderer lights each
   pixel with each light of the game in its own colour and with its whole falloff. `true`
   decodes the lights as MGE XE on Direct3D 9 does.

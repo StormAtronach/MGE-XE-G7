@@ -449,6 +449,10 @@ pub struct RuntimeSettings {
     pub proxy_only: bool,
     pub renderer_wgpu: bool,
     pub renderer_backend: RendererBackend,
+    /// The room of the texture arrays of the wgpu renderer: 0 automatic (the adapter's room,
+    /// at most 16384), or the most slots, 256 to 1048576 (at most the adapter's room). Read
+    /// by numidium.exe when it starts.
+    pub renderer_texture_slots: u32,
     pub skip_intro: bool,
     pub menu_caching: bool,
     pub custom_camera: bool,
@@ -466,6 +470,7 @@ impl Default for RuntimeSettings {
             proxy_only: false,
             renderer_wgpu: true,
             renderer_backend: RendererBackend::Auto,
+            renderer_texture_slots: 0,
             skip_intro: true,
             menu_caching: false,
             custom_camera: false,

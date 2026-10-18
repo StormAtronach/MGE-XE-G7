@@ -379,6 +379,22 @@ mod tests {
     }
 
     #[test]
+    fn texture_slots_keep_a_room_in_range_and_default_one_out_of_it() {
+        // A value out of 256 to 1048576 (0 is automatic) is not valid in the file: the
+        // default (automatic) with a warning, as for every value out of its range.
+        for (written, read) in [(0u32, 0u32), (100, 0), (4096, 4096), (1_048_576, 1_048_576), (2_000_000, 0)] {
+            let root = test_root(&format!("texture-slots-{written}"));
+            let path = root.join(FILE_NAME);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(&path, DEFAULT_DOCUMENT.replace("renderer_texture_slots = 0", &format!("renderer_texture_slots = {written}"))).unwrap();
+            let document = ConfigDocument::open(&path);
+            assert_eq!(document.settings().runtime.renderer_texture_slots, read, "written {written}: {:?}", document.warnings());
+            assert_eq!(document.warnings().iter().any(|warning| warning.path == "runtime.renderer_texture_slots"), read != written, "written {written}");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn weather_clamp_warnings_carry_the_path_of_the_clamped_field() {
         let root = test_root("weather-clamp-warnings");
         let path = root.join(FILE_NAME);
