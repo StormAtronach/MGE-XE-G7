@@ -139,7 +139,7 @@ impl Settings {
 /// The record of MGE XE for a picture file that a mod asked for (`mge.saveScreenshot`): the
 /// version 1, 1 for a picture with the interface of the game, the path.
 const PICTURE_ID: u32 = 3;
-/// The status text of MGE XE (`Deviceless::sendStatus`): the version 1, 1 for a warning or an
+/// The status text of MGE XE (`StatusOverlay::sendToRenderer`): the version 1, 1 for a warning or an
 /// error, the time to show it in ms, the text. The stream does not keep it: a capture file
 /// has no status text.
 const STATUS_ID: u32 = 9;
