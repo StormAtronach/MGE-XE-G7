@@ -228,7 +228,11 @@ mouse pointer of the menus follows your hand late, send us this line.
    `nirender-host.log` name the versions.
 3. If the game does not start or shows nothing: set `renderer_wgpu = false`, start again,
    and send the same logs.
-4. If a message box says that the graphics device was lost (the driver was reset, or it
+4. If an object is missing, comes late, or stays in an old pose: type
+   `lua include("nirender").engineWalk(true)` in the console (the key under Esc). The game
+   then finds the objects as before this build (its own walk of the scene). If that mends
+   it, tell us the place and send the logs. `engineWalk(false)` turns it back.
+5. If a message box says that the graphics device was lost (the driver was reset, or it
    stopped), the renderer cannot draw any more. Quit the game and start it again, and send
    `nirender-host.log`. A fault of the GPU that is not a loss does not stop the game: a
    part of the picture can be missing, and `nirender-host.log` has lines `gpu error`.
