@@ -167,8 +167,9 @@ mod tests {
     fn missing_keys_use_shared_defaults() {
         let root = TestRoot::with_toml("missing", "schema_version = 1\n");
         let configuration = Configuration::load_at(root.path());
-        assert!(!configuration.automatic_distant_land_rebuild);
-        assert!(!configuration.distant_land_enabled());
+        // The defaults of a new file: distant land on, rebuilt at the start (2026-10-18).
+        assert!(configuration.automatic_distant_land_rebuild);
+        assert!(configuration.distant_land_enabled());
         assert!(configuration.horizon_culling);
         assert_eq!(configuration.horizon_bins, 512);
     }
@@ -217,8 +218,8 @@ mod tests {
             "schema_version = 1\n[distant_land]\nautomatic_rebuild = \"maybe\"\n",
         );
         let configuration = Configuration::load_at(root.path());
-        assert!(!configuration.automatic_distant_land_rebuild);
-        assert!(!configuration.distant_land_enabled());
+        assert!(configuration.automatic_distant_land_rebuild);
+        assert!(configuration.distant_land_enabled());
     }
 
     #[test]

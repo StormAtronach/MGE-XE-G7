@@ -94,10 +94,13 @@ crosshair_autohide = false
 
 # Core distant-land switches and distances in exterior cells.
 [distant_land]
-# A fresh configuration deliberately starts with distant land disabled.
-enabled = false
-# Regenerate automatically when the saved generation job requires it.
-automatic_rebuild = false
+# A new configuration starts with distant land on (the settings of the tests of the wgpu
+# renderer). The distant land must be generated once in the MGE XE GUI.
+enabled = true
+# Regenerate automatically when the saved generation job requires it (the load order, the
+# generation settings, or the version of the data changed). The GUI saves the job when it
+# generates.
+automatic_rebuild = true
 # The wgpu renderer: after a game load, keep the loading screen until the distant statics
 # around the player are on the GPU (at most 15 s), as MGE XE on Direct3D 9 does at the first
 # load. Without it they fade in after the load.
@@ -115,17 +118,17 @@ native_ppl_packets = true
 # Direct3D 9 it needs a renderer that reports the expanded limit (ignored
 # otherwise), and with per-pixel lighting also native_ppl_packets set to true.
 expanded_light_limit = true
-# A fresh configuration deliberately starts with distant statics disabled.
-statics = false
+# A new configuration starts with distant statics on.
+statics = true
 # Permit replacement water even when distant land is disabled.
 water_without_land = true
 # Render generated grass.
 render_grass = true
 # Overall and static-band distances, clamped to the schema ranges.
-draw_distance = 5.0
-near_static_end = 2.0
-far_static_end = 4.0
-very_far_static_end = 5.0
+draw_distance = 7.0
+near_static_end = 4.0
+far_static_end = 4.69
+very_far_static_end = 6.86
 # Minimum model sizes used when classifying far static tiers.
 far_static_min_size = 600.0
 very_far_static_min_size = 800.0
@@ -134,7 +137,7 @@ very_far_static_min_size = 800.0
 # the limit in megabytes; 0 is no limit.
 statics_fallback_cap_mb = 1024
 # Enable fixed-function replacement lighting and select its scope.
-per_pixel_lighting = false
+per_pixel_lighting = true
 per_pixel_mode = "always"
 # Fade each per-pixel point light to zero before a multiple of its radius,
 # instead of letting it reach infinitely far. The fade covers the last
@@ -302,9 +305,10 @@ ambient = 1.0
 sun = 1.0
 ambient = 1.0
 
-# Ordered post-processing shader names.
+# Ordered post-processing shader names. A new configuration starts with the chain of the
+# tests of the wgpu renderer.
 [shaders]
-chain = []
+chain = ["SSAO Fast", "Sunshafts", "Bloom Fine"]
 
 # Input data is structured TOML; the shared crate renders legacy runtime buffers.
 [input]

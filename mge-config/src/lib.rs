@@ -133,7 +133,7 @@ mod tests {
         assert!(written.contains("# Water reflection, simulation, and effect strengths."));
         assert!(written.contains("[distant_land.water]"));
         assert!(written.contains("[lighting.weather.blizzard]"));
-        assert!(written.contains("chain = []"));
+        assert!(written.contains("chain = [\"SSAO Fast\", \"Sunshafts\", \"Bloom Fine\"]"));
         assert!(written.contains("remap = {}"));
         assert!(written.contains(&format!("schema_version = {SCHEMA_VERSION}")));
 
@@ -164,7 +164,7 @@ mod tests {
             &DEFAULT_DOCUMENT[..start],
             &DEFAULT_DOCUMENT[end..]
         )
-        .replace("chain = []", "chain = [\"Bloom\"]");
+        .replace("chain = [\"SSAO Fast\", \"Sunshafts\", \"Bloom Fine\"]", "chain = [\"Bloom\"]");
         fs::write(&path, &source).unwrap();
 
         let mut document = ConfigDocument::open(&path);

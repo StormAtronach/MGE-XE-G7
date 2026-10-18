@@ -52,6 +52,19 @@ renderer_backend = "dx12"
 The values are `auto`, `vulkan` and `dx12`. The first lines of `nirender-host.log` name the
 adapter and the one in use.
 
+## A new settings file
+
+A new `mgeXE.toml` (MGE XE writes one when there is none) starts with the settings that we
+test with: the distant land and the distant statics on, the draw distance 7 cells,
+per-pixel lighting on, and the post shaders SSAO Fast, Sunshafts and Bloom Fine. A file that
+you have keeps your values.
+
+Generate the distant land once in the MGE XE GUI (`MGEXEgui.exe`, the Distant Land page).
+After that, `automatic_rebuild = true` (on in a new file) generates it again at the start
+of the game when the load order, the generation settings or the version of the data
+change. That start can take some minutes. With an older file, set it below
+`[distant_land]`, or generate again in the GUI after you change your mods.
+
 ## Requirements
 
 - Everything that MGE XE G7 needs (see `MGE XE Readme.md`): a GPU with Vulkan 1.3, 64-bit

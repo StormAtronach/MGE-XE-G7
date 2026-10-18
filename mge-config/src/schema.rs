@@ -522,19 +522,21 @@ pub struct DistantLandSettings {
 impl Default for DistantLandSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
-            automatic_rebuild: false,
+            // The settings of the tests of the wgpu renderer for a new file (the owner,
+            // 2026-10-18); a file that has a key keeps its value.
+            enabled: true,
+            automatic_rebuild: true,
             wait_on_load: false,
             native_depth_capture: true,
             native_ppl_packets: true,
             expanded_light_limit: true,
-            statics: false,
+            statics: true,
             water_without_land: true,
             render_grass: true,
-            draw_distance: 5.0,
-            near_static_end: 2.0,
-            far_static_end: 4.0,
-            very_far_static_end: 5.0,
+            draw_distance: 7.0,
+            near_static_end: 4.0,
+            far_static_end: 4.69,
+            very_far_static_end: 6.86,
             far_static_min_size: 600.0,
             very_far_static_min_size: 800.0,
             statics_fallback_cap_mb: 1024,
@@ -542,7 +544,7 @@ impl Default for DistantLandSettings {
             fog: FogSettings::default(),
             grass: GrassSettings::default(),
             shadows: ShadowSettings::default(),
-            per_pixel_lighting: false,
+            per_pixel_lighting: true,
             per_pixel_mode: PerPixelMode::Always,
             per_pixel_light_fade: true,
             per_pixel_light_fade_radius: 1.75,
@@ -867,10 +869,18 @@ impl LightingWeatherSet {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShaderSettings {
     pub chain: Vec<String>,
+}
+
+impl Default for ShaderSettings {
+    /// A new file starts with the chain of the tests of the wgpu renderer (the owner,
+    /// 2026-10-18); the shaders are in the archive of MGE XE.
+    fn default() -> Self {
+        Self { chain: ["SSAO Fast", "Sunshafts", "Bloom Fine"].map(String::from).to_vec() }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

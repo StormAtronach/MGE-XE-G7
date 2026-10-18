@@ -305,7 +305,8 @@ the strict version-3 job in the generator-owned `[generation]` table of game-roo
 At `Direct3DCreate8` time, `d3d8.dll` attempts to launch `numidium.exe` when MGE is enabled,
 proxy-only mode is disabled, distant land is enabled, and the executable exists. This launch
 is not gated on automatic generation, but generation at startup is: only with
-`[distant_land] automatic_rebuild = true` (default `false`) does the host call
+`[distant_land] automatic_rebuild = true` (default `true` in a new file since 2026-10-18,
+`false` before) does the host call
 `ensure_distant_land_ready` (`mgeHost64/src/startup_generation.rs`), which checks the saved
 job against the install, inspects the current output status, and regenerates if needed.
 Otherwise the host logs that the automatic rebuild is disabled. A per-install named mutex
