@@ -1209,6 +1209,11 @@ namespace Deviceless {
         // 1.5 for a thunderstorm, below 0 for none), and the height of the player.
         float precipitation;
         float playerHeight;
+        // Version 7: how much of the night there is, 1 at night and 0 in the day, linear
+        // through the weather's sunrise and sunset spans, the spans the game's ambient of
+        // the hour goes through (MWBridge::getNightFraction). The glows and the baked light
+        // of the distant lights follow it; before, a threshold on the sun's colour.
+        float night;
     };
     static const UINT EnvironmentId = 1;
 
@@ -1220,7 +1225,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 6;
+        e.version = 7;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1426,6 +1431,7 @@ namespace Deviceless {
             e.precipitation = mix(p0, p1, mwBridge->GetWeatherRatio());
         }
         e.playerHeight = mwBridge->PlayerHeight();
+        e.night = mwBridge->getNightFraction();
         if (!mwBridge->IsExterior()) {
             if (const char* name = mwBridge->getInteriorName()) {
                 std::strncpy(e.interiorName, name, sizeof(e.interiorName));

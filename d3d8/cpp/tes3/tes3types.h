@@ -245,7 +245,14 @@ struct WeatherController {
     float sunsetHour;                                // 0xE0
     float sunriseDuration;                           // 0xE4
     float sunsetDuration;                            // 0xE8
-    char pad_EC[0x84];                               // 0xEC
+    float fogDepthChangeSpeed;                       // 0xEC
+    // The spans of the ambient of the hour around the sunrise and the sunset (MWSE
+    // TES3WeatherController.h; WeatherController::updateAmbient 0x43EF80).
+    float ambientPreSunriseTime;                     // 0xF0
+    float ambientPostSunriseTime;                    // 0xF4
+    float ambientPreSunsetTime;                      // 0xF8
+    float ambientPostSunsetTime;                     // 0xFC
+    char pad_100[0x70];                              // 0x100
     float transitionScalar;                          // 0x170
     char pad_174[0x7C];                              // 0x174
 };
@@ -258,6 +265,8 @@ static_assert(offsetof(WeatherController, currentSkyColor) == 0x90, "TES3::Weath
 static_assert(offsetof(WeatherController, currentFogColor) == 0x9C, "TES3::WeatherController::currentFogColor failed offset validation");
 static_assert(offsetof(WeatherController, windVelocityCurrWeather) == 0xB8, "TES3::WeatherController::windVelocityCurrWeather failed offset validation");
 static_assert(offsetof(WeatherController, sunriseHour) == 0xDC, "TES3::WeatherController::sunriseHour failed offset validation");
+static_assert(offsetof(WeatherController, ambientPreSunriseTime) == 0xF0, "TES3::WeatherController::ambientPreSunriseTime failed offset validation");
+static_assert(offsetof(WeatherController, ambientPostSunsetTime) == 0xFC, "TES3::WeatherController::ambientPostSunsetTime failed offset validation");
 static_assert(offsetof(WeatherController, transitionScalar) == 0x170, "TES3::WeatherController::transitionScalar failed offset validation");
 
 //-----------------------------------------------------------------------------

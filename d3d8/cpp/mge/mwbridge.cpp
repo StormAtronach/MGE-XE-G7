@@ -1192,6 +1192,29 @@ float MWBridge::getGameHour() {
     return worldController()->gvarGameHour->value;
 }
 
+// getNightFraction - 1 at night, 0 in the day, linear through the sunrise and the sunset
+// spans of the weather controller: from the pre-sunrise time before the sunrise hour to
+// the post-sunrise time after the sunrise duration, and the same for the sunset, the spans
+// WeatherController::updateAmbient (0x43EF80) interpolates the ambient of the hour over.
+float MWBridge::getNightFraction() {
+    const auto* wc = weatherController();
+    const float hour = getGameHour();
+    const float riseStart = wc->sunriseHour - wc->ambientPreSunriseTime;
+    const float riseSpan = wc->ambientPreSunriseTime + wc->sunriseDuration + wc->ambientPostSunriseTime;
+    const float setStart = wc->sunsetHour - wc->ambientPreSunsetTime;
+    const float setSpan = wc->ambientPreSunsetTime + wc->sunsetDuration + wc->ambientPostSunsetTime;
+    if (riseSpan > 0 && hour > riseStart && hour <= riseStart + riseSpan) {
+        return 1.0f - (hour - riseStart) / riseSpan;
+    }
+    if (setSpan > 0 && hour > setStart && hour <= setStart + setSpan) {
+        return (hour - setStart) / setSpan;
+    }
+    if (hour > riseStart + riseSpan && hour <= setStart) {
+        return 0.0f;
+    }
+    return 1.0f;
+}
+
 //-----------------------------------------------------------------------------
 
 // getDaysPassed - Returns the value of the script global DaysPassed

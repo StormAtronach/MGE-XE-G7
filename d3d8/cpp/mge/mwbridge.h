@@ -150,6 +150,10 @@ public:
     void* getGMSTPointer(DWORD id);
     const char* getPlayerName();
     float getGameHour();
+    // How much of the night there is: 1 at night, 0 in the day, linear through the sunrise
+    // and the sunset spans of the weather controller, the spans the game's ambient of the
+    // hour goes through (WeatherController::updateAmbient).
+    float getNightFraction();
     int getDaysPassed();
     int getFrameBeginMillis();
     void* getGlobalVar(const char *id);

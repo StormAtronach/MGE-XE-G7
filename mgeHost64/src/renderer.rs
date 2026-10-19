@@ -250,6 +250,11 @@ struct Environment {
     /// and the height of the player.
     precipitation: f32,
     player_height: f32,
+    /// Version 7: how much of the night there is, 1 at night and 0 in the day, from the
+    /// hour against the weather's sunrise and sunset spans on the game side (design D5,
+    /// step 1). A record of an older game side leaves it 0 with its version below 7, and
+    /// the helper falls back to the sun's colour (`distant_lights::night_of`).
+    night: f32,
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -2053,7 +2058,7 @@ impl Extension for DistantLand {
             let length = bytes.len().min(raw.len());
             raw[..length].copy_from_slice(&bytes[..length]);
             let environment: Environment = bytemuck::pod_read_unaligned(&raw);
-            if (4..=6).contains(&environment.version) {
+            if (4..=7).contains(&environment.version) {
                 // A game was loaded (flag 256, in one record only): the wait for the statics
                 // starts. The record can come in a loading screen, which has no world frame.
                 if environment.flags & 256 != 0 && self.prefetch.is_none() {
@@ -2123,8 +2128,10 @@ impl Extension for DistantLand {
         let eye_range = [eye[0], eye[1], eye[2], view_range];
         let land = LandUniforms { terrain: gpu.terrain, atlas: gpu.atlas, atlas_more: gpu.atlas_more, patterns: gpu.patterns, range: [view_range, 0.0, 0.0, 0.0] };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
-        // The baked light of the distant lights: at night, in the exterior.
-        let night = distant_lights::night_of(scene.sun_color);
+        // The baked light of the distant lights: at night, in the exterior. The night is the
+        // game's, from the hour against the weather's sunrise and sunset (the environment
+        // record, version 7); the sun's colour serves for an older game side.
+        let night = self.environment.filter(|e| e.version >= 7).map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night);
         let Some(binding) = self.light_binding.as_mut() else { return false };
         binding.set_strength(scene.queue, if scene.interior { 0.0 } else { self.tunables.get(tunables::BAKED_STRENGTH) * night });
         let Some(views) = self.view_binding.as_ref() else { return false };
