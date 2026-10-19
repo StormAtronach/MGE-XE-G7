@@ -1197,8 +1197,14 @@ float MWBridge::getGameHour() {
 // the post-sunrise time after the sunrise duration, and the same for the sunset, the spans
 // WeatherController::updateAmbient (0x43EF80) interpolates the ambient of the hour over.
 float MWBridge::getNightFraction() {
-    const auto* wc = weatherController();
-    const float hour = getGameHour();
+    // The world controller has no weather controller and no game hour before a game runs
+    // (the main menu after the data loaded): night then.
+    const auto* world = worldController();
+    if (!world || !world->weatherController || !world->gvarGameHour) {
+        return 1.0f;
+    }
+    const auto* wc = world->weatherController;
+    const float hour = world->gvarGameHour->value;
     const float riseStart = wc->sunriseHour - wc->ambientPreSunriseTime;
     const float riseSpan = wc->ambientPreSunriseTime + wc->sunriseDuration + wc->ambientPostSunriseTime;
     const float setStart = wc->sunsetHour - wc->ambientPreSunsetTime;

@@ -1431,7 +1431,7 @@ namespace Deviceless {
             e.precipitation = mix(p0, p1, mwBridge->GetWeatherRatio());
         }
         e.playerHeight = mwBridge->PlayerHeight();
-        e.night = mwBridge->getNightFraction();
+        e.night = exterior ? mwBridge->getNightFraction() : 1.0f;
         if (!mwBridge->IsExterior()) {
             if (const char* name = mwBridge->getInteriorName()) {
                 std::strncpy(e.interiorName, name, sizeof(e.interiorName));
