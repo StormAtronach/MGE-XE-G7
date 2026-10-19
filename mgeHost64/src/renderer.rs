@@ -324,6 +324,10 @@ pub struct DistantLand {
     distant_cell: bool,
     /// The light for each pixel of this frame, or `None`.
     shade: Option<PerPixel>,
+    /// The sun of the frame for the shadow of a draw: the direction the light goes in and
+    /// its colour, from the scene's sun (the weather's sky light, the plugin's scene record),
+    /// `None` when the scene has none (then the draw's own directional light serves).
+    scene_sun: Option<([f32; 3], [f32; 3])>,
     /// The loads complete before a frame: a capture file, where each frame must be the same.
     synchronous: bool,
     blend: Option<blend::Blend>,
@@ -686,6 +690,7 @@ impl DistantLand {
             like_exterior: true,
             distant_cell: true,
             shade: None,
+            scene_sun: None,
             synchronous: false,
             blend: None,
             caustics: None,
@@ -1582,6 +1587,7 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
+        self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.finish_generation();
         self.finish_load(scene);
         self.apply_settings();
@@ -1770,14 +1776,18 @@ impl Extension for DistantLand {
         if self.shade.is_none() && !shadows {
             return;
         }
-        // The sun of the draw, for the shadow: its direction and the light it gives, as
-        // shadowSunEstimate takes it (with the multiplier of the per-pixel light).
+        // The sun for the shadow of the draw: its direction and the light it gives, as
+        // shadowSunEstimate takes it (with the multiplier of the per-pixel light). The sun
+        // is the scene's, the weather's sky light (design D4, step 1, 2026-10-19): a draw's
+        // own directional light served before, and a mod's directional light, or a draw
+        // without the sky light among its lights, changed the shadow. The draw's light
+        // serves only when the scene has no sun (a plugin from before the scene record).
         if shadows && facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) {
-            if let Some(sun) = lights.iter().find(|light| light.position[3] == 3.0) {
-                let d = sun.direction;
+            let sun = self.scene_sun.or_else(|| lights.iter().find(|light| light.position[3] == 3.0).map(|light| ([light.direction[0], light.direction[1], light.direction[2]], [light.diffuse[0], light.diffuse[1], light.diffuse[2]])));
+            if let Some((d, diffuse)) = sun {
                 let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
                 let mult = self.shade.map_or(1.0, |p| p.sun);
-                let luminance = (sun.diffuse[0] * 0.36 + sun.diffuse[1] * 0.53 + sun.diffuse[2] * 0.11) * mult;
+                let luminance = (diffuse[0] * 0.36 + diffuse[1] * 0.53 + diffuse[2] * 0.11) * mult;
                 let sun_vis = self.environment.map_or(0.0, |e| e.sun_vis);
                 draw.extension[5] = [d[0] / length, d[1] / length, d[2] / length, 0.0];
                 draw.extension[7] = [luminance * (0.25 + 0.75 * sun_vis), 0.0, 0.0, 0.0];
