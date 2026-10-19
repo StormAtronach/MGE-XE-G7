@@ -333,6 +333,17 @@ pub struct DistantLand {
     /// its colour, from the scene's sun (the weather's sky light, the plugin's scene record),
     /// `None` when the scene has none (then the draw's own directional light serves).
     scene_sun: Option<([f32; 3], [f32; 3])>,
+    /// The sun as the last draw with a directional light gave it, for a scene without a
+    /// sun (a plugin from before the scene record, or its mode without the table): the
+    /// shadow map, the post chain and the water volumes take it before the sun's position,
+    /// as the shade of a draw does. At night the sun's position is below the horizon and
+    /// the light of the game is not: a shadow map from the position shadowed the whole
+    /// world on the engine's path (risk 20, 2026-10-19).
+    draw_sun: Option<([f32; 3], [f32; 3])>,
+    /// How much of the day there is (1 less the night of the frame): the sun casts no
+    /// shadow at night (the owner, 2026-10-19), and the shadow fades through dusk and dawn
+    /// as the game's ambient of the hour goes. 0 means no shadow map for the frame.
+    shadow_day: f32,
     /// The loads complete before a frame: a capture file, where each frame must be the same.
     synchronous: bool,
     blend: Option<blend::Blend>,
@@ -696,6 +707,8 @@ impl DistantLand {
             distant_cell: true,
             shade: None,
             scene_sun: None,
+            draw_sun: None,
+            shadow_day: 1.0,
             synchronous: false,
             blend: None,
             caustics: None,
@@ -1337,6 +1350,10 @@ const DRAW_SHADER: &str = "
 // The shadow of the draw at the pixel: `RenderShadowsPS` of `XE Mod Shadow.fx`. From
 // `extension_shade` for `extension_finish`.
 var<private> shadow_v: f32;
+// The debug view of the layers (frame.values[10].z): the layer that served the pixel (1 or
+// 2, 0 outside both, -1 for a draw without the shadow test), and 1 where the map shadows it.
+var<private> shadow_layer: f32;
+var<private> shadow_hit: f32;
 
 // shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
 // the pixel; a positive number when the map has nothing nearer to the sun.
@@ -1344,18 +1361,23 @@ fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
     let rcp = frame.values[8].w;
     let margin = vec3f(1.0 - 8.0 * rcp, 1.0 - 8.0 * rcp, 1.0);
     if all(abs(s0) < margin) {
+        shadow_layer = 1.0;
         let uv = vec2f(0.5 + 0.5 * s0.x, 0.5 - 0.5 * s0.y);
         return textureSample(extension_texture, extension_sampler, vec2f(uv.x * 0.5, uv.y)).r / frame.values[8].z - s0.z;
     }
     if all(abs(s1) < margin) {
+        shadow_layer = 2.0;
         let uv = vec2f(0.5 + 0.5 * s1.x, 0.5 - 0.5 * s1.y);
         return textureSample(extension_texture, extension_sampler, vec2f(0.5 + uv.x * 0.5, uv.y)).r / frame.values[8].z - s1.z;
     }
+    shadow_layer = 0.0;
     return 1e-6;
 }
 
 fn extension_shade(in: VertexOut) -> vec4f {
     shadow_v = 0.0;
+    shadow_layer = -1.0;
+    shadow_hit = 0.0;
     if (draw.counts.w & 32u) != 0u {
         // The light that the sun gives the pixel, as shadowSunEstimate: the sun of the draw
         // is in draw.extension[5] (its direction) and [7].x (its colour and visibility). A
@@ -1377,6 +1399,7 @@ fn extension_shade(in: VertexOut) -> vec4f {
         s1 = vec4f(s1.xy, s1.z / s1.w, s1.w);
         let dz = shadow_delta(s0.xyz, s1.xyz);
         if dz < 0.0 {
+            shadow_hit = 1.0;
             // shadowESM, and the fade at the edge of the outer layer.
             var v = (1.0 - clamp(exp(frame.values[8].x * dz + frame.values[8].y), 0.0, 1.0)) * light;
             let fade = clamp(25.0 * (1.0 - abs(s1.xy)), vec2f(0.0), vec2f(1.0));
@@ -1515,6 +1538,19 @@ fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
             out = vec4f(out.rgb * (1.0 - v * frame.values[9].xyz), out.a);
         }
     }
+    if frame.values[10].z > 0.5 {
+        // The debug view of the shadow layers (MGE_XE_SHADOW_LAYERS=1).
+        if shadow_layer < -0.5 {
+            return vec4f(0.3, 0.3, 0.3, out.a);
+        }
+        var c = vec3f(0.0, 0.0, 1.0);
+        if shadow_layer > 1.5 {
+            c = vec3f(0.0, 1.0, 0.0);
+        } else if shadow_layer > 0.5 {
+            c = vec3f(1.0, 0.0, 0.0);
+        }
+        return vec4f(c * (1.0 - 0.6 * shadow_hit), out.a);
+    }
     return out;
 }
 ";
@@ -1593,6 +1629,8 @@ impl Extension for DistantLand {
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
+        let draw_sun = self.draw_sun;
+        self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
         self.finish_load(scene);
         self.apply_settings();
@@ -1714,7 +1752,7 @@ impl Extension for DistantLand {
         let mut values = [[0.0f32; 4]; 32];
         let mut texture = None;
         self.shadow_in_frame = false;
-        if distant && self.like_exterior && self.shadows_enabled {
+        if distant && self.like_exterior && self.shadows_enabled && self.shadow_day > 0.0 {
             if self.shadow.is_none() {
                 self.shadow = Some(Shadow::new(scene, self.shadow_resolution));
             }
@@ -1724,7 +1762,7 @@ impl Extension for DistantLand {
                 // lightVec: against the sun when it is up; the sun light of the game when
                 // it is not.
                 let sun_pos = e.sun_pos;
-                let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.unwrap_or(sun_pos.map(|v| -v)) };
+                let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.or(draw_sun.map(|s| s.0)).unwrap_or(sun_pos.map(|v| -v)) };
                 shadow.set_frame(eye, eye_vec, light_vec);
                 values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > -1.0);
                 texture = Some(shadow.atlas_view.clone());
@@ -1788,14 +1826,21 @@ impl Extension for DistantLand {
         // without the sky light among its lights, changed the shadow. The draw's light
         // serves only when the scene has no sun (a plugin from before the scene record).
         if shadows && facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) {
-            let sun = self.scene_sun.or_else(|| lights.iter().find(|light| light.position[3] == 3.0).map(|light| ([light.direction[0], light.direction[1], light.direction[2]], [light.diffuse[0], light.diffuse[1], light.diffuse[2]])));
+            let scene_sun = self.scene_sun;
+            let sun = scene_sun.or_else(|| {
+                let found = lights.iter().find(|light| light.position[3] == 3.0).map(|light| ([light.direction[0], light.direction[1], light.direction[2]], [light.diffuse[0], light.diffuse[1], light.diffuse[2]]));
+                if found.is_some() {
+                    self.draw_sun = found;
+                }
+                found
+            });
             if let Some((d, diffuse)) = sun {
                 let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
                 let mult = self.shade.map_or(1.0, |p| p.sun);
                 let luminance = (diffuse[0] * 0.36 + diffuse[1] * 0.53 + diffuse[2] * 0.11) * mult;
                 let sun_vis = self.environment.map_or(0.0, |e| e.sun_vis);
                 draw.extension[5] = [d[0] / length, d[1] / length, d[2] / length, 0.0];
-                draw.extension[7] = [luminance * (0.25 + 0.75 * sun_vis), 0.0, 0.0, 0.0];
+                draw.extension[7] = [luminance * (0.25 + 0.75 * sun_vis) * self.shadow_day, 0.0, 0.0, 0.0];
                 draw.counts[3] |= 1 | 32;
                 if facts.blend_enable {
                     draw.counts[3] |= 64;
@@ -2131,7 +2176,7 @@ impl Extension for DistantLand {
         // The baked light of the distant lights: at night, in the exterior. The night is the
         // game's, from the hour against the weather's sunrise and sunset (the environment
         // record, version 7); the sun's colour serves for an older game side.
-        let night = self.environment.filter(|e| e.version >= 7).map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night);
+        let night = self.night(scene);
         let Some(binding) = self.light_binding.as_mut() else { return false };
         binding.set_strength(scene.queue, if scene.interior { 0.0 } else { self.tunables.get(tunables::BAKED_STRENGTH) * night });
         let Some(views) = self.view_binding.as_ref() else { return false };
@@ -2536,7 +2581,7 @@ impl DistantLand {
         if e.sun_vis == 0.0 {
             light_source[2] = -light_source[2];
         }
-        let sunvec = scene.sun_direction.unwrap_or(light_source.map(|v| -v));
+        let sunvec = scene.sun_direction.or(self.draw_sun.map(|s| s.0)).unwrap_or(light_source.map(|v| -v));
         let exponential = e.flags & 1 != 0;
         let underwater = e.flags & 2 != 0;
         // An exterior, or an interior cell with the flag "behaves like exterior" of the game
@@ -2632,7 +2677,7 @@ impl DistantLand {
             shadow,
             lights: scene.lights.as_ref().filter(|_| self.volume_point_lights),
             caustics: if self.volume_caustics && outdoors { water::caustic_strength(self.caustics_intensity, frame.sun_vis, frame.fog_color_far) } else { 0.0 },
-            sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
+            sun_direction: scene.sun_direction.or(self.draw_sun.map(|s| s.0)).unwrap_or([0.0, 0.0, -1.0]),
         };
         let Some(water) = self.water.as_mut() else { return 0 };
         // The water shaders of mods that the looks name, the first time one is named: from
@@ -2909,6 +2954,12 @@ impl DistantLand {
     /// The camera is under the water in this frame.
     fn under_water(&self) -> bool {
         self.environment.is_some_and(|e| e.flags & 2 != 0)
+    }
+
+    /// How much of the night there is: the environment record's night of the hour (version
+    /// 7), else from the colour of the sun.
+    fn night(&self, scene: &SceneView) -> f32 {
+        self.environment.filter(|e| e.version >= 7).map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night)
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {

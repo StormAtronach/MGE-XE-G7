@@ -93,6 +93,10 @@ pub struct Shadow {
     debug_pipeline: wgpu::RenderPipeline,
     debug_group: wgpu::BindGroup,
     pub debug: bool,
+    /// `MGE_XE_SHADOW_LAYERS=1`: the draw shader colours each pixel by the layer of the
+    /// shadow map that serves it (red the first, green the second, blue outside both, grey
+    /// a draw without the shadow test), darker where the map shadows the pixel.
+    pub layers_debug: bool,
     /// The matrices of the two layers for this frame, with the layout of Direct3D.
     pub viewproj: [[f32; 16]; 2],
     pub frames: u64,
@@ -297,6 +301,7 @@ impl Shadow {
             debug_pipeline,
             debug_group,
             debug: std::env::var("MGE_XE_SHADOW_DEBUG").is_ok_and(|v| v != "0"),
+            layers_debug: std::env::var("MGE_XE_SHADOW_LAYERS").is_ok_and(|v| v != "0"),
             viewproj: [[0.0; 16]; 2],
             frames: 0,
         }
@@ -385,7 +390,7 @@ impl Shadow {
         }
         values[8] = [ESM_C, ESM_BIAS, ESM_SCALE, 1.0 / self.resolution as f32];
         values[9] = [SHADE_COLOR[0], SHADE_COLOR[1], SHADE_COLOR[2], SHADE];
-        values[10] = [sun_vis, if above_sea { 1.0 } else { 0.0 }, 0.0, 0.0];
+        values[10] = [sun_vis, if above_sea { 1.0 } else { 0.0 }, if self.layers_debug { 1.0 } else { 0.0 }, 0.0];
         values
     }
 }
