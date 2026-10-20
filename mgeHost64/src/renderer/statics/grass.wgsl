@@ -11,6 +11,8 @@
 // vertex normal at a different place, so parts of a blade went from the light of the sun
 // to the back light (0.3 of it) and back as the camera moved, a band of shade that slid along
 // the blade (the owner, 2026-10-20: a fault of the Direct3D 9 path; changed on purpose).
+// A model whose normals are bent on purpose (up, or away from the clump: `BENT_SHARE` of
+// statics.rs, found when the subset arrives) is lit by its normal as the author made it.
 //
 // Three looks of the grass shader of Remiros' Groundcover are options, off at the start
 // (`[distant_land.grass]` in mgeXE.toml, `g.look`):
@@ -69,7 +71,8 @@ struct In {
     @location(4) world0: vec4f,
     @location(5) world1: vec4f,
     @location(6) world2: vec4f,
-    // x: the share of the subset that is in (the fade-in after its arrival).
+    // x: the share of the subset that is in (the fade-in after its arrival); y: 1 for a model
+    // with bent normals.
     @location(7) fade: vec4f,
 }
 
@@ -87,6 +90,8 @@ struct Out {
     @location(6) shadow1: vec3f,
     // The red of the vertex colour (the looks of Remiros' Groundcover).
     @location(7) red: f32,
+    // 1 for a model with bent normals.
+    @location(8) @interpolate(flat) bent: f32,
 }
 
 // The order of the pixels of a block of 4 x 4 for the fade-in (Bayer), as the statics have it.
@@ -173,6 +178,7 @@ fn bnoise(x: f32) -> f32 {
     // fogMWScalar: the linear fog of the near cells.
     out.fog = clamp((u.fog.w - length(to_vertex)) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
     out.fade = in.fade.x;
+    out.bent = in.fade.y;
     let s0 = g.shadow_layer0 * vec4f(world, 1.0);
     let s1 = g.shadow_layer1 * vec4f(world, 1.0);
     out.shadow0 = vec3f(s0.xy, s0.z / s0.w);
@@ -187,10 +193,11 @@ override ALPHA_TO_COVERAGE: bool = false;
     let texel = textureSample(base_texture, base_sampler, in.coordinate);
     // The plane of the triangle, turned to the camera (the eye is at 0 in `relative`), and
     // the normal of the blade on the side that the camera sees: it changes only where the
-    // camera crosses the plane of the triangle.
+    // camera crosses the plane of the triangle. A bent normal stays as it is.
     let plane = cross(dpdx(in.relative), dpdy(in.relative));
     let toward = select(-plane, plane, dot(plane, -in.relative) > 0.0);
-    let seen = select(-in.normal, in.normal, dot(in.normal, toward) >= 0.0);
+    let turned = select(-in.normal, in.normal, dot(in.normal, toward) >= 0.0);
+    let seen = select(turned, in.normal, in.bent > 0.5);
     // The light of the sun for the side that the camera sees.
     let facing = dot(seen, -u.sun_direction.xyz);
     var lambert: f32;

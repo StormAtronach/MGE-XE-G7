@@ -115,6 +115,58 @@ fn float(bytes: &[u8], at: usize) -> f32 {
     f32::from_bits(word(bytes, at))
 }
 
+/// An IEEE half float (the positions of a statics vertex) as f32.
+fn half(bytes: &[u8], at: usize) -> f32 {
+    let h = u16::from_le_bytes([bytes[at], bytes[at + 1]]) as u32;
+    let (sign, exponent, mantissa) = (h >> 15, (h >> 10) & 0x1F, h & 0x3FF);
+    let magnitude = match exponent {
+        0 => mantissa as f32 * (1.0 / 16_777_216.0),
+        31 => f32::INFINITY,
+        e => f32::from_bits(((e + 112) << 23) | (mantissa << 13)),
+    };
+    if sign == 1 { -magnitude } else { magnitude }
+}
+
+/// A grass subset has bent normals when at least this share of the corners of its triangles
+/// have a normal that points against the face of the triangle (by its winding). A normal of
+/// the geometry never does; an author's bent normal (up, or away from the clump) does on one
+/// triangle of each pair: the grass of Fantasia Grass Mod has each blade twice, with the two
+/// windings and the same normal. The scan of its 402 models (2026-10-20): about 0.5 in the 342
+/// bent ones, at most 0.25 in the ordinary ones, 0.27 to 0.39 in four partly bent ones.
+const BENT_SHARE: f32 = 0.3;
+
+/// The share of the corners whose normal points against the face of their triangle, for the
+/// vertices (`VERTEX` bytes each: the position as half floats, then the normal as bytes) and
+/// the triangles (three u16 each) of a subset; `None` without a triangle of some area.
+fn normal_alignment(vertices: &[u8], indexes: &[u8]) -> Option<f32> {
+    let count = vertices.len() / VERTEX;
+    let position = |v: usize| [half(vertices, v * VERTEX), half(vertices, v * VERTEX + 2), half(vertices, v * VERTEX + 4)];
+    let normal = |v: usize| -> [f32; 3] { core::array::from_fn(|i| vertices[v * VERTEX + 8 + i] as f32 / 127.5 - 1.0) };
+    let (mut corners, mut against) = (0u32, 0u32);
+    for triangle in indexes.chunks_exact(TRIANGLE) {
+        let corner: [usize; 3] = core::array::from_fn(|i| u16::from_le_bytes([triangle[2 * i], triangle[2 * i + 1]]) as usize);
+        if corner.iter().any(|&v| v >= count) {
+            continue;
+        }
+        let [a, b, c] = corner.map(position);
+        let (e1, e2) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+        let face = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        let area = (face[0] * face[0] + face[1] * face[1] + face[2] * face[2]).sqrt();
+        if area < 1e-6 {
+            continue;
+        }
+        for v in corner {
+            let n = normal(v);
+            let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if length > 1e-3 {
+                corners += 1;
+                against += ((n[0] * face[0] + n[1] * face[1] + n[2] * face[2]) / (length * area) < 0.0) as u32;
+            }
+        }
+    }
+    (corners > 0).then(|| against as f32 / corners as f32)
+}
+
 /// One part of a merged subset: triangles of one source model.
 #[derive(Clone, Copy)]
 struct Component {
@@ -565,6 +617,9 @@ struct Arrival {
     indexes: Vec<u8>,
     /// The triangles of the three levels of detail: all, far, very far.
     faces: [u32; 3],
+    /// A grass subset with bent normals (`BENT_SHARE`): lit by its normal as the author
+    /// made it, not turned to the side that the camera sees.
+    bent: bool,
 }
 
 /// Reads the vertices and the indexes of the subsets that the renderer asks for. The indexes
@@ -606,7 +661,8 @@ fn reader(catalog: Arc<Catalog>, requests: Receiver<u32>, arrivals: Sender<Arriv
             faces = [counts[0] + counts[1] + counts[2], counts[2] + counts[1], counts[2]];
             ordered
         };
-        if arrivals.send(Arrival { subset, vertices, indexes, faces }).is_err() {
+        let bent = s.grass && normal_alignment(&vertices, &indexes).is_some_and(|share| share >= BENT_SHARE);
+        if arrivals.send(Arrival { subset, vertices, indexes, faces, bent }).is_err() {
             return;
         }
     }
@@ -693,6 +749,8 @@ struct Resident {
     /// The time of the arrival on the clock of `Statics`, in seconds: the subset comes in
     /// over the fade time after it.
     arrived: f32,
+    /// A grass subset with bent normals (`Arrival::bent`).
+    bent: bool,
 }
 
 /// What the loader thread gives to the renderer: the catalog, and the bytes of the texture
@@ -1091,8 +1149,8 @@ pub struct Statics {
     view_groups: Vec<wgpu::BindGroup>,
     prepare_calls: u64,
     prepare_seconds: f64,
-    /// The grass of the frame: texture, subset, record.
-    grass_draws: Vec<(u32, u32, [f32; 12], f32)>,
+    /// The grass of the frame: texture, subset, record, the fade-in, 1 for bent normals.
+    grass_draws: Vec<(u32, u32, [f32; 12], f32, f32)>,
     /// The clock of the arrivals, and the time a subset takes to come in (0: no fade-in).
     clock: Instant,
     fade_seconds: f32,
@@ -1102,6 +1160,9 @@ pub struct Statics {
     grass_frames: u64,
     grass_drawn: u64,
     grass_cut: u64,
+    /// The grass subsets that arrived, and those of them with bent normals.
+    grass_arrived: u64,
+    grass_bent: u64,
     frames: u64,
     drawn: u64,
     most_bytes: u64,
@@ -1187,6 +1248,8 @@ impl Statics {
             grass_frames: 0,
             grass_drawn: 0,
             grass_cut: 0,
+            grass_arrived: 0,
+            grass_bent: 0,
             frames: 0,
             drawn: 0,
             most_bytes: 0,
@@ -1629,7 +1692,11 @@ impl Statics {
             if let Some(gpu) = self.gpu.as_ref() {
                 queue.write_buffer(&gpu.arrivals, arrival.subset as u64 * 4, bytemuck::bytes_of(&arrived));
             }
-            self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size, arrived });
+            if s.grass {
+                self.grass_arrived += 1;
+                self.grass_bent += arrival.bent as u64;
+            }
+            self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size, arrived, bent: arrival.bent });
             self.resident_bytes += size;
             self.most_bytes = self.most_bytes.max(self.resident_bytes);
             if self.catalog.as_ref().is_some_and(|catalog| catalog.merged_place.contains_key(&arrival.subset)) {
@@ -1690,15 +1757,15 @@ impl Statics {
                     }
                     let record = grass_record(&world_matrix(place.position, place.rotation, place.scale));
                     for subset in place.first_subset..place.first_subset + place.subset_count {
-                        if !self.resident.contains_key(&subset) {
+                        let Some(bent) = self.resident.get(&subset).map(|r| r.bent) else {
                             continue;
-                        }
+                        };
                         if self.grass_draws.len() == GRASS_RECORDS {
                             cut = true;
                             break 'cells;
                         }
                         let fade = self.fade_of(subset);
-                        self.grass_draws.push((catalog.subsets[subset as usize].texture, subset, record, fade));
+                        self.grass_draws.push((catalog.subsets[subset as usize].texture, subset, record, fade, bent as u32 as f32));
                     }
                 }
             }
@@ -1709,7 +1776,7 @@ impl Statics {
             return;
         }
         self.grass_draws.sort_unstable_by_key(|draw| (draw.0, draw.1));
-        let records: Vec<f32> = self.grass_draws.iter().flat_map(|draw| draw.2.into_iter().chain([draw.3, 0.0, 0.0, 0.0])).collect();
+        let records: Vec<f32> = self.grass_draws.iter().flat_map(|draw| draw.2.into_iter().chain([draw.3, draw.4, 0.0, 0.0])).collect();
         scene.queue.write_buffer(&gpu.grass_records, 0, bytemuck::cast_slice(&records));
         let uniforms = GrassUniforms {
             range: [view_range, 0.0, 0.0, 0.0],
@@ -1737,7 +1804,7 @@ impl Statics {
         // One draw for each run of places with the same subset.
         let mut start = 0;
         while start < self.grass_draws.len() {
-            let (texture, subset, _, _) = self.grass_draws[start];
+            let (texture, subset, ..) = self.grass_draws[start];
             let mut end = start + 1;
             while end < self.grass_draws.len() && self.grass_draws[end].1 == subset {
                 end += 1;
@@ -2201,10 +2268,12 @@ impl Drop for Statics {
             self.capped_frames
         );
         println!(
-            "grass: {} frames, {:.0} records in a frame as a mean, {} frames with more than {GRASS_RECORDS}",
+            "grass: {} frames, {:.0} records in a frame as a mean, {} frames with more than {GRASS_RECORDS}; {} subsets arrived, {} of them with bent normals",
             self.grass_frames,
             self.grass_drawn as f64 / self.grass_frames.max(1) as f64,
-            self.grass_cut
+            self.grass_cut,
+            self.grass_arrived,
+            self.grass_bent
         );
         println!("distant statics: {} places of hidden vis groups not drawn", self.hidden_skipped);
         self.report("end");
@@ -2664,9 +2733,65 @@ fn make_grass_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, unifo
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_from_budget, flags_problem, hidden, plan_merged};
+    use super::{cap_from_budget, flags_problem, half, hidden, normal_alignment, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
+
+    /// A value that a half float holds exactly (0 or a normal number), as its bits.
+    fn to_half(value: f32) -> u16 {
+        if value == 0.0 {
+            return 0;
+        }
+        let bits = value.to_bits();
+        let sign = (bits >> 16) & 0x8000;
+        let exponent = ((bits >> 23) & 0xFF) - 112;
+        (sign | (exponent << 10) | ((bits >> 13) & 0x3FF)) as u16
+    }
+
+    /// A statics vertex: the position as half floats (and the palette number 0), the normal
+    /// as bytes, a white colour, the texture coordinate 0.
+    fn vertex(position: [f32; 3], normal: [f32; 3]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(VERTEX);
+        for p in position {
+            bytes.extend_from_slice(&to_half(p).to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend(normal.map(|n| ((n + 1.0) * 127.5).round() as u8));
+        bytes.push(0);
+        bytes.extend_from_slice(&[255; 4]);
+        bytes.extend_from_slice(&[0; 4]);
+        bytes
+    }
+
+    #[test]
+    fn a_half_float_decodes() {
+        for value in [0.0f32, 1.0, -2.5, 65504.0, 123.375, 0.5] {
+            assert_eq!(half(&to_half(value).to_le_bytes(), 0), value);
+        }
+        // The smallest subnormal and infinity.
+        assert_eq!(half(&1u16.to_le_bytes(), 0), 1.0 / 16_777_216.0);
+        assert_eq!(half(&0x7C00u16.to_le_bytes(), 0), f32::INFINITY);
+    }
+
+    /// An upright blade drawn on both sides, as two windings of its two triangles (the face of
+    /// the first winding faces -y). Ordinary: each winding has vertices of its own with the
+    /// normal of its face. Bent, as Fantasia Grass Mod has it: both windings share vertices with
+    /// a normal that leans up and out, so it points against the faces of one winding.
+    #[test]
+    fn bent_normals_are_told_from_the_normals_of_the_faces() {
+        let corners = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 0.0, 30.0], [10.0, 0.0, 30.0]];
+        let triangles = |list: &[u16]| -> Vec<u8> { list.iter().flat_map(|i| i.to_le_bytes()).collect() };
+        // Ordinary: vertices 0 to 3 face -y, 4 to 7 (the same places) face +y.
+        let mut ordinary: Vec<u8> = corners.iter().flat_map(|&p| vertex(p, [0.0, -1.0, 0.0])).collect();
+        ordinary.extend(corners.iter().flat_map(|&p| vertex(p, [0.0, 1.0, 0.0])));
+        let ordinary_triangles = triangles(&[0, 1, 2, 1, 3, 2, 4, 6, 5, 5, 6, 7]);
+        assert_eq!(normal_alignment(&ordinary, &ordinary_triangles), Some(0.0));
+        // Bent: four shared vertices, both windings.
+        let bent: Vec<u8> = corners.iter().flat_map(|&p| vertex(p, [0.0, -0.5, 0.866])).collect();
+        let share = normal_alignment(&bent, &triangles(&[0, 1, 2, 1, 3, 2, 0, 2, 1, 1, 2, 3])).unwrap();
+        assert!((share - 0.5).abs() < 1e-6 && share >= BENT_SHARE, "{share}");
+        assert_eq!(normal_alignment(&ordinary, &[]), None);
+    }
 
     #[test]
     fn a_subset_flag_that_is_not_known_rejects_the_data() {
