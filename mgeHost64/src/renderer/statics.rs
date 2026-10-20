@@ -56,7 +56,7 @@
 //! texture draws them from pools of geometry. Without the features of the device, or with
 //! `MGE_XE_STATICS_CULL=cpu`, the CPU chooses them and draws each place from the same pools.
 //!
-//! Not here yet: a test against the land that hides a place.
+//! No test against the land hides a place.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -524,7 +524,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
 }
 
 /// The work of the draws of one set (the main view, the mirror, the two layers of the shadow
-/// map) since the last report, for the measure of step 2.2 of the plan.
+/// map) since the last report (`statics report` of `nirender.tune`).
 #[derive(Default, Clone, Copy)]
 struct SetStats {
     calls: u64,
@@ -1772,7 +1772,7 @@ impl Statics {
         }
     }
 
-    /// The water among the distant statics of the frame (B6): the water subsets within the
+    /// The water among the distant statics of the frame: the water subsets within the
     /// draw distance that are in the view (`planes`), with their buffers. A merged one comes
     /// to the GPU as a merged static does. `loaded` is the range of x and y of the cells that
     /// the game has loaded: the game draws the meshes of their places near the camera.

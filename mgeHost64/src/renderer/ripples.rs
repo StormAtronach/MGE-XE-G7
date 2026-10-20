@@ -14,8 +14,8 @@
 //!   ring of 12 units.
 //!
 //! The textures are in the world by x and y, and not by a water level: each water surface
-//! reads them with its own position (the plane now; a water volume reads the same two on
-//! the Direct3D 9 path).
+//! reads them with its own position (the plane; on the Direct3D 9 path a water volume reads
+//! the same two).
 
 use nirender_wgpu::{SceneView, wgpu};
 

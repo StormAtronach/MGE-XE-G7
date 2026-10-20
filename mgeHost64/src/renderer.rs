@@ -24,8 +24,7 @@
 //! the `d3d8.dll` of the plugin and not with that of MGE XE) the fog is linear with the
 //! distances of `mgeXE.toml`.
 //!
-//! Not here yet: the quadtree and the horizon culling of the IPC host mode (a test of each
-//! mesh against the view is enough for the 358 meshes of the test data).
+//! The terrain has no quadtree and no horizon culling: each mesh is tested against the view.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -251,9 +250,9 @@ struct Environment {
     precipitation: f32,
     player_height: f32,
     /// Version 7: how much of the night there is, 1 at night and 0 in the day, from the
-    /// hour against the weather's sunrise and sunset spans on the game side (design D5,
-    /// step 1). A record of an older game side leaves it 0 with its version below 7, and
-    /// the helper falls back to the sun's colour (`distant_lights::night_of`).
+    /// hour against the weather's sunrise and sunset spans on the game side. A record below
+    /// version 7 leaves it 0, and the helper takes the night from the sun's colour
+    /// (`distant_lights::night_of`).
     night: f32,
 }
 
@@ -334,15 +333,14 @@ pub struct DistantLand {
     /// `None` when the scene has none (then the draw's own directional light serves).
     scene_sun: Option<([f32; 3], [f32; 3])>,
     /// The sun as the last draw with a directional light gave it, for a scene without a
-    /// sun (a plugin from before the scene record, or its mode without the table): the
-    /// shadow map, the post chain and the water volumes take it before the sun's position,
-    /// as the shade of a draw does. At night the sun's position is below the horizon and
-    /// the light of the game is not: a shadow map from the position shadowed the whole
-    /// world on the engine's path (risk 20, 2026-10-19).
+    /// sun (an older plugin, or its mode without the table). The shadow map, the post chain
+    /// and the water volumes take it before the sun's position, as the shade of a draw
+    /// does: at night the sun's position is below the horizon, and the light of the game
+    /// is not.
     draw_sun: Option<([f32; 3], [f32; 3])>,
-    /// How much of the day there is (1 less the night of the frame): the sun casts no
-    /// shadow at night (the owner, 2026-10-19), and the shadow fades through dusk and dawn
-    /// as the game's ambient of the hour goes. 0 means no shadow map for the frame.
+    /// How much of the day there is (1 less the night of the frame). The sun casts no
+    /// shadow at night, and the shadow fades through dusk and dawn with the game's ambient
+    /// of the hour. 0 means no shadow map for the frame.
     shadow_day: f32,
     /// The loads complete before a frame: a capture file, where each frame must be the same.
     synchronous: bool,
@@ -451,8 +449,8 @@ pub struct DistantLand {
     /// How far from the camera the surfaces of water volumes reflect what is in the picture,
     /// in cells (`distant_land.water.volume_reflection_cells`); 0 for the sky only.
     volume_reflect_cells: f32,
-    /// The light of the frame on the surfaces of water volumes (B8): the shadow map, the lights
-    /// of the frame for each pixel, and the caustics under them
+    /// The light of the frame on the surfaces of water volumes: the shadow map, the lights of
+    /// the frame for each pixel, and the caustics under them
     /// (`distant_land.water.volume_shadows`, `volume_point_lights`, `volume_caustics`).
     volume_shadows: bool,
     /// The looks of the grass shader of Remiros' Groundcover (`[distant_land.grass]`
@@ -609,10 +607,6 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 }
 ";
 
-/// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
-/// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
-/// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
-/// `sun_altitude`, and the shader a function `fog_range()`, the view range of the game.
 /// The bytes of a file under `Data Files`: in the game folder (the mods of Mod Organizer are
 /// in its file system), in `MGE_XE_GAME_DIR`, or beside this program (for a replay).
 fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
@@ -649,6 +643,10 @@ struct Out {
 }
 ";
 
+/// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
+/// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
+/// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
+/// `sun_altitude`, and the shader a function `fog_range()`, the view range of the game.
 const FOG_FUNCTION: &str = "
 fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
     // fogColour: the exponential curve past the view range of the game, and the linear fog
@@ -1821,10 +1819,9 @@ impl Extension for DistantLand {
         }
         // The sun for the shadow of the draw: its direction and the light it gives, as
         // shadowSunEstimate takes it (with the multiplier of the per-pixel light). The sun
-        // is the scene's, the weather's sky light (design D4, step 1, 2026-10-19): a draw's
-        // own directional light served before, and a mod's directional light, or a draw
-        // without the sky light among its lights, changed the shadow. The draw's light
-        // serves only when the scene has no sun (a plugin from before the scene record).
+        // is the scene's (the weather's sky light), so the lights of a draw do not change
+        // the shadow. The draw's light serves only when the scene has no sun (an older
+        // plugin).
         if shadows && facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) {
             let scene_sun = self.scene_sun;
             let sun = scene_sun.or_else(|| {

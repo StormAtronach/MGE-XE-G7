@@ -1,4 +1,4 @@
-//! Dry spaces (B5): closed meshes inside which there is no water, the hold of a boat or a room
+//! Dry spaces: closed meshes inside which there is no water, the hold of a boat or a room
 //! under a pond. A mod reports their triangles (`MGE_WaterMasksSet`, record 7). Whether a
 //! point of a water surface is inside one is counted in a bit of the stencil buffer, as on
 //! Direct3D 9 (`countDrySpaces` of `renderwater.cpp`): each face of the dry spaces behind the

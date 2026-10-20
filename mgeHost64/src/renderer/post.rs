@@ -3967,7 +3967,6 @@ fn average(pos: vec2f, range: f32, h: ptr<function, f32>) -> vec3f {
 ";
 
 
-/// The shaders that this program has a port of.
 // gammavtdt of the STEP Shaders Compilation: a bloom from a quarter-size copy in the corner
 // of the picture, a tone curve with the adaptation point, and a lens pass.
 const GAMMAVTDT: &str = "
@@ -4220,6 +4219,7 @@ fn ports() -> impl Iterator<Item = &'static Shader> {
     SHADERS.iter().chain(super::post_jop::SHADERS)
 }
 
+/// The shaders that this program has a port of.
 pub const SHADERS: &[Shader] = &[
     Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &[full("stretch"), full("blur_r_half"), full("rays"), full("blur_t"), full("combine")], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, textures: &[], requires_hdr: false, variables: &[] },
     Shader { name: "Bloom Fine", source: BLOOM_FINE, passes: &[full("energy_levels"), full("blur_vert"), full("blur_horz_combine")], disable_flags: 0, no_sun_glare: false, priority: 4_000_000, textures: &[], requires_hdr: false, variables: &[] },

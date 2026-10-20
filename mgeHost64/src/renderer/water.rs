@@ -667,12 +667,12 @@ impl Water {
         );
     }
 
-    /// The planes of the view of the reflection, for the cull of the distant land.
     /// The 3D wave texture, for the post-processing shaders.
     pub fn waves(&self) -> wgpu::TextureView {
         self.waves.clone()
     }
 
+    /// The planes of the view of the reflection, for the cull of the distant land.
     pub fn reflection_planes(mirrored_view: &[f32; 16], projection: &[f32; 16]) -> [[f32; 4]; 6] {
         planes(&multiply(mirrored_view, projection))
     }

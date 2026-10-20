@@ -44,7 +44,7 @@ pub struct Look {
     glow: f32,
     /// 1 is water; lower shows what is behind the surface.
     opacity: f32,
-    /// The free values p0 to p3, and the name of a water shader of a mod: for B10.
+    /// The free values p0 to p3, and the name of a water shader of a mod.
     params: [[f32; 4]; 4],
     shader: [u8; 32],
     /// What the surface reflects in place of the sky, with `LOOK_HAS_SKY`.
@@ -186,7 +186,7 @@ impl Look {
     }
 }
 
-/// A water subset among the distant statics at one place, for a frame (B6).
+/// A water subset among the distant statics at one place, for a frame.
 pub struct FarWater {
     pub vertices: wgpu::Buffer,
     pub indexes: wgpu::Buffer,
@@ -217,7 +217,7 @@ pub struct VolumeLook {
     pub view_range: f32,
 }
 
-/// The light of the frame on the surfaces (B8): each part is on when its setting is, and the
+/// The light of the frame on the surfaces: each part is on when its setting is on and the
 /// frame has it.
 pub struct VolumeLight<'a> {
     /// The shadow map of the frame (`shadow.rs`): the atlas, the matrices of its two layers from
