@@ -110,6 +110,11 @@ change. That start can take some minutes. With an older file, set it below
   `MGE XE Post Shaders Readme.md`). Three shaders of this build are new: `Bloom S_A`,
   `SSAO S_A` and `Depth of Field S_A`; name them in the chain like the others.
 - The frame rate of the game thread goes up where the Direct3D 9 driver was the limit.
+- Multisampling as the Direct3D 9 path has it: the "Anti-aliasing" level of the MGE XE
+  settings (`graphics.anti_aliasing`) gives the samples of each pixel of the world, and
+  "Transparency anti-aliasing" (`graphics.transparency_antialiasing`) gives the grass and the
+  distant statics alpha to coverage. The post shaders read the resolved picture and the
+  nearest depth of each pixel. With "none", every pixel has one sample.
 - A setting that a mod or the MGE XE options change while the game runs (the draw distance,
   the ends of the static tiers, the water options, the caustics, the lighting mode, the speed
   of the HDR) reaches the renderer at once.

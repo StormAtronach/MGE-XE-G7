@@ -401,6 +401,9 @@ pub struct DistantLand {
     shadow_resolution: u32,
     /// The anisotropic filter of the settings (`graphics.anisotropy`): 1 is none.
     anisotropy: u16,
+    /// The samples for each pixel of the frame (`graphics.anti_aliasing`): 1 is none. The
+    /// renderer draws the pass of the game into multisampled targets with more.
+    samples: u32,
     /// The room of the texture arrays (`runtime.renderer_texture_slots`): 0 is automatic.
     texture_slots: u32,
     /// The post-processing chain, when the settings have shaders; `None` before the first
@@ -737,6 +740,7 @@ impl DistantLand {
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
             anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
+            samples: (document.settings().graphics.anti_aliasing.runtime_value() as u32).max(1),
             texture_slots: document.settings().runtime.renderer_texture_slots,
             post: None,
             menu_keep: None,
@@ -1152,7 +1156,9 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant land shadow"), bind_group_layouts: &[Some(view_layout)], immediate_size: 0 });
     // A terrain vertex of `terrain.bin` has 20 bytes: the position, the normal and the colour.
     let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Unorm8x4];
-    let make_pipeline = |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    // The land of the frame goes into the pass of the game (its samples); the mirror of the
+    // water is a texture of this program, with one sample.
+    let make_pipeline = |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant land"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -1173,7 +1179,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             stencil: Default::default(),
             bias: Default::default(),
         }),
-        multisample: Default::default(),
+        multisample,
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: Some("fs"),
@@ -1183,15 +1189,15 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         multiview_mask: None,
         cache: None,
     });
-    let pipeline = make_pipeline(None, wgpu::PolygonMode::Fill);
+    let pipeline = make_pipeline(None, wgpu::PolygonMode::Fill, scene.multisample(false));
     // The same as lines, for a frame in which the game draws in wireframe (see
     // `SceneView::wireframe`); a device without the line mode draws the land filled then.
     let lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
-    let pipeline_lines = lines.then(|| make_pipeline(None, wgpu::PolygonMode::Line));
+    let pipeline_lines = lines.then(|| make_pipeline(None, wgpu::PolygonMode::Line, scene.multisample(false)));
     // The mirror turns the winding: the front of the land is the other face there, as
     // the statics have it.
-    let mirror_pipeline = make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Fill);
-    let mirror_pipeline_lines = lines.then(|| make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Line));
+    let mirror_pipeline = make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Fill, Default::default());
+    let mirror_pipeline_lines = lines.then(|| make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Line, Default::default()));
 
     // The casters of the shadow map: the land with the depth from the sun.
     let shadow_source = format!("{}{LAND_SHADOW_SHADER}", view::wgsl());
@@ -1611,6 +1617,10 @@ impl Extension for DistantLand {
 
     fn anisotropy(&self) -> u16 {
         self.anisotropy
+    }
+
+    fn samples(&self) -> u32 {
+        self.samples
     }
 
     fn texture_slots(&self) -> u32 {

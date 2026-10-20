@@ -999,6 +999,10 @@ struct Out {
     return out;
 }
 
+// True for the pipelines of the frame with multisampling and alpha to coverage (a pipeline
+// constant); false for the mirror of the water and with one sample.
+override ALPHA_TO_COVERAGE: bool = false;
+
 @fragment fn fs(in: Out) -> @location(0) vec4f {
     // The palette entry is min v, max u, min u, max v of a rectangle of the atlas page.
     let scale = in.bounds.yw - in.bounds.zx;
@@ -1014,19 +1018,37 @@ struct Out {
     // The handoff to the game, and the fade-in after the arrival of the subset.
     let dissolve = clamp((range - (set_values.handoff.y - set_values.handoff.z)) / set_values.handoff.z, 0.0, 1.0) * in.fade;
     // Across the band a static comes in by its share of covered pixels: Direct3D 9 gives the
-    // dissolve to alpha to coverage, which needs the samples of multisampling; the picture
-    // of wgpu has one sample for each pixel, so an ordered threshold of 4 x 4 pixels.
+    // dissolve to alpha to coverage, which needs the samples of multisampling; here an
+    // ordered threshold of 4 x 4 pixels, the same with one sample and with more (the alpha
+    // to coverage of the frame's pipeline takes the alpha of the texel only).
     let cell = vec2u(in.position.xy) % 4u;
     let threshold = (HANDOFF_ORDER[cell.y * 4u + cell.x] + 0.5) / 16.0;
-    if dissolve < max(threshold, 1.0 / 255.0) || (in.alpha_test > 0.5 && texel.a < 133.0 / 255.0) {
+    if dissolve < max(threshold, 1.0 / 255.0) {
         discard;
     }
-    return vec4f(fog_of(texel.rgb * in.color, in.world), 1.0);
+    // The alpha test of StaticPS (AlphaRef 133). With alpha to coverage the alpha test is
+    // off, as DXVK turns it off under the vendor switch of alpha to coverage, and the alpha
+    // is calc_coverage(a, 133 / 255, 2) of `XE Common.fx`: the samples of the pixel that
+    // the static covers.
+    var alpha = 1.0;
+    if in.alpha_test > 0.5 {
+        if ALPHA_TO_COVERAGE {
+            alpha = clamp(2.0 * (texel.a - 133.0 / 255.0) + 133.0 / 255.0, 0.0, 1.0);
+        } else if texel.a < 133.0 / 255.0 {
+            discard;
+        }
+    }
+    return vec4f(fog_of(texel.rgb * in.color, in.world), alpha);
 }
 ";
 
 pub struct Statics {
     settings: Settings,
+    /// The alpha of a static with an alpha test and of a blade of grass becomes the coverage
+    /// of the samples of its pixel (`graphics.transparency_antialiasing`, with more than one
+    /// sample): the `beginAlphaToCoverage` of the Direct3D 9 path around the statics and the
+    /// grass.
+    alpha_to_coverage: bool,
     loading: Option<Receiver<Result<Loaded, CatalogError>>>,
     catalog: Option<Arc<Catalog>>,
     gpu: Option<Gpu>,
@@ -1125,6 +1147,7 @@ impl Statics {
         });
         Statics {
             settings,
+            alpha_to_coverage: document.settings().graphics.transparency_antialiasing,
             loading: Some(receiver),
             catalog: None,
             gpu: None,
@@ -1540,7 +1563,7 @@ impl Statics {
         }
         self.device = Some(scene.device.clone());
         self.queue = Some(scene.queue.clone());
-        self.gpu = Some(make_gpu(scene, &loaded, &view_layout));
+        self.gpu = Some(make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();
         let for_reader = catalog.clone();
@@ -2237,7 +2260,7 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
     }
 }
 
-fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLayout) -> Gpu {
+fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLayout, alpha_to_coverage: bool) -> Gpu {
     let device = scene.device;
     let catalog = &loaded.catalog;
     let make_uniforms = || {
@@ -2376,7 +2399,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     // half floats, the normal, the colour, and the texture coordinate as two half floats.
     let vertex = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4, 3 => Float16x2];
     let place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
-    let make_pipeline = |cull: wgpu::Face, polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    // The statics of the frame go into the pass of the game (its samples, the alpha as the
+    // coverage with `alpha_to_coverage`; the alpha of the back buffer stays 1, as a target
+    // of the game without alpha gives). The mirror of the water is a texture of this
+    // program, with one sample.
+    let make_pipeline = |cull: wgpu::Face, polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState, write_mask: wgpu::ColorWrites| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant statics"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -2398,23 +2425,26 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             stencil: Default::default(),
             bias: Default::default(),
         }),
-        multisample: Default::default(),
+        multisample,
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: Some("fs"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask })],
         }),
         multiview_mask: None,
         cache: None,
     });
-    let pipeline = make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Fill);
-    let mirror_pipeline = make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Fill);
+    let pipeline = make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Fill, scene.multisample(alpha_to_coverage), wgpu::ColorWrites::COLOR);
+    let mirror_pipeline = make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Fill, Default::default(), wgpu::ColorWrites::ALL);
     // The same as lines, for a frame in which the game draws in wireframe (see
     // `SceneView::wireframe`); a device without the line mode draws them filled then.
     let lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
-    let pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Line));
-    let mirror_pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Line));
+    let pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage), wgpu::ColorWrites::COLOR));
+    let mirror_pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Line, Default::default(), wgpu::ColorWrites::ALL));
     // The casters of the shadow map: the same vertices and places, the depth from the sun.
     let shadow_source = format!("{}{SET_WGSL}{SHADOW_SHADER}", super::view::wgsl());
     let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics shadow"), source: wgpu::ShaderSource::Wgsl(shadow_source.into()) });
@@ -2569,12 +2599,17 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             stencil: Default::default(),
             bias: Default::default(),
         }),
-        multisample: Default::default(),
+        // The alpha of the blade is the coverage of its pixel with `alpha_to_coverage`; the
+        // alpha of the back buffer stays 1.
+        multisample: scene.multisample(alpha_to_coverage),
         fragment: Some(wgpu::FragmentState {
             module: &grass_module,
             entry_point: Some("fs"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[("ALPHA_TO_COVERAGE", scene.multisample(alpha_to_coverage).alpha_to_coverage_enabled as u32 as f64)],
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
         }),
         multiview_mask: None,
         cache: None,

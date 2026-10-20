@@ -391,7 +391,7 @@ impl Water {
                 stencil,
                 bias: Default::default(),
             }),
-            multisample: Default::default(),
+            multisample: scene.multisample(false),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fs"),
@@ -656,6 +656,8 @@ impl Water {
                 view: None,
                 projection: Some(Self::far_projection(scene, frame.draw_distance)),
                 target_size: (REFLECTION_SIZE, REFLECTION_SIZE),
+                // The reflection is a texture of this program, with one sample.
+                samples: 1,
                 flip_cull: true,
                 // With the dynamic waves the plane can be lower by half of the wave height.
                 clip_plane: Some([0.0, 0.0, 1.0, -(frame.water_level as f64 - 1.0) + 0.5 * frame.wave_height.unwrap_or(0.0) as f64]),

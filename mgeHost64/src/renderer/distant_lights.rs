@@ -588,7 +588,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
             stencil: Default::default(),
             bias: Default::default(),
         }),
-        multisample: Default::default(),
+        multisample: scene.multisample(false),
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: Some("fs"),

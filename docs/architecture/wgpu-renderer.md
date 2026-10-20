@@ -105,7 +105,21 @@ Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export
 - Formats: depth `Depth24PlusStencil8` everywhere (stencil bit `0x02` counts the dry spaces).
   The game draws into an off-screen back buffer (`Bgra8Unorm`, else the first non-sRGB
   format of the surface; `Rgba8Unorm` in a replay), copied to the surface at the end of the
-  frame. No MSAA anywhere.
+  frame.
+- Multisampling: `Extension::samples` gives the count of `graphics.anti_aliasing` (1, 2, 4
+  or 8); `Renderer::new` takes the largest count up to it that the adapter has for the colour
+  format (with a resolve) and the depth format. With more than 1, the pass of the game draws
+  into a multisampled colour target and a multisampled depth target (`Player::ms_color`,
+  `ms_depth`); the colour resolves into the back buffer at the end of each pass
+  (`resolve_target`). Every pipeline that draws into that pass takes
+  `SceneView::multisample` (`PipelineKey::samples` for the game's draws); a texture of the
+  game or of the extension keeps one sample (`RetainedView::samples`, `ReplayView::samples`).
+  The readers of the depth get a resolve into a texture with one sample, the nearest sample
+  of each pixel, as the depth resolve of DXVK on the Direct3D 9 path (`multisample.rs`,
+  `Player::copy_depth`). After `Extension::post` wrote the back buffer, the renderer loads it
+  into the multisampled colour (`Player::load_color`) for the draws of the interface. The
+  grass and the distant statics of the frame draw with alpha to coverage when
+  `graphics.transparency_antialiasing` is on, and write no alpha into the back buffer.
 - Surface: `AutoNoVsync`, frame latency 2.
 
 ## 3. The frame
@@ -137,7 +151,7 @@ flowchart TD
         W["water reflection: land, statics (mirror set), sky replay; mip levels"]
     end
     subgraph main["Main encoder"]
-        P0["game pass: sky draws (back buffer + D24S8)"]
+        P0["game pass: sky draws (back buffer + D24S8; multisampled targets resolved into the back buffer with graphics.anti_aliasing)"]
         P1["before_world: distant land, statics set 0, glows"]
         P2["copies: picture before world, depth; game pass reopened, depth cleared"]
         P3["game world draws (game draw shader + extension frame group)"]

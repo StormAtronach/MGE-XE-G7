@@ -191,12 +191,19 @@ fn bnoise(x: f32) -> f32 {
     return out;
 }
 
+// True for the pipeline with multisampling and alpha to coverage (a pipeline constant).
+override ALPHA_TO_COVERAGE: bool = false;
+
 @fragment fn fs(in: Out) -> @location(0) vec4f {
     let texel = textureSample(base_texture, base_sampler, in.coordinate);
     let cell = vec2u(in.position.xy) % 4u;
-    if texel.a < 128.0 / 255.0 || in.fade < (FADE_ORDER[cell.y * 4u + cell.x] + 0.5) / 16.0 {
+    // GrassPS discards below 64; then the alpha test of the pass (AlphaRef 128) cuts, or,
+    // with alpha to coverage, which turns the alpha test off, the coverage
+    // calc_coverage(a, 128 / 255, 4) of `XE Common.fx` gives the samples of the pixel.
+    if texel.a < 64.0 / 255.0 || (!ALPHA_TO_COVERAGE && texel.a < 128.0 / 255.0) || in.fade < (FADE_ORDER[cell.y * 4u + cell.x] + 0.5) / 16.0 {
         discard;
     }
+    let coverage = clamp(4.0 * (texel.a - 128.0 / 255.0) + 128.0 / 255.0, 0.0, 1.0);
     var color = texel.rgb * in.color;
     // The shadow, as GrassPS: shadowESM times the light of the sun, towards shadecolor.
     if g.shadow.x > 0.5 {
@@ -211,5 +218,6 @@ fn bnoise(x: f32) -> f32 {
         }
         color *= 1.0 - v * g.shade.rgb;
     }
-    return vec4f(mix(g.fog_color.rgb, color, in.fog), 1.0);
+    // The pipeline writes no alpha: the alpha is only the coverage.
+    return vec4f(mix(g.fog_color.rgb, color, in.fog), coverage);
 }

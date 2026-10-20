@@ -118,7 +118,8 @@ impl Blend {
             vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
             primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
             depth_stencil: None,
-            multisample: Default::default(),
+            // The blend draws into the colour target of the game.
+            multisample: scene.multisample(false),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fs"),

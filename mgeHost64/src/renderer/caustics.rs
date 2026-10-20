@@ -169,7 +169,7 @@ impl Caustics {
                     stencil,
                     bias: Default::default(),
                 }),
-                multisample: Default::default(),
+                multisample: scene.multisample(false),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some("fs"),
