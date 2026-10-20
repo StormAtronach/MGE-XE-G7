@@ -1261,11 +1261,47 @@ int MWBridge::getJournalIndex(const void* dialogue) {
     return static_cast<const TES3::Dialogue*>(dialogue)->journalIndex;
 }
 
+// findObjectById - Find the object record
+void* MWBridge::findObjectById(const char* id) {
+    const auto resolveObject = reinterpret_cast<TES3::BaseObject*(__thiscall*)(TES3::NonDynamicData*, const char*)>(
+        TES3::Address::NonDynamicData_resolveObject);
+
+    return resolveObject(dataHandler()->nonDynamicData, id);
+}
+
+// The game's cell worker stops between two references while an object of this type lives.
+// The main thread can then read the reference lists of the cells, which the worker changes.
+// If the game already holds a stall (a save, a new game, a corpse expiry), the object does
+// nothing: a release here would end the game's stall too early.
+class CellWorkerStall {
+public:
+    CellWorkerStall() : owned(!dataHandler()->backgroundThreadStallAsked) {
+        if (owned) {
+            const auto wait = reinterpret_cast<void(__thiscall*)(TES3::DataHandler*)>(
+                TES3::Address::DataHandler_waitForBackgroundThread);
+            wait(dataHandler());
+        }
+    }
+    ~CellWorkerStall() {
+        if (owned) {
+            const auto release = reinterpret_cast<void(__thiscall*)(TES3::DataHandler*)>(
+                TES3::Address::DataHandler_releaseBackgroundThread);
+            release(dataHandler());
+        }
+    }
+    CellWorkerStall(const CellWorkerStall&) = delete;
+    CellWorkerStall& operator=(const CellWorkerStall&) = delete;
+
+private:
+    const bool owned;
+};
+
 // findFirstReferenceById - Find first reference to object
 void* MWBridge::findFirstReferenceById(const char* id) {
     const auto findFirstReferenceByObjectId = reinterpret_cast<TES3::Reference*(__thiscall*)(TES3::NonDynamicData*, const char*)>(
         TES3::Address::NonDynamicData_findFirstReferenceByObjectId);
 
+    CellWorkerStall stall;
     return findFirstReferenceByObjectId(dataHandler()->nonDynamicData, id);
 }
 

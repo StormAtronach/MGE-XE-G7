@@ -160,6 +160,11 @@ public:
     float getGlobalVarValue(const void* globalVar);
     void* getDialogue(const char *id);
     int getJournalIndex(const void* dialogue);
+    // The object record with this id, or null. Records live until the game exits.
+    void* findObjectById(const char *id);
+    // The first reference to the object with this id in the loaded cells, or null. The
+    // result is valid only until the cell worker runs again: do not keep it. Main thread
+    // only, and not inside a stall of the cell worker (the walk stalls it).
     void* findFirstReferenceById(const char *id);
     unsigned int getRecordFlags(const void* record);
 

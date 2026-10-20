@@ -153,6 +153,8 @@ inline constexpr uintptr_t NonDynamicData_resolveObject = 0x4B8B60;
 inline constexpr uintptr_t NonDynamicData_findGlobalVariable = 0x4BA820;
 inline constexpr uintptr_t NonDynamicData_findDialogue = 0x4BA8D0;
 inline constexpr uintptr_t NonDynamicData_findFirstReferenceByObjectId = 0x4B8F50;
+inline constexpr uintptr_t DataHandler_waitForBackgroundThread = 0x48EB10;
+inline constexpr uintptr_t DataHandler_releaseBackgroundThread = 0x48EB60;
 
 inline constexpr uintptr_t BaseObject_isClone = 0x4F0FF0;
 inline constexpr uintptr_t Reference_getAttachment6ItemData = 0x4E5460;

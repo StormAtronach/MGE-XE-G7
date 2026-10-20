@@ -1171,7 +1171,9 @@ void DistantLand::resolveDynamicVisGroups() {
             vis.gameObject = mwBridge->getGlobalVar(vis.id.c_str());
             break;
         case DynamicVisGroup::DataSource::UniqueObject:
-            vis.gameObject = mwBridge->findFirstReferenceById(vis.id.c_str());
+            // The object record, which lives until the game exits. Its reference is found
+            // again at each scan (isVisGroupShown).
+            vis.gameObject = mwBridge->findObjectById(vis.id.c_str());
             break;
         }
     }
@@ -1196,9 +1198,16 @@ bool DistantLand::isVisGroupShown(const DynamicVisGroup& vis) {
         value = int(mwBridge->getGlobalVarValue(vis.gameObject));
         break;
     case DynamicVisGroup::DataSource::UniqueObject: {
+        // The reference is found again at each scan and not kept: the cell worker frees a
+        // temporary reference when it unloads its cell. With no reference in the loaded
+        // cells, the group keeps its state.
+        const void* reference = mwBridge->findFirstReferenceById(vis.id.c_str());
+        if (!reference) {
+            return vis.enabled;
+        }
         const int disabledRecordFlag = 0x800;
         const int deletedRecordFlag = 0x20;
-        value = (mwBridge->getRecordFlags(vis.gameObject) & (disabledRecordFlag | deletedRecordFlag)) == 0;
+        value = (mwBridge->getRecordFlags(reference) & (disabledRecordFlag | deletedRecordFlag)) == 0;
         break;
     }
     }
