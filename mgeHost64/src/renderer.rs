@@ -543,7 +543,7 @@ struct Out {
         let distance = length(world - u.eye.xyz);
         world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
     }
-    out.position = u.view_projection * vec4f(world, 1.0);
+    out.position = clip_of(world);
     out.normal = normal.xyz * 2.0 - 1.0;
     // The colour of a vertex has the bytes blue, green, red.
     out.color = color.bgr;
@@ -635,7 +635,7 @@ struct Out {
 
 @vertex fn vs(@location(0) position: vec3f, @location(1) normal: vec4f, @location(2) color: vec4f) -> Out {
     var out: Out;
-    var clip = u.view_projection * vec4f(position, 1.0);
+    var clip = clip_of(position);
     clip.z = max(0.0, clip.z);
     out.position = clip;
     out.depth = clip.z / clip.w;
@@ -851,7 +851,7 @@ impl DistantLand {
     /// grass, the water and the caustics. In each frame with a world: the water draws in a cell
     /// without the distant land too.
     fn write_game_view(&mut self, scene: &SceneView) {
-        let game_view = self.frame_view(scene, multiply(&scene.view, &scene.projection));
+        let game_view = self.frame_view(scene, &scene.projection);
         let binding = self.light_binding.get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
         views.refresh(scene.device, binding);
@@ -2175,7 +2175,7 @@ impl Extension for DistantLand {
         let projection = self.land_projection(scene);
         let view_projection = multiply(&scene.view, &projection);
         let eye = eye_of(&scene.view);
-        let main_view = self.frame_view(scene, view_projection);
+        let main_view = self.frame_view(scene, &projection);
         // The fog: from the game with this frame, or the linear fog of the settings.
         let (view_range, near_fog) = match self.environment {
             Some(e) => (e.near_view_range, (e.fog_near_start, e.fog_near_end)),
@@ -2268,7 +2268,7 @@ impl Extension for DistantLand {
             for layer in 0..2 {
                 shadow.set_layer(&mut pass, layer);
                 let viewproj = shadow.viewproj[layer];
-                let layer_view = view::View { view_projection: viewproj, ..main_view };
+                let layer_view = view::View { view_projection: viewproj, relative: view::relative_of_product(&viewproj, eye), ..main_view };
                 views.write(scene.queue, view::SHADOW[layer], &layer_view);
                 let layer_planes = crate::renderer::planes(&viewproj);
                 // The terrain casts a shadow in an exterior, as `renderShadowLayerGeneric`
@@ -2314,7 +2314,7 @@ impl Extension for DistantLand {
                 timer.start(&mut encoder);
             }
             let (mut mirror_pass, mirrored_view, far_projection) = water.begin_reflection(scene, &mut encoder, frame);
-            let mut mirror_view = view::View { view_projection: multiply(&mirrored_view, &far_projection), ..main_view };
+            let mut mirror_view = view::View { view_projection: multiply(&mirrored_view, &far_projection), relative: view::relative(&mirrored_view, &far_projection, eye), ..main_view };
             // Only the side of the water plane that the mirror shows.
             mirror_view.flags[1] = if frame.underwater { -1.0 } else { 1.0 };
             // With the dynamic waves the plane can be lower by half of the wave height:
@@ -2736,8 +2736,10 @@ impl DistantLand {
 
     /// The values of a view of the frame (`view::View`) for its view and projection: the
     /// main view of the land, or the game view with the projection of the game.
-    fn frame_view(&self, scene: &SceneView, view_projection: [f32; 16]) -> view::View {
+    fn frame_view(&self, scene: &SceneView, projection: &[f32; 16]) -> view::View {
         let eye = eye_of(&scene.view);
+        let view_projection = multiply(&scene.view, projection);
+        let relative = view::relative(&scene.view, projection, eye);
         // The fog: from the game with this frame, or the linear fog of the settings.
         // A plain interior cell has the linear fog of the game on the statics
         // (`StaticInteriorVS`), not the exponential curve.
@@ -2795,6 +2797,7 @@ impl DistantLand {
             outscatter: scattering[2],
             inscatter: scattering[3],
             sun_altitude: scattering[4],
+            relative,
         }
     }
 

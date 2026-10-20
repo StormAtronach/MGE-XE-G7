@@ -306,8 +306,8 @@ fn reflection_sample(origin: vec4f, direction: vec4f, travelled: f32, with_land:
 }
 
 fn reflect_scene(origin: vec3f, direction: vec3f, with_land: bool) -> vec4f {
-    let clip_origin = u.view_projection * vec4f(origin, 1.0);
-    let clip_direction = u.view_projection * vec4f(direction, 0.0);
+    let clip_origin = clip_of(origin);
+    let clip_direction = u.relative * vec4f(direction, 0.0);
     // How far along the ray it leaves the picture: on it while each of these is positive.
     let room = vec4f(clip_origin.w - clip_origin.x, clip_origin.w + clip_origin.x, clip_origin.w - clip_origin.y, clip_origin.w + clip_origin.y);
     let closing = vec4f(clip_direction.x - clip_direction.w, -clip_direction.x - clip_direction.w, clip_direction.y - clip_direction.w, -clip_direction.y - clip_direction.w);

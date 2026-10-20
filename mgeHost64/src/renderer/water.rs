@@ -85,7 +85,7 @@ struct Out {
     }
     out.world = world;
     out.texcoords = vec4f(world.xy / 3900.0, world.xy / 527.0);
-    out.position = u.view_projection * vec4f(world, 1.0);
+    out.position = clip_of(world);
     // The far plane of the game is its view distance; the sea goes on to the draw distance of
     // the distant land, as on Direct3D 9, where MGE XE moves the far plane of the game there.
     // The near plane stays that of the game. The depth that the pixel writes is that of the
@@ -93,7 +93,7 @@ struct Out {
     out.position.z = out.position.w * water.land.z + water.land.w;
     out.clip_w = out.position.w;
     // The point of the reflection is not above the plane.
-    out.clamped = (u.view_projection * vec4f(world.xy, world.z - lowered, 1.0)).xyw;
+    out.clamped = clip_of(vec3f(world.xy, world.z - lowered)).xyw;
     return out;
 }
 

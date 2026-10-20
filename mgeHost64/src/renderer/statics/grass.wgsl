@@ -152,7 +152,7 @@ fn bnoise(x: f32) -> f32 {
         moved *= red;
     }
     world = vec3f(world.xy + moved, world.z - sink);
-    out.position = u.view_projection * vec4f(world, 1.0);
+    out.position = clip_of(world);
     // The normal goes through the world matrix and is not made of length 1 again.
     let n = vec4f(normalize(in.normal.xyz * 2.0 - 1.0), 0.0);
     let normal = vec3f(dot(n, in.world0), dot(n, in.world1), dot(n, in.world2));

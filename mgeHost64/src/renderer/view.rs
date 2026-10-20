@@ -46,7 +46,37 @@ pub struct View {
     pub outscatter: [f32; 4],
     pub inscatter: [f32; 4],
     pub sun_altitude: [f32; 4],
+    /// The view and the projection for a position less `eye` (`clip_of` in WGSL). Far from
+    /// the origin of the world a product of the absolute position with `view_projection` in
+    /// f32 rounds the depth row and the w row of the clip position apart, by about 0.004
+    /// units at 74000 units; the depth is their quotient, so the error becomes about 0.004
+    /// times the distance in depth (half a unit at 135 units). The grass then fights the
+    /// terrain of the game, which is relative to the camera, and itself. Relative to the eye
+    /// the two rows round together, as the view and then the projection of the Direct3D 9
+    /// path do (`transformGrassVert`).
+    pub relative: [f32; 16],
 }
+
+/// `relative` of a view: `view` and `projection` with the layout of Direct3D, `eye` the
+/// position that the shader takes from each vertex (`View::eye`). The translation of the view
+/// less the eye is small, and it is made in f64 before the projection.
+pub fn relative(view: &[f32; 16], projection: &[f32; 16], eye: [f32; 3]) -> [f32; 16] {
+    let v = view.map(f64::from);
+    let mut r = v;
+    for c in 0..3 {
+        r[12 + c] = eye[0] as f64 * v[c] + eye[1] as f64 * v[4 + c] + eye[2] as f64 * v[8 + c] + v[12 + c];
+    }
+    let p = projection.map(f64::from);
+    core::array::from_fn(|i| (0..4).map(|k| r[i / 4 * 4 + k] * p[k * 4 + i % 4]).sum::<f64>() as f32)
+}
+
+/// `relative` of a view and projection that come as one matrix (the layers of the shadow
+/// map, orthographic: their w row has no position in it).
+pub fn relative_of_product(view_projection: &[f32; 16], eye: [f32; 3]) -> [f32; 16] {
+    relative(view_projection, &IDENTITY, eye)
+}
+
+const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 const VIEW_WGSL: &str = "
 struct View {
@@ -63,8 +93,15 @@ struct View {
     outscatter: vec4f,
     inscatter: vec4f,
     sun_altitude: vec4f,
+    relative: mat4x4f,
 }
 @group(0) @binding(0) var<uniform> u: View;
+
+// The clip position of a position in the space of the world: relative to the eye (see
+// `View::relative`).
+fn clip_of(world: vec3f) -> vec4f {
+    return u.relative * vec4f(world - u.eye.xyz, 1.0);
+}
 ";
 
 /// The code of the view group for the start of a shader: `u` and `baked_light`.
@@ -136,9 +173,44 @@ mod tests {
 
     #[test]
     fn the_view_struct_has_the_size_of_its_wgsl() {
-        // A matrix and twelve vectors of four numbers.
-        assert_eq!(size_of::<View>(), 4 * (16 + 12 * 4));
+        // A matrix, twelve vectors of four numbers, and the relative matrix.
+        assert_eq!(size_of::<View>(), 4 * (16 + 12 * 4 + 16));
         assert_eq!(VIEW_WGSL.matches(": vec4f,").count(), 12);
+        assert_eq!(VIEW_WGSL.matches(": mat4x4f,").count(), 2);
+    }
+
+    /// The relative matrix gives the clip position of the absolute one, computed in f64.
+    #[test]
+    fn the_relative_matrix_gives_the_clip_position_of_the_view() {
+        // A view with the camera at (19724, -74050, 353), turned 30 degrees about z.
+        let (s, c) = (0.5f64, 0.75f64.sqrt());
+        let eye = [19724.25f64, -74050.5, 353.75];
+        let rot = [c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0];
+        let mut view = [0.0f32; 16];
+        for r in 0..3 {
+            for k in 0..3 {
+                view[r * 4 + k] = rot[r * 3 + k] as f32;
+            }
+        }
+        for k in 0..3 {
+            view[12 + k] = -(0..3).map(|r| eye[r] * rot[r * 3 + k]).sum::<f64>() as f32;
+        }
+        view[15] = 1.0;
+        let projection = [0.9774, 0.0, 0.0, 0.0, 0.0, 1.7376, 0.0, 0.0, 0.0, 0.0, 1.0001, 1.0, 0.0, 0.0, -1.0001, 0.0];
+        let eye32 = eye.map(|e| e as f32);
+        let m = relative(&view, &projection, eye32);
+        let world = [19760.0f64, -73930.0, 230.0];
+        // The shader: the position less the eye in f32, then the matrix.
+        let d: [f32; 3] = core::array::from_fn(|i| world[i] as f32 - eye32[i]);
+        let clip: [f64; 4] = core::array::from_fn(|i| (0..3).map(|k| d[k] as f64 * m[k * 4 + i] as f64).sum::<f64>() + m[12 + i] as f64);
+        // The same in f64 from the absolute position.
+        let vs: [f64; 3] = core::array::from_fn(|k| (0..3).map(|r| (world[r] - eye[r]) * rot[r * 3 + k]).sum());
+        let exact = [vs[0] * 0.9774, vs[1] * 1.7376, vs[2] * 1.0001 - 1.0001, vs[2]];
+        let depth = |c: &[f64; 4]| c[2] / c[3];
+        // The view translation rounds to f32 (about 0.004 units); the depth stays within
+        // what 0.01 units of distance give at this range.
+        let slope = 1.0001 / (vs[2] * vs[2]);
+        assert!((depth(&clip) - depth(&exact)).abs() < 0.01 * slope, "{} {}", depth(&clip), depth(&exact));
     }
 
     #[test]

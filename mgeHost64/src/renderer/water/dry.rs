@@ -42,7 +42,7 @@ struct Mask {
 @vertex fn vs_mask_plane(@location(0) world: vec3f) -> Mask {
     var out: Mask;
     out.world = world;
-    out.position = u.view_projection * vec4f(world, 1.0);
+    out.position = clip_of(world);
     out.position.z = out.position.w * water.land.z + water.land.w;
     return out;
 }
@@ -51,7 +51,7 @@ struct Mask {
 @vertex fn vs_mask(@location(0) world: vec3f) -> Mask {
     var out: Mask;
     out.world = world;
-    out.position = u.view_projection * vec4f(world, 1.0);
+    out.position = clip_of(world);
     return out;
 }
 

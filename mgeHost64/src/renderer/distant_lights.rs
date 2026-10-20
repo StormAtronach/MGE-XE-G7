@@ -351,7 +351,7 @@ fn fog_left(world: vec3f) -> f32 {
     let corners = array<vec2f, 6>(vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, 1.0));
     let place = glows[instance * 2u];
     let look = glows[instance * 2u + 1u];
-    var clip = u.view_projection * vec4f(place.xyz, 1.0);
+    var clip = clip_of(place.xyz);
     let w = max(clip.w, 1.0);
     let wanted = place.w * g.glow.x * g.screen.z / w;
     let pixels = clamp(wanted, g.glow.z, g.glow.w);

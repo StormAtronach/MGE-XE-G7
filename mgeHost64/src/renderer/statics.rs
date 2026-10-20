@@ -880,7 +880,7 @@ const FADE_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0
 @vertex fn vs(in: In) -> Out {
     var out: Out;
     let world = in.position.x * in.world0.xyz + in.position.y * in.world1.xyz + in.position.z * in.world2.xyz + in.world3.xyz;
-    var clip = u.view_projection * vec4f(world, 1.0);
+    var clip = clip_of(world);
     // What is nearer to the sun than the near plane stays, at the near plane.
     clip.z = max(0.0, clip.z);
     out.position = clip;
@@ -976,7 +976,7 @@ struct Out {
     var out: Out;
     // A position is a row vector in Direct3D: position * world.
     let world = in.position.x * in.world0.xyz + in.position.y * in.world1.xyz + in.position.z * in.world2.xyz + in.world3.xyz;
-    out.position = u.view_projection * vec4f(world, 1.0);
+    out.position = clip_of(world);
     // Near the camera the game draws the real static. A vertex before the band goes away.
     if length(world - u.eye.xyz) < set_values.handoff.y - set_values.handoff.z - set_values.handoff.w {
         out.position = vec4f(0.0, 0.0, -10000.0, 0.0);
