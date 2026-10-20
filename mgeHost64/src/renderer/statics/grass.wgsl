@@ -5,6 +5,13 @@
 // takes the shadow map of the frame. A subset that arrived on the GPU comes in over a time
 // with a 4 x 4 dither (the fade-in of the distant statics).
 //
+// The side of a blade that the camera sees comes from its triangle, in the fragment shader.
+// `GrassInstVS` took it for each vertex, from the sign of the eye vector against the
+// smoothed normal of the vertex: on a curved blade the camera crosses the plane of each
+// vertex normal at a different place, so parts of a blade went from the light of the sun
+// to the back light (0.3 of it) and back as the camera moved, a band of shade that slid along
+// the blade (the owner, 2026-10-20: a fault of the Direct3D 9 path; changed on purpose).
+//
 // Three looks of the grass shader of Remiros' Groundcover are options, off at the start
 // (`[distant_land.grass]` in mgeXE.toml, `g.look`):
 // - x, `soft_end`: near the end of the grass a blade sinks into the ground. The band starts
@@ -68,15 +75,18 @@ struct In {
 
 struct Out {
     @builtin(position) position: vec4f,
-    @location(0) color: vec3f,
+    // The normal in the space of the world (through the world matrix, not of length 1).
+    @location(0) normal: vec3f,
     @location(1) coordinate: vec2f,
     @location(2) fog: f32,
     @location(3) @interpolate(flat) fade: f32,
-    // The light of the sun for the shadow (shadowSunEstimate), and the position in the two
-    // layers of the shadow map, z divided by w.
-    @location(4) light: f32,
+    // The position less the eye: its derivatives give the plane of the triangle.
+    @location(4) relative: vec3f,
+    // The position in the two layers of the shadow map, z divided by w.
     @location(5) shadow0: vec3f,
     @location(6) shadow1: vec3f,
+    // The red of the vertex colour (the looks of Remiros' Groundcover).
+    @location(7) red: f32,
 }
 
 // The order of the pixels of a block of 4 x 4 for the fade-in (Bayer), as the statics have it.
@@ -155,35 +165,14 @@ fn bnoise(x: f32) -> f32 {
     out.position = clip_of(world);
     // The normal goes through the world matrix and is not made of length 1 again.
     let n = vec4f(normalize(in.normal.xyz * 2.0 - 1.0), 0.0);
-    let normal = vec3f(dot(n, in.world0), dot(n, in.world1), dot(n, in.world2));
+    out.normal = vec3f(dot(n, in.world0), dot(n, in.world1), dot(n, in.world2));
     let to_vertex = world - u.eye.xyz;
-    // The light of the sun for the side that the camera sees.
-    let facing = dot(normal, -u.sun_direction.xyz) * -sign(dot(to_vertex, normal));
-    var lambert: f32;
-    if g.look.z > 0.5 {
-        if g.look.y < 0.5 || red > 0.5 {
-            // Remiros' wrap light, and the light through the back.
-            lambert = pow(clamp((facing + WRAP_W) / (1.0 + WRAP_W), 0.0, 1.0), WRAP_N) * (WRAP_N + 1.0) / (2.0 * (1.0 + WRAP_W)) + max(0.0, -facing) * BACK_LIGHT;
-        } else {
-            // A part without red: the light of one side.
-            lambert = dot(normal, -u.sun_direction.xyz);
-        }
-        lambert = max(0.0, lambert);
-    } else {
-        // The other side gets a part (the back-scatter of MGE XE).
-        lambert = facing;
-        if lambert < 0.0 {
-            lambert *= -0.3;
-        }
-    }
-    out.color = g.sun_color.rgb * lambert + g.ambient.rgb;
+    out.relative = to_vertex;
+    out.red = red;
     out.coordinate = in.coordinate;
     // fogMWScalar: the linear fog of the near cells.
     out.fog = clamp((u.fog.w - length(to_vertex)) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
     out.fade = in.fade.x;
-    // shadowSunEstimate of the light of the blade.
-    let x = lambert * g.shadow.y;
-    out.light = x / (g.shade.w + x);
     let s0 = g.shadow_layer0 * vec4f(world, 1.0);
     let s1 = g.shadow_layer1 * vec4f(world, 1.0);
     out.shadow0 = vec3f(s0.xy, s0.z / s0.w);
@@ -196,6 +185,35 @@ override ALPHA_TO_COVERAGE: bool = false;
 
 @fragment fn fs(in: Out) -> @location(0) vec4f {
     let texel = textureSample(base_texture, base_sampler, in.coordinate);
+    // The plane of the triangle, turned to the camera (the eye is at 0 in `relative`), and
+    // the normal of the blade on the side that the camera sees: it changes only where the
+    // camera crosses the plane of the triangle.
+    let plane = cross(dpdx(in.relative), dpdy(in.relative));
+    let toward = select(-plane, plane, dot(plane, -in.relative) > 0.0);
+    let seen = select(-in.normal, in.normal, dot(in.normal, toward) >= 0.0);
+    // The light of the sun for the side that the camera sees.
+    let facing = dot(seen, -u.sun_direction.xyz);
+    var lambert: f32;
+    if g.look.z > 0.5 {
+        if g.look.y < 0.5 || in.red > 0.5 {
+            // Remiros' wrap light, and the light through the back.
+            lambert = pow(clamp((facing + WRAP_W) / (1.0 + WRAP_W), 0.0, 1.0), WRAP_N) * (WRAP_N + 1.0) / (2.0 * (1.0 + WRAP_W)) + max(0.0, -facing) * BACK_LIGHT;
+        } else {
+            // A part without red: the light of one side.
+            lambert = dot(in.normal, -u.sun_direction.xyz);
+        }
+        lambert = max(0.0, lambert);
+    } else {
+        // The other side gets a part (the back-scatter of MGE XE).
+        lambert = facing;
+        if lambert < 0.0 {
+            lambert *= -0.3;
+        }
+    }
+    let light_color = g.sun_color.rgb * lambert + g.ambient.rgb;
+    // shadowSunEstimate of the light of the blade.
+    let x = lambert * g.shadow.y;
+    let light = x / (g.shade.w + x);
     let cell = vec2u(in.position.xy) % 4u;
     // GrassPS discards below 64; then the alpha test of the pass (AlphaRef 128) cuts, or,
     // with alpha to coverage, which turns the alpha test off, the coverage
@@ -204,11 +222,11 @@ override ALPHA_TO_COVERAGE: bool = false;
         discard;
     }
     let coverage = clamp(4.0 * (texel.a - 128.0 / 255.0) + 128.0 / 255.0, 0.0, 1.0);
-    var color = texel.rgb * in.color;
+    var color = texel.rgb * light_color;
     // The shadow, as GrassPS: shadowESM times the light of the sun, towards shadecolor.
     if g.shadow.x > 0.5 {
         let dz = shadow_delta(in.shadow0, in.shadow1);
-        var v = (1.0 - clamp(exp(g.esm.x * dz + g.esm.y), 0.0, 1.0)) * in.light;
+        var v = (1.0 - clamp(exp(g.esm.x * dz + g.esm.y), 0.0, 1.0)) * light;
         if g.shadow.w > 0.5 {
             // As the ground under the blade (RenderShadowsPS): the fade at the edge of the
             // outer layer, and the fog weakens the shadow.
