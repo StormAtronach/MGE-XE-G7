@@ -1746,6 +1746,8 @@ impl Extension for DistantLand {
         }
         let post = self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty());
         // The glare of the sun of the game (class 8) goes when a shader draws its own sun.
+        // The engine's glare code still runs: this mode does not apply the patch at 0x4404FB
+        // of the Direct3D 9 path, so the picks and the full-screen glare fader stay.
         let no_glare = post && self.post.as_ref().is_some_and(|post| post.no_sun_glare);
         // The shadow map: its matrices from the camera and the sun of this frame.
         let mut values = [[0.0f32; 4]; 32];
@@ -1871,7 +1873,7 @@ impl Extension for DistantLand {
                 light.direction = [direction[0] / length, direction[1] / length, direction[2] / length, 0.0];
             } else if !p.original {
                 // The light of the game as it is: only the fade of MGE XE at a multiple of
-                // its radius.
+                // its radius. The engine's light has no range and no fade (0x6BAAF0).
                 let radius = light.cone[2];
                 let cutoff = if p.fade > 0.0 && radius > 0.0 { (p.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
                 light.position[3] = 1.0;
@@ -1918,7 +1920,9 @@ impl Extension for DistantLand {
         } else {
             [draw.scene_ambient[0] * p.ambient, draw.scene_ambient[1] * p.ambient, draw.scene_ambient[2] * p.ambient, draw.scene_ambient[3]]
         };
-        // A draw that adds to the picture gets darker in the fog and no fog colour.
+        // A draw that adds to the picture gets darker in the fog and no fog colour. This is
+        // MGE XE's rule: the engine fogs every draw toward the colour of its fog property
+        // (`updateD3DState` 0x6B8352).
         draw.counts[3] |= 1 | if adds { 2 } else { 0 };
         // The fog of this shading is on the distance from the camera.
         draw.fog[3] = 1.0;
@@ -2398,7 +2402,8 @@ impl Extension for DistantLand {
         let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
         let frame = statics::GrassFrame {
             // The view range of the game is the end of the grass. Without it from the game,
-            // the default of the game with distant land: 7168 units.
+            // 7168 units: the top of the game's "Render Distance" (2500 to 7168, default 4834),
+            // which the Direct3D 9 path sets at the load. This mode does not set it.
             eye: [eye[0], eye[1], eye[2], environment.map_or(7168.0, |e| e.near_view_range)],
             // The grass has the linear fog of the near cells (in the game view), with their
             // fog colour.
@@ -2540,7 +2545,8 @@ impl Extension for DistantLand {
     }
 
     fn blend(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView) {
-        // Without the view range from the game, the default of the game with distant land.
+        // Without the view range from the game, 7168: the top of the game's "Render Distance",
+        // as for the grass.
         let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
         self.blend.get_or_insert_with(|| blend::Blend::new(scene)).draw(scene, pass, before, depth, near_view_range);
     }
@@ -2705,9 +2711,10 @@ impl DistantLand {
 
     /// The projection of the game with a far plane at the draw distance of the distant land.
     /// In a projection of Direct3D the two numbers of the depth are at 10 and 14. The near
-    /// plane is a little before that of the game, as `renderStage0` of the Direct3D 9 path has
-    /// it: a draw of the game then wins the depth test against the same geometry among the
-    /// statics (a static of the cell itself, in an interior).
+    /// plane (64) is MGE XE's own value. The game's near plane is 1.0 (0x4049C2), and
+    /// `renderStage0` of the Direct3D 9 path uses 4. A draw of the game then wins the depth
+    /// test against the same geometry among the statics (a static of the cell itself, in an
+    /// interior).
     fn land_projection(&self, scene: &SceneView) -> [f32; 16] {
         let mut projection = scene.projection;
         let near = NEAR - 1e-2;
