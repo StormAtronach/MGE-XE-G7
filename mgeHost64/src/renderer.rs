@@ -311,8 +311,9 @@ pub struct DistantLand {
     gpu: Option<Gpu>,
     /// The fog distances for the near cells of the frame, when the terrain is in it.
     near_fog: Option<(f32, f32)>,
-    /// The settings for the light for each pixel: on, only in interior cells, and the number
-    /// that the radius of a light is multiplied with for its end (0: no end).
+    /// The settings for the light for each pixel: on, only in interior cells, the number
+    /// that the radius of a light is multiplied with for its end (0: no end), and the
+    /// original lights of the game (`distant_land.per_pixel_original_lights`).
     per_pixel: (bool, bool, f32, bool),
     /// `distant_land.clustered_lights`: `FrameParameters::clustered_lights`.
     clustered_lights: bool,

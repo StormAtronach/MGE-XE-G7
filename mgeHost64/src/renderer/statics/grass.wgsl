@@ -15,8 +15,8 @@
 //   through from the back. With `vertex_color_sway`, only the parts with red over 0.5 get
 //   it; the other parts are lit from one side.
 // The numbers of the soft end are those of Remiros' shader for a grass range of 7300 units,
-// scaled to the range of the frame. The looks are Remiros' work; he approved their
-// inclusion in MGE XE (2026-10-15).
+// scaled to the range of the frame. The looks are Remiros' work, in MGE XE with Remiros'
+// approval.
 
 // The view group (`view.rs`, group 0) comes before this code: the game view in `u`, with the
 // linear fog of the near cells in `u.fog.zw`. The values of the grass are in group 1.
