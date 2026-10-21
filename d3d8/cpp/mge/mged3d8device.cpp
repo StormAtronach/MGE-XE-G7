@@ -1737,6 +1737,9 @@ namespace Deviceless {
             MWPatches::patchResolveDuringInit(&onResolveDuringInit);
             // As the proxy device at its first scene of the loaded game.
             StatusOverlay::setStatus(XE_VERSION_STRING);
+            if (Configuration.UIScale != 1.0f) {
+                mwBridge->setUIScale(Configuration.UIScale);
+            }
         }
         if (mwBridge->IsLoaded()) {
             updateFrameLogic(mwBridge);
