@@ -6,8 +6,15 @@ fn main() {
     let cpp_dir = manifest_dir.join("cpp");
     let def_file = cpp_dir.join("exports.def");
 
+    // The contract of the nirender plugin (`mge_render_link.h`): the packets and the calls of
+    // the wgpu path between the plugin and this DLL. The plugin's repository is a sibling of
+    // this one, as for mgeHost64's path dependency on its crate.
+    let contract_dir = manifest_dir.join("..").join("..").join("nirender-plugin").join("contract");
+    assert!(contract_dir.join("mge_render_link.h").exists(), "the nirender plugin's contract is not at {}", contract_dir.display());
+
     println!("cargo:rerun-if-changed={}", cpp_dir.display());
     println!("cargo:rerun-if-changed={}", def_file.display());
+    println!("cargo:rerun-if-changed={}", contract_dir.join("mge_render_link.h").display());
 
     let is_release = env::var("OPT_LEVEL").is_ok_and(|l| l != "0");
 
@@ -37,13 +44,13 @@ fn main() {
         println!("cargo:rustc-link-arg=/LTCG");
     }
 
-    let mut build = base_build(&cpp_dir, &dxsdk, is_release, whole_program);
+    let mut build = base_build(&cpp_dir, &contract_dir, &dxsdk, is_release, whole_program);
     for source in &sources {
         build.file(source);
     }
     build.compile("mge_d3d8");
 
-    let mut entry_build = base_build(&cpp_dir, &dxsdk, is_release, whole_program);
+    let mut entry_build = base_build(&cpp_dir, &contract_dir, &dxsdk, is_release, whole_program);
     for source in &entry_sources {
         entry_build.file(source);
     }
@@ -62,7 +69,7 @@ fn main() {
 
 /// Compiler configuration shared by the archive and the standalone entry-point
 /// object; the two must agree on every flag.
-fn base_build(cpp_dir: &Path, dxsdk: &Path, is_release: bool, whole_program: bool) -> cc::Build {
+fn base_build(cpp_dir: &Path, contract_dir: &Path, dxsdk: &Path, is_release: bool, whole_program: bool) -> cc::Build {
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -80,6 +87,7 @@ fn base_build(cpp_dir: &Path, dxsdk: &Path, is_release: bool, whole_program: boo
         .define("NOMINMAX", None)
         .define("_WINDOWS", None)
         .include(cpp_dir)
+        .include(contract_dir)
         .include(dxsdk.join("include"));
 
     if is_release {

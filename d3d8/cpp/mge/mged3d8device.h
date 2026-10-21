@@ -2,6 +2,7 @@
 
 #include "proxydx/d3d8device.h"
 #include "mgeindexedskinning.h"
+#include "mge_render_link.h"
 
 
 
@@ -55,6 +56,9 @@ namespace Deviceless {
     // interface of the game. The format is that of the extension of the path.
     void requestPicture(const char* path, bool withUI);
     void transform(unsigned state, D3DMATRIX* matrix, bool targetIsBackBuffer);
+    // The Click of a camera starts: the plugin's scene packet (its contract,
+    // mge_render_link.h).
+    void sceneBegin(const MgeLinkSceneV1* scene);
     // A message of the extension in the helper (Extension::messages of the crate).
     void message(unsigned id, const void* data, unsigned length);
 }

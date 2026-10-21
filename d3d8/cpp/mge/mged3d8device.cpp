@@ -1151,10 +1151,13 @@ namespace Deviceless {
     static UINT waitSerial = 0;
     // The frames that the game showed: a wait counts the frames of its loading bar.
     static unsigned presentCount = 0;
+    // The views of the player: the world camera's scenes and the first-person arms, as the
+    // plugin's scene packet names them from the camera object (MGE_StreamSceneBegin). They
+    // take the camera effects and the zoom.
     static bool mainView = false;
-    // The position of the camera of the world, from its last view matrix.
+    // The world position of the world camera and the direction it looks in, from the camera
+    // object at the world scene's Click.
     static float eye[3] = { 0, 0, 0 };
-    // The direction that the camera of the world looks in.
     static float look[3] = { 0, 1, 0 };
     // The fog colour that the scattering gives the near cells, from the last environment,
     // and true when that frame had the scattering. The game writes the fog colour of the
@@ -1764,17 +1767,7 @@ namespace Deviceless {
             return;
         }
         if (state == D3DTS_VIEW) {
-            mainView = !detectMenu(matrix);
             if (mainView) {
-                // The camera is at -translation * transposed rotation of its view matrix.
-                const D3DMATRIX& m = *matrix;
-                eye[0] = -(m._41 * m._11 + m._42 * m._12 + m._43 * m._13);
-                eye[1] = -(m._41 * m._21 + m._42 * m._22 + m._43 * m._23);
-                eye[2] = -(m._41 * m._31 + m._42 * m._32 + m._43 * m._33);
-                // The camera looks along the third axis of its view.
-                look[0] = m._13;
-                look[1] = m._23;
-                look[2] = m._33;
                 D3DXMATRIX view = *matrix;
                 view *= camEffectsMatrix;
                 *matrix = view;
@@ -1788,6 +1781,27 @@ namespace Deviceless {
         } else if (state == D3DTS_PROJECTION && mainView && (Configuration.MGEFlags & ZOOM_ASPECT)) {
             matrix->_11 *= Configuration.CameraEffects.zoom;
             matrix->_22 *= Configuration.CameraEffects.zoom;
+        }
+    }
+
+    // The Click of a camera starts (the plugin, at the renderer's SetCameraData, before the
+    // view of the camera goes to the device), with the plugin's scene packet. The main view
+    // and the eye come from it and from the camera object it names, not from a pattern of
+    // the view matrix. NiCamera: the world translation at +0x64, kWorldDir at +0xDC
+    // (nirender src/gen/layouts.rs).
+    void sceneBegin(const MgeLinkSceneV1* scene) {
+        const unsigned kind = scene->kind;
+        mainView = kind == MGE_LINK_SCENE_WORLD || kind == MGE_LINK_SCENE_SORTED_ALPHA || kind == MGE_LINK_SCENE_WATER || kind == MGE_LINK_SCENE_FIRST_PERSON;
+        if (kind != MGE_LINK_SCENE_WORLD || !scene->camera) {
+            return;
+        }
+        const auto camera = reinterpret_cast<const unsigned char*>(uintptr_t(scene->camera));
+        const auto translation = reinterpret_cast<const float*>(camera + 0x64);
+        const auto direction = reinterpret_cast<const float*>(camera + 0xDC);
+        const bool exact = (scene->flags & MGE_LINK_SCENE_HAS_CAMERA_ORIGIN) != 0;
+        for (int i = 0; i < 3; ++i) {
+            eye[i] = exact ? float(scene->cameraOrigin[i]) : translation[i];
+            look[i] = direction[i];
         }
     }
 }

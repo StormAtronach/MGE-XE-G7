@@ -189,6 +189,14 @@ extern "C" void __cdecl MGE_StreamPresent(UINT width, UINT height) {
     }
 }
 
+// The nirender plugin calls this at the start of each camera's Click, before its transforms,
+// with the scene packet of its contract (mge_render_link.h).
+extern "C" void __cdecl MGE_StreamSceneBegin(const MgeLinkSceneV1* scene) {
+    if (isMW && Configuration.RendererWgpu && scene) {
+        Deviceless::sceneBegin(scene);
+    }
+}
+
 extern "C" void __cdecl MGE_StreamTransform(UINT state, float* matrix, UINT targetIsBackBuffer) {
     if (isMW && Configuration.RendererWgpu) {
         Deviceless::transform(state, reinterpret_cast<D3DMATRIX*>(matrix), targetIsBackBuffer != 0);
