@@ -4,17 +4,17 @@
 #include "mge/mwbridge.h"
 #include "mge/mwpatches.h"
 #include "mge/mwtextureloader.h"
+#include "mwse/mwsenative.h"
 #include "support/timing.h"
 #include "tes3/tes3types.h"
 #include <algorithm>
 
-// Override UI scaling callback: set new UI scaling and mouse bounds, setup borderless window
-static void _stdcall onUIScaleInit() {
+// Setup borderless window, if selected
+static void setupBorderlessWindow() {
     auto mwBridge = MWBridge::get();
     auto hMainWnd = mwBridge->getWindowHandle();
     auto gameOptions = static_cast<TES3::Game*>(mwBridge->getGameOptionsStruct());
 
-    // Setup borderless window, if selected
     if (!gameOptions->fullscreen && Configuration.Borderless) {
         int wx = std::max(0, Configuration.WindowAlignX * (GetSystemMetrics(SM_CXSCREEN) - gameOptions->windowWidth) / 2);
         int wy = std::max(0, Configuration.WindowAlignY * (GetSystemMetrics(SM_CYSCREEN) - gameOptions->windowHeight) / 2);
@@ -23,12 +23,17 @@ static void _stdcall onUIScaleInit() {
         SetWindowLong(hMainWnd, GWL_STYLE, WS_VISIBLE | WS_POPUP);
         SetWindowPos(hMainWnd, NULL, wx, wy, gameOptions->windowWidth, gameOptions->windowHeight, SWP_NOACTIVATE|SWP_NOCOPYBITS|SWP_NOZORDER);
     }
+}
 
-    mwBridge->setUIScale(Configuration.UIScale);
+// Override UI scaling callback: set new UI scaling and mouse bounds, setup borderless window
+static void _stdcall onUIScaleInit() {
+    setupBorderlessWindow();
+    MWBridge::get()->setUIScale(Configuration.UIScale);
 }
 
 void MWInitPatch::patch() {
-    if ((Configuration.MGEFlags & MGE_DISABLED) || Configuration.OnlyProxyD3D8To9) {
+    // With the wgpu renderer MWSE configures the UI scale (patchUIScaleWgpu, after MWSE loads).
+    if (((Configuration.MGEFlags & MGE_DISABLED) || Configuration.OnlyProxyD3D8To9) && !Configuration.RendererWgpu) {
         // User interface still needs to be scaled, normally done by the D3DDevice proxy
         // Without the proxy, patch Morrowind UI creation instead
         MWPatches::patchUIConfigure(onUIScaleInit);
@@ -52,4 +57,13 @@ void MWInitPatch::patch() {
 
     // Patch engine issue with light emissive particle material that affects particle rendering
     MWPatches::patchLightParticleMaterialModifier();
+}
+
+void MWInitPatch::patchUIScaleWgpu(HMODULE mwse) {
+    // MWSE sets the UI scale when the engine makes its UI and tells when it did, for the
+    // borderless window. An MWSE without its native ABI: MGE XE patches the UI creation itself.
+    if (MwseNative::init(mwse) && MwseNative::listenUIConfigured(setupBorderlessWindow) && MwseNative::requestUIScale(Configuration.UIScale)) {
+        return;
+    }
+    MWPatches::patchUIConfigure(onUIScaleInit);
 }

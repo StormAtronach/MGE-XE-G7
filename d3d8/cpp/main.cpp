@@ -116,6 +116,10 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             } else {
                 LOG::logline("MWSE.dll failed to load.");
             }
+            if (Configuration.RendererWgpu) {
+                // MWSE configures the UI scale on the wgpu path (MWInitPatch::patch left it out).
+                MWInitPatch::patchUIScaleWgpu(dll);
+            }
         } else {
             LOG::logline("MWSE is disabled.");
         }

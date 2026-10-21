@@ -5,6 +5,7 @@
 
 #include "mwbridge.h"
 #include "mwpatches.h"
+#include "mwse/mwsenative.h"
 #include "tes3/nitypes.h"
 #include "tes3/tes3addresses.h"
 #include "tes3/tes3types.h"
@@ -1126,7 +1127,12 @@ float MWBridge::getUIScale() {
 
 // setUIScale - Configures the scaling of Morrowind's UI system.
 //              MWBridge is not required to be loaded for this function.
+//              With MWSE's native ABI in use (the wgpu path), MWSE applies the scale.
 void MWBridge::setUIScale(float scale) {
+    if (MwseNative::requestUIScale(scale)) {
+        return;
+    }
+
     auto wc = worldController();
 
     // Read renderer width and height
