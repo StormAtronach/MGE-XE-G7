@@ -1242,10 +1242,28 @@ void DistantLand::scanDynamicVisGroups() {
             dynVisFlagsShared.push_back({ groupIndex, enable });
         }
     }
+    logWorkerStalls(dynamicVisGroups.size());
 
     if (!dynVisFlagsShared.empty()) {
         ipcClient.updateDynVis(dynVisFlagsSharedId);
     }
+}
+
+// logWorkerStalls - The stalls of the cell worker in a scan of the vis groups. A scan runs
+// at a cell change, when the worker loads the cells ahead, so each stall waits for up to
+// one reference. A line when the waits sum to 2 ms or more; a line for each scan with
+// stalls when MGE_XE_STALL_LOG=1.
+void DistantLand::logWorkerStalls(size_t groups) {
+    static const bool everyScan = [] {
+        char value[4] = {};
+        return GetEnvironmentVariableA("MGE_XE_STALL_LOG", value, sizeof(value)) == 1 && value[0] == '1';
+    }();
+    const auto stalls = MWBridge::takeWorkerStalls();
+    if (stalls.count == 0 || (!everyScan && stalls.totalMs < 2.0)) {
+        return;
+    }
+    LOG::logline("-- vis groups: %u groups read at a cell change; %u stalls of the cell worker, %.2f ms waited, the longest %.2f ms",
+        unsigned(groups), stalls.count, stalls.totalMs, stalls.longestMs);
 }
 
 // setView - Called once per frame to setup view dependent data

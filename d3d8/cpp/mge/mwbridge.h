@@ -168,6 +168,18 @@ public:
     void* findFirstReferenceById(const char *id);
     unsigned int getRecordFlags(const void* record);
 
+    // The waits of the main thread for the cell worker in the stalls of this bridge: their
+    // count, their sum and the longest, in milliseconds.
+    struct WorkerStalls {
+        unsigned count = 0;
+        double totalMs = 0.0;
+        double longestMs = 0.0;
+    };
+    // Adds the wait of one stall.
+    static void noteWorkerStall(double ms);
+    // The waits since the last call, and a new count.
+    static WorkerStalls takeWorkerStalls();
+
     MWBridge();
 
 protected:

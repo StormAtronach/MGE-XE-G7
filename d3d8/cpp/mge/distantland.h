@@ -380,6 +380,8 @@ public:
     static void resolveDynamicVisGroups();
     static void scanDynamicVisGroups();
     static bool isVisGroupShown(const DynamicVisGroup& vis);
+    // A line in the log for the stalls of the cell worker in a scan of the vis groups.
+    static void logWorkerStalls(size_t groups);
 
     static void setView(const D3DMATRIX* m);
     static void setProjection(D3DMATRIX* proj);

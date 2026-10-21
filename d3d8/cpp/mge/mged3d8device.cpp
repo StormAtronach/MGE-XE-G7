@@ -1695,6 +1695,7 @@ namespace Deviceless {
                 changed = true;
             }
         }
+        DistantLand::logWorkerStalls(groups.size());
         if (!changed || groups.empty()) {
             return;
         }

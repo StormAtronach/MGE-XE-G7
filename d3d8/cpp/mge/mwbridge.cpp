@@ -1279,7 +1279,14 @@ public:
         if (owned) {
             const auto wait = reinterpret_cast<void(__thiscall*)(TES3::DataHandler*)>(
                 TES3::Address::DataHandler_waitForBackgroundThread);
+            // The wait lasts until the worker is between two references: up to one
+            // reference of a cell that it loads.
+            LARGE_INTEGER start, end, frequency;
+            QueryPerformanceCounter(&start);
             wait(dataHandler());
+            QueryPerformanceCounter(&end);
+            QueryPerformanceFrequency(&frequency);
+            MWBridge::noteWorkerStall(double(end.QuadPart - start.QuadPart) * 1000.0 / double(frequency.QuadPart));
         }
     }
     ~CellWorkerStall() {
@@ -1295,6 +1302,23 @@ public:
 private:
     const bool owned;
 };
+
+// The waits of the stalls since the last take. Main thread only, as the stalls.
+static MWBridge::WorkerStalls workerStalls;
+
+void MWBridge::noteWorkerStall(double ms) {
+    ++workerStalls.count;
+    workerStalls.totalMs += ms;
+    if (ms > workerStalls.longestMs) {
+        workerStalls.longestMs = ms;
+    }
+}
+
+MWBridge::WorkerStalls MWBridge::takeWorkerStalls() {
+    const WorkerStalls taken = workerStalls;
+    workerStalls = WorkerStalls();
+    return taken;
+}
 
 // findFirstReferenceById - Find first reference to object
 void* MWBridge::findFirstReferenceById(const char* id) {
