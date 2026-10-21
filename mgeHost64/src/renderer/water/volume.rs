@@ -833,6 +833,8 @@ pub(super) struct Volumes {
     no_lights: [wgpu::Buffer; 4],
     target_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
+    /// The samples of the game pass. Every pipeline here draws into that pass.
+    multisample: wgpu::MultisampleState,
     /// The near surfaces and the far water drawn since the start.
     pub drawn: u64,
     pub far_drawn: u64,
@@ -946,6 +948,7 @@ impl Volumes {
             no_lights,
             target_format: scene.target_format,
             depth_format: scene.depth_format,
+            multisample: scene.multisample(false),
             drawn: 0,
             far_drawn: 0,
         }
@@ -1081,7 +1084,7 @@ impl Volumes {
     }
 
     fn pipeline(&mut self, device: &wgpu::Device, key: Key) -> &wgpu::RenderPipeline {
-        let (module, layout, target_format, depth_format) = (&self.modules[key.shader as usize], &self.pipeline_layout, self.target_format, self.depth_format);
+        let (module, layout, target_format, depth_format, multisample) = (&self.modules[key.shader as usize], &self.pipeline_layout, self.target_format, self.depth_format, self.multisample);
         self.pipelines.entry(key).or_insert_with(|| {
             if key.far {
                 // A distant static: the position with the palette entry, the normal with the
@@ -1108,7 +1111,7 @@ impl Volumes {
                         stencil: Default::default(),
                         bias: Default::default(),
                     }),
-                    multisample: Default::default(),
+                    multisample,
                     fragment: Some(wgpu::FragmentState {
                         module,
                         entry_point: Some("fs"),
@@ -1177,7 +1180,7 @@ impl Volumes {
                     },
                     bias: Default::default(),
                 }),
-                multisample: Default::default(),
+                multisample,
                 fragment: Some(wgpu::FragmentState {
                     module,
                     entry_point: Some(if key.depth_only { "fs_depth" } else { "fs" }),

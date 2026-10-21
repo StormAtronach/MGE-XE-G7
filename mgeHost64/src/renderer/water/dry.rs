@@ -100,7 +100,8 @@ impl Dry {
                     stencil: wgpu::StencilState { front: face, back: face, read_mask: 0xFF, write_mask: DRY_BIT },
                     bias,
                 }),
-                multisample: Default::default(),
+                // The game pass, with its samples: the count marks its stencil.
+                multisample: scene.multisample(false),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some(fragment),
