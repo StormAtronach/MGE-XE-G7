@@ -1159,6 +1159,9 @@ namespace Deviceless {
     // object at the world scene's Click.
     static float eye[3] = { 0, 0, 0 };
     static float look[3] = { 0, 1, 0 };
+    // The environment of this frame went at the start of its world scene; Present sends it
+    // only for a frame without one (a menu, a load).
+    static bool environmentSent = false;
     // The fog colour that the scattering gives the near cells, from the last environment,
     // and true when that frame had the scattering. The game writes the fog colour of the
     // weather into its scene graph before each frame, so the colour goes in when the game
@@ -1750,9 +1753,12 @@ namespace Deviceless {
             if (Configuration.ScreenFOV > 0) {
                 mwBridge->SetFOV(Configuration.ScreenFOV);
             }
-            sendEnvironment(mwBridge);
+            if (!environmentSent) {
+                sendEnvironment(mwBridge);
+            }
             PostShaders::sendShaderStates();
         }
+        environmentSent = false;
         sendSettings();
         sendPictureRequests();
         StatusOverlay::sendToRenderer();
@@ -1802,6 +1808,13 @@ namespace Deviceless {
         for (int i = 0; i < 3; ++i) {
             eye[i] = exact ? float(scene->cameraOrigin[i]) : translation[i];
             look[i] = direction[i];
+        }
+        // The environment of this frame, before its world draws: from Present it reached the
+        // helper one frame late.
+        auto mwBridge = MWBridge::get();
+        if (mwBridge->IsLoaded()) {
+            sendEnvironment(mwBridge);
+            environmentSent = true;
         }
     }
 }
