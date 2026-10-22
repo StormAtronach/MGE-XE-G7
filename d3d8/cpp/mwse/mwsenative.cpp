@@ -128,6 +128,13 @@ namespace MwseNative {
         return request(MWSE_NATIVE_REQUEST_LIGHT_PARTICLES_FIX, &packet, "the light particles fix");
     }
 
+    bool requestSunGlareOff() {
+        MwseNativeSunGlareRequestV1 packet = {};
+        packet.structSize = sizeof(packet);
+        packet.enabled = 0;
+        return request(MWSE_NATIVE_REQUEST_SUN_GLARE, &packet, "the sun glare");
+    }
+
     bool claimLightAttachRadius(int (__cdecl* function)(const void* light, int radius)) {
         return claim(MWSE_NATIVE_OVERRIDE_LIGHT_ATTACH_RADIUS, reinterpret_cast<void*>(function), "the light attach radius");
     }

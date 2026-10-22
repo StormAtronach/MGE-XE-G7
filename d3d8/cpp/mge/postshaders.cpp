@@ -374,8 +374,8 @@ void PostShaders::initShaderChainPlaceholders() {
         // The helper has the chain already: a record goes when a mod changes the shader.
         shader->values->changed = false;
         // The flags of the chain, as initShader sets them from the effect: the API reads
-        // them, and the settings record carries them. The helper applies the sun glare
-        // rule itself (it skips the draw of the glare).
+        // them, and the settings record carries them. The helper also skips the draw of
+        // the glare.
         if (shader->values->requiresHDR) {
             Configuration.MGEFlags |= USE_HDR;
         }
@@ -387,6 +387,12 @@ void PostShaders::initShaderChainPlaceholders() {
     }
     orderShaders();
     LOG::logline("-- Shader chain indicates HDR %s", (Configuration.MGEFlags & USE_HDR) ? "On" : "Off");
+
+    // The engine's glare off, as on Direct3D 9; on this path through MWSE's request.
+    if (Configuration.MGEFlags & NO_MW_SUNGLARE) {
+        MWPatches::disableSunglare();
+        LOG::logline("-- Shader chain replaces standard Morrowind sun glare");
+    }
 }
 
 bool PostShaders::reloadPlaceholder(MGEShader* shader) {

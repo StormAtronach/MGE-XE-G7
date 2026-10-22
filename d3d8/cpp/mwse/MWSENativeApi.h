@@ -95,6 +95,20 @@ typedef struct MwseNativeGameIdsResolvedV1 {
 	void* worldController;
 } MwseNativeGameIdsResolvedV1;
 
+// The engine drew the queue of an accumulator: 0x6CF0E0 `NiClusterAccumulator::FinishAccumulating`
+// (the slot 0x30 of the virtual tables of NiAlphaAccumulator 0x7468D0 and NiClusterAccumulator
+// 0x74FB4C) draws the queued objects in the order of its sort. `NiCamera::Click` calls it at the end
+// of a Click (0x6CC895) unless its argument keeps the queue open. Main thread. It fires after the
+// engine function returns. Latest subscribe: none.
+#define MWSE_NATIVE_EVENT_ACCUMULATOR_FINISHED 4u
+typedef struct MwseNativeAccumulatorFinishedV1 {
+	uint32_t structSize;
+	// The `NiAccumulator`.
+	void* accumulator;
+	// The camera of the accumulator before the call (the engine function clears it), or null.
+	void* camera;
+} MwseNativeAccumulatorFinishedV1;
+
 //
 // Overrides. The owner's function has the signature of the engine function. `engineFunction`
 // of `claim` gives the engine function, to call or not.
@@ -223,6 +237,16 @@ typedef struct MwseNativeIntroMoviesRequestV1 {
 typedef struct MwseNativeLightParticlesFixRequestV1 {
 	uint32_t structSize;
 } MwseNativeLightParticlesFixRequestV1;
+
+// The engine's sun glare (`WeatherController::sunGlareTests`, the jz at 0x4404FB): on or off. Off
+// takes the occluded branch each frame, so the glare fades out and stays culled; the occlusion test
+// and its result stay the same. Latest request: none.
+#define MWSE_NATIVE_REQUEST_SUN_GLARE 6u
+typedef struct MwseNativeSunGlareRequestV1 {
+	uint32_t structSize;
+	// 1: the engine shows its sun glare (its own behaviour). 0: no sun glare.
+	uint32_t enabled;
+} MwseNativeSunGlareRequestV1;
 
 //
 // Queries.

@@ -24,6 +24,9 @@ void disableScreenshotFunc() {
 //-----------------------------------------------------------------------------
 
 void disableSunglare() {
+    if (MwseNative::requestSunGlareOff()) {
+        return;
+    }
     DWORD addr = TES3::Address::patch_sunglare;
 
     // Replace jz short with nop (74 xx -> 90 90)

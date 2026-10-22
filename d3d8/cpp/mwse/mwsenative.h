@@ -31,6 +31,9 @@ namespace MwseNative {
     // The fix of the emissive colour of a light's particles.
     bool requestLightParticlesFix();
 
+    // The engine's sun glare off.
+    bool requestSunGlareOff();
+
     // The radius out to which the engine attaches a point light (`function` gets the light and the
     // engine's radius, and returns the radius to use).
     bool claimLightAttachRadius(int (__cdecl* function)(const void* light, int radius));
