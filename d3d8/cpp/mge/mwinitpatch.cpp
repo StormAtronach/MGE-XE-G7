@@ -39,11 +39,6 @@ void MWInitPatch::patch() {
         MWPatches::patchUIConfigure(onUIScaleInit);
     }
 
-    if (Configuration.MGEFlags & SKIP_INTRO) {
-        // Disable intro movies on initialization as the logo appears before game init
-        MWPatches::disableIntroMovies();
-    }
-
     // Patch texture loading to reduce process memory footprint
     // The patch gives its textures to a Direct3D device with UpdateTexture. With the wgpu
     // renderer the game has no Direct3D device, and the game code loads the textures.
@@ -51,19 +46,37 @@ void MWInitPatch::patch() {
         MWTextureLoader::patchLoadTexture2D();
     }
 
-    // Patches certain calls to timeGetTime to redirect to a better time.
     HighResolutionTimer::init();
+
+    // With the wgpu renderer MWSE applies these (patchWgpu, after MWSE loads).
+    if (!Configuration.RendererWgpu) {
+        patchEarlyEngineChanges();
+    }
+}
+
+void MWInitPatch::patchEarlyEngineChanges() {
+    if (Configuration.MGEFlags & SKIP_INTRO) {
+        // Disable intro movies on initialization as the logo appears before game init
+        MWPatches::disableIntroMovies();
+    }
+
+    // Patches certain calls to timeGetTime to redirect to a better time.
     MWPatches::patchFrameTimer(&HighResolutionTimer::getMilliseconds);
 
     // Patch engine issue with light emissive particle material that affects particle rendering
     MWPatches::patchLightParticleMaterialModifier();
 }
 
-void MWInitPatch::patchUIScaleWgpu(HMODULE mwse) {
+void MWInitPatch::patchWgpu(HMODULE mwse) {
+    // MWSE applies the engine changes of MGE XE at its requests (MWPatches asks MWSE first). An
+    // MWSE without its native ABI: MGE XE changes the engine code itself, as before.
+    MwseNative::init(mwse);
+
     // MWSE sets the UI scale when the engine makes its UI and tells when it did, for the
-    // borderless window. An MWSE without its native ABI: MGE XE patches the UI creation itself.
-    if (MwseNative::init(mwse) && MwseNative::listenUIConfigured(setupBorderlessWindow) && MwseNative::requestUIScale(Configuration.UIScale)) {
-        return;
+    // borderless window.
+    if (!(MwseNative::listenUIConfigured(setupBorderlessWindow) && MwseNative::requestUIScale(Configuration.UIScale))) {
+        MWPatches::patchUIConfigure(onUIScaleInit);
     }
-    MWPatches::patchUIConfigure(onUIScaleInit);
+
+    patchEarlyEngineChanges();
 }

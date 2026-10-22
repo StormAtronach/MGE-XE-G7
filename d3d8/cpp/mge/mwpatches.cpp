@@ -1,4 +1,5 @@
 #include "mge/mwpatches.h"
+#include "mwse/mwsenative.h"
 #include "support/log.h"
 #include "tes3/nitypes.h"
 #include "tes3/tes3addresses.h"
@@ -34,6 +35,9 @@ void disableSunglare() {
 //-----------------------------------------------------------------------------
 
 void disableIntroMovies() {
+    if (MwseNative::requestIntroMoviesSkipped()) {
+        return;
+    }
     DWORD addr = TES3::Address::patch_bethesdaLogoMovie;
     BYTE patch[] = { 0xeb, 0x16 };
 
@@ -122,6 +126,9 @@ void patchSplashScreen(unsigned int width, unsigned int height) {
 static int (__cdecl* patchFrameTimerTarget)();
 
 void patchFrameTimer(int (__cdecl* newfunc)()) {
+    if (MwseNative::claimFrameTimer(newfunc)) {
+        return;
+    }
     const auto& addrs = TES3::Address::patch_frameTimer;
 
     patchFrameTimerTarget = newfunc;
@@ -147,6 +154,9 @@ static void __fastcall patchResolveDuringInitShim(void* worldController) {
 }
 
 void patchResolveDuringInit(void (__cdecl* newfunc)()) {
+    if (MwseNative::listenGameIdsResolved(newfunc)) {
+        return;
+    }
     const auto& addrs = TES3::Address::patch_resolveDuringInit;
 
     patchResolveDuringInitFunc = newfunc;
@@ -160,6 +170,9 @@ void patchResolveDuringInit(void (__cdecl* newfunc)()) {
 //-----------------------------------------------------------------------------
 
 void patchLightParticleMaterialModifier() {
+    if (MwseNative::requestLightParticlesFix()) {
+        return;
+    }
     DWORD addr = TES3::Address::patch_particleEmissiveMaterial;
 
     // Jump over code that affects the particle emissive material
@@ -208,6 +221,10 @@ void patchWorldRenderingAccumulation() {
 // rewritten; the cmp/ja structure is untouched, which caps this patch form at 127.
 // The caller decides whether the active render path can consume the extra lights.
 void patchExpandedLightLimit() {
+    if (MwseNative::requestLightLimit(32)) {
+        LOG::logline("-- Expanded per-node light limit to 32 (through MWSE)");
+        return;
+    }
     const DWORD addr = TES3::Address::patch_localEffectsLimit;
     const BYTE expected[] = { 0x83, 0xfd, 0x07, 0x77, 0x0a };    // cmp ebp, 7; ja 0x6c8fff
     const BYTE patched[] = { 0x83, 0xfd, 0x20, 0x77, 0x0a };     // cmp ebp, 32; ja 0x6c8fff
@@ -262,6 +279,10 @@ static void retargetCall(DWORD site, DWORD target) {
 }
 
 void patchLightAttachRadius(int (__cdecl* newfunc)(const NI::PointLight* light, int radius)) {
+    if (MwseNative::claimLightAttachRadius(reinterpret_cast<int (__cdecl*)(const void*, int)>(newfunc))) {
+        LOG::logline("-- Light attach radius follows the per-pixel light fade (through MWSE)");
+        return;
+    }
     struct Site { DWORD address, original, shim; };
     const DWORD pointLight = TES3::Address::game_updateDynamicLightingForPointLight;
     const DWORD helper = TES3::Address::game_updateLightHelper2;

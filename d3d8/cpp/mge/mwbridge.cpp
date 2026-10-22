@@ -934,6 +934,9 @@ bool MWBridge::getExteriorGrid(int& x, int& y) {
 
 // toggleRipples - Turns off ripple generation from all sources
 void MWBridge::toggleRipples(BOOL enabled) {
+    if (MwseNative::requestRipples(enabled != FALSE)) {
+        return;
+    }
     auto* site = reinterpret_cast<DWORD*>(TES3::Address::patch_ripples);
     DWORD code = *site;
     if ((enabled && code == 0x33504D8B) || (!enabled && code == 0x3390C931)) {

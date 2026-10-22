@@ -84,6 +84,17 @@ typedef struct MwseNativeUIConfiguredV1 {
 	int32_t viewHeight;
 } MwseNativeUIConfiguredV1;
 
+// The engine resolved the internal ids of the scripts at the start of a game: a new game, a
+// load, the start in a cell (0x40FC40 `WorldController::resolveScriptInternalIDs` at its four
+// callers, the quick start of 0x5FE7B0 among them). Main thread. It fires after the engine
+// function returns. Latest subscribe: before the first game starts.
+#define MWSE_NATIVE_EVENT_GAME_IDS_RESOLVED 3u
+typedef struct MwseNativeGameIdsResolvedV1 {
+	uint32_t structSize;
+	// The `TES3::WorldController`.
+	void* worldController;
+} MwseNativeGameIdsResolvedV1;
+
 //
 // Overrides. The owner's function has the signature of the engine function. `engineFunction`
 // of `claim` gives the engine function, to call or not.
@@ -95,6 +106,72 @@ typedef struct MwseNativeUIConfiguredV1 {
 // 4 bytes: a module may take them as uint32_t and pass them on.
 #define MWSE_NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST 1u
 typedef void (__cdecl* MwseNativeDynamicLightTest)(void* light, void* node, int32_t radius, int32_t flags, uint8_t isLand, uint8_t highPriority);
+
+// The engine's thiscall functions below are declared as __fastcall with an unused second
+// parameter: the same calling convention in C. A module may give a thiscall function.
+
+// 0x6EB480 `NiAVObject::CullShow` of a camera's root, at its call in `NiCamera::Click`
+// (0x6CC874) only: the walk of the scene of every Click. Main thread. Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW 2u
+typedef void (__fastcall* MwseNativeCameraRootCullShow)(void* root, void* unused, void* camera);
+
+// 0x42F6F0 `WorldControllerRenderTarget::renderMap`: the read of a tile of the local map from
+// its rendered texture (its caller: `drawMap`). With `skip` set the engine does nothing.
+// Main thread. Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_MAP_TILE_READ 3u
+typedef void (__fastcall* MwseNativeMapTileRead)(void* renderTarget, void* unused, uint8_t skip);
+
+// 0x485490 `DataHandler::purgeTextures`, at its eight callers. Main thread. Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_TEXTURE_PURGE 4u
+typedef void (__fastcall* MwseNativeTexturePurge)(void* dataHandler, void* unused);
+
+// 0x4C81C0 `RecordsHandler::mapDrawCell` at its call in `Cell::sub_4E3210` (0x4E32FE) only: the
+// paint of a cell's tile from the cache on the world map. Main thread. Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_MAP_CELL_PAINT 5u
+typedef void (__fastcall* MwseNativeMapCellPaint)(void* recordsHandler, void* unused, void* cell);
+
+// 0x4B4F80 `TES3File_static::createSaveScreenshot` at its call in `TES3File::writeSaveHeader`
+// (0x4B586D) only: the picture at the start of a save. Returns its pixel data. Main thread.
+// Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_SAVE_PICTURE 6u
+typedef void* (__cdecl* MwseNativeSavePicture)(const char* fileName);
+
+// 0x42F3F0 `WorldControllerRenderTarget::lockRenderTarget`, at its three callers and at MWSE's
+// own calls (the fog cache). `texture` is a counted pointer that the function lets go of, or
+// null for the target's own texture. Returns a D3DLOCKED_RECT, or null. Main thread. Latest
+// claim: none.
+#define MWSE_NATIVE_OVERRIDE_RENDER_TARGET_LOCK 7u
+typedef void* (__fastcall* MwseNativeRenderTargetLock)(void* renderTarget, void* unused, void* texture);
+
+// 0x42F620 `WorldControllerRenderTarget::unlockRenderTarget`, at its three callers and at
+// MWSE's own calls. Main thread. Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK 8u
+typedef void (__fastcall* MwseNativeRenderTargetUnlock)(void* renderTarget, void* unused, void* lockedRect, int32_t copyBack);
+
+// 0x42FC60 `WorldControllerRenderTarget::renderFogOfWar`, at its one caller: the fog of a map
+// texture made again from its 16 x 16 bitmap. Main thread. Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_FOG_RENDER 9u
+typedef void (__fastcall* MwseNativeFogRender)(void* renderTarget, void* unused, void* texture, void* bitmap, uint8_t smallBlobs);
+
+// 0x42FA50 `WorldControllerRenderTarget::updateFogOfWarVertexBuffer`, at its seven callers: one
+// blob of the fog drawn into a map texture. `texture` is a counted pointer that the function
+// lets go of; x, y and size in sixteenths of the texture. Main thread. Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_FOG_BLOB 10u
+typedef void (__fastcall* MwseNativeFogBlob)(void* renderTarget, void* unused, void* texture, int32_t x, int32_t y, int32_t size);
+
+// The radius out to which the engine attaches a point light to the nodes near it: the radius
+// that `game_updateDynamicLightingForPointLight` (0x4D2C20, four callers) and
+// `game_updateLightHelper2` (0x4D32F0, two callers) pass on to the dynamic light test. The owner
+// returns the radius to use; the engine function returns `radius`. Main thread. Latest claim:
+// none (lights attached before keep their radius until the engine attaches them again).
+#define MWSE_NATIVE_OVERRIDE_LIGHT_ATTACH_RADIUS 11u
+typedef int32_t (__cdecl* MwseNativeLightAttachRadius)(const void* light, int32_t radius);
+
+// The clock of the frame timer and of the music: the engine's `timeGetTime` at its four uses
+// (0x403B50 the music, 0x4535FB, 0x453613, 0x453636 the frame timer). The owner returns
+// milliseconds. The engine function is `timeGetTime`. Main thread. Latest claim: none.
+#define MWSE_NATIVE_OVERRIDE_FRAME_TIMER 12u
+typedef uint32_t (__stdcall* MwseNativeFrameTimer)(void);
 
 //
 // Requests.
@@ -111,6 +188,41 @@ typedef struct MwseNativeUIScaleRequestV1 {
 	// Larger than 0. 1 is the engine's own scale.
 	float scale;
 } MwseNativeUIScaleRequestV1;
+
+// The most local lights of a node (`NiNode::PushLocalEffects`, 0x6C8FF2: the engine's 7). Later
+// requests replace the limit. Latest request: none (the next update of a node uses it).
+#define MWSE_NATIVE_REQUEST_LIGHT_LIMIT 2u
+typedef struct MwseNativeLightLimitRequestV1 {
+	uint32_t structSize;
+	// 1 to 127.
+	uint32_t limit;
+} MwseNativeLightLimitRequestV1;
+
+// The ripples of the engine's water (`WaterController::createRipple`, 0x51C2D4): on or off.
+// Latest request: none.
+#define MWSE_NATIVE_REQUEST_RIPPLES 3u
+typedef struct MwseNativeRipplesRequestV1 {
+	uint32_t structSize;
+	// 1: the engine makes ripples (its own behaviour). 0: no ripples.
+	uint32_t enabled;
+} MwseNativeRipplesRequestV1;
+
+// The two movies at the start of the game (the Bethesda logo, 0x418EF0, and the intro of the main
+// menu, 0x5FC8F7). Latest request: before the game initializes (the logo plays then).
+#define MWSE_NATIVE_REQUEST_INTRO_MOVIES 4u
+typedef struct MwseNativeIntroMoviesRequestV1 {
+	uint32_t structSize;
+	// 1: the engine plays them (its own behaviour). 0: they are skipped.
+	uint32_t play;
+} MwseNativeIntroMoviesRequestV1;
+
+// A fix of the engine: `sg_stopParticlesAndSetEmissiveMaterialToBlack` (0x4D2789) jumps over the
+// code that changes the emissive colour of the material of a light's particles. Latest request:
+// none.
+#define MWSE_NATIVE_REQUEST_LIGHT_PARTICLES_FIX 5u
+typedef struct MwseNativeLightParticlesFixRequestV1 {
+	uint32_t structSize;
+} MwseNativeLightParticlesFixRequestV1;
 
 //
 // Queries.
