@@ -1220,6 +1220,9 @@ namespace Deviceless {
         // the hour goes through (MWBridge::getNightFraction). The glows and the baked light
         // of the distant lights follow it; before, a threshold on the sun's colour.
         float night;
+        // Version 8: the height of the engine's water plane (MWBridge::WaterPlaneHeight):
+        // the camera is above the sea above it. The lowest float in a cell without water.
+        float waterPlane;
     };
     static const UINT EnvironmentId = 1;
 
@@ -1231,7 +1234,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 7;
+        e.version = 8;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1426,6 +1429,7 @@ namespace Deviceless {
         e.time = mwBridge->simulationTime();
         e.waterLevel = mwBridge->WaterLevel();
         e.hasWater = mwBridge->CellHasWater() ? 1u : 0u;
+        e.waterPlane = mwBridge->WaterPlaneHeight();
         if (exterior) {
             // As DistantLand::simulateDynamicWaves: rain = 4; thunderstorm = 5; snow = 8;
             // blizzard = 9. A thunderstorm has 50% more drops.

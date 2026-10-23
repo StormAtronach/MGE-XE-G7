@@ -254,6 +254,18 @@ struct Environment {
     /// version 7 leaves it 0, and the helper takes the night from the sun's colour
     /// (`distant_lights::night_of`).
     night: f32,
+    /// Version 8: the height of the engine's water plane (`MWBridge::WaterPlaneHeight`): -1
+    /// in an exterior, the cell's water level in an interior, the lowest float in a cell
+    /// without water. The camera is above the sea above it.
+    water_plane: f32,
+}
+
+impl Environment {
+    /// The height of the sea for the tests "above the sea" of the Direct3D 9 path. A record
+    /// below version 8 gives -1, the plane of an exterior.
+    fn sea_plane(&self) -> f32 {
+        if self.version >= 8 { self.water_plane } else { -1.0 }
+    }
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -659,7 +671,7 @@ fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
     let fog = select(linear, exponential, u.flags.x > 0.5 && distance > fog_range());
     // fogColourScatter: the light that the air adds, in good weather and over the water.
     var added = u.fog_color.rgb * (1.0 - fog);
-    if u.sky.w > 0.5 && u.sun_pos.w > 0.001 && u.eye.z > -1.0 {
+    if u.sky.w > 0.5 && u.sun_pos.w > 0.001 && u.eye.z > u.flags.w {
         let direction = to_pixel / max(distance, 1.0);
         let depth = clamp(0.224 * fog_distance, 0.0, 1.0);
         let sun_cos = dot(direction, u.sun_pos.xyz);
@@ -1762,7 +1774,7 @@ impl Extension for DistantLand {
                 let sun_pos = e.sun_pos;
                 let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.unwrap_or(sun_pos.map(|v| -v)) };
                 shadow.set_frame(eye, eye_vec, light_vec);
-                values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > -1.0);
+                values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > e.sea_plane());
                 texture = Some(shadow.atlas_view.clone());
                 self.shadow_in_frame = true;
             }
@@ -2087,14 +2099,14 @@ impl Extension for DistantLand {
             }
             return;
         }
-        // Version 4 ends before the name of the interior cell and the values of version 6.
-        const VERSION_4: usize = size_of::<Environment>() - 64 - 8;
+        // Version 4 ends before the name of the interior cell.
+        const VERSION_4: usize = core::mem::offset_of!(Environment, interior_name);
         if id == ENVIRONMENT_ID && bytes.len() >= VERSION_4 {
             let mut raw = [0u8; size_of::<Environment>()];
             let length = bytes.len().min(raw.len());
             raw[..length].copy_from_slice(&bytes[..length]);
             let environment: Environment = bytemuck::pod_read_unaligned(&raw);
-            if (4..=7).contains(&environment.version) {
+            if (4..=8).contains(&environment.version) {
                 // A game was loaded (flag 256, in one record only): the wait for the statics
                 // starts. The record can come in a loading screen, which has no world frame.
                 if environment.flags & 256 != 0 && self.prefetch.is_none() {
@@ -2411,7 +2423,7 @@ impl Extension for DistantLand {
                 layers: shadow.viewproj,
                 rcp: 1.0 / shadow.resolution as f32,
                 sun_vis: environment.map_or(0.0, |e| e.sun_vis),
-                above_sea: eye[2] > -1.0,
+                above_sea: eye[2] > environment.map_or(-1.0, |e| e.sea_plane()),
                 edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
             })
             .filter(|_| self.tunables.get(tunables::GRASS_SHADOW) > 0.5),
@@ -2767,7 +2779,7 @@ impl DistantLand {
             eye: [eye[0], eye[1], eye[2], 0.0],
             fog_color,
             fog,
-            flags: [exponential as u32 as f32, 0.0, 0.0, 0.0],
+            flags: [exponential as u32 as f32, 0.0, 0.0, self.environment.map_or(-1.0, |e| e.sea_plane())],
             sun_direction: [sun[0], sun[1], sun[2], 0.0],
             sun_color: [sun_color[0], sun_color[1], sun_color[2], 0.0],
             ambient: [ambient[0], ambient[1], ambient[2], 0.0],
@@ -2860,7 +2872,7 @@ impl DistantLand {
         Some([
             [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 0.0],
             [e.sky_col[0], e.sky_col[1], e.sky_col[2], e.nice_weather],
-            [sky[0], sky[1], sky[2], if e.eye[2] > -1.0 { 1.0 } else { 0.0 }],
+            [sky[0], sky[1], sky[2], if e.eye[2] > e.sea_plane() { 1.0 } else { 0.0 }],
             [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], 0.0],
             [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
             [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
@@ -2987,6 +2999,21 @@ mod version_tests {
         assert!(version_byte_problem(None).unwrap().contains("missing"));
         assert!(version_byte_problem(Some(&[])).is_some());
         assert!(version_byte_problem(Some(&[MGE_DL_VERSION, 0])).is_some());
+    }
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+
+    #[test]
+    fn the_sea_plane_is_the_engines_from_version_8() {
+        let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.water_plane = 512.0;
+        e.version = 7;
+        assert_eq!(e.sea_plane(), -1.0);
+        e.version = 8;
+        assert_eq!(e.sea_plane(), 512.0);
     }
 }
 

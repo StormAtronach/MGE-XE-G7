@@ -86,6 +86,9 @@ public:
     bool IntIllegSleep();
     bool IntHasWater();
     float WaterLevel();
+    // The height of the engine's water plane, whatever water volume the eye is in; the
+    // lowest float in a cell without water.
+    float WaterPlaneHeight();
 
     // Boxes of water that a mod reports through MGE_WaterVolumesSet, independent of the cell's
     // own water. min and max are world-space corners; the surface is at max[2].

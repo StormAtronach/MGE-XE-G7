@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 
 static MWBridge m_instance;
@@ -654,6 +655,21 @@ float MWBridge::WaterLevel() {
         return cell->waterLevelOrRegion.waterLevel;
     }
     return 0.0f;
+}
+
+//-----------------------------------------------------------------------------
+
+float MWBridge::WaterPlaneHeight() {
+    assert(m_loaded);
+    // The engine puts its plane at -1 in an exterior and at the cell's water level in an
+    // interior, and hides it in an interior without water (WaterController::updateForGrid
+    // 0x51BA20).
+    auto cell = getInteriorCell();
+    if (cell != nullptr && cell->getIsInterior() && !cell->getHasWater()) {
+        return std::numeric_limits<float>::lowest();
+    }
+    const NI::Node* plane = dataHandler()->waterController->waterPlane;
+    return plane->worldTransform.translation.z;
 }
 
 //-----------------------------------------------------------------------------

@@ -115,7 +115,7 @@ fn fog_water(direction: vec3f, distance: f32) -> vec4f {
     let fog = clamp(exp(-fog_distance), 0.0, 1.0);
     fog_distance = clamp(0.224 * fog_distance, 0.0, 1.0);
     var added = u.fog_color.rgb * (1.0 - fog);
-    if u.sky.w > 0.5 && water.sky_col.w > 0.001 && u.eye.z > -1.0 {
+    if u.sky.w > 0.5 && water.sky_col.w > 0.001 && u.eye.z > u.flags.w {
         let sun_cos = dot(direction, water.sun_pos.xyz);
         let mie = (1.58 / (1.24 - sun_cos)) * u.sun_altitude.z;
         let rayleigh = 1.0 - 0.09 * mie;
@@ -272,7 +272,7 @@ fn transmission(tint: vec3f, depth: f32) -> vec3f {
 fn sky_color(direction: vec3f) -> vec3f {
     let up = 1.0 - pow(clamp(1.0 - 2.22 * clamp(direction.z - 0.075, 0.0, 1.0), 0.0, 1.0), 1.15);
     var color = mix(u.fog_color.rgb, water.sky_col.rgb, up);
-    if u.sky.w > 0.5 && water.sky_col.w > 0.001 && u.eye.z > -1.0 {
+    if u.sky.w > 0.5 && water.sky_col.w > 0.001 && u.eye.z > u.flags.w {
         let sun_cos = dot(direction, water.sun_pos.xyz);
         let mie = (1.58 / (1.24 - sun_cos)) * u.sun_altitude.z;
         let rayleigh = 1.0 - 0.09 * mie;
