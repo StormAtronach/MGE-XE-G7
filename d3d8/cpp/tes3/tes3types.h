@@ -254,7 +254,11 @@ struct WeatherController {
     float ambientPostSunsetTime;                     // 0xFC
     char pad_100[0x70];                              // 0x100
     float transitionScalar;                          // 0x170
-    char pad_174[0x7C];                              // 0x174
+    char pad_174[0x25];                              // 0x174
+    // The camera is under the water plane of a cell with water (MWSE
+    // TES3WeatherController.h; WeatherController::updateUnderwaterSounds 0x440AF0).
+    bool underwaterPitchbendState;                   // 0x199
+    char pad_19A[0x56];                              // 0x19A
 };
 static_assert(sizeof(WeatherController) == 0x1F0, "TES3::WeatherController failed size validation");
 static_assert(offsetof(WeatherController, arrayWeathers) == 0x14, "TES3::WeatherController::arrayWeathers failed offset validation");
@@ -268,6 +272,7 @@ static_assert(offsetof(WeatherController, sunriseHour) == 0xDC, "TES3::WeatherCo
 static_assert(offsetof(WeatherController, ambientPreSunriseTime) == 0xF0, "TES3::WeatherController::ambientPreSunriseTime failed offset validation");
 static_assert(offsetof(WeatherController, ambientPostSunsetTime) == 0xFC, "TES3::WeatherController::ambientPostSunsetTime failed offset validation");
 static_assert(offsetof(WeatherController, transitionScalar) == 0x170, "TES3::WeatherController::transitionScalar failed offset validation");
+static_assert(offsetof(WeatherController, underwaterPitchbendState) == 0x199, "TES3::WeatherController::underwaterPitchbendState failed offset validation");
 
 //-----------------------------------------------------------------------------
 // Mobiles

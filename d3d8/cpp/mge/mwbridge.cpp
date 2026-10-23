@@ -377,7 +377,11 @@ bool MWBridge::IsUnderwater(float eyeZ) {
     if (m_cameraDry) {
         return false;
     }
-    return (CellHasWater() && (eyeZ < WaterLevel() - 1.0f));
+    if (m_inWaterVolume) {
+        return eyeZ < m_waterVolumeSurface - 1.0f;
+    }
+    // The engine's own state: its fog colour and its underwater sound use it.
+    return weatherController()->underwaterPitchbendState;
 }
 
 //-----------------------------------------------------------------------------
