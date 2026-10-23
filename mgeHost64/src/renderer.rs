@@ -2478,6 +2478,12 @@ impl Extension for DistantLand {
         self.volumes_ready
     }
 
+    /// The surfaces of water volumes are this extension's, whether the water is made yet or
+    /// not: the retained table offers them to `hold` in each frame.
+    fn claims(&self, facts: &DrawFacts) -> bool {
+        water::volume_marked(facts.specular_power)
+    }
+
     /// The surfaces of water volumes, at the end of the draws that do not blend: what
     /// blends goes over them, and they show what is under them.
     fn draw_held(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
