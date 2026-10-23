@@ -53,7 +53,7 @@ use mge_config::{ConfigDocument, FILE_NAME};
 use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status};
+use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status, TableShade};
 use water::{Water, WaterFrame};
 use post::{Post, Variables};
 use shadow::Shadow;
@@ -1339,6 +1339,67 @@ struct PerPixel {
     original: bool,
 }
 
+impl PerPixel {
+    /// The lights of a draw as the per-pixel light changes them; `camera_z` is the z axis of
+    /// the camera in the space of the lights.
+    fn shade_lights(&self, lights: &mut [LightData], camera_z: [f32; 3], sky: bool) {
+        let mut shared_constant = 0.33f32;
+        for light in lights.iter_mut() {
+            if light.position[3] == 3.0 {
+                let direction = light.direction;
+                let length = (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt().max(1e-12);
+                let (sun, amb) = if sky { (0.0, 0.0) } else { (self.sun, self.ambient) };
+                light.diffuse = [light.diffuse[0] * sun, light.diffuse[1] * sun, light.diffuse[2] * sun, 0.0];
+                light.ambient = [light.ambient[0] * amb, light.ambient[1] * amb, light.ambient[2] * amb, 0.0];
+                light.position = [0.0, 0.0, 0.0, 3.0];
+                light.direction = [direction[0] / length, direction[1] / length, direction[2] / length, 0.0];
+            } else if !self.original {
+                // The light of the game as it is: only the fade of MGE XE at a multiple of
+                // its radius. The engine's light has no range and no fade (0x6BAAF0).
+                let radius = light.cone[2];
+                let cutoff = if self.fade > 0.0 && radius > 0.0 { (self.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
+                light.position[3] = 1.0;
+                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
+            } else {
+                let falloff = light.attenuation;
+                let mut color = [light.diffuse[0], light.diffuse[1], light.diffuse[2]];
+                let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
+                if falloff[0] > 0.0 {
+                    shared_constant = falloff[0];
+                    quadratic = falloff[2];
+                } else if falloff[2] > 0.0 {
+                    color = color.map(|c| c * shared_constant);
+                    wrap = 1.0 + 1e-4 / falloff[2].sqrt();
+                    quadratic = shared_constant * falloff[2];
+                } else if falloff[1] == 0.100_000_01 {
+                    quadratic = 5e-5;
+                } else if falloff[1] > 0.0 {
+                    color = [0.25 + 1e-4 / falloff[1]; 3];
+                    wrap = 1.0;
+                    quadratic = 0.5555 * falloff[1] * falloff[1];
+                    bias = 25.0;
+                }
+                let radius = light.cone[2];
+                let cutoff = if self.fade > 0.0 && radius > 0.0 { (self.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
+                let position = light.position;
+                light.diffuse = [color[0], color[1], color[2], 0.0];
+                light.ambient = [wrap, 0.0, 0.0, 0.0];
+                light.position = [position[0] + bias * camera_z[0], position[1] + bias * camera_z[1], position[2] + bias * camera_z[2], 1.0];
+                light.attenuation = [0.0, 0.0, quadratic, 0.0];
+                // The radius stays: the reach of the light in the clusters of the frame
+                // without a cut-off (`nirender_wgpu::FrameLights`).
+                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
+            }
+        }
+        // One constant for all the lights of the draw, as the one register of Direct3D 9.
+        if self.original {
+            for light in lights.iter_mut() {
+                light.attenuation[0] = shared_constant;
+            }
+        }
+    }
+}
+
 /// The light of a pixel, and the curve of MGE XE for its light for each pixel. A point light
 /// is the light of the game (bit 512 of `counts.w`): its colour, its ambient colour, the
 /// three numbers of its falloff and its range, as the fixed function of Direct3D 8 lights a
@@ -1819,43 +1880,12 @@ impl Extension for DistantLand {
     /// All lights of the draw: the game gives at most 8 for each node, or 32 with the patch
     /// of `expanded_light_limit`.
     fn shade(&mut self, draw: &mut DrawData, lights: &mut [LightData], facts: &DrawFacts) {
-        // A draw that adds to the picture (a glow, a spell, a bug) under water: its light goes
-        // to the colour of the water with the distance, and the fog adds no colour to it.
-        let adds = facts.blend_enable && (facts.source_blend == 2 || facts.destination_blend == 2);
-        if adds && self.under_water() {
-            draw.counts[3] |= 1 | 2 | 256;
+        draw.counts[3] |= self.shade_flags(facts);
+        if let Some((direction, light)) = self.shadow_sun(facts) {
+            draw.extension[5] = direction;
+            draw.extension[7] = light;
         }
-        let shadows = self.shadow.is_some() && self.shadow_in_frame;
-        if self.shade.is_none() && !shadows {
-            return;
-        }
-        // The sun for the shadow of the draw: its direction and the light it gives, as
-        // shadowSunEstimate takes it (with the multiplier of the per-pixel light). The sun
-        // is the scene's (the weather's sky light), so the lights of a draw do not change
-        // the shadow. A scene without a sun gives no shadow.
-        if shadows && facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) {
-            if let Some((d, diffuse)) = self.scene_sun {
-                let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
-                let mult = self.shade.map_or(1.0, |p| p.sun);
-                let luminance = (diffuse[0] * 0.36 + diffuse[1] * 0.53 + diffuse[2] * 0.11) * mult;
-                let sun_vis = self.environment.map_or(0.0, |e| e.sun_vis);
-                draw.extension[5] = [d[0] / length, d[1] / length, d[2] / length, 0.0];
-                draw.extension[7] = [luminance * (0.25 + 0.75 * sun_vis) * self.shadow_day, 0.0, 0.0, 0.0];
-                draw.counts[3] |= 1 | 32;
-                if facts.blend_enable {
-                    draw.counts[3] |= 64;
-                }
-            }
-        }
-        let Some(p) = self.shade else {
-            draw.counts[3] |= 1;
-            return;
-        };
-        draw.counts[3] |= 16 | 128;
-        if !p.original {
-            draw.counts[3] |= 512;
-        }
-        let mut shared_constant = 0.33f32;
+        let Some(p) = self.shade else { return };
         // The z axis of the camera in the space of the lights: MGE XE moves one form of
         // light 25 units along it.
         let camera_z = [draw.view[2], draw.view[6], draw.view[10]];
@@ -1863,70 +1893,30 @@ impl Extension for DistantLand {
         // its class: MGE_LINK_CLASS_SKY_DOME (1) to MGE_LINK_CLASS_SUN_GLARE (8). The colour of
         // the ambient is no test: a cell can have a white ambient light.
         let sky = (1..=8).contains(&facts.class);
-        for light in lights.iter_mut() {
-            if light.position[3] == 3.0 {
-                let direction = light.direction;
-                let length = (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt().max(1e-12);
-                let (sun, amb) = if sky { (0.0, 0.0) } else { (p.sun, p.ambient) };
-                light.diffuse = [light.diffuse[0] * sun, light.diffuse[1] * sun, light.diffuse[2] * sun, 0.0];
-                light.ambient = [light.ambient[0] * amb, light.ambient[1] * amb, light.ambient[2] * amb, 0.0];
-                light.position = [0.0, 0.0, 0.0, 3.0];
-                light.direction = [direction[0] / length, direction[1] / length, direction[2] / length, 0.0];
-            } else if !p.original {
-                // The light of the game as it is: only the fade of MGE XE at a multiple of
-                // its radius. The engine's light has no range and no fade (0x6BAAF0).
-                let radius = light.cone[2];
-                let cutoff = if p.fade > 0.0 && radius > 0.0 { (p.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
-                light.position[3] = 1.0;
-                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
-            } else {
-                let falloff = light.attenuation;
-                let mut color = [light.diffuse[0], light.diffuse[1], light.diffuse[2]];
-                let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
-                if falloff[0] > 0.0 {
-                    shared_constant = falloff[0];
-                    quadratic = falloff[2];
-                } else if falloff[2] > 0.0 {
-                    color = color.map(|c| c * shared_constant);
-                    wrap = 1.0 + 1e-4 / falloff[2].sqrt();
-                    quadratic = shared_constant * falloff[2];
-                } else if falloff[1] == 0.100_000_01 {
-                    quadratic = 5e-5;
-                } else if falloff[1] > 0.0 {
-                    color = [0.25 + 1e-4 / falloff[1]; 3];
-                    wrap = 1.0;
-                    quadratic = 0.5555 * falloff[1] * falloff[1];
-                    bias = 25.0;
-                }
-                let radius = light.cone[2];
-                let cutoff = if p.fade > 0.0 && radius > 0.0 { (p.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
-                let position = light.position;
-                light.diffuse = [color[0], color[1], color[2], 0.0];
-                light.ambient = [wrap, 0.0, 0.0, 0.0];
-                light.position = [position[0] + bias * camera_z[0], position[1] + bias * camera_z[1], position[2] + bias * camera_z[2], 1.0];
-                light.attenuation = [0.0, 0.0, quadratic, 0.0];
-                // The radius stays: the reach of the light in the clusters of the frame
-                // without a cut-off (`nirender_wgpu::FrameLights`).
-                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
-            }
-        }
-        // One constant for all the lights of the draw, as the one register of Direct3D 9.
-        if p.original {
-            for light in lights.iter_mut() {
-                light.attenuation[0] = shared_constant;
-            }
-        }
+        p.shade_lights(lights, camera_z, sky);
         draw.scene_ambient = if sky {
             [1.25, 1.25, 1.25, 1.0]
         } else {
             [draw.scene_ambient[0] * p.ambient, draw.scene_ambient[1] * p.ambient, draw.scene_ambient[2] * p.ambient, draw.scene_ambient[3]]
         };
-        // A draw that adds to the picture gets darker in the fog and no fog colour. This is
-        // MGE XE's rule: the engine fogs every draw toward the colour of its fog property
-        // (`updateD3DState` 0x6B8352).
-        draw.counts[3] |= 1 | if adds { 2 } else { 0 };
         // The fog of this shading is on the distance from the camera.
         draw.fog[3] = 1.0;
+    }
+
+    fn shade_table(&mut self, view: &[f32; 16], lights: &mut [LightData], kinds: &[DrawFacts; 8]) -> TableShade {
+        // The table's draws are of the world (class 12), never of the sky.
+        let mut table = TableShade { flags: kinds.map(|facts| self.shade_flags(&facts)), ..TableShade::default() };
+        let opaque = DrawFacts { class: 12, blend_enable: false, source_blend: 0, destination_blend: 0, depth_write: true, specular_power: 0.0, emissive: [0.0; 4] };
+        if let Some((direction, light)) = self.shadow_sun(&opaque) {
+            table.extension5 = direction;
+            table.extension7 = light;
+        }
+        if let Some(p) = self.shade {
+            p.shade_lights(lights, [view[2], view[6], view[10]], false);
+            table.ambient_scale = [p.ambient; 3];
+            table.radial_fog = true;
+        }
+        table
     }
 
     fn sky_shader(&self) -> Option<String> {
@@ -2969,6 +2959,52 @@ impl DistantLand {
     /// 7), else from the colour of the sun.
     fn night(&self, scene: &SceneView) -> f32 {
         self.environment.filter(|e| e.version >= 7).map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night)
+    }
+
+    /// The bits of `counts.w` that `shade` sets for a draw with these facts.
+    fn shade_flags(&self, facts: &DrawFacts) -> u32 {
+        // A draw that adds to the picture (a glow, a spell, a bug) under water: its light goes
+        // to the colour of the water with the distance, and the fog adds no colour to it.
+        let adds = facts.blend_enable && (facts.source_blend == 2 || facts.destination_blend == 2);
+        let mut bits = 0;
+        if adds && self.under_water() {
+            bits |= 1 | 2 | 256;
+        }
+        if self.shade.is_none() && !(self.shadow.is_some() && self.shadow_in_frame) {
+            return bits;
+        }
+        if self.shadow_sun(facts).is_some() {
+            bits |= 1 | 32;
+            if facts.blend_enable {
+                bits |= 64;
+            }
+        }
+        let Some(p) = self.shade else { return bits | 1 };
+        bits |= 16 | 128;
+        if !p.original {
+            bits |= 512;
+        }
+        // A draw that adds to the picture gets darker in the fog and no fog colour. This is
+        // MGE XE's rule: the engine fogs every draw toward the colour of its fog property
+        // (`updateD3DState` 0x6B8352).
+        bits | 1 | if adds { 2 } else { 0 }
+    }
+
+    /// `DrawData::extension` 5 and 7 of a draw with these facts: the sun for its shadow, its
+    /// direction and the light it gives, as shadowSunEstimate takes it (with the multiplier
+    /// of the per-pixel light). The sun is the scene's (the weather's sky light), so the
+    /// lights of a draw do not change the shadow. A scene without a sun gives no shadow.
+    fn shadow_sun(&self, facts: &DrawFacts) -> Option<([f32; 4], [f32; 4])> {
+        let shadows = self.shadow.is_some() && self.shadow_in_frame;
+        if !shadows || !facts.depth_write || (facts.blend_enable && facts.destination_blend == 2) {
+            return None;
+        }
+        let (d, diffuse) = self.scene_sun?;
+        let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
+        let mult = self.shade.map_or(1.0, |p| p.sun);
+        let luminance = (diffuse[0] * 0.36 + diffuse[1] * 0.53 + diffuse[2] * 0.11) * mult;
+        let sun_vis = self.environment.map_or(0.0, |e| e.sun_vis);
+        Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [luminance * (0.25 + 0.75 * sun_vis) * self.shadow_day, 0.0, 0.0, 0.0]))
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {
