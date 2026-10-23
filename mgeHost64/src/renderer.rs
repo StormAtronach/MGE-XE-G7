@@ -1869,14 +1869,15 @@ impl Extension for DistantLand {
         // The z axis of the camera in the space of the lights: MGE XE moves one form of
         // light 25 units along it.
         let camera_z = [draw.view[2], draw.view[6], draw.view[10]];
-        // A scene with white ambient light (the sky dome, a menu) has a fixed ambient light
-        // and no sun.
-        let white = draw.scene_ambient == [1.0; 4];
+        // A draw of the sky has a fixed ambient light and no sun. The plugin names the sky by
+        // its class: MGE_LINK_CLASS_SKY_DOME (1) to MGE_LINK_CLASS_SUN_GLARE (8). The colour of
+        // the ambient is no test: a cell can have a white ambient light.
+        let sky = (1..=8).contains(&facts.class);
         for light in lights.iter_mut() {
             if light.position[3] == 3.0 {
                 let direction = light.direction;
                 let length = (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt().max(1e-12);
-                let (sun, amb) = if white { (0.0, 0.0) } else { (p.sun, p.ambient) };
+                let (sun, amb) = if sky { (0.0, 0.0) } else { (p.sun, p.ambient) };
                 light.diffuse = [light.diffuse[0] * sun, light.diffuse[1] * sun, light.diffuse[2] * sun, 0.0];
                 light.ambient = [light.ambient[0] * amb, light.ambient[1] * amb, light.ambient[2] * amb, 0.0];
                 light.position = [0.0, 0.0, 0.0, 3.0];
@@ -1925,7 +1926,7 @@ impl Extension for DistantLand {
                 light.attenuation[0] = shared_constant;
             }
         }
-        draw.scene_ambient = if white {
+        draw.scene_ambient = if sky {
             [1.25, 1.25, 1.25, 1.0]
         } else {
             [draw.scene_ambient[0] * p.ambient, draw.scene_ambient[1] * p.ambient, draw.scene_ambient[2] * p.ambient, draw.scene_ambient[3]]
