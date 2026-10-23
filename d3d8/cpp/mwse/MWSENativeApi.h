@@ -109,6 +109,25 @@ typedef struct MwseNativeAccumulatorFinishedV1 {
 	void* camera;
 } MwseNativeAccumulatorFinishedV1;
 
+// The player changed cell through the engine's cell change: 0x45CEF0 `game_cellChange` (a
+// door, a travel, `coc` and the other moves of the console, Recall and the interventions, a
+// script's PositionCell, the prison, the cell of a loaded game) at its thirteen callers, and
+// 0x45C9B0 `game_cellChangeWithCompanion` (a door or a travel with companions) at its two, and
+// at MWSE's own calls (`tes3.positionCell`). It fires after the engine function returns: the
+// cells of the new place are loaded and the player is in them, and the engine has drawn no
+// frame there. A walk across the border of an exterior cell does not fire it. Main thread.
+// Latest subscribe: none.
+#define MWSE_NATIVE_EVENT_PLAYER_CELL_CHANGED 5u
+typedef struct MwseNativePlayerCellChangedV1 {
+	uint32_t structSize;
+	// The `TES3::Cell` of the player before the change, or null.
+	void* previousCell;
+	// The `TES3::Cell` of the player after the change.
+	void* cell;
+	// 1 when the load of a saved game made the change (0x4C4B4F, 0x4C51AE); else 0.
+	uint32_t gameLoad;
+} MwseNativePlayerCellChangedV1;
+
 //
 // Overrides. The owner's function has the signature of the engine function. `engineFunction`
 // of `claim` gives the engine function, to call or not.

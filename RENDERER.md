@@ -182,11 +182,12 @@ change. That start can take some minutes. With an older file, set it below
   teleport, or as you travel), where Direct3D 9 shows them at once. The time is the
   parameter "Distant statics: fade-in time" of the renderer's parameters window (row
   "water (renderer)"); 0 turns the fade off until the game ends.
-- To have the distant land complete when a loaded game starts, as MGE XE on Direct3D 9 does
-  at the first load: "Wait on the loading screen for the distant land" in the Distant Land
-  page of the MGE XE GUI (`wait_on_load = true` under `[distant_land]`). The loading screen
-  then stays until the distant statics around you are there, at most 15 s. Teleports do not
-  wait; their statics fade in.
+- To have the distant land complete when a loaded game starts or after a teleport (a door,
+  a travel, Recall), as MGE XE on Direct3D 9 does at the first load: "Wait on the loading
+  screen for the distant land" in the Distant Land page of the MGE XE GUI
+  (`wait_on_load = true` under `[distant_land]`). The loading screen then stays until the
+  distant statics around you are there, at most 15 s. A teleport waits only with an MWSE
+  that has the event of the player's change of cell (its native event 5).
 - Three looks of the grass shader of Remiros' Groundcover are options in the Distant Land
   page of the MGE XE GUI (`[distant_land.grass]`, off at the start): `soft_end` (the grass
   sinks into the ground near the end of its range, so it ends without a line),

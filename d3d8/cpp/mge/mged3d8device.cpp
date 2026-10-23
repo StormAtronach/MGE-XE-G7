@@ -5,6 +5,7 @@
 #include "dxvk_morrowind_interop.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include "mgeversion.h"
 #include "camerarelative.h"
@@ -21,6 +22,8 @@
 #include "support/log.h"
 #include "userhud.h"
 #include "videobackground.h"
+#include "mwse/mwsenative.h"
+#include "tes3/tes3types.h"
 
 static int sceneCount;
 static bool rendertargetNormal, isHUDready;
@@ -1593,12 +1596,14 @@ namespace Deviceless {
     static const UINT PrefetchId = 10;
     static const DWORD WaitLimitMs = 15000;
 
-    // distant_land.wait_on_load: the game stays in its load, with its loading bar, until the
-    // helper says that the distant statics around the player are there, or WaitLimitMs. As
+    // The place of the player goes to the helper (record 10): it streams the distant land
+    // there, and says when the distant statics around the player are there (its arrival, the
+    // event distantLandReady "arrived"). With `wait`, from distant_land.wait_on_load, the game
+    // stays in its load, with its loading bar, until that answer or WaitLimitMs. As
     // DistantLand::drainUploadPump of the Direct3D 9 path holds the first load. The frames
     // of the loading bar go to the helper, and the plugin gives the answer of the helper at
     // their end (Deviceless::message).
-    static void waitForDistantLand(MWBridge* mwBridge) {
+    static void prefetchDistantLand(MWBridge* mwBridge, bool wait) {
         float position[3] = {};
         if (!mwBridge->tryGetPlayerPosition(position)) {
             LOG::logline("-- wgpu renderer: no position of the player after the load; no wait for the distant land");
@@ -1615,6 +1620,9 @@ namespace Deviceless {
         }
         distantLandArrived = false;
         sendToRenderer(PrefetchId, &prefetch, sizeof(prefetch));
+        if (!wait) {
+            return;
+        }
 
         // The loading bar, as drainUploadPump has it: its label is put back after the wait.
         const bool hadLoadingBar = mwBridge->isLoadingBar();
@@ -1666,8 +1674,34 @@ namespace Deviceless {
         visGroupsUnsent = true;
         gameLoaded = true;
         if (Configuration.DistantLandWaitOnLoad) {
-            waitForDistantLand(MWBridge::get());
+            prefetchDistantLand(MWBridge::get(), true);
         }
+    }
+
+    // A move to a place whose distant statics the helper may not have: from or to an
+    // interior, or across more than one exterior cell. A move to a neighbour cell streams as a
+    // walk across the border does.
+    static bool isFarMove(const TES3::Cell* from, const TES3::Cell* to) {
+        if (!from || !to) {
+            return true;
+        }
+        if (from->getIsInterior() || to->getIsInterior()) {
+            return from != to;
+        }
+        const auto& a = from->variantData.exterior;
+        const auto& b = to->variantData.exterior;
+        return std::abs(a.gridX - b.gridX) > 1 || std::abs(a.gridY - b.gridY) > 1;
+    }
+
+    // The player changed cell through the engine's cell change (MWSE's native event 5): a
+    // teleport (a door, a travel, coc, Recall). The engine has drawn no frame of the new place
+    // yet. The load of a saved game has its own wait (onResolveDuringInit).
+    static void __cdecl onPlayerCellChanged(const void* previousCell, const void* cell, bool gameLoad) {
+        auto mwBridge = MWBridge::get();
+        if (gameLoad || !mwBridge->IsLoaded() || !isFarMove(static_cast<const TES3::Cell*>(previousCell), static_cast<const TES3::Cell*>(cell))) {
+            return;
+        }
+        prefetchDistantLand(mwBridge, Configuration.DistantLandWaitOnLoad);
     }
 
     // The messages of the helper. 1: the distant land, version 1, then the reason
@@ -1745,6 +1779,9 @@ namespace Deviceless {
                 MWPatches::patchLightAttachRadius(&FixedFunctionShader::lightAttachRadius);
             }
             MWPatches::patchResolveDuringInit(&onResolveDuringInit);
+            if (!MwseNative::listenPlayerCellChanged(&onPlayerCellChanged)) {
+                LOG::logline("-- wgpu renderer: MWSE has no event of the player's change of cell; a teleport neither waits for the distant land nor says when it is there");
+            }
             // As the proxy device at its first scene of the loaded game.
             StatusOverlay::setStatus(XE_VERSION_STRING);
             if (Configuration.UIScale != 1.0f) {

@@ -19,6 +19,11 @@ namespace MwseNative {
     // Calls `listener` when the engine resolved the scripts' ids at the start of a game.
     bool listenGameIdsResolved(void (__cdecl* listener)());
 
+    // Calls `listener` when the player changed cell through the engine's cell change (a
+    // teleport, or the cell of a loaded game): the cell before and after, and whether the load
+    // of a saved game made the change.
+    bool listenPlayerCellChanged(void (__cdecl* listener)(const void* previousCell, const void* cell, bool gameLoad));
+
     // The most local lights of a node.
     bool requestLightLimit(unsigned int limit);
 

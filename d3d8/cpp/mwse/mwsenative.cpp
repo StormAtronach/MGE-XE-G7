@@ -11,6 +11,7 @@ namespace MwseNative {
     static const MwseNativeApiV1* table = nullptr;
     static void (*uiConfiguredListener)() = nullptr;
     static void (__cdecl* gameIdsResolvedListener)() = nullptr;
+    static void (__cdecl* playerCellChangedListener)(const void*, const void*, bool) = nullptr;
 
     bool init(HMODULE mwse) {
         auto getNativeApi = reinterpret_cast<MwseGetNativeApi>(GetProcAddress(mwse, "MWSE_GetNativeApi"));
@@ -96,6 +97,22 @@ namespace MwseNative {
         gameIdsResolvedListener = listener;
         if (!subscribe(MWSE_NATIVE_EVENT_GAME_IDS_RESOLVED, onGameIdsResolved, "the event of the resolve of the game's ids")) {
             gameIdsResolvedListener = nullptr;
+            return false;
+        }
+        return true;
+    }
+
+    static void __cdecl onPlayerCellChanged(void*, const void* data) {
+        auto packet = static_cast<const MwseNativePlayerCellChangedV1*>(data);
+        if (playerCellChangedListener && packet->structSize >= sizeof(MwseNativePlayerCellChangedV1)) {
+            playerCellChangedListener(packet->previousCell, packet->cell, packet->gameLoad != 0);
+        }
+    }
+
+    bool listenPlayerCellChanged(void (__cdecl* listener)(const void* previousCell, const void* cell, bool gameLoad)) {
+        playerCellChangedListener = listener;
+        if (!subscribe(MWSE_NATIVE_EVENT_PLAYER_CELL_CHANGED, onPlayerCellChanged, "the event of the player's change of cell")) {
+            playerCellChangedListener = nullptr;
             return false;
         }
         return true;

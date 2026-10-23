@@ -144,16 +144,17 @@ const PICTURE_ID: u32 = 3;
 const STATUS_ID: u32 = 9;
 /// The message of the helper for MGE XE about the distant land (`Deviceless::message`):
 /// version 1, then 1 when the distant land of the session is loaded, 2 when after a game
-/// load or a jump of the camera the distant statics around the camera are there; then the
-/// number of the wait that it answers (`PREFETCH_ID`), 0 for none.
+/// load or a teleport the distant statics around the camera are there; then the number of
+/// the wait that it answers (`PREFETCH_ID`), 0 for none.
 const MESSAGE_DISTANT_LAND: u32 = 1;
 const LOADED: u32 = 1;
 const ARRIVED: u32 = 2;
-/// The longest wait for the statics after a game load or a jump, from the end of the load
+/// The longest wait for the statics after a game load or a teleport, from the end of the load
 /// of the data: then `ARRIVED` goes anyway, as the bootstrap of Direct3D 9 gives up.
 const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
-/// The place of a wait of a game load for the distant land (`Deviceless::waitForDistantLand`,
-/// `distant_land.wait_on_load`): version 1, the number of the wait, the position of the
+/// The place of the player after a teleport, or of a wait of a game load
+/// (`Deviceless::prefetchDistantLand`; a teleport comes from MWSE's native event 5 and holds
+/// with `distant_land.wait_on_load`): version 1, the number of the wait, the position of the
 /// player, the name of the interior cell (64 bytes, empty for the exterior). The helper
 /// streams for it at the end of each frame until a world frame comes, and gives the number
 /// back with its `ARRIVED`.
@@ -376,11 +377,10 @@ pub struct DistantLand {
     messages_out: Vec<(u32, Vec<u8>)>,
     /// `LOADED` was said.
     loaded_said: bool,
-    /// After a game load or a jump of the camera: the start of the wait for the statics, and
-    /// the world frames since then. The position of the camera in the last world frame.
+    /// After a game load or a teleport: the start of the wait for the statics, and the world
+    /// frames since then.
     arrival: Option<(Instant, u32)>,
-    last_eye: Option<[f32; 3]>,
-    /// The place of a wait of a game load (record 10): the world space and the eye, until a
+    /// The place of a teleport or of a wait of a game load (record 10): the world space and the eye, until a
     /// world frame comes; and the number of the wait that `ARRIVED` answers (0 for none).
     prefetch: Option<(Vec<u8>, [f32; 3])>,
     arrival_serial: u32,
@@ -731,7 +731,6 @@ impl DistantLand {
             messages_out: Vec::new(),
             loaded_said: false,
             arrival: None,
-            last_eye: None,
             prefetch: None,
             arrival_serial: 0,
             tunables: tunables::Tunables::new(),
@@ -1707,15 +1706,9 @@ impl Extension for DistantLand {
         if let Some(statics) = self.statics.as_mut() {
             statics.set_fade(self.tunables.get(tunables::STATICS_FADE));
         }
-        // A jump of the camera of more than 2 cells (a teleport) waits for the statics as a
-        // game load does; each world frame counts for a wait.
-        let eye = scene.eye.map(|v| v as f32);
+        // A game load or a teleport (the prefetch record) waits for the statics; each world
+        // frame counts for a wait.
         self.prefetch = None;
-        if self.last_eye.is_some_and(|last| (eye[0] - last[0]).hypot(eye[1] - last[1]) > 2.0 * CELL) {
-            self.arrival = Some((Instant::now(), 0));
-            self.arrival_serial = 0;
-        }
-        self.last_eye = Some(eye);
         if let Some((_, frames)) = self.arrival.as_mut() {
             *frames += 1;
         }
@@ -2051,8 +2044,6 @@ impl Extension for DistantLand {
                 self.prefetch = Some((name, eye));
                 self.arrival = Some((Instant::now(), 0));
                 self.arrival_serial = serial;
-                // The first world frame there is no jump.
-                self.last_eye = Some(eye);
             }
             return;
         }

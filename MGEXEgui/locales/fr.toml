@@ -65,7 +65,7 @@ grass_wrap_lighting = "Herbe : éclairage enveloppant (Remiros' Groundcover, mot
 
 enabled_tip = "Affiche le terrain et les objets au-delà de la distance de vue normale de Morrowind."
 auto_rebuild_tip = "Régénère les paysages distants au démarrage lorsque la tâche enregistrée ne correspond plus au contenu installé."
-wait_on_load_tip = "Après le chargement d'une partie, l'écran de chargement reste jusqu'à ce que les objets distants autour du joueur soient prêts (15 s au plus), comme sous Direct3D 9 au premier chargement. Sans cette option, ils apparaissent en fondu après le chargement."
+wait_on_load_tip = "Après le chargement d'une partie ou une téléportation (une porte, un voyage), l'écran de chargement reste jusqu'à ce que les objets distants autour du joueur soient prêts (15 s au plus), comme sous Direct3D 9 au premier chargement. Sans cette option, ils apparaissent en fondu après le chargement."
 grass_soft_end_tip = "Près de la fin de sa portée, l'herbe s'enfonce dans le sol à une distance variable, pour finir sans ligne nette."
 grass_vertex_color_sway_tip = "Le rouge de la couleur des sommets d'un modèle d'herbe règle l'ondulation de chaque partie : une partie sans rouge reste immobile. Avec l'éclairage enveloppant, seules les parties rouges le reçoivent. Pour les modèles d'herbe faits avec des couleurs de sommets, comme Remiros' Groundcover."
 grass_wrap_lighting_tip = "La lumière du soleil enveloppe le bord des brins, et une partie traverse depuis l'arrière."

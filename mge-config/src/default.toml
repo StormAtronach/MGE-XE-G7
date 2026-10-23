@@ -107,9 +107,10 @@ enabled = true
 # generation settings, or the version of the data changed). The GUI saves the job when it
 # generates.
 automatic_rebuild = true
-# The wgpu renderer: after a game load, keep the loading screen until the distant statics
-# around the player are on the GPU (at most 15 s), as MGE XE on Direct3D 9 does at the first
-# load. Without it they fade in after the load.
+# The wgpu renderer: after a game load or a teleport (a door, a travel; it needs MWSE's
+# native event 5), keep the loading screen until the distant statics around the player are on
+# the GPU (at most 15 s), as MGE XE on Direct3D 9 does at the first load. Without it they fade
+# in after the load.
 wait_on_load = false
 # Read the scene's real depth buffer instead of redrawing geometry to approximate
 # it. Removes about half the depth pass, and fixes objects vanishing from
