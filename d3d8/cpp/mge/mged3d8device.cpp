@@ -1580,6 +1580,16 @@ namespace Deviceless {
             }
         }
         CloseHandle(h);
+
+        // The kinds of the groups, for the cost of a scan: a unique object is found again in
+        // the loaded cells at each scan.
+        unsigned kinds[4] = {};
+        for (const auto& vis : DistantLand::dynamicVisGroups) {
+            const auto kind = static_cast<unsigned>(vis.source);
+            kinds[kind < 4 ? kind : 0]++;
+        }
+        LOG::logline("-- vis groups: %u read; %u journal, %u global, %u unique object, %u of no kind (group 0 is one)",
+            unsigned(DistantLand::dynamicVisGroups.size()), kinds[1], kinds[2], kinds[3], kinds[0]);
     }
 
     // The place of a wait for the distant land: record 10 (PREFETCH_ID in
