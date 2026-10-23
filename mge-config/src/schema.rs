@@ -600,9 +600,9 @@ impl Default for WaterSettings {
             wave_height: 50,
             caustics_intensity: 50,
             volume_reflection_cells: 8.0,
-            volume_shadows: false,
-            volume_point_lights: false,
-            volume_caustics: false,
+            volume_shadows: true,
+            volume_point_lights: true,
+            volume_caustics: true,
         }
     }
 }

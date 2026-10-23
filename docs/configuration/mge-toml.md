@@ -242,8 +242,8 @@ camera, reflects what is on screen for every value but `0`. The default is `8.0`
 they reflect the sky only.
 
 Three settings put light on water volumes. They have no obsolete INI predecessor. Each is
-`false` by default, and the water shading has no code for one that is off, so it costs
-nothing then. A change takes effect when the game starts.
+`true` by default. The water shading has no code for one that is off, so an option that is
+off costs nothing. A change takes effect when the game starts.
 
 - `distant_land.water.volume_shadows`: the shadows of distant land fall on the surface. In a
   shadow the water has no glint of the sun and its depth is a little darker. It needs

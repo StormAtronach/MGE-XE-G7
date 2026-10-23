@@ -138,8 +138,8 @@ change. That start can take some minutes. With an older file, set it below
   boat's hold) are drawn as water, near the camera and among the distant statics. The dry
   spaces that a mod reports (the inside of a boat's hold) have no water. A mod can give a
   surface a water shader of its own (`Data Files/shaders/water/<name>.wgsl`).
-- More light on water volumes: three options under `[distant_land.water]`, each off at the
-  start. `volume_shadows`: the shadows of distant land fall on the surface.
+- More light on water volumes: three options under `[distant_land.water]`, each on by
+  default. `volume_shadows`: the shadows of distant land fall on the surface.
   `volume_point_lights`: the lamps and fires of the game glint in it. `volume_caustics`: the
   light pattern of ripples on what is under it.
 - The vis groups of the distant statics: a group of distant statics that the game hides is
