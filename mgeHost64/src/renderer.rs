@@ -267,6 +267,19 @@ impl Environment {
     fn sea_plane(&self) -> f32 {
         if self.version >= 8 { self.water_plane } else { -1.0 }
     }
+
+    /// The height of the water surface that MGE XE draws: the engine's water plane (version
+    /// 8), or the top of the water volume the camera is in (flag 16). A record below version 8,
+    /// and a cell without water, give the level of the record, as Direct3D 9 draws it.
+    fn surface_level(&self) -> f32 {
+        if self.version >= 8 && self.flags & 16 == 0 && self.has_water != 0 { self.water_plane } else { self.water_level }
+    }
+
+    /// The height of the mirror of the reflection and of the split of the blends at the water:
+    /// the surface (version 8). Below version 8 the level less 1, as Direct3D 9 mirrors it.
+    fn mirror_level(&self) -> f32 {
+        if self.version >= 8 { self.surface_level() } else { self.water_level - 1.0 }
+    }
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -1772,7 +1785,7 @@ impl Extension for DistantLand {
                         like_exterior: e.flags & 4 != 0,
                         precipitation: e.precipitation,
                         foot: (e.foot_valid != 0).then_some(e.foot_pos),
-                        water_level: e.water_level,
+                        water_level: e.surface_level(),
                         player_height: e.player_height,
                     },
                 );
@@ -1845,11 +1858,11 @@ impl Extension for DistantLand {
             values,
             texture,
             post: post || self.menu_keeping,
-            // The surface of the water (the plane lies at the level less 1): what blends on
-            // its far side goes into the picture before the water, so the water shows it,
-            // and what blends on the side of the camera goes over the water.
+            // The surface of the water (`Environment::mirror_level`): what blends on its far
+            // side goes into the picture before the water, so the water shows it, and what
+            // blends on the side of the camera goes over the water.
             class_plane: (water && !in_volume).then(|| {
-                let level = self.environment.map_or(0.0, |e| e.water_level) as f64 - 1.0;
+                let level = self.environment.map_or(-1.0, |e| e.mirror_level()) as f64;
                 (10, if self.under_water() { [0.0, 0.0, -1.0, level] } else { [0.0, 0.0, 1.0, -level] })
             }),
             hold: self.volumes_ready || (self.enabled && self.water_enabled && self.water.is_none()),
@@ -2205,7 +2218,7 @@ impl Extension for DistantLand {
                 }
             }
             if let (Some(_), Some(frame)) = (self.water.as_ref().filter(|_| self.reflect_statics), water_frame.as_ref()) {
-                let mirrored_view = multiply(&Water::mirror(frame.water_level), &scene.view);
+                let mirrored_view = multiply(&Water::mirror(frame.mirror_level), &scene.view);
                 let projection = Water::far_projection(scene, frame.draw_distance);
                 sets.push(statics::CullSet { set: 1, planes: Water::reflection_planes(&mirrored_view, &projection), eye, fog_end: fog_end.min(self.near_static_end) });
             }
@@ -2291,7 +2304,7 @@ impl Extension for DistantLand {
             mirror_view.flags[1] = if frame.underwater { -1.0 } else { 1.0 };
             // With the dynamic waves the plane can be lower by half of the wave height:
             // the cut moves to the side that the mirror does not show.
-            mirror_view.flags[2] = frame.water_level - 1.0 - mirror_view.flags[1] * 0.5 * frame.wave_height.unwrap_or(0.0);
+            mirror_view.flags[2] = frame.mirror_level - mirror_view.flags[1] * 0.5 * frame.wave_height.unwrap_or(0.0);
             views.write(scene.queue, view::MIRROR, &mirror_view);
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
@@ -2591,7 +2604,7 @@ impl DistantLand {
             eyevec: [scene.view[2], scene.view[6], scene.view[10], sunvis],
             eyepos: [eye[0], eye[1], eye[2], fov],
             sunvec: [sunvec[0], sunvec[1], sunvec[2], e.time],
-            suncol: [scene.sun_color[0], scene.sun_color[1], scene.sun_color[2], if e.has_water != 0 { e.water_level } else { -1.0e9 }],
+            suncol: [scene.sun_color[0], scene.sun_color[1], scene.sun_color[2], if e.has_water != 0 { e.surface_level() } else { -1.0e9 }],
             sunamb: [scene.sun_ambient[0] + scene.ambient[0], scene.sun_ambient[1] + scene.ambient[1], scene.sun_ambient[2] + scene.ambient[2], if like_exterior { 0.0 } else { 1.0 }],
             sunpos: [sun_pos[0], sun_pos[1], sun_pos[2], if underwater { 1.0 } else { 0.0 }],
             hdr: [1.0; 4],
@@ -2790,7 +2803,8 @@ impl DistantLand {
             // colour of the horizon of the game (its fog colour), no scattering.
             let fog = [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2]];
             return Some(WaterFrame {
-                water_level: e.water_level,
+                water_level: e.surface_level(),
+                mirror_level: e.mirror_level(),
                 underwater,
                 time: e.time,
                 sun_pos: [0.0, 0.0, -1.0],
@@ -2813,7 +2827,8 @@ impl DistantLand {
         self.gpu.as_ref()?;
         let sun_pos = e.sun_pos;
         Some(WaterFrame {
-            water_level: e.water_level,
+            water_level: e.surface_level(),
+            mirror_level: e.mirror_level(),
             underwater,
             time: e.time,
             sun_pos,
@@ -3041,6 +3056,30 @@ mod environment_tests {
         assert_eq!(e.sea_plane(), -1.0);
         e.version = 8;
         assert_eq!(e.sea_plane(), 512.0);
+    }
+
+    #[test]
+    fn the_surface_and_its_mirror_are_the_engines_plane_from_version_8() {
+        let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.water_level = 0.0;
+        e.water_plane = -1.0;
+        e.has_water = 1;
+        // Version 7: Direct3D 9's surface at the level, its mirror 1 under it.
+        e.version = 7;
+        assert_eq!((e.surface_level(), e.mirror_level()), (0.0, -1.0));
+        // Version 8: both at the engine's plane.
+        e.version = 8;
+        assert_eq!((e.surface_level(), e.mirror_level()), (-1.0, -1.0));
+        // In a water volume: its top.
+        e.flags = 16;
+        e.water_level = 300.0;
+        assert_eq!((e.surface_level(), e.mirror_level()), (300.0, 300.0));
+        // A cell without water: the record's level, never the plane's lowest float.
+        e.flags = 0;
+        e.has_water = 0;
+        e.water_level = 0.0;
+        e.water_plane = f32::MIN;
+        assert_eq!((e.surface_level(), e.mirror_level()), (0.0, 0.0));
     }
 }
 

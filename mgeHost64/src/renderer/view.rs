@@ -33,7 +33,7 @@ pub struct View {
     /// The exponential fog: its start and its divisor. The linear fog: its start and its end.
     pub fog: [f32; 4],
     /// x: 1 for the exponential fog past the view range. In a reflection: y the side of the
-    /// water plane to keep (1 above, -1 below), z the plane (the water level less 1). w: the
+    /// water plane to keep (1 above, -1 below), z the plane (`Environment::mirror_level`). w: the
     /// height of the engine's water plane; the eye is above the sea above it.
     pub flags: [f32; 4],
     pub sun_direction: [f32; 4],

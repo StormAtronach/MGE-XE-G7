@@ -182,7 +182,10 @@ fn plane_color(in: Out) -> vec4f {
 
 /// What the water needs from the environment and the frame.
 pub struct WaterFrame {
+    /// The height of the surface (`Environment::surface_level`).
     pub water_level: f32,
+    /// The height of the mirror of the reflection (`Environment::mirror_level`).
+    pub mirror_level: f32,
     pub underwater: bool,
     pub time: f32,
     /// The direction to the sun (z negated when the sun is not visible), its visibility.
@@ -540,14 +543,14 @@ impl Water {
         })
     }
 
-    /// The matrix that mirrors the world in the plane of the water (z = level - 1), with the
-    /// layout of Direct3D.
-    pub fn mirror(water_level: f32) -> [f32; 16] {
+    /// The matrix that mirrors the world in the plane z = `mirror_level`, with the layout of
+    /// Direct3D.
+    pub fn mirror(mirror_level: f32) -> [f32; 16] {
         let mut m = [0.0f32; 16];
         m[0] = 1.0;
         m[5] = 1.0;
         m[10] = -1.0;
-        m[14] = 2.0 * (water_level - 1.0);
+        m[14] = 2.0 * mirror_level;
         m[15] = 1.0;
         m
     }
@@ -585,7 +588,7 @@ impl Water {
                 multiview_mask: None,
             })
             .forget_lifetime();
-        let mirrored_view = multiply(&Self::mirror(frame.water_level), &scene.view);
+        let mirrored_view = multiply(&Self::mirror(frame.mirror_level), &scene.view);
         let projection = Self::far_projection(scene, frame.draw_distance);
         self.levels_wanted = frame.blur_reflections && frame.blur_contact;
         self.reflected = true;
@@ -648,7 +651,7 @@ impl Water {
         if frame.underwater {
             return;
         }
-        let mirror = Self::mirror(frame.water_level).map(|v| v as f64);
+        let mirror = Self::mirror(frame.mirror_level).map(|v| v as f64);
         replay.replay(
             pass,
             &ReplayView {
@@ -660,7 +663,7 @@ impl Water {
                 samples: 1,
                 flip_cull: true,
                 // With the dynamic waves the plane can be lower by half of the wave height.
-                clip_plane: Some([0.0, 0.0, 1.0, -(frame.water_level as f64 - 1.0) + 0.5 * frame.wave_height.unwrap_or(0.0) as f64]),
+                clip_plane: Some([0.0, 0.0, 1.0, -(frame.mirror_level as f64) + 0.5 * frame.wave_height.unwrap_or(0.0) as f64]),
                 opaque_only: false,
                 translucent_only: false,
                 force_depth_test: true,
