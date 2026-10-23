@@ -1361,3 +1361,7 @@ void* MWBridge::findFirstReferenceById(const char* id) {
 unsigned int MWBridge::getRecordFlags(const void* record) {
     return static_cast<const TES3::BaseObject*>(record)->objectFlags;
 }
+
+bool MWBridge::isCellWorkerRunning() {
+    return dataHandler()->backgroundThreadRunning;
+}

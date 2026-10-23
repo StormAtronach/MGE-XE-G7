@@ -187,6 +187,8 @@ public:
     static IPC::Client ipcClient;
     static std::vector<DynamicVisGroup> dynamicVisGroups;
     static void* lastDistantVisCell;
+    // The last scan kept the state of the unique-object groups because the cell worker ran.
+    static bool visGroupsDeferred;
     // Cached SetWorldSpace result; invalidated on every host (re)start.
     static std::string lastWorldSpaceKey;
     static bool lastWorldSpaceFound;
@@ -379,6 +381,9 @@ public:
     static void onResolveDuringInit();
     static void resolveDynamicVisGroups();
     static void scanDynamicVisGroups();
+    // A scan of the vis groups is due: the player's cell changed, or the last scan deferred
+    // the unique-object groups and the cell worker has stopped since.
+    static bool isVisGroupScanDue(void* playerCell);
     static bool isVisGroupShown(const DynamicVisGroup& vis);
     // A line in the log for the time of a scan of the vis groups and the stalls of the cell
     // worker in it.

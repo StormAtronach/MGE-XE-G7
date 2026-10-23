@@ -82,6 +82,7 @@ VendorSpecificRendering DistantLand::vsr;
 IPC::Client DistantLand::ipcClient;
 std::vector<DistantLand::DynamicVisGroup> DistantLand::dynamicVisGroups;
 void* DistantLand::lastDistantVisCell;
+bool DistantLand::visGroupsDeferred = false;
 std::string DistantLand::lastWorldSpaceKey;
 bool DistantLand::lastWorldSpaceFound = false;
 bool DistantLand::worldSpaceCacheValid = false;
@@ -2323,6 +2324,7 @@ void DistantLand::release() {
 
     dynamicVisGroups.clear();
     lastDistantVisCell = nullptr;
+    visGroupsDeferred = false;
     isDistantLandLoaded = false;
     staticsUploaded = false;
 

@@ -170,6 +170,10 @@ public:
     // only, and not inside a stall of the cell worker (the walk stalls it).
     void* findFirstReferenceById(const char *id);
     unsigned int getRecordFlags(const void* record);
+    // The cell worker loads cells now. Only the main thread resumes it, so on the main thread
+    // a false result stays false until the main thread runs the game's cell code again, and
+    // a stall then costs no wait.
+    bool isCellWorkerRunning();
 
     // The waits of the main thread for the cell worker in the stalls of this bridge: their
     // count, their sum and the longest, in milliseconds.

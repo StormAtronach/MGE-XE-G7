@@ -594,7 +594,9 @@ struct DataHandler {
     char pad_B4F0[0x1E];               // 0xB4F0
     bool backgroundThreadStallAsked;   // 0xB50E, set by the main thread in waitForBackgroundThread
     bool backgroundThreadStalled;      // 0xB50F, set by the cell worker when it stops
-    char pad_B510[0x30];               // 0xB510
+    char pad_B510[0x1];                // 0xB510
+    bool backgroundThreadRunning;      // 0xB511, set by the main thread when it resumes the cell worker; cleared by the worker before it suspends itself
+    char pad_B512[0x2E];               // 0xB512
     Cell* currentCell;                 // 0xB540
     char pad_B544[0x14];               // 0xB544
 
@@ -607,6 +609,7 @@ static_assert(offsetof(DataHandler, sgFogProperty) == 0x9C, "TES3::DataHandler::
 static_assert(offsetof(DataHandler, currentInteriorCell) == 0xAC, "TES3::DataHandler::currentInteriorCell failed offset validation");
 static_assert(offsetof(DataHandler, waterController) == 0xB4EC, "TES3::DataHandler::waterController failed offset validation");
 static_assert(offsetof(DataHandler, backgroundThreadStallAsked) == 0xB50E, "TES3::DataHandler::backgroundThreadStallAsked failed offset validation");
+static_assert(offsetof(DataHandler, backgroundThreadRunning) == 0xB511, "TES3::DataHandler::backgroundThreadRunning failed offset validation");
 static_assert(offsetof(DataHandler, currentCell) == 0xB540, "TES3::DataHandler::currentCell failed offset validation");
 
 struct Game;

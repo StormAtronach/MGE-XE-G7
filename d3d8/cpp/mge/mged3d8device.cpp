@@ -1731,10 +1731,11 @@ namespace Deviceless {
 
     static void scanVisGroups(MWBridge* mwBridge) {
         void* playerCell = mwBridge->getPlayerCell();
-        if (playerCell == DistantLand::lastDistantVisCell) {
+        if (!DistantLand::isVisGroupScanDue(playerCell)) {
             return;
         }
         DistantLand::lastDistantVisCell = playerCell;
+        DistantLand::visGroupsDeferred = false;
 
         auto& groups = DistantLand::dynamicVisGroups;
         bool changed = visGroupsUnsent;

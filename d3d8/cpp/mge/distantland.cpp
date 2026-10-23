@@ -1092,7 +1092,7 @@ bool DistantLand::selectDistantCell() {
     if (Configuration.MGEFlags & USE_DISTANT_LAND) {
         // Scan dynamic vis on cell change
         void* playerCell = mwBridge->getPlayerCell();
-        if (playerCell != lastDistantVisCell) {
+        if (isVisGroupScanDue(playerCell)) {
             scanDynamicVisGroups();
             lastDistantVisCell = playerCell;
         }
@@ -1182,6 +1182,15 @@ void DistantLand::resolveDynamicVisGroups() {
     lastDistantVisCell = nullptr;
 }
 
+// isVisGroupScanDue - A scan of the vis groups is due: the player's cell changed, or the last
+// scan deferred the unique-object groups and the cell worker has stopped since.
+bool DistantLand::isVisGroupScanDue(void* playerCell) {
+    if (playerCell != lastDistantVisCell) {
+        return true;
+    }
+    return visGroupsDeferred && !MWBridge::get()->isCellWorkerRunning();
+}
+
 // isVisGroupShown - Whether the game data shows a resolved vis group now
 bool DistantLand::isVisGroupShown(const DynamicVisGroup& vis) {
     auto mwBridge = MWBridge::get();
@@ -1200,7 +1209,13 @@ bool DistantLand::isVisGroupShown(const DynamicVisGroup& vis) {
     case DynamicVisGroup::DataSource::UniqueObject: {
         // The reference is found again at each scan and not kept: the cell worker frees a
         // temporary reference when it unloads its cell. With no reference in the loaded
-        // cells, the group keeps its state.
+        // cells, the group keeps its state. While the cell worker runs, the lookup must stall
+        // it, and each stall waits until the worker has added its current reference: the
+        // group keeps its state, and the scan runs again when the worker has stopped.
+        if (mwBridge->isCellWorkerRunning()) {
+            visGroupsDeferred = true;
+            return vis.enabled;
+        }
         const void* reference = mwBridge->findFirstReferenceById(vis.id.c_str());
         if (!reference) {
             return vis.enabled;
@@ -1224,6 +1239,7 @@ bool DistantLand::isVisGroupShown(const DynamicVisGroup& vis) {
 // scanDynamicVisGroups - Scan through game data for visibility changes
 void DistantLand::scanDynamicVisGroups() {
     dynVisFlagsShared.clear();
+    visGroupsDeferred = false;
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
 
@@ -1253,10 +1269,10 @@ void DistantLand::scanDynamicVisGroups() {
 }
 
 // logWorkerStalls - The time of a scan of the vis groups (in counts of
-// QueryPerformanceCounter) and the stalls of the cell worker in it. A scan runs at a cell
-// change, when the worker loads the cells ahead, so each stall waits for up to one
-// reference. A line when the scan or the waits take 2 ms or more; a line for each scan
-// when MGE_XE_STALL_LOG=1.
+// QueryPerformanceCounter) and the stalls of the cell worker in it. A scan stalls the
+// worker only when it does not run (the unique-object groups wait for that), so a stall
+// should wait 0 ms. A line when the scan or the waits take 2 ms or more; a line for each
+// scan when MGE_XE_STALL_LOG=1.
 void DistantLand::logWorkerStalls(size_t groups, long long scanCounts) {
     static const bool everyScan = [] {
         char value[4] = {};
@@ -1269,8 +1285,9 @@ void DistantLand::logWorkerStalls(size_t groups, long long scanCounts) {
     if (!everyScan && stalls.totalMs < 2.0 && scanMs < 2.0) {
         return;
     }
-    LOG::logline("-- vis groups: %u groups read at a cell change in %.2f ms; %u stalls of the cell worker, %.2f ms waited, the longest %.2f ms",
-        unsigned(groups), scanMs, stalls.count, stalls.totalMs, stalls.longestMs);
+    LOG::logline("-- vis groups: %u groups read at a cell change in %.2f ms; %u stalls of the cell worker, %.2f ms waited, the longest %.2f ms%s",
+        unsigned(groups), scanMs, stalls.count, stalls.totalMs, stalls.longestMs,
+        visGroupsDeferred ? "; the unique objects deferred: the cell worker runs" : "");
 }
 
 // setView - Called once per frame to setup view dependent data
