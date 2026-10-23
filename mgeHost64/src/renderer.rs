@@ -331,14 +331,10 @@ pub struct DistantLand {
     shade: Option<PerPixel>,
     /// The sun of the frame for the shadow of a draw: the direction the light goes in and
     /// its colour, from the scene's sun (the weather's sky light, the plugin's scene record),
-    /// `None` when the scene has none (then the draw's own directional light serves).
+    /// `None` when the scene has none. A draw's own directional light never serves: it can
+    /// be a mod's light. For a stream without the scene record the renderer gives the sun of
+    /// the engine's draw in `SceneView::sun_direction`.
     scene_sun: Option<([f32; 3], [f32; 3])>,
-    /// The sun as the last draw with a directional light gave it, for a scene without a
-    /// sun (an older plugin, or its mode without the table). The shadow map, the post chain
-    /// and the water volumes take it before the sun's position, as the shade of a draw
-    /// does: at night the sun's position is below the horizon, and the light of the game
-    /// is not.
-    draw_sun: Option<([f32; 3], [f32; 3])>,
     /// How much of the day there is (1 less the night of the frame). The sun casts no
     /// shadow at night, and the shadow fades through dusk and dawn with the game's ambient
     /// of the hour. 0 means no shadow map for the frame.
@@ -709,7 +705,6 @@ impl DistantLand {
             distant_cell: true,
             shade: None,
             scene_sun: None,
-            draw_sun: None,
             shadow_day: 1.0,
             synchronous: false,
             blend: None,
@@ -1638,7 +1633,6 @@ impl Extension for DistantLand {
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
-        let draw_sun = self.draw_sun;
         self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
         self.finish_load(scene);
@@ -1773,7 +1767,7 @@ impl Extension for DistantLand {
                 // lightVec: against the sun when it is up; the sun light of the game when
                 // it is not.
                 let sun_pos = e.sun_pos;
-                let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.or(draw_sun.map(|s| s.0)).unwrap_or(sun_pos.map(|v| -v)) };
+                let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.unwrap_or(sun_pos.map(|v| -v)) };
                 shadow.set_frame(eye, eye_vec, light_vec);
                 values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > -1.0);
                 texture = Some(shadow.atlas_view.clone());
@@ -1833,18 +1827,9 @@ impl Extension for DistantLand {
         // The sun for the shadow of the draw: its direction and the light it gives, as
         // shadowSunEstimate takes it (with the multiplier of the per-pixel light). The sun
         // is the scene's (the weather's sky light), so the lights of a draw do not change
-        // the shadow. The draw's light serves only when the scene has no sun (an older
-        // plugin).
+        // the shadow. A scene without a sun gives no shadow.
         if shadows && facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) {
-            let scene_sun = self.scene_sun;
-            let sun = scene_sun.or_else(|| {
-                let found = lights.iter().find(|light| light.position[3] == 3.0).map(|light| ([light.direction[0], light.direction[1], light.direction[2]], [light.diffuse[0], light.diffuse[1], light.diffuse[2]]));
-                if found.is_some() {
-                    self.draw_sun = found;
-                }
-                found
-            });
-            if let Some((d, diffuse)) = sun {
+            if let Some((d, diffuse)) = self.scene_sun {
                 let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
                 let mult = self.shade.map_or(1.0, |p| p.sun);
                 let luminance = (diffuse[0] * 0.36 + diffuse[1] * 0.53 + diffuse[2] * 0.11) * mult;
@@ -2596,7 +2581,7 @@ impl DistantLand {
         if e.sun_vis == 0.0 {
             light_source[2] = -light_source[2];
         }
-        let sunvec = scene.sun_direction.or(self.draw_sun.map(|s| s.0)).unwrap_or(light_source.map(|v| -v));
+        let sunvec = scene.sun_direction.unwrap_or(light_source.map(|v| -v));
         let exponential = e.flags & 1 != 0;
         let underwater = e.flags & 2 != 0;
         // An exterior, or an interior cell with the flag "behaves like exterior" of the game
@@ -2692,7 +2677,7 @@ impl DistantLand {
             shadow,
             lights: scene.lights.as_ref().filter(|_| self.volume_point_lights),
             caustics: if self.volume_caustics && outdoors { water::caustic_strength(self.caustics_intensity, frame.sun_vis, frame.fog_color_far) } else { 0.0 },
-            sun_direction: scene.sun_direction.or(self.draw_sun.map(|s| s.0)).unwrap_or([0.0, 0.0, -1.0]),
+            sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
         };
         let Some(water) = self.water.as_mut() else { return 0 };
         // The water shaders of mods that the looks name, the first time one is named: from
