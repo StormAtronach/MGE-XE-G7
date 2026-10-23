@@ -345,6 +345,10 @@ pub struct DistantLand {
     clustered_lights: bool,
     /// The tune `lights world` or `lights engine`: `FrameParameters::world_lights`.
     world_lights: bool,
+    /// The tune `lights debug on` or `off`: a draw lit for each pixel shows only the light it
+    /// takes (frame.values[12].x), without its material, its textures and the fog: a seam of
+    /// the lights is a step at the edge of a shape.
+    light_debug: bool,
     /// The world of the frame is in an interior cell.
     interior: bool,
     /// The cell of the frame is an exterior, or an interior that is like one: the fact of the
@@ -728,6 +732,7 @@ impl DistantLand {
             ),
             clustered_lights: settings.clustered_lights,
             world_lights: false,
+            light_debug: false,
             interior: false,
             like_exterior: true,
             distant_cell: true,
@@ -1435,6 +1440,10 @@ var<private> shadow_v: f32;
 // 2, 0 outside both, -1 for a draw without the shadow test), and 1 where the map shadows it.
 var<private> shadow_layer: f32;
 var<private> shadow_hit: f32;
+// The light that the pixel takes (`d + a` of `extension_shade`), for the debug view of the
+// lights (frame.values[12].x); `light_term_set` when the draw is lit for each pixel.
+var<private> light_term: vec3f;
+var<private> light_term_set: bool;
 
 // shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
 // the pixel; a positive number when the map has nothing nearer to the sun.
@@ -1588,6 +1597,8 @@ fn extension_shade(in: VertexOut) -> vec4f {
             a += terms.a;
         }
     }
+    light_term = d + a;
+    light_term_set = true;
     // The three ways of a material with a vertex colour.
     if draw.more.x == 1u {
         return vec4f(in.vertex_color.rgb * (d + a) + draw.material_emissive.rgb, in.vertex_color.a);
@@ -1646,6 +1657,10 @@ fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
         if v >= 2.0 / 255.0 {
             out = vec4f(out.rgb * (1.0 - v * frame.values[9].xyz), out.a);
         }
+    }
+    if frame.values[12].x > 0.5 && light_term_set {
+        // The debug view of the lights (the tune `lights debug on`).
+        return vec4f(light_term, alpha);
     }
     if frame.values[10].z > 0.5 {
         // The debug view of the shadow layers (MGE_XE_SHADOW_LAYERS=1).
@@ -1878,6 +1893,7 @@ impl Extension for DistantLand {
             }
         }
         self.shade = self.per_pixel();
+        values[12][0] = if self.light_debug { 1.0 } else { 0.0 };
         values[11][0] = self.tunables.get(tunables::WATER_LIGHT_COLOUR);
         FrameParameters {
             fog_range: distant.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
@@ -2050,9 +2066,11 @@ impl Extension for DistantLand {
                 match mode.trim() {
                     "world" => self.world_lights = true,
                     "engine" => self.world_lights = false,
-                    other => println!("tune: lights {other}: not world or engine"),
+                    "debug on" => self.light_debug = true,
+                    "debug off" => self.light_debug = false,
+                    other => println!("tune: lights {other}: not world, engine, debug on or debug off"),
                 }
-                println!("tune: lights {}", if self.world_lights { "world" } else { "engine" });
+                println!("tune: lights {}, debug {}", if self.world_lights { "world" } else { "engine" }, if self.light_debug { "on" } else { "off" });
                 return;
             }
             // `statics report <label>`: the work of the distant statics since the last report.
