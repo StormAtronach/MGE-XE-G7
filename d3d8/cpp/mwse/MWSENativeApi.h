@@ -128,6 +128,42 @@ typedef struct MwseNativePlayerCellChangedV1 {
 	uint32_t gameLoad;
 } MwseNativePlayerCellChangedV1;
 
+// The engine placed a point light in the world: its pass that attaches the light to the nodes
+// near it ran. 0x4D2C20 `game_updateDynamicLightingForPointLight` (a light of a reference, a
+// torch, the light of a magic effect: one call for each active cell) at its four callers, and
+// 0x4D32F0 `game_updateLightHelper2` (the lights of the world on a reference that comes into
+// the world) at its two. It fires after the engine function returns, also when the menu mode
+// stopped the pass. A light can be placed many times; it stays in the world until
+// MWSE_NATIVE_EVENT_LIGHT_REMOVED. Main thread. Latest subscribe: none (a module that subscribes
+// late misses the lights placed before).
+#define MWSE_NATIVE_EVENT_LIGHT_PLACED 6u
+typedef struct MwseNativeLightPlacedV1 {
+	uint32_t structSize;
+	// The `NiPointLight`.
+	void* light;
+	// The `TES3::Cell` of the pass of 0x4D2C20, or null for a pass of 0x4D32F0.
+	void* cell;
+	// The radius and the flags of the light that the engine passed.
+	int32_t radius;
+	int32_t flags;
+} MwseNativeLightPlacedV1;
+
+// The engine took a point light out of the world: 0x4D3360
+// `EntityLight_static::resetLightDynamicEffect` (it detaches the light from every node) at its
+// eight callers: the unload of a cell and the change to another cell
+// (`Reference::cleanupLightDynamicEffect`), the destruction of a reference and of its
+// attachments, a change of equipment, the end of a torch, the end of the light of a magic
+// effect. A pass that attaches the light again follows it when the engine only lights the light
+// again. It fires before the engine function. Main thread, or the engine's cell worker for the
+// destruction of a reference of an unloaded cell: a listener must be safe on both. Latest
+// subscribe: none.
+#define MWSE_NATIVE_EVENT_LIGHT_REMOVED 7u
+typedef struct MwseNativeLightRemovedV1 {
+	uint32_t structSize;
+	// The `NiLight`.
+	void* light;
+} MwseNativeLightRemovedV1;
+
 //
 // Overrides. The owner's function has the signature of the engine function. `engineFunction`
 // of `claim` gives the engine function, to call or not.

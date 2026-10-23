@@ -343,6 +343,8 @@ pub struct DistantLand {
     per_pixel: (bool, bool, f32, bool),
     /// `distant_land.clustered_lights`: `FrameParameters::clustered_lights`.
     clustered_lights: bool,
+    /// The tune `lights world` or `lights engine`: `FrameParameters::world_lights`.
+    world_lights: bool,
     /// The world of the frame is in an interior cell.
     interior: bool,
     /// The cell of the frame is an exterior, or an interior that is like one: the fact of the
@@ -725,6 +727,7 @@ impl DistantLand {
                 settings.per_pixel_original_lights,
             ),
             clustered_lights: settings.clustered_lights,
+            world_lights: false,
             interior: false,
             like_exterior: true,
             distant_cell: true,
@@ -1452,6 +1455,47 @@ fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
     return 1e-6;
 }
 
+// The diffuse and the ambient light that one light gives a pixel at `p` with `normal`.
+struct LightTerms {
+    d: vec3f,
+    a: vec3f,
+}
+fn light_terms(light: Light, normal: vec3f, p: vec3f) -> LightTerms {
+    var terms = LightTerms(vec3f(0.0), vec3f(0.0));
+    if light.position.w == 3.0 {
+        terms.d = light.diffuse.rgb * clamp(dot(normal, -light.direction.xyz), 0.0, 1.0);
+        terms.a = light.ambient.rgb;
+    } else if (draw.counts.w & 512u) != 0u {
+        // The light of the game: the whole falloff, the range, the colour and the ambient
+        // colour of the light, and the fade of MGE XE over the last quarter.
+        let to_light = light.position.xyz - p;
+        let distance2 = dot(to_light, to_light);
+        let distance = sqrt(distance2);
+        if distance <= light.direction.w {
+            let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
+            let f = light.attenuation;
+            var strength = 1.0 / max(f.x + f.y * distance + f.z * distance2, 0.0001);
+            var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
+            fade = 1.0 - fade * fade;
+            strength *= fade * fade;
+            terms.d = lambert * strength * light.diffuse.rgb;
+            terms.a = strength * light.ambient.rgb;
+        }
+    } else {
+        let to_light = light.position.xyz - p;
+        let distance2 = dot(to_light, to_light);
+        let distance = sqrt(distance2);
+        let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
+        var strength = 1.0 / max(light.attenuation.z * distance2 + light.attenuation.x, 0.0001);
+        // The light goes to zero over the last quarter of its distance.
+        var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
+        fade = 1.0 - fade * fade;
+        strength *= fade * fade;
+        terms.d = (lambert + light.ambient.x) * strength * light.diffuse.rgb;
+    }
+    return terms;
+}
+
 fn extension_shade(in: VertexOut) -> vec4f {
     shadow_v = 0.0;
     shadow_layer = -1.0;
@@ -1499,11 +1543,14 @@ fn extension_shade(in: VertexOut) -> vec4f {
     }
     var d = vec3f(0.0);
     var a = draw.scene_ambient.rgb;
+    // The lights of the world (`world_lights_here`): the point lights of the cluster of the
+    // pixel, in place of the draw's own; the draw keeps its directional lights.
+    let world = world_lights_here();
     // The lights of the draw, or of the cluster of the pixel when the frame has clusters.
     var first = draw.light_range.x;
     var count = draw.light_range.y;
     var clustered = false;
-    if (draw.light_range.w & 1u) != 0u {
+    if !world && (draw.light_range.w & 1u) != 0u {
         let view_z = (draw.view * vec4f(in.world_position, 1.0)).z;
         let cluster = cluster_lights(in.clip.xy, view_z);
         if clusters.grid.w != 0u {
@@ -1525,36 +1572,20 @@ fn extension_shade(in: VertexOut) -> vec4f {
             at = entry & 0xFFFFu;
         }
         let light = lights[at];
-        if light.position.w == 3.0 {
-            d += light.diffuse.rgb * clamp(dot(normal, -light.direction.xyz), 0.0, 1.0);
-            a += light.ambient.rgb;
-        } else if (draw.counts.w & 512u) != 0u {
-            // The light of the game: the whole falloff, the range, the colour and the ambient
-            // colour of the light, and the fade of MGE XE over the last quarter.
-            let to_light = light.position.xyz - in.world_position;
-            let distance2 = dot(to_light, to_light);
-            let distance = sqrt(distance2);
-            if distance <= light.direction.w {
-                let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
-                let f = light.attenuation;
-                var strength = 1.0 / max(f.x + f.y * distance + f.z * distance2, 0.0001);
-                var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
-                fade = 1.0 - fade * fade;
-                strength *= fade * fade;
-                d += lambert * strength * light.diffuse.rgb;
-                a += strength * light.ambient.rgb;
-            }
-        } else {
-            let to_light = light.position.xyz - in.world_position;
-            let distance2 = dot(to_light, to_light);
-            let distance = sqrt(distance2);
-            let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
-            var strength = 1.0 / max(light.attenuation.z * distance2 + light.attenuation.x, 0.0001);
-            // The light goes to zero over the last quarter of its distance.
-            var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
-            fade = 1.0 - fade * fade;
-            strength *= fade * fade;
-            d += (lambert + light.ambient.x) * strength * light.diffuse.rgb;
+        if world && light.position.w != 3.0 {
+            continue;
+        }
+        let terms = light_terms(light, normal, in.world_position);
+        d += terms.d;
+        a += terms.a;
+    }
+    if world {
+        let view_z = (draw.view * vec4f(in.world_position, 1.0)).z;
+        let cluster = world_cluster(in.clip.xy, view_z);
+        for (var i = 0u; i < cluster.y; i++) {
+            let terms = light_terms(world_light(cluster.x + i), normal, in.world_position);
+            d += terms.d;
+            a += terms.a;
         }
     }
     // The three ways of a material with a vertex colour.
@@ -1868,6 +1899,7 @@ impl Extension for DistantLand {
             hold: self.volumes_ready || (self.enabled && self.water_enabled && self.water.is_none()),
             lights: self.volume_point_lights && near_volumes && self.volumes_ready,
             clustered_lights: self.clustered_lights,
+            world_lights: self.world_lights,
             // The far cascade of the shadow map: what it reaches animates in the game.
             shadow_reach: if self.shadow_in_frame { shadow::RADII[1] } else { 0.0 },
         }
@@ -2010,6 +2042,17 @@ impl Extension for DistantLand {
         if id == TUNE_ID {
             if core::str::from_utf8(bytes).is_ok_and(|text| text.trim() == "gpu lose device") {
                 self.lose_device = true;
+                return;
+            }
+            // `lights world` or `lights engine`: the lights of a lit draw of the world, for an
+            // A/B inside one run (`FrameParameters::world_lights`).
+            if let Some(mode) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("lights ")) {
+                match mode.trim() {
+                    "world" => self.world_lights = true,
+                    "engine" => self.world_lights = false,
+                    other => println!("tune: lights {other}: not world or engine"),
+                }
+                println!("tune: lights {}", if self.world_lights { "world" } else { "engine" });
                 return;
             }
             // `statics report <label>`: the work of the distant statics since the last report.
