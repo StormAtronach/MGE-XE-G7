@@ -1517,15 +1517,20 @@ namespace Deviceless {
         float waterCaustics, waterWaveHeight;
         // In cells.
         float interiorFogEnd;
+        // Version 2: the debug views of a run; 1 the view of the light
+        // (FixedFunctionShader::lightDebug). Never saved.
+        UINT debug;
     };
     static const UINT SettingsId = 4;
+    static const UINT SettingsDebugLight = 1;
     static Settings lastSettings;
     static bool settingsSent = false;
 
     // Sends the settings when one of them changed since the last record.
     static void sendSettings() {
         Settings s = {};
-        s.version = 1;
+        s.version = 2;
+        s.debug = FixedFunctionShader::lightDebug ? SettingsDebugLight : 0;
         s.flags = Configuration.MGEFlags;
         s.perPixelMode = Configuration.PerPixelLightFlags;
         s.hdrReactionSpeed = Configuration.HDRReactionSpeed;

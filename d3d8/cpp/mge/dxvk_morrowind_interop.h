@@ -31,6 +31,10 @@ static constexpr uint64_t DXVK_MORROWIND_CAP_PPL_DRAW_V3 = 1ull << 4;
 // path, which no packet version speaks for. A client that writes a finite
 // Range to a renderer without this gets the step, on every vertex past it.
 static constexpr uint64_t DXVK_MORROWIND_CAP_SOFT_LIGHT_RANGE = 1ull << 5;
+// DrawPplV1 accepts DXVK_MW_PPL_LIGHT_DEBUG: the draw shows only the light of
+// each pixel. A client without this must not set the flag (the packet is
+// rejected).
+static constexpr uint64_t DXVK_MORROWIND_CAP_PPL_LIGHT_DEBUG = 1ull << 6;
 
 static constexpr uint32_t DXVK_MORROWIND_PPL_STRUCT_VERSION = 2;
 static constexpr uint32_t DXVK_MORROWIND_PPL_STRUCT_VERSION_V3 = 3;
@@ -42,6 +46,10 @@ enum DxvkMorrowindPplFlags : uint32_t {
     DXVK_MW_PPL_USE_BUMPMAP        = 1u << 2,
     DXVK_MW_PPL_USE_TEXGEN         = 1u << 3,
     DXVK_MW_PPL_PROJECTIVE_TEXGEN  = 1u << 4,
+    // A debug view: the colour is the light of the pixel (the diffuse and the
+    // ambient light), without the material, the textures and the fog. The
+    // alpha and its test stay those of the draw.
+    DXVK_MW_PPL_LIGHT_DEBUG        = 1u << 5,
 };
 
 enum DxvkMorrowindPplStageFlags : uint32_t {

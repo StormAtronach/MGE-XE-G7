@@ -106,13 +106,29 @@ pub struct Settings {
     pub water_wave_height: f32,
     /// In cells.
     pub interior_fog_end: f32,
+    /// Version 2: the debug views of a run (`SETTINGS_DEBUG_LIGHT`). 0 in a version 1 record.
+    pub debug: u32,
 }
 
+/// `Settings::debug`: the debug view of the light (`mge.render.lightDebug`,
+/// `FixedFunctionShader::lightDebug`).
+const SETTINGS_DEBUG_LIGHT: u32 = 1;
+
 impl Settings {
-    /// Reads the record; `None` for another version or a short record.
+    /// The bytes of a version 1 record: the members up to `interior_fog_end`.
+    const V1_SIZE: usize = 13 * 4;
+
+    /// Reads the record: version 1 (the members up to `interior_fog_end`) or a later one,
+    /// which only adds members at the end; `None` for a short record or a version 0.
     pub fn read(bytes: &[u8]) -> Option<Settings> {
-        let settings: Settings = bytemuck::pod_read_unaligned(bytes.get(..size_of::<Settings>())?);
-        (settings.version == 1).then_some(settings)
+        let version = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
+        if version == 0 || bytes.len() < Self::V1_SIZE {
+            return None;
+        }
+        let mut settings: Settings = bytemuck::Zeroable::zeroed();
+        let n = bytes.len().min(size_of::<Settings>());
+        bytemuck::bytes_of_mut(&mut settings)[..n].copy_from_slice(&bytes[..n]);
+        Some(settings)
     }
 
     /// The names of the flags that differ between two records, each with its new state.
@@ -2969,6 +2985,11 @@ impl DistantLand {
         let before = self.settings_applied;
         self.settings_applied = Some(settings);
         let on = |flag: u32| settings.flags & flag != 0;
+        // The debug view of the light, as `mge.render.lightDebug` sets it (the tune `lights
+        // debug` sets the same view between two records).
+        if before.is_none_or(|b| b.debug != settings.debug) {
+            self.light_debug = settings.debug & SETTINGS_DEBUG_LIGHT != 0;
+        }
         self.enabled = on(USE_DISTANT_LAND) && (self.gpu.is_some() || self.loading.is_some());
         self.shadows_enabled = on(USE_SHADOWS);
         self.post_enabled = on(USE_HW_SHADER);
@@ -3166,15 +3187,22 @@ mod settings_tests {
         for number in [0.5f32, 5.0, 1.0, 2.0, 3.0, 150.0, 400.0, 50.0, 30.0, 0.8] {
             bytes.extend(number.to_le_bytes());
         }
-        assert_eq!(bytes.len(), size_of::<Settings>());
+        // A version 1 record: no debug word.
+        assert_eq!(bytes.len(), Settings::V1_SIZE);
         let settings = Settings::read(&bytes).unwrap();
         assert_eq!(settings.flags, USE_DISTANT_LAND | USE_SHADOWS);
         assert_eq!(settings.per_pixel_mode, 1);
         assert_eq!(settings.hdr_reaction_speed, 0.5);
         assert_eq!(settings.draw_distance, 5.0);
         assert_eq!(settings.interior_fog_end, 0.8);
+        assert_eq!(settings.debug, 0);
         assert!(Settings::read(&bytes[..40]).is_none());
+        // A version 2 record: the debug word follows.
         bytes[0] = 2;
+        bytes.extend(SETTINGS_DEBUG_LIGHT.to_le_bytes());
+        assert_eq!(bytes.len(), size_of::<Settings>());
+        assert_eq!(Settings::read(&bytes).unwrap().debug, SETTINGS_DEBUG_LIGHT);
+        bytes[0] = 0;
         assert!(Settings::read(&bytes).is_none());
     }
 

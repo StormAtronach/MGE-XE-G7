@@ -208,7 +208,7 @@ class FixedFunctionShader {
     static D3DXHANDLE ehLightSceneAmbient, ehLightSunDiffuse, ehLightSunDirection;
     static D3DXHANDLE ehLightDiffuse, ehLightAmbient, ehLightPosition;
     static D3DXHANDLE ehLightFalloffQuadratic, ehLightFalloffLinear, ehLightFalloffConstant;
-    static D3DXHANDLE ehLightFadeInvRadius;
+    static D3DXHANDLE ehLightFadeInvRadius, ehLightDebug;
     static D3DXHANDLE ehTexgenTransform, ehBumpMatrix, ehBumpLumiScaleBias;
 
     static float sunMultiplier, ambMultiplier;
@@ -216,6 +216,9 @@ class FixedFunctionShader {
     static IDxvkMorrowindPplInterop1* m_morrowindInterop;
     // The renderer accepts version 3 packets, which carry the light fade.
     static bool m_nativePplFade;
+    // The renderer accepts the flag of the debug view of the light
+    // (DXVK_MORROWIND_CAP_PPL_LIGHT_DEBUG).
+    static bool m_nativePplLightDebug;
     static PplSceneState m_pplSceneState;
     static unsigned long long m_nativePplDraws;
     static unsigned long long m_nativePplUnavailable;
@@ -274,4 +277,9 @@ public:
     // fade. The one definition the shader reciprocal, the attach radius and the
     // fixed-function D3D Range all come from.
     static float lightFadeCutoff(float recoveredRadius);
+
+    // The debug view of the light (mge.render.lightDebug): a draw lit for each
+    // pixel shows only its light, without its material, its textures and the
+    // fog. A view for a run, never a setting: it is not saved.
+    static bool lightDebug;
 };

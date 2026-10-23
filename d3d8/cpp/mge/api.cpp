@@ -4,6 +4,7 @@
 
 #include "configuration.h"
 #include "distantland.h"
+#include "ffeshader.h"
 #include "mmefunctiondefs.h"
 #include "mgeversion.h"
 #include "postshaders.h"
@@ -123,6 +124,9 @@ namespace api {
     };
 
     bool MGEAPIv1::featureGetEnabled(RenderFeature feature) {
+        if (feature == RenderFeature::LightDebug) {
+            return FixedFunctionShader::lightDebug;
+        }
         int i = static_cast<int>(feature);
         if (i >= 0 && i < featureToFlagMap.size()) {
             auto flag = featureToFlagMap[i];
@@ -132,6 +136,10 @@ namespace api {
     }
 
     void MGEAPIv1::featureSetEnabled(RenderFeature feature, bool enable) {
+        if (feature == RenderFeature::LightDebug) {
+            FixedFunctionShader::lightDebug = enable;
+            return;
+        }
         int i = static_cast<int>(feature);
         if (i >= 0 && i < featureToFlagMap.size()) {
             auto flag = featureToFlagMap[i];

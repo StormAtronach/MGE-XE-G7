@@ -91,7 +91,7 @@ D3DXHANDLE FixedFunctionShader::ehMaterialDiffuse, FixedFunctionShader::ehMateri
 D3DXHANDLE FixedFunctionShader::ehLightSceneAmbient, FixedFunctionShader::ehLightSunDiffuse, FixedFunctionShader::ehLightDiffuse;
 D3DXHANDLE FixedFunctionShader::ehLightSunDirection, FixedFunctionShader::ehLightPosition, FixedFunctionShader::ehLightAmbient;
 D3DXHANDLE FixedFunctionShader::ehLightFalloffQuadratic, FixedFunctionShader::ehLightFalloffLinear, FixedFunctionShader::ehLightFalloffConstant;
-D3DXHANDLE FixedFunctionShader::ehLightFadeInvRadius;
+D3DXHANDLE FixedFunctionShader::ehLightFadeInvRadius, FixedFunctionShader::ehLightDebug;
 D3DXHANDLE FixedFunctionShader::ehTexgenTransform, FixedFunctionShader::ehBumpMatrix, FixedFunctionShader::ehBumpLumiScaleBias;
 
 float FixedFunctionShader::sunMultiplier, FixedFunctionShader::ambMultiplier;
@@ -103,6 +103,8 @@ unordered_map<FixedFunctionShader::ShaderKey, ID3DXBuffer*, FixedFunctionShader:
 
 IDxvkMorrowindPplInterop1* FixedFunctionShader::m_morrowindInterop = nullptr;
 bool FixedFunctionShader::m_nativePplFade = false;
+bool FixedFunctionShader::m_nativePplLightDebug = false;
+bool FixedFunctionShader::lightDebug = false;
 FixedFunctionShader::PplSceneState FixedFunctionShader::m_pplSceneState = {};
 unsigned long long FixedFunctionShader::m_nativePplDraws = 0;
 unsigned long long FixedFunctionShader::m_nativePplUnavailable = 0;
@@ -178,6 +180,7 @@ bool FixedFunctionShader::init(IDirect3DDevice* d, ID3DXEffectPool* pool) {
                 m_morrowindInterop = nullptr;
             } else {
                 m_nativePplFade = (capabilities & DXVK_MORROWIND_CAP_PPL_DRAW_V3) != 0;
+                m_nativePplLightDebug = (capabilities & DXVK_MORROWIND_CAP_PPL_LIGHT_DEBUG) != 0;
                 LOG::logline(
                     "-- Native PPL packets armed (caps 0x%08lx%08lx)",
                     static_cast<unsigned long>(capabilities >> 32),
@@ -239,6 +242,7 @@ bool FixedFunctionShader::init(IDirect3DDevice* d, ID3DXEffectPool* pool) {
     ehLightFalloffLinear = effect->GetParameterByName(0, "lightFalloffLinear");
     ehLightFalloffConstant = effect->GetParameterByName(0, "lightFalloffConstant");
     ehLightFadeInvRadius = effect->GetParameterByName(0, "lightFadeInvRadius");
+    ehLightDebug = effect->GetParameterByName(0, "lightDebug");
     ehTexgenTransform = effect->GetParameterByName(0, "texgenTransform");
     ehBumpMatrix = effect->GetParameterByName(0, "bumpMatrix");
     ehBumpLumiScaleBias = effect->GetParameterByName(0, "bumpLumiScaleBias");
@@ -584,6 +588,7 @@ void FixedFunctionShader::renderMorrowindLegacy(
     effectFFE->SetFloatArray(ehLightFalloffLinear, data.lightFalloffLinear, MGE_LEGACY_PPL_MAX_LIGHTS);
     effectFFE->SetFloat(ehLightFalloffConstant, data.lightFalloffConstant);
     effectFFE->SetFloatArray(ehLightFadeInvRadius, data.lightFadeInvRadius, MGE_LEGACY_PPL_MAX_LIGHTS);
+    effectFFE->SetFloat(ehLightDebug, lightDebug ? 1.0f : 0.0f);
 
     if (data.key.usesBumpmap) {
         effectFFE->SetFloatArray(ehBumpMatrix, data.bumpMatrix, 4);
@@ -669,7 +674,18 @@ void FixedFunctionShader::renderMorrowind(
                 LOG::logline("-- Native PPL packet encountered an unsupported shader key; falling back per draw");
                 key.log();
             }
+        } else if (lightDebug && !m_nativePplLightDebug) {
+            // A renderer without the debug view of the light: the legacy effect
+            // draws it, with at most its 8 lights for each draw.
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                LOG::logline("-- Native PPL packets predate the light debug view; the legacy effect draws it");
+            }
         } else {
+            if (lightDebug) {
+                packet.base.flags |= DXVK_MW_PPL_LIGHT_DEBUG;
+            }
             useNative = true;
         }
     }

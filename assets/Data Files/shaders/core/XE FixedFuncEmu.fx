@@ -15,6 +15,8 @@ shared float4 lightPosition[6];
 shared float4 lightFalloffQuadratic[2], lightFalloffLinear[2];
 shared float lightFalloffConstant;
 shared float4 lightFadeInvRadius[2];
+// The debug view of the light (mge.render.lightDebug): 1 shows only the light of the pixel.
+shared float lightDebug;
 shared matrix texgenTransform;
 shared float4 bumpMatrix;
 shared float2 bumpLumiScaleBias;
@@ -220,6 +222,10 @@ float4 PerPixelPS(FFEPixel IN) : COLOR0 {
     // Texturing and combinators
     float4 c = diffuse;
     /* template */ FFE_TEXTURING
+
+    // The debug view of the light: the light of the pixel only, with the alpha of the draw
+    if (lightDebug > 0.5)
+        return float4(d + a, c.a);
 
     // Static tonemap and final fogging
     c.rgb = tonemap(c.rgb);

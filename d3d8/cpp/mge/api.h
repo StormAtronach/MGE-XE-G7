@@ -114,6 +114,9 @@ namespace api {
 		BlurReflections = 19,
 		DynamicRipples = 20,
 		CrosshairAutoHide = 21,
+		// The debug view of the light (FixedFunctionShader::lightDebug): not a flag of
+		// MGEFlags, so never saved. An MGE XE without it answers false and ignores a set.
+		LightDebug = 22,
 	};
 
 	struct MGEAPIv1 : public MGEAPI {
