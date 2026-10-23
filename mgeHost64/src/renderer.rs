@@ -1313,13 +1313,6 @@ fn planes(m: &[f32; 16]) -> [[f32; 4]; 6] {
     planes
 }
 
-/// The position of the camera of a view matrix of Direct3D: minus its translation times its
-/// transposed rotation.
-fn eye_of(view: &[f32; 16]) -> [f32; 3] {
-    let translation = [view[12], view[13], view[14]];
-    core::array::from_fn(|i| -(translation[0] * view[i * 4] + translation[1] * view[i * 4 + 1] + translation[2] * view[i * 4 + 2]))
-}
-
 /// The light for each pixel of MGE XE, for the draws of the world of a frame.
 #[derive(Clone, Copy)]
 struct PerPixel {
@@ -1643,7 +1636,7 @@ impl Extension for DistantLand {
         }
         // A jump of the camera of more than 2 cells (a teleport) waits for the statics as a
         // game load does; each world frame counts for a wait.
-        let eye = eye_of(&scene.view);
+        let eye = scene.eye.map(|v| v as f32);
         self.prefetch = None;
         if self.last_eye.is_some_and(|last| (eye[0] - last[0]).hypot(eye[1] - last[1]) > 2.0 * CELL) {
             self.arrival = Some((Instant::now(), 0));
@@ -1762,7 +1755,7 @@ impl Extension for DistantLand {
                 self.shadow = Some(Shadow::new(scene, self.shadow_resolution));
             }
             if let (Some(shadow), Some(e)) = (self.shadow.as_mut(), self.environment) {
-                let eye = eye_of(&scene.view);
+                let eye = scene.eye.map(|v| v as f32);
                 let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
                 // lightVec: against the sun when it is up; the sun light of the game when
                 // it is not.
@@ -2160,7 +2153,7 @@ impl Extension for DistantLand {
 
         let projection = self.land_projection(scene);
         let view_projection = multiply(&scene.view, &projection);
-        let eye = eye_of(&scene.view);
+        let eye = scene.eye.map(|v| v as f32);
         let main_view = self.frame_view(scene, &projection);
         // The fog: from the game with this frame, or the linear fog of the settings.
         let (view_range, near_fog) = match self.environment {
@@ -2392,7 +2385,7 @@ impl Extension for DistantLand {
             return;
         }
         let view_projection = multiply(&scene.view, &scene.projection);
-        let eye = eye_of(&scene.view);
+        let eye = scene.eye.map(|v| v as f32);
         let environment = self.environment;
         let (sun_mult, ambient_mult) = environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
@@ -2571,7 +2564,7 @@ impl DistantLand {
     /// the chain or the environment.
     fn run_post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
         let (Some(post), Some(e)) = (self.post.as_mut(), self.environment) else { return false };
-        let eye = eye_of(&scene.view);
+        let eye = scene.eye.map(|v| v as f32);
         let rows = |m: &[f32; 16]| -> [[f32; 4]; 4] { core::array::from_fn(|r| [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]]) };
         // `sun_pos` of the environment is the `sunPos` of the Direct3D 9 path: the game side
         // turned it at the horizon when the sun is not visible. The direction of the light is
@@ -2723,7 +2716,7 @@ impl DistantLand {
     /// The values of a view of the frame (`view::View`) for its view and projection: the
     /// main view of the land, or the game view with the projection of the game.
     fn frame_view(&self, scene: &SceneView, projection: &[f32; 16]) -> view::View {
-        let eye = eye_of(&scene.view);
+        let eye = scene.eye.map(|v| v as f32);
         let view_projection = multiply(&scene.view, projection);
         let relative = view::relative(&scene.view, projection, eye);
         // The fog: from the game with this frame, or the linear fog of the settings.

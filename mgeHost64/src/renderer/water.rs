@@ -690,7 +690,7 @@ impl Water {
         let depth = scene.depth?;
         let picture = if picture { scene.picture? } else { &self.flat };
         let dynamic = frame.wave_height.zip(ripples);
-        let eye = super::eye_of(&scene.view);
+        let eye = scene.eye.map(|v| v as f32);
         let sunlight = 1.0 - (1.0 - frame.sun_vis).powi(2);
         let wind_factor = ((frame.wind[0] * frame.wind[0] + frame.wind[1] * frame.wind[1]).sqrt() + 1.5) / 140.0;
         let uniforms = Uniforms {
@@ -758,7 +758,7 @@ impl Water {
         let dynamic = frame.wave_height.zip(ripples);
         // The dry spaces cut the plane, but not from under the water (`renderStageWater`).
         let cut = self.dry.any() && !frame.underwater;
-        let eye = super::eye_of(&scene.view);
+        let eye = scene.eye.map(|v| v as f32);
         if cut && frame.camera_dry && (eye[2] - frame.water_level).abs() < DRY_LEVEL_MARGIN {
             // The eye is in a dry space at the level of the water: the waves put the plane
             // now over the eye and now under it, and the side that the count is made for is
