@@ -1224,6 +1224,8 @@ bool DistantLand::isVisGroupShown(const DynamicVisGroup& vis) {
 // scanDynamicVisGroups - Scan through game data for visibility changes
 void DistantLand::scanDynamicVisGroups() {
     dynVisFlagsShared.clear();
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
 
     std::uint16_t i = 0;
     for (auto& vis : dynamicVisGroups) {
@@ -1242,28 +1244,33 @@ void DistantLand::scanDynamicVisGroups() {
             dynVisFlagsShared.push_back({ groupIndex, enable });
         }
     }
-    logWorkerStalls(dynamicVisGroups.size());
+    QueryPerformanceCounter(&end);
+    logWorkerStalls(dynamicVisGroups.size(), end.QuadPart - start.QuadPart);
 
     if (!dynVisFlagsShared.empty()) {
         ipcClient.updateDynVis(dynVisFlagsSharedId);
     }
 }
 
-// logWorkerStalls - The stalls of the cell worker in a scan of the vis groups. A scan runs
-// at a cell change, when the worker loads the cells ahead, so each stall waits for up to
-// one reference. A line when the waits sum to 2 ms or more; a line for each scan with
-// stalls when MGE_XE_STALL_LOG=1.
-void DistantLand::logWorkerStalls(size_t groups) {
+// logWorkerStalls - The time of a scan of the vis groups (in counts of
+// QueryPerformanceCounter) and the stalls of the cell worker in it. A scan runs at a cell
+// change, when the worker loads the cells ahead, so each stall waits for up to one
+// reference. A line when the scan or the waits take 2 ms or more; a line for each scan
+// when MGE_XE_STALL_LOG=1.
+void DistantLand::logWorkerStalls(size_t groups, long long scanCounts) {
     static const bool everyScan = [] {
         char value[4] = {};
         return GetEnvironmentVariableA("MGE_XE_STALL_LOG", value, sizeof(value)) == 1 && value[0] == '1';
     }();
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    const double scanMs = double(scanCounts) * 1000.0 / double(frequency.QuadPart);
     const auto stalls = MWBridge::takeWorkerStalls();
-    if (stalls.count == 0 || (!everyScan && stalls.totalMs < 2.0)) {
+    if (!everyScan && stalls.totalMs < 2.0 && scanMs < 2.0) {
         return;
     }
-    LOG::logline("-- vis groups: %u groups read at a cell change; %u stalls of the cell worker, %.2f ms waited, the longest %.2f ms",
-        unsigned(groups), stalls.count, stalls.totalMs, stalls.longestMs);
+    LOG::logline("-- vis groups: %u groups read at a cell change in %.2f ms; %u stalls of the cell worker, %.2f ms waited, the longest %.2f ms",
+        unsigned(groups), scanMs, stalls.count, stalls.totalMs, stalls.longestMs);
 }
 
 // setView - Called once per frame to setup view dependent data

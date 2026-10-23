@@ -1949,6 +1949,9 @@ impl Extension for DistantLand {
             } else if frames >= 2 && (self.statics.as_ref().is_none_or(|statics| statics.settled()) || since.elapsed() >= ARRIVAL_TIMEOUT) {
                 self.arrival = None;
                 println!("distant land: ready (arrived) in {:.2} s{}", since.elapsed().as_secs_f32(), if self.arrival_serial != 0 { format!(", wait {}", self.arrival_serial) } else { String::new() });
+                if let Some(wait) = self.statics.as_mut().and_then(|statics| statics.take_wait()) {
+                    println!("distant land: the wait: {wait}");
+                }
                 self.messages_out.push(say(ARRIVED, std::mem::take(&mut self.arrival_serial)));
             }
         }

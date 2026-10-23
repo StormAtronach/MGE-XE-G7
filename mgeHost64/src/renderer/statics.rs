@@ -596,6 +596,24 @@ struct SetStats {
     runs: u64,
 }
 
+/// The work of a wait on the loading screen (a teleport or a game load), from its first
+/// frame with no world to the end of the wait (`Statics::take_wait`).
+#[derive(Default, Clone, Copy)]
+struct WaitStats {
+    /// The frames with no world, and the time of the arrivals in them: all and the longest.
+    frames: u32,
+    upload_seconds: f64,
+    longest_upload: f64,
+    /// The subsets asked for from the reader thread, and their bytes.
+    asked: u32,
+    asked_bytes: u64,
+    /// The subsets that arrived, their bytes, and those of them that were on the GPU before
+    /// in the session (a return to a place reads them again).
+    arrived: u32,
+    arrived_bytes: u64,
+    again: u32,
+}
+
 const SET_NAMES: [&str; 4] = ["view", "mirror", "shadow 1", "shadow 2"];
 
 /// True when the place of a group is hidden: `shown` has a byte for each group, 0 for a hidden
@@ -1183,6 +1201,21 @@ pub struct Statics {
     /// The work of each set since the last `report`, and of the grass.
     set_stats: [SetStats; 4],
     grass_stats: SetStats,
+    /// The view range of the game in the last main view (`CullSet::eye` w).
+    game_range: f32,
+    /// The merged subsets that arrived in play since the last `report`: all of them, those
+    /// with their place inside the draw distance, those of them past the handoff (a late
+    /// arrival that the view shows), and the nearest distance of a late one.
+    play_arrivals: u64,
+    late_arrivals: u64,
+    late_shown: u64,
+    late_nearest: f32,
+    /// The merged subsets that arrived in play and were on the GPU before in the session.
+    play_again: u64,
+    /// The subsets that were on the GPU at some time in the session.
+    ever_arrived: HashSet<u32>,
+    /// The work of the wait on the loading screen, from its first frame to `take_wait`.
+    wait: Option<WaitStats>,
 }
 
 impl Statics {
@@ -1262,6 +1295,14 @@ impl Statics {
             hidden_skipped: 0,
             set_stats: [SetStats::default(); 4],
             grass_stats: SetStats::default(),
+            game_range: 0.0,
+            play_arrivals: 0,
+            late_arrivals: 0,
+            late_shown: 0,
+            late_nearest: f32::MAX,
+            play_again: 0,
+            ever_arrived: HashSet::new(),
+            wait: None,
         }
     }
 
@@ -1367,6 +1408,22 @@ impl Statics {
                 }
             }
         }
+        if self.play_arrivals > 0 {
+            println!(
+                "statics report {label}: arrivals: {} merged subsets in play ({} of them on the GPU before), {} inside the draw distance of {:.0}, {} of them past the handoff (shown late), the nearest at {:.0}",
+                self.play_arrivals,
+                self.play_again,
+                self.late_arrivals,
+                self.settings.draw_distance,
+                self.late_shown,
+                if self.late_arrivals > 0 { self.late_nearest } else { 0.0 }
+            );
+        }
+        self.play_arrivals = 0;
+        self.play_again = 0;
+        self.late_arrivals = 0;
+        self.late_shown = 0;
+        self.late_nearest = f32::MAX;
         self.set_stats = [SetStats::default(); 4];
         self.grass_stats = SetStats::default();
     }
@@ -1442,6 +1499,10 @@ impl Statics {
         for subset in wanted {
             if !self.resident.contains_key(&subset) && self.requested.insert(subset) {
                 let _ = requests.send(subset);
+                if let Some(wait) = self.wait.as_mut() {
+                    wait.asked += 1;
+                    wait.asked_bytes += catalog.subsets[subset as usize].bytes();
+                }
             }
         }
     }
@@ -1577,6 +1638,10 @@ impl Statics {
         for subset in admit {
             self.requested.insert(subset);
             let _ = requests.send(subset);
+            if let Some(wait) = self.wait.as_mut() {
+                wait.asked += 1;
+                wait.asked_bytes += catalog.subsets[subset as usize].bytes();
+            }
         }
         self.capped_frames += waiting as u64;
     }
@@ -1641,9 +1706,11 @@ impl Statics {
     }
 
     /// Makes the buffers of the subsets that the reader thread has ready, for a part of a frame.
-    fn take_arrivals(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn take_arrivals(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, eye: [f32; 3]) {
         let Some(arrivals) = self.arrivals.as_ref() else { return };
         let (mut count, mut bytes) = (0, 0);
+        // The places of the merged subsets that arrived in play, counted after the loop.
+        let mut in_play = Vec::new();
         while self.synchronous || (count < ARRIVALS_IN_FRAME && bytes < ARRIVAL_BYTES_IN_FRAME) {
             // Synchronous: all that was asked for comes now. A subset that the reader thread
             // could not read never comes: a limit of time.
@@ -1699,12 +1766,43 @@ impl Statics {
             self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size, arrived, bent: arrival.bent });
             self.resident_bytes += size;
             self.most_bytes = self.most_bytes.max(self.resident_bytes);
-            if self.catalog.as_ref().is_some_and(|catalog| catalog.merged_place.contains_key(&arrival.subset)) {
+            let again = !self.ever_arrived.insert(arrival.subset);
+            if let Some(wait) = self.wait.as_mut() {
+                wait.arrived += 1;
+                wait.arrived_bytes += size;
+                wait.again += again as u32;
+            }
+            if let Some(&index) = self.catalog.as_ref().and_then(|catalog| catalog.merged_place.get(&arrival.subset)) {
                 self.merged_bytes += size;
                 self.most_merged = self.most_merged.max(self.merged_bytes);
+                if !self.prefetching {
+                    in_play.push(index);
+                    self.play_again += again as u64;
+                }
             }
             count += 1;
             bytes += size as usize;
+        }
+        for index in in_play {
+            self.count_arrival(index, eye);
+        }
+    }
+
+    /// Counts a merged subset that arrived in play by the distance of its place: inside the
+    /// draw distance it came late, and past the handoff the view shows it late.
+    fn count_arrival(&mut self, index: u32, eye: [f32; 3]) {
+        let Some(catalog) = self.catalog.as_ref() else { return };
+        let instance = &catalog.instances[index as usize];
+        let near = flat_distance(instance, eye) - instance.radius;
+        self.play_arrivals += 1;
+        if near >= self.settings.draw_distance {
+            return;
+        }
+        self.late_arrivals += 1;
+        self.late_nearest = self.late_nearest.min(near.max(0.0));
+        let gone_before = self.game_range - HANDOFF - HANDOFF_BAND - HANDOFF_CULL;
+        if flat_distance(instance, eye) + instance.radius >= gone_before {
+            self.late_shown += 1;
         }
     }
 
@@ -1937,6 +2035,7 @@ impl Statics {
             return;
         }
         let started = Instant::now();
+        self.game_range = first.eye[3];
         if self.frame_work(scene, [first.eye[0], first.eye[1], first.eye[2]], true) {
             let catalog = self.catalog.clone();
             if let (Some(catalog), Some(gpu)) = (catalog, self.gpu.as_mut()) {
@@ -2000,13 +2099,38 @@ impl Statics {
         if !self.loaded() {
             return;
         }
+        let wait = self.wait.get_or_insert_default();
+        wait.frames += 1;
         self.set_world(world);
         let Some(catalog) = self.catalog.clone() else { return };
         self.admit_merged(&catalog, eye);
         self.prefetching = true;
-        self.take_arrivals(scene.device, scene.queue);
+        let started = Instant::now();
+        self.take_arrivals(scene.device, scene.queue, eye);
+        let seconds = started.elapsed().as_secs_f64();
+        if let Some(wait) = self.wait.as_mut() {
+            wait.upload_seconds += seconds;
+            wait.longest_upload = wait.longest_upload.max(seconds);
+        }
         self.prefetching = false;
         self.want_near(&catalog, eye);
+    }
+
+    /// The work of the wait on the loading screen that ends, as a text for the log, and the
+    /// start of the next one. None when no frame with no world came.
+    pub fn take_wait(&mut self) -> Option<String> {
+        let wait = self.wait.take()?;
+        Some(format!(
+            "{} frames with no world, the arrivals in them {:.1} ms (the longest frame {:.1} ms); {} subsets asked for ({:.1} MB), {} arrived ({:.1} MB), {} of them on the GPU before",
+            wait.frames,
+            wait.upload_seconds * 1000.0,
+            wait.longest_upload * 1000.0,
+            wait.asked,
+            wait.asked_bytes as f64 / 1e6,
+            wait.arrived,
+            wait.arrived_bytes as f64 / 1e6,
+            wait.again
+        ))
     }
 
     fn frame_work(&mut self, scene: &SceneView, eye: [f32; 3], main: bool) -> bool {
@@ -2027,7 +2151,7 @@ impl Statics {
             }
             self.admit_merged(&catalog, eye);
         }
-        self.take_arrivals(scene.device, scene.queue);
+        self.take_arrivals(scene.device, scene.queue, eye);
         let Some(catalog) = self.catalog.clone() else { return false };
         if !catalog.worlds.contains_key(&self.world) {
             return false;

@@ -1728,6 +1728,8 @@ namespace Deviceless {
 
         auto& groups = DistantLand::dynamicVisGroups;
         bool changed = visGroupsUnsent;
+        LARGE_INTEGER start, end;
+        QueryPerformanceCounter(&start);
         for (auto& vis : groups) {
             // An object that the game does not have leaves its group shown.
             if (!vis.gameObject) {
@@ -1739,7 +1741,8 @@ namespace Deviceless {
                 changed = true;
             }
         }
-        DistantLand::logWorkerStalls(groups.size());
+        QueryPerformanceCounter(&end);
+        DistantLand::logWorkerStalls(groups.size(), end.QuadPart - start.QuadPart);
         if (!changed || groups.empty()) {
             return;
         }
