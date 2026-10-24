@@ -21,7 +21,7 @@ pub(super) struct GpuTime {
 }
 
 impl GpuTime {
-    /// `None` without `MGE_XE_GPU_TIME=1` or without stamps in an encoder.
+    /// [`None`] without `MGE_XE_GPU_TIME=1` or without stamps in an encoder.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<GpuTime> {
         let features = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         if std::env::var("MGE_XE_GPU_TIME").map_or(true, |v| v != "1") || !device.features().contains(features) {

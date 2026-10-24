@@ -165,7 +165,7 @@ impl Dry {
 }
 
 /// The triangles of the dry spaces from the record of the masks (7): the version, the number
-/// of triangles, then three corners of three floats for each. `None` for a record that is not
+/// of triangles, then three corners of three floats for each. [`None`] for a record that is not
 /// one.
 pub fn read_masks(bytes: &[u8]) -> Option<Vec<[f32; 3]>> {
     let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));

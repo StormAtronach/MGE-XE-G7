@@ -220,7 +220,7 @@ pub struct ShaderStatus {
 }
 
 impl ShaderStatus {
-    /// The result of a load: `None` for a shader that compiles.
+    /// The result of a load: [`None`] for a shader that compiles.
     pub fn note(&mut self, name: &str, error: Option<String>) {
         let loads = self.list.iter().find(|(known, _, _)| known == name).map_or(0, |(_, _, loads)| *loads) + 1;
         self.list.retain(|(known, _, _)| known != name);
@@ -769,7 +769,7 @@ impl Definition {
     /// A shader file of a mod: `Data Files/shaders/XEshaders/<name>.wgsl`. The file starts
     /// with lines `//! key: value`, which have what the technique of an effect file of
     /// MGE XE has in its annotations; the rest is WGSL, compiled after the common part
-    /// (`COMMON`: the variables `u`, the textures, the samplers, the vertex function `vs`
+    /// ([`COMMON`]: the variables `u`, the textures, the samplers, the vertex function `vs`
     /// and the struct `Quad`). The keys:
     ///
     /// - `interface: mge-xe-wgsl 1` (needed)
@@ -4591,7 +4591,7 @@ pub struct Post {
 
 impl Post {
     /// Makes the chain from the names of the settings. A name is a WGSL file of a mod
-    /// (`shaders/XEshaders/<name>.wgsl`, see `Definition::of_file`) or, without such a file,
+    /// (`shaders/XEshaders/<name>.wgsl`, see [`Definition::of_file`]) or, without such a file,
     /// a port of this program; a name with neither, and a file that does not compile, is
     /// reported and skipped. `waves` is the 3D wave texture of the water; `read` gives the
     /// bytes of a file under `Data Files`; `hdr_reaction` is `render.hdr_reaction_time`.
@@ -5278,7 +5278,7 @@ mod tests {
         assert_eq!(file_priority("technique T0<string MGEinterface = \"MGE XE 0\"; string category = \"atmosphere\";> {"), 2_000_000);
     }
 
-    /// A record as `PostShaders::sendShaderStates` writes it.
+    /// A record as [`PostShaders::sendShaderStates`] writes it.
     fn record(name: &str, flags: u32, priority: i32, variables: &[(&str, u8, &[f32])]) -> Vec<u8> {
         let padded = |text: &str| {
             let mut bytes = [0u8; 64];

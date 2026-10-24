@@ -314,7 +314,7 @@ impl Shadow {
         }
     }
 
-    /// Starts the pass of the casters: the atlas cleared to `ESM_SCALE`, the depth to 1. The
+    /// Starts the pass of the casters: the atlas cleared to [`ESM_SCALE`], the depth to 1. The
     /// caller sets the layer with `set_layer`, draws the casters, and then ends the pass.
     pub fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) -> wgpu::RenderPass<'static> {
         self.frames += 1;

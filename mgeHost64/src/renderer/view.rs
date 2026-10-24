@@ -1,7 +1,7 @@
 //! The view group: group 0 of the pipelines of MGE XE, with one layout for all of them and one
 //! group for each view of the frame (the main view, the mirror of the water, the two layers of
-//! the shadow map, the game view). It has the values of the view (`View`, the uniform `u` of a
-//! shader) and the baked light of the distant lights (`baked_light`, from `LightBinding`). The
+//! the shadow map, the game view). It has the values of the view ([`View`], the uniform `u` of a
+//! shader) and the baked light of the distant lights (`baked_light`, from [`LightBinding`]). The
 //! values of one pipeline only (the terrain of the land, the view range of a handoff, the
 //! light of the frame on the water volumes) are in its group 1. The pipelines that draw into
 //! the world take it: the land, the statics (with their shadow casters), the glows, the grass,
@@ -21,7 +21,7 @@ pub const SHADOW: [usize; 2] = [2, 3];
 pub const GAME: usize = 4;
 const VIEWS: usize = 5;
 
-/// The values of a view; the layout of `View` in `wgsl()`.
+/// The values of a view; the layout of [`View`] in [`wgsl()`].
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct View {
@@ -59,7 +59,7 @@ pub struct View {
 }
 
 /// `relative` of a view: `view` and `projection` with the layout of Direct3D, `eye` the
-/// position that the shader takes from each vertex (`View::eye`). The translation of the view
+/// position that the shader takes from each vertex ([`View::eye`]). The translation of the view
 /// less the eye is small, and it is made in f64 before the projection.
 pub fn relative(view: &[f32; 16], projection: &[f32; 16], eye: [f32; 3]) -> [f32; 16] {
     let v = view.map(f64::from);
@@ -114,7 +114,7 @@ pub struct ViewBinding {
     pub layout: wgpu::BindGroupLayout,
     buffers: [wgpu::Buffer; VIEWS],
     groups: Vec<wgpu::BindGroup>,
-    /// The `LightBinding::generation` of the groups.
+    /// The [`LightBinding::generation`] of the groups.
     generation: Option<u64>,
 }
 

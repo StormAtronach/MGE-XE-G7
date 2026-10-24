@@ -32,7 +32,7 @@
 //! for each subset, with one record for each place (`rendergrass.cpp`): at most 16384
 //! records, out to the view range of the game. The shader is that of `XE Mod Grass.fx`: the
 //! wind, the grass that the player pushes away, the light of the sun from the two sides, and
-//! the shadow map of the frame (`GrassShadow`), which ends on a blade as on the ground under
+//! the shadow map of the frame ([`GrassShadow`]), which ends on a blade as on the ground under
 //! it (tunable `grass.shadow`).
 //!
 //! An interior cell with statics in `usage.data` is a world space of its own, with its
@@ -136,8 +136,8 @@ fn half(bytes: &[u8], at: usize) -> f32 {
 const BENT_SHARE: f32 = 0.3;
 
 /// The share of the corners whose normal points against the face of their triangle, for the
-/// vertices (`VERTEX` bytes each: the position as half floats, then the normal as bytes) and
-/// the triangles (three u16 each) of a subset; `None` without a triangle of some area.
+/// vertices ([`VERTEX`] bytes each: the position as half floats, then the normal as bytes) and
+/// the triangles (three u16 each) of a subset; [`None`] without a triangle of some area.
 fn normal_alignment(vertices: &[u8], indexes: &[u8]) -> Option<f32> {
     let count = vertices.len() / VERTEX;
     let position = |v: usize| [half(vertices, v * VERTEX), half(vertices, v * VERTEX + 2), half(vertices, v * VERTEX + 4)];
@@ -597,7 +597,7 @@ struct SetStats {
 }
 
 /// The work of a wait on the loading screen (a teleport or a game load), from its first
-/// frame with no world to the end of the wait (`Statics::take_wait`).
+/// frame with no world to the end of the wait ([`Statics::take_wait`]).
 #[derive(Default, Clone, Copy)]
 struct WaitStats {
     /// The frames with no world, and the time of the arrivals in them: all and the longest.
@@ -635,7 +635,7 @@ struct Arrival {
     indexes: Vec<u8>,
     /// The triangles of the three levels of detail: all, far, very far.
     faces: [u32; 3],
-    /// A grass subset with bent normals (`BENT_SHARE`): lit by its normal as the author
+    /// A grass subset with bent normals ([`BENT_SHARE`]): lit by its normal as the author
     /// made it, not turned to the side that the camera sees.
     bent: bool,
 }
@@ -692,7 +692,7 @@ fn flat_distance(instance: &Instance, eye: [f32; 3]) -> f32 {
 }
 
 /// The budget and the use of this process of the largest memory heap of the GPU, from
-/// `VK_EXT_memory_budget`, which wgpu turns on when the driver has it. `None` on another
+/// `VK_EXT_memory_budget`, which wgpu turns on when the driver has it. [`None`] on another
 /// backend than Vulkan, or without the extension.
 fn memory_budget(device: &wgpu::Device) -> Option<(u64, u64)> {
     // SAFETY: the guard keeps the device alive, and the calls only read the properties of its
@@ -764,15 +764,15 @@ struct Resident {
     geometry: Geometry,
     faces: [u32; 3],
     bytes: u64,
-    /// The time of the arrival on the clock of `Statics`, in seconds: the subset comes in
+    /// The time of the arrival on the clock of [`Statics`], in seconds: the subset comes in
     /// over the fade time after it.
     arrived: f32,
-    /// A grass subset with bent normals (`Arrival::bent`).
+    /// A grass subset with bent normals ([`Arrival::bent`]).
     bent: bool,
 }
 
 /// What the loader thread gives to the renderer: the catalog, and the bytes of the texture
-/// files in the order of the catalog (`None` for a file that is not there).
+/// files in the order of the catalog ([`None`] for a file that is not there).
 struct Loaded {
     catalog: Arc<Catalog>,
     textures: Vec<Option<Vec<u8>>>,
@@ -792,7 +792,7 @@ struct Gpu {
     /// winding of each triangle.
     mirror_pipeline: wgpu::RenderPipeline,
     /// The two as lines, when the device has the line mode: for a frame in which the game
-    /// draws in wireframe (`SceneView::wireframe`).
+    /// draws in wireframe ([`SceneView::wireframe`]).
     pipeline_lines: Option<wgpu::RenderPipeline>,
     mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
     /// The depth from the sun into the shadow map.
@@ -801,7 +801,7 @@ struct Gpu {
     sets: [BufferSet; 4],
     /// The values of all places for the draws: the world matrix and the values of the subset.
     instances: wgpu::Buffer,
-    /// The time of the arrival of each subset, in seconds of the clock of `Statics`, for the
+    /// The time of the arrival of each subset, in seconds of the clock of [`Statics`], for the
     /// fade-in of the shaders (`arrivals` of group 1). A subset that never arrived has a time
     /// long ago.
     arrivals: wgpu::Buffer,
@@ -926,7 +926,7 @@ fn fog_range() -> f32 {
 ";
 
 /// The casters of the shadow map: `StaticShadowVS` and `StaticShadowPS` of `XE Shadowmap.fx`.
-/// After the view group and `SET_WGSL` (the matrix of the layer in `view_projection`).
+/// After the view group and [`SET_WGSL`] (the matrix of the layer in `view_projection`).
 const SHADOW_SHADER: &str = "
 
 struct In {
@@ -1007,7 +1007,7 @@ pub struct Frame {
     pub time: f32,
 }
 
-/// Group 1 of the statics shaders: `Set` of `SET_WGSL`.
+/// Group 1 of the statics shaders: `Set` of [`SET_WGSL`].
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SetUniforms {
@@ -1016,7 +1016,7 @@ struct SetUniforms {
     fade: [f32; 4],
 }
 
-/// The statics in a view: after the view group and `SET_WGSL`.
+/// The statics in a view: after the view group and [`SET_WGSL`].
 const SHADER: &str = "
 // The order of the pixels of a block of 4 x 4 for the band of the handoff (Bayer).
 const HANDOFF_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
@@ -1138,7 +1138,7 @@ pub struct Statics {
     /// The bytes of the merged subsets on the GPU, and the most that may be.
     merged_bytes: u64,
     merged_cap: u64,
-    /// `distant_land.statics_fallback_cap_mb` in bytes, `u64::MAX` for no cap.
+    /// `distant_land.statics_fallback_cap_mb` in bytes, [`u64::MAX`] for no cap.
     fallback_cap: u64,
     /// The time of the next sample of the memory budget, when the cap follows it, and the
     /// lower samples in a row.
@@ -1185,7 +1185,7 @@ pub struct Statics {
     drawn: u64,
     most_bytes: u64,
     failed: bool,
-    /// The data has what this build does not know (`CatalogError::Rejected`).
+    /// The data has what this build does not know ([`CatalogError::Rejected`]).
     rejected: Option<String>,
     /// The loads complete before a frame, and all arrivals go to the GPU in the frame.
     pub synchronous: bool,
@@ -1201,7 +1201,7 @@ pub struct Statics {
     /// The work of each set since the last `report`, and of the grass.
     set_stats: [SetStats; 4],
     grass_stats: SetStats,
-    /// The view range of the game in the last main view (`CullSet::eye` w).
+    /// The view range of the game in the last main view ([`CullSet::eye`] w).
     game_range: f32,
     /// The merged subsets that arrived in play since the last `report`: all of them, those
     /// with their place inside the draw distance, those of them past the handoff (a late
@@ -1948,7 +1948,7 @@ impl Statics {
     }
 
     /// The draw distance and the ends of the three tiers, in units, from the settings
-    /// record of MGE XE; `None` keeps an end. The draw of a frame reads them, as the
+    /// record of MGE XE; [`None`] keeps an end. The draw of a frame reads them, as the
     /// Direct3D 9 path reads them in each frame. The tier of a place stays the one of the
     /// load (the sizes of the tiers are for the load only).
     pub fn set_distances(&mut self, draw_distance: f32, band_ends: [Option<f32>; 3]) {
@@ -2365,7 +2365,7 @@ fn uniforms_of(frame: &Frame, fade: [f32; 4]) -> SetUniforms {
     SetUniforms { range: [frame.eye[3], 0.0, 0.0, 0.0], handoff: [frame.time, frame.eye[3] - HANDOFF, HANDOFF_BAND, HANDOFF_CULL], fade }
 }
 
-/// A set for `Statics::prepare`: its number (0 the main view, 1 the mirror, 2 and 3 the
+/// A set for [`Statics::prepare`]: its number (0 the main view, 1 the mirror, 2 and 3 the
 /// layers of the shadow map), the planes of its view, the eye with the view range of the game
 /// in w (0 for a set without the handoff), and the end of its fog.
 pub struct CullSet {

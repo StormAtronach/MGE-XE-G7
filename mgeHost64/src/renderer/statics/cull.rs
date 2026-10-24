@@ -123,7 +123,7 @@ impl Pools {
         self.pools.get(texture as usize)?.as_ref().map(|pool| (&pool.vertices, &pool.indexes))
     }
 
-    /// Puts the vertices and the indexes of a subset into the pool of its texture. `None` when
+    /// Puts the vertices and the indexes of a subset into the pool of its texture. [`None`] when
     /// the pool cannot grow to hold it (the largest buffer of the device).
     pub fn put(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, texture: u32, vertices: &[u8], indexes: &[u8]) -> Option<Slot> {
         let vertex_count = (vertices.len() as u64 / VERTEX) as u32;

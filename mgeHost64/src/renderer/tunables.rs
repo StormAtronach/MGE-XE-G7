@@ -101,7 +101,7 @@ impl Tunables {
     }
 
     /// One command: `set <name> <value>`, `reset <name>`, or `reset all`. Returns a line
-    /// for the log when a value changed, and `None` for a command that is not known.
+    /// for the log when a value changed, and [`None`] for a command that is not known.
     pub fn command(&mut self, text: &str) -> Option<String> {
         let mut words = text.split_whitespace();
         match (words.next()?, words.next()?, words.next()) {

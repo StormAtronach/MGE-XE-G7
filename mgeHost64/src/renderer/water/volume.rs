@@ -47,7 +47,7 @@ pub struct Look {
     /// The free values p0 to p3, and the name of a water shader of a mod.
     params: [[f32; 4]; 4],
     shader: [u8; 32],
-    /// What the surface reflects in place of the sky, with `LOOK_HAS_SKY`.
+    /// What the surface reflects in place of the sky, with [`LOOK_HAS_SKY`].
     sky: [f32; 3],
     /// Over how many units of water what is under the surface fades into the colour of deep
     /// water; 800 is the standard, 0 shows nothing.
@@ -78,7 +78,7 @@ impl Look {
 
     /// The looks of the slots from the record of the looks (6): the version, the number of
     /// slots, then for each its number and its `WaterLook`. A look that is shorter than this
-    /// layout keeps the standard values after its end. `None` for a record that is not one.
+    /// layout keeps the standard values after its end. [`None`] for a record that is not one.
     pub fn read_table(bytes: &[u8]) -> Option<HashMap<u32, Look>> {
         let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
         if word(0)? != 1 {
@@ -163,7 +163,7 @@ impl Look {
         look
     }
 
-    /// The name of the water shader of a mod that the look names, in small letters; `None` for
+    /// The name of the water shader of a mod that the look names, in small letters; [`None`] for
     /// the standard look.
     pub fn shader_name(&self) -> Option<String> {
         let length = self.shader.iter().position(|&b| b == 0).unwrap_or(self.shader.len());
@@ -231,7 +231,7 @@ pub struct VolumeLight<'a> {
     pub sun_direction: [f32; 3],
 }
 
-/// The values of `Lighting` in the shader.
+/// The values of [`Lighting`] in the shader.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Lighting {
@@ -786,11 +786,11 @@ struct Key {
     /// The offsets of the two sets of texture coordinates (the first again for a mesh with
     /// one set); none without coordinates.
     coordinates: [Option<u64>; 2],
-    /// The water shader: 0 the standard one, else one of a mod (`Volumes::modules`).
+    /// The water shader: 0 the standard one, else one of a mod ([`Volumes::modules`]).
     shader: u16,
 }
 
-/// The tests that a held shape asks for: the depth test, and its own stencil test (see `Key`).
+/// The tests that a held shape asks for: the depth test, and its own stencil test (see [`Key`]).
 fn tests_of(held: &HeldDraw) -> (bool, Option<[u32; 5]>) {
     // D3DCMP_ALWAYS is 8: the game turns the depth test off that way too.
     let depth_test = held.depth[0] != 0 && held.depth[2] != 8;
@@ -825,7 +825,7 @@ pub(super) struct Volumes {
     group: wgpu::BindGroup,
     /// Zeros for the inputs that a vertex does not have.
     defaults: wgpu::Buffer,
-    /// The light of the frame (`VolumeLight`) in the water group: its values, and what the
+    /// The light of the frame ([`VolumeLight`]) in the water group: its values, and what the
     /// group has in place of a part that the frame does not have: a texture of one texel, and
     /// empty lights and clusters.
     lighting: wgpu::Buffer,
@@ -1022,7 +1022,7 @@ impl Volumes {
         self.shaders.contains_key(name)
     }
 
-    /// Adds the water shader of a mod by its name, from its file (`None`: there is none). A
+    /// Adds the water shader of a mod by its name, from its file ([`None`]: there is none). A
     /// shader that fails has the standard look, and the reason is returned.
     pub fn add_shader(&mut self, device: &wgpu::Device, name: &str, file: Option<&str>) -> Result<(), String> {
         let result = file.ok_or_else(|| "no file shaders/water/<name>.wgsl".to_string()).and_then(water_shader_source);

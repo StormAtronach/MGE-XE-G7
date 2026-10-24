@@ -95,7 +95,7 @@ pub fn steps_of(remaining: &mut f32, frame_time: f32) -> u32 {
 
 /// The part of the player texture that stays when the player moved by (`shift_x`,
 /// `shift_y`) pixels: its corner in the texture before, its corner in the texture after,
-/// and its size. `None` when nothing stays. The first row and the first column are never
+/// and its size. [`None`] when nothing stays. The first row and the first column are never
 /// kept, as on the Direct3D 9 path.
 pub fn kept_part(shift_x: i32, shift_y: i32) -> Option<([u32; 2], [u32; 2], [u32; 2])> {
     let size = SIZE as i64;

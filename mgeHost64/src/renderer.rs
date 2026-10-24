@@ -67,12 +67,12 @@ const CELL: f32 = 8192.0;
 const NEAR: f32 = 64.0;
 /// The number of the environment data in the stream. `Deviceless::EnvironmentId` of MGE XE.
 const ENVIRONMENT_ID: u32 = 1;
-/// The state of a post shader that a mod loaded: see `post::ShaderState`.
+/// The state of a post shader that a mod loaded: see [`post::ShaderState`].
 const SHADER_STATE_ID: u32 = 2;
-/// The settings that a mod can change while the game runs: see `Settings`.
+/// The settings that a mod can change while the game runs: see [`Settings`].
 const SETTINGS_ID: u32 = 4;
 /// A command for a parameter of the renderer, from `nirender.tune` of the plugin: see
-/// `tunables::Tunables::command`.
+/// [`tunables::Tunables::command`].
 const TUNE_ID: u32 = 5;
 /// The looks of the slots of water volumes (`WaterLooks::sendToRenderer`): a state that the
 /// stream keeps, so a capture file has it.
@@ -109,7 +109,7 @@ pub struct Settings {
     pub water_wave_height: f32,
     /// In cells.
     pub interior_fog_end: f32,
-    /// Version 2: the debug views of a run (`SETTINGS_DEBUG_LIGHT`). 0 in a version 1 record.
+    /// Version 2: the debug views of a run ([`SETTINGS_DEBUG_LIGHT`]). 0 in a version 1 record.
     pub debug: u32,
 }
 
@@ -122,7 +122,7 @@ impl Settings {
     const V1_SIZE: usize = 13 * 4;
 
     /// Reads the record: version 1 (the members up to `interior_fog_end`) or a later one,
-    /// which only adds members at the end; `None` for a short record or a version 0.
+    /// which only adds members at the end; [`None`] for a short record or a version 0.
     pub fn read(bytes: &[u8]) -> Option<Settings> {
         let version = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
         if version == 0 || bytes.len() < Self::V1_SIZE {
@@ -164,19 +164,19 @@ const STATUS_ID: u32 = 9;
 /// The message of the helper for MGE XE about the distant land (`Deviceless::message`):
 /// version 1, then 1 when the distant land of the session is loaded, 2 when after a game
 /// load or a teleport the distant statics around the camera are there; then the number of
-/// the wait that it answers (`PREFETCH_ID`), 0 for none.
+/// the wait that it answers ([`PREFETCH_ID`]), 0 for none.
 const MESSAGE_DISTANT_LAND: u32 = 1;
 const LOADED: u32 = 1;
 const ARRIVED: u32 = 2;
 /// The longest wait for the statics after a game load or a teleport, from the end of the load
-/// of the data: then `ARRIVED` goes anyway, as the bootstrap of Direct3D 9 gives up.
+/// of the data: then [`ARRIVED`] goes anyway, as the bootstrap of Direct3D 9 gives up.
 const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The place of the player after a teleport, or of a wait of a game load
 /// (`Deviceless::prefetchDistantLand`; a teleport comes from MWSE's native event 5 and holds
 /// with `distant_land.wait_on_load`): version 1, the number of the wait, the position of the
 /// player, the name of the interior cell (64 bytes, empty for the exterior). The helper
 /// streams for it at the end of each frame until a world frame comes, and gives the number
-/// back with its `ARRIVED`.
+/// back with its [`ARRIVED`].
 const PREFETCH_ID: u32 = 10;
 
 /// Runs the renderer with the distant land of MGE XE.
@@ -272,7 +272,7 @@ struct Environment {
     /// Version 7: how much of the night there is, 1 at night and 0 in the day, from the
     /// hour against the weather's sunrise and sunset spans on the game side. A record below
     /// version 7 leaves it 0, and the helper takes the night from the sun's colour
-    /// (`distant_lights::night_of`).
+    /// ([`distant_lights::night_of`]).
     night: f32,
     /// Version 8: the height of the engine's water plane (`MWBridge::WaterPlaneHeight`): -1
     /// in an exterior, the cell's water level in an interior, the lowest float in a cell
@@ -327,8 +327,8 @@ struct Gpu {
     /// The land in the mirror of the water: one side only.
     mirror_pipeline: wgpu::RenderPipeline,
     mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
-    /// Group 1 of the land (`LandUniforms` and the textures), the same in the main view and
-    /// in the mirror; group 0 is the view group (`view::ViewBinding`).
+    /// Group 1 of the land ([`LandUniforms`] and the textures), the same in the main view and
+    /// in the mirror; group 0 is the view group ([`view::ViewBinding`]).
     group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     /// The depth of the land from the sun, for the two layers of the shadow map: the view
@@ -360,9 +360,9 @@ pub struct DistantLand {
     /// that the radius of a light is multiplied with for its end (0: no end), and the
     /// original lights of the game (`distant_land.per_pixel_original_lights`).
     per_pixel: (bool, bool, f32, bool),
-    /// `distant_land.clustered_lights`: `FrameParameters::clustered_lights`.
+    /// `distant_land.clustered_lights`: [`FrameParameters::clustered_lights`].
     clustered_lights: bool,
-    /// The tune `lights world` or `lights engine`: `FrameParameters::world_lights`.
+    /// The tune `lights world` or `lights engine`: [`FrameParameters::world_lights`].
     world_lights: bool,
     /// The tune `lights debug on` or `off`: a draw lit for each pixel shows only the light it
     /// takes (`frame.values[12].x`), without its material, its textures and the fog: a seam of
@@ -378,13 +378,13 @@ pub struct DistantLand {
     /// The cell of the frame has a world space of the distant land: an exterior, or an
     /// interior cell with statics in `usage.data` (`isDistantCell` of the Direct3D 9 path).
     distant_cell: bool,
-    /// The light for each pixel of this frame, or `None`.
+    /// The light for each pixel of this frame, or [`None`].
     shade: Option<PerPixel>,
     /// The sun of the frame for the shadow of a draw: the direction the light goes in and
     /// its colour, from the scene's sun (the weather's sky light, the plugin's scene record),
-    /// `None` when the scene has none. A draw's own directional light never serves: it can
+    /// [`None`] when the scene has none. A draw's own directional light never serves: it can
     /// be a mod's light. For a stream without the scene record the renderer gives the sun of
-    /// the engine's draw in `SceneView::sun_direction`.
+    /// the engine's draw in [`SceneView::sun_direction`].
     scene_sun: Option<([f32; 3], [f32; 3])>,
     /// How much of the day there is (1 less the night of the frame). The sun casts no
     /// shadow at night, and the shadow fades through dusk and dawn with the game's ambient
@@ -393,7 +393,7 @@ pub struct DistantLand {
     /// The loads complete before a frame: a capture file, where each frame must be the same.
     synchronous: bool,
     blend: Option<blend::Blend>,
-    /// The caustics under the water; `None` before the first frame with them.
+    /// The caustics under the water; [`None`] before the first frame with them.
     caustics: Option<caustics::Caustics>,
     /// The setting `distant_land.water.caustics_intensity`: 0 is none.
     caustics_intensity: f32,
@@ -411,15 +411,15 @@ pub struct DistantLand {
     status: Option<(String, bool, Instant)>,
     /// The time of the last status text in the log.
     status_logged: Option<Instant>,
-    /// The messages for MGE XE of this frame (`Extension::messages`).
+    /// The messages for MGE XE of this frame ([`Extension::messages`]).
     messages_out: Vec<(u32, Vec<u8>)>,
-    /// `LOADED` was said.
+    /// [`LOADED`] was said.
     loaded_said: bool,
     /// After a game load or a teleport: the start of the wait for the statics, and the world
     /// frames since then.
     arrival: Option<(Instant, u32)>,
     /// The place of a teleport or of a wait of a game load (record 10): the world space and the eye, until a
-    /// world frame comes; and the number of the wait that `ARRIVED` answers (0 for none).
+    /// world frame comes; and the number of the wait that [`ARRIVED`] answers (0 for none).
     prefetch: Option<(Vec<u8>, [f32; 3])>,
     arrival_serial: u32,
     /// The parameters that a person can change while the game runs (tunables.rs).
@@ -433,13 +433,13 @@ pub struct DistantLand {
     settings_told_distance: (f32, f32),
     statics: Option<statics::Statics>,
     /// The distant lights (`lights.data`), and the bind group of their baked light that the
-    /// land and the statics read; `None` before the first frame.
+    /// land and the statics read; [`None`] before the first frame.
     lights: Option<distant_lights::DistantLights>,
     light_binding: Option<distant_lights::LightBinding>,
-    /// The view group (group 0) of the pipelines of MGE XE that take it; `None` before the
+    /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
-    /// The shadow map, when the settings have shadows; `None` before the first frame. True
+    /// The shadow map, when the settings have shadows; [`None`] before the first frame. True
     /// when the map is made in this frame.
     shadow: Option<Shadow>,
     shadow_in_frame: bool,
@@ -452,7 +452,7 @@ pub struct DistantLand {
     samples: u32,
     /// The room of the texture arrays (`runtime.renderer_texture_slots`): 0 is automatic.
     texture_slots: u32,
-    /// The post-processing chain, when the settings have shaders; `None` before the first
+    /// The post-processing chain, when the settings have shaders; [`None`] before the first
     /// frame with the water (it needs the wave texture).
     post: Option<Post>,
     post_enabled: bool,
@@ -467,11 +467,11 @@ pub struct DistantLand {
     hdr_reaction: f32,
     /// The folder of the game (the current folder), for the files of the shaders.
     root: PathBuf,
-    /// The water, when its wave texture was found; `None` before the first frame.
+    /// The water, when its wave texture was found; [`None`] before the first frame.
     water: Option<Water>,
     water_enabled: bool,
     /// The dynamic waves (`distant_land.water.dynamic_ripples`), their wave height
-    /// (`wave_height`, 0 to 250), and their simulation; `None` before the first frame
+    /// (`wave_height`, 0 to 250), and their simulation; [`None`] before the first frame
     /// with them.
     ripples_enabled: bool,
     wave_height: f32,
@@ -534,7 +534,7 @@ pub struct DistantLand {
 }
 
 /// The values of the land only, group 1 of its shader. Those of the view are in the view
-/// group (`view::View`).
+/// group ([`view::View`]).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LandUniforms {
@@ -893,7 +893,7 @@ impl DistantLand {
         }
     }
 
-    /// Writes the game view of the frame (`view::GAME`, the projection of the game) for the
+    /// Writes the game view of the frame ([`view::GAME`], the projection of the game) for the
     /// grass, the water and the caustics. In each frame with a world: the water draws in a cell
     /// without the distant land too.
     fn write_game_view(&mut self, scene: &SceneView) {
@@ -1998,7 +1998,7 @@ impl Extension for DistantLand {
 
 
     /// The events of the distant land for MGE XE (`distantLandReady` of its Lua), at the end
-    /// of a frame: `LOADED` one time when the data of the session is loaded; `ARRIVED` after a
+    /// of a frame: [`LOADED`] one time when the data of the session is loaded; [`ARRIVED`] after a
     /// game load or a jump when the statics near the camera are there. A wait needs two world
     /// frames: the first one asks for the statics of the new place.
     fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
@@ -2742,7 +2742,7 @@ impl DistantLand {
     }
 
     /// Draws the surfaces of water volumes among `held` and the far water `far`, with the look
-    /// and the light of the frame. Returns the number drawn (`Water::draw_volumes`).
+    /// and the light of the frame. Returns the number drawn ([`Water::draw_volumes`]).
     fn draw_surfaces(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, held: &[nirender_wgpu::HeldDraw], far: &[water::FarWater]) -> usize {
         // What a surface reflects in place of the sky in an interior: the light of the room,
         // as the reflection of the water of the cell has it.
@@ -2786,7 +2786,7 @@ impl DistantLand {
         water.draw_volumes(scene, pass, game_view, frame, self.ripples.as_ref(), held, far, &look, &self.water_looks, &light)
     }
 
-    /// What the water needs from the environment of the frame, or `None` without water in
+    /// What the water needs from the environment of the frame, or [`None`] without water in
     /// the cell, without the land, or without the environment.
     fn water_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
         let e = self.environment.filter(|e| e.has_water != 0)?;
@@ -2808,7 +2808,7 @@ impl DistantLand {
         projection
     }
 
-    /// The values of a view of the frame (`view::View`) for its view and projection: the
+    /// The values of a view of the frame ([`view::View`]) for its view and projection: the
     /// main view of the land, or the game view with the projection of the game.
     fn frame_view(&self, scene: &SceneView, projection: &[f32; 16]) -> view::View {
         let eye = scene.eye.map(|v| v as f32);
@@ -3090,7 +3090,7 @@ impl DistantLand {
         bits | 1 | if adds { 2 } else { 0 }
     }
 
-    /// `DrawData::extension` 5 and 7 of a draw with these facts: the sun for its shadow, its
+    /// [`DrawData::extension`] 5 and 7 of a draw with these facts: the sun for its shadow, its
     /// direction and the light it gives, as shadowSunEstimate takes it (with the multiplier
     /// of the per-pixel light). The sun is the scene's (the weather's sky light), so the
     /// lights of a draw do not change the shadow. A scene without a sun gives no shadow.

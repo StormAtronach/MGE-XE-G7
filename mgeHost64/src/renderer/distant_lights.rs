@@ -10,7 +10,7 @@
 //! - The baked light: the generator gives the light of the sources on the land of each lit
 //!   cell, a tile of 65 x 65 values (the vertices of the land). The tiles are in one texture,
 //!   with a texture of the tile of each cell. The shaders of the land and of the statics add it
-//!   to their light at night (`baked_light`, in the view group, from `LightBinding`).
+//!   to their light at night (`baked_light`, in the view group, from [`LightBinding`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
@@ -33,7 +33,7 @@ const TEXEL: u32 = 4;
 const GLOW_WORDS: u64 = 8;
 
 /// The baked light for a shader of the land or of the statics: `GROUP` is the number of the
-/// bind group with the bindings of `LightBinding` in that shader, and `B0` to `B3` their
+/// bind group with the bindings of [`LightBinding`] in that shader, and `B0` to `B3` their
 /// numbers. `baked_light(world)` is the light at a place.
 const BAKED_WGSL: &str = "
 struct LightMap {
@@ -70,7 +70,7 @@ fn baked_light(world: vec3f) -> vec3f {
 }
 ";
 
-/// `BAKED_WGSL` for the bind group `group`, with the bindings from `first` (`LightBinding::layout_entries`).
+/// [`BAKED_WGSL`] for the bind group `group`, with the bindings from `first` ([`LightBinding::layout_entries`]).
 pub fn baked_wgsl_at(group: u32, first: u32) -> String {
     (0..4).fold(BAKED_WGSL.replace("GROUP", &group.to_string()), |code, i| code.replace(&format!("B{i}"), &(first + i).to_string()))
 }
@@ -84,7 +84,7 @@ struct MapUniforms {
 
 /// The resources of the baked light that the land and the statics read, as four bindings of
 /// the view group (`view::ViewBinding`). It has no light until a file comes
-/// (`DistantLights::poll`).
+/// ([`DistantLights::poll`]).
 pub struct LightBinding {
     uniforms: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -384,7 +384,7 @@ struct CullUniforms {
     counts: [u32; 4],
 }
 
-/// Group 1 of the glows: `Glow` of `GLOW_SHADER`.
+/// Group 1 of the glows: `Glow` of [`GLOW_SHADER`].
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlowUniforms {
@@ -416,7 +416,7 @@ struct Glows {
     cull_uniforms: wgpu::Buffer,
     args: wgpu::Buffer,
     draw: wgpu::RenderPipeline,
-    /// Group 1 of the draw: the values of the glows (`GlowUniforms`) and the list.
+    /// Group 1 of the draw: the values of the glows ([`GlowUniforms`]) and the list.
     draw_group: wgpu::BindGroup,
     values: wgpu::Buffer,
     sources: u32,

@@ -202,11 +202,11 @@ pub struct WaterFrame {
     /// among the distant statics is drawn with it, and its depth is that of the land.
     pub land_projection: [f32; 16],
     /// The view depth where the plane ends, in an interior and under the water (the clip
-    /// plane of `renderStageWater`); `None` for no end.
+    /// plane of `renderStageWater`); [`None`] for no end.
     pub view_end: Option<f32>,
     /// The camera is in a dry space (`MGE_WaterDrySet`).
     pub camera_dry: bool,
-    /// The wave height of the settings (0 to 250), with the dynamic waves; `None` without.
+    /// The wave height of the settings (0 to 250), with the dynamic waves; [`None`] without.
     pub wave_height: Option<f32>,
     /// The blur of the reflection (`distant_land.water.blur_reflections`).
     pub blur_reflections: bool,
@@ -266,7 +266,7 @@ fn fine_disc() -> (Vec<[f32; 3]>, Vec<u16>) {
 pub struct Water {
     pipeline: wgpu::RenderPipeline,
     /// The same as lines, when the device has the line mode: for a frame in which the game
-    /// draws in wireframe (`SceneView::wireframe`).
+    /// draws in wireframe ([`SceneView::wireframe`]).
     pipeline_lines: Option<wgpu::RenderPipeline>,
     /// The plane outside the dry spaces.
     pipeline_cut: wgpu::RenderPipeline,
@@ -686,7 +686,7 @@ impl Water {
     /// values, the reflection, the waves, the picture and the depth of the scene, and the
     /// light of the frame for the surfaces of water volumes (`light`; none for the plane).
     /// `ripples` has the textures of the dynamic waves; they count when the frame has a wave
-    /// height. The values go into `uniforms`. `None` without the depth, or without the
+    /// height. The values go into `uniforms`. [`None`] without the depth, or without the
     /// picture unless `picture` is false (a draw that does not read it: the count of the dry
     /// spaces).
     fn frame_group(&self, scene: &SceneView, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, uniforms_buffer: &wgpu::Buffer, picture: bool, light: Option<&VolumeLight>) -> Option<wgpu::BindGroup> {
@@ -848,7 +848,7 @@ impl Water {
         self.volumes.knows_shader(name)
     }
 
-    /// Adds the water shader of a mod from its file (`None`: there is none). A shader that
+    /// Adds the water shader of a mod from its file ([`None`]: there is none). A shader that
     /// fails has the standard look, and the reason is returned.
     pub fn add_water_shader(&mut self, device: &wgpu::Device, name: &str, file: Option<&str>) -> Result<(), String> {
         self.volumes.add_shader(device, name, file)
