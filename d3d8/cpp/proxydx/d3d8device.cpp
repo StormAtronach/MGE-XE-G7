@@ -103,7 +103,9 @@ void _stdcall ProxyDevice::SetGammaRamp(DWORD a, const D3DGAMMARAMP* b) {
     sc->Release();
 
     if (pp.Windowed) {
-        SetDeviceGammaRamp(GetDC(pp.hDeviceWindow), (void*)b);
+        HDC dc = GetDC(pp.hDeviceWindow);
+        SetDeviceGammaRamp(dc, (void*)b);
+        ReleaseDC(pp.hDeviceWindow, dc);
     } else {
         realDevice->SetGammaRamp(0, a, b);
     }
@@ -118,7 +120,9 @@ void _stdcall ProxyDevice::GetGammaRamp(D3DGAMMARAMP* a) {
     sc->Release();
 
     if (pp.Windowed) {
-        GetDeviceGammaRamp(GetDC(pp.hDeviceWindow), (void*)a);
+        HDC dc = GetDC(pp.hDeviceWindow);
+        GetDeviceGammaRamp(dc, (void*)a);
+        ReleaseDC(pp.hDeviceWindow, dc);
     } else {
         realDevice->GetGammaRamp(0, a);
     }

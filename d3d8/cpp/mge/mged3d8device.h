@@ -15,6 +15,9 @@ public:
     HRESULT _stdcall GetIndexedSkinningCaps(MgeIndexedSkinningCaps* caps);
 
     HRESULT _stdcall Present(const RECT* a, const RECT* b, HWND c, const RGNDATA* d);
+    // The gamma ramp goes onto the back buffer at Present (GammaRamp), not to the display.
+    void _stdcall SetGammaRamp(DWORD a, const D3DGAMMARAMP* b);
+    void _stdcall GetGammaRamp(D3DGAMMARAMP* a);
     HRESULT _stdcall SetRenderTarget(IDirect3DSurface8* a, IDirect3DSurface8* b);
     HRESULT _stdcall BeginScene();
     HRESULT _stdcall EndScene();

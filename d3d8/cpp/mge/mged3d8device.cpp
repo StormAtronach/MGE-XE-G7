@@ -12,6 +12,7 @@
 #include "configuration.h"
 #include "distantland.h"
 #include "distantlandready.h"
+#include "gammaramp.h"
 #include "mgedinput.h"
 #include "morrowindskinning.h"
 #include "mwbridge.h"
@@ -388,7 +389,18 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
         DistantLand::tickResidency(stage0RanThisFrame);
     }
 
+    // After the screenshots (EndScene) and the last draw of the frame.
+    GammaRamp::apply(realDevice);
+
     return ProxyDevice::Present(a, b, c, d);
+}
+
+void _stdcall MGEProxyDevice::SetGammaRamp(DWORD a, const D3DGAMMARAMP* b) {
+    GammaRamp::set(b);
+}
+
+void _stdcall MGEProxyDevice::GetGammaRamp(D3DGAMMARAMP* a) {
+    GammaRamp::get(a);
 }
 
 HRESULT _stdcall MGEProxyDevice::SetRenderTarget(IDirect3DSurface8* a, IDirect3DSurface8* b) {
@@ -786,6 +798,7 @@ ULONG _stdcall MGEProxyDevice::Release() {
     if (r == 0) {
         DistantLand::release();
         MGEhud::release();
+        GammaRamp::release();
         StatusOverlay::release();
         // Drops the negotiated device and the fallback cache's engine
         // references. The executable patches stay installed; they are
