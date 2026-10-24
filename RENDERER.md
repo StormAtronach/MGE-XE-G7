@@ -80,9 +80,14 @@ change. That start can take some minutes. With an older file, set it below
 
 - Everything that MGE XE G7 needs (see `MGE XE Readme.md`): a GPU with Vulkan 1.3, 64-bit
   Windows 10 or 11.
-- MWSE 2.1, a build of 2026 or later. The plugin loads as an MWSE plugin
-  (`Data Files/MWSE/lib/akulakhan.dll`, `Data Files/MWSE/mods/nirender/main.lua`); with a mod
-  manager, check that it does not leave `.dll` files out.
+- MWSE 2.1 with the native ABI for DLL modules. Public MWSE does not have it yet, so this
+  test build ships an `MWSE.dll` in its Morrowind folder: install it over yours. With an
+  MWSE.dll without the ABI the renderer is refused for the session, the game runs on
+  Direct3D 9, and `nirender.log` says "the MWSE.dll of the game has no native ABI". Do not
+  run `MWSE-Update.exe` while you test this build: it puts the public MWSE.dll back. The
+  plugin loads as an MWSE plugin (`Data Files/MWSE/lib/akulakhan.dll`,
+  `Data Files/MWSE/mods/nirender/main.lua`); with a mod manager, check that it does not leave
+  `.dll` files out.
 - The Morrowind Code Patch, 2.5 beta 19 or later as shipped with recent MWSE. The plugin
   replaces 301 functions of the game's renderer with its own code and follows the changes
   that the Code Patch makes in them. At the start it compares the code of each function
