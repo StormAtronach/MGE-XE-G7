@@ -26,6 +26,9 @@
 //!
 //! The terrain has no quadtree and no horizon culling: each mesh is tested against the view.
 
+// A link in a doc comment of the renderer that rustdoc cannot resolve fails the doc build.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
@@ -362,7 +365,7 @@ pub struct DistantLand {
     /// The tune `lights world` or `lights engine`: `FrameParameters::world_lights`.
     world_lights: bool,
     /// The tune `lights debug on` or `off`: a draw lit for each pixel shows only the light it
-    /// takes (frame.values[12].x), without its material, its textures and the fog: a seam of
+    /// takes (`frame.values[12].x`), without its material, its textures and the fog: a seam of
     /// the lights is a step at the edge of a shape.
     light_debug: bool,
     /// The world of the frame is in an interior cell.
