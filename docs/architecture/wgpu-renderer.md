@@ -248,7 +248,11 @@ The records of the retained instances come from `nirender-plugin/src/instance_st
 rotation, translation and colours of a shape; 24 INSTANCE_DRAW, a draw of it in the place
 of a SHAPE; 25 INSTANCE_DELETE; 26 INSTANCE_LIGHTS, the keys of its lights; 27
 INSTANCE_STATE, hidden or visible; 28 RETAINED_SCENE, the ambient light and the fog of the
-scene. The plugin sends a record only when the shape changed.
+scene; 35 INSTANCE_PARTICLES, the particles of a particle instance for one draw. An
+INSTANCE_DRAW can carry the engine's effect stages of that draw (flag 16: the environment
+map and the fog map of the dynamic effect state, when it has one) and the fog (flag 32). Tags 29 to 34 (bones, tile copies,
+the sorted queue, the walk, the lights) are in `src/capture.rs`. The plugin sends a record
+only when the shape changed; a particle instance sends its particles at each draw.
 
 Switches for diagnostics and tests, never for a player (the A/B switches of finished
 steps retired at the review of checkpoint 4, nirender 6c8586d): `MGE_XE_RETAINED=0` (the
@@ -257,8 +261,20 @@ helper ignores the instance records), `MGE_XE_CLUSTERS=0/1` (overrides
 `MGE_XE_RECORD_LIMIT` (test limits). In the plugin:
 `NIRENDER_RETAINED=off|dual|gpu` (default gpu), `NIRENDER_LANDSCAPE=0`,
 `NIRENDER_ACTORS=0`, `NIRENDER_ANIMATED=0` (that class stays on the engine's path),
-`NIRENDER_SKIP=0` (the engine displays the retained shapes too), `NIRENDER_PORT_TIMING=1`
-(times each live port call). MSOC is not supported with this renderer (RENDERER.md).
+`NIRENDER_SKIP=0` (the engine displays the retained shapes too), `NIRENDER_PARTICLES=off`
+(the particle systems stay on the engine's path; the table takes them by default since
+nirender 978c0df), `NIRENDER_PORT_TIMING=1` (times each live port call). MSOC is not
+supported with this renderer (RENDERER.md).
+
+**"particle quads"** (compute, `host/src/particle_quads.rs`): the particles of a draw (20
+bytes each) go into an input buffer of the frame, and the pass writes four vertices of 36
+bytes for each particle, as `NiDX8Renderer::RenderPoints` writes them. Group 0: 0 storage
+input (read), 1 storage vertices (read and write), 2 uniform job (256 B, a dynamic offset:
+the camera's right plus up and up minus right, times the radius; the first particle, the
+count, the first vertex). Workgroups of 64. Each system
+gets its own ranges in the frame, also a system drawn twice. The pass goes into the frame's
+commands before its draws; the draws then take the path of any shape.
+`MGE_XE_PARTICLE_QUADS=cpu` makes the corners on the CPU instead.
 
 **"screen draw"**: film frames and screen-space draws. Group 0: texture, sampler (F); a new
 group per draw. Depth test always, no depth write.
