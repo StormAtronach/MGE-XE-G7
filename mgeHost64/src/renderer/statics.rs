@@ -2044,6 +2044,7 @@ impl Statics {
                         culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
                     }
                     let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull") });
+                    let at = scene.commands.stamps().begin(&mut encoder, "distant statics: the GPU cull of all sets", nirender_wgpu::stamps::StampKind::Detail);
                     for cull_set in sets {
                         let values = cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end);
                         culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
@@ -2051,6 +2052,7 @@ impl Statics {
                             *prepared = true;
                         }
                     }
+                    scene.commands.stamps().end(&mut encoder, at);
                     scene.commands.defer(encoder.finish());
                 }
             }

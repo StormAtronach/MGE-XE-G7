@@ -336,6 +336,7 @@ impl Ripples {
         // The steps of the frame, for both simulations.
         let steps = steps_of(&mut self.remaining, frame_time);
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ripples") });
+        let at = scene.commands.stamps().begin(&mut encoder, "ripples: the simulation", nirender_wgpu::stamps::StampKind::Detail);
         // The first slot is for the step passes: they read no uniform.
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&[0.0f32, 0.0, inputs.time, 0.0]));
 
@@ -414,6 +415,7 @@ impl Ripples {
             }
             self.origin = [pixel.0 as f32 * WORLD_PIXEL - 0.5 * WORLD_SIZE, pixel.1 as f32 * WORLD_PIXEL - 0.5 * WORLD_SIZE];
         }
+        scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
     }
 

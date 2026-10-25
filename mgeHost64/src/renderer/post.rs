@@ -5043,6 +5043,8 @@ impl Post {
         let reads_depth = self.debug == 2.0 || self.chain.iter().any(|c| c.enabled && c.disable_flags & environment_flags == 0 && c.reads_depth);
         if reads_depth {
             self.depth_frames += 1;
+            let stamps = scene.commands.stamps();
+            let at = stamps.begin(encoder, "post: the depth frame", nirender_wgpu::stamps::StampKind::Detail);
             let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
                 label: Some("post depth"),
                 layout: &self.depth_layout,
@@ -5056,6 +5058,8 @@ impl Post {
             pass.set_pipeline(&self.depth_pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
+            drop(pass);
+            stamps.end(encoder, at);
         }
         // The chain. `last` is the pool texture that holds the input of the shader: `None` is
         // the picture. The passes of a shader each get a texture of their class that is not
@@ -5082,6 +5086,9 @@ impl Post {
                 continue;
             }
             self.shaders_run += 1;
+            // The GPU time of each shader, with `MGE_XE_GPU_TIME=1`.
+            let stamps = scene.commands.stamps();
+            let at = if stamps.on() { stamps.begin(encoder, nirender_wgpu::stamps::name(&compiled.name), nirender_wgpu::stamps::StampKind::Detail) } else { nirender_wgpu::stamps::Stamp::NONE };
             let mut in_use: Vec<usize> = last.into_iter().collect();
             let mut targets: Vec<usize> = Vec::with_capacity(compiled.passes.len());
             for pass in &compiled.passes {
@@ -5115,6 +5122,7 @@ impl Post {
                 drop(render);
                 targets.push(sink);
             }
+            stamps.end(encoder, at);
             // The output of the last pass is the input of the next shader.
             last = targets.last().copied();
         }

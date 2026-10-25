@@ -582,7 +582,14 @@ impl Culling {
     /// of the frame that draw them.
     pub fn run(&self, scene: &nirender_wgpu::SceneView, set: usize, uniforms: &CullUniforms) {
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull") });
+        let name = match set {
+            0 => "distant statics: the GPU cull of the view",
+            1 => "distant statics: the GPU cull of the mirror",
+            _ => "distant statics: the GPU cull of a shadow layer",
+        };
+        let at = scene.commands.stamps().begin(&mut encoder, name, nirender_wgpu::stamps::StampKind::Detail);
         self.encode(scene.queue, &mut encoder, set, uniforms);
+        scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
     }
 

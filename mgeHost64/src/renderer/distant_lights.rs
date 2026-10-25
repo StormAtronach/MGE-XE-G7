@@ -480,12 +480,14 @@ impl DistantLights {
         };
         scene.queue.write_buffer(&glows.values, 0, bytemuck::bytes_of(&values));
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant lights, cull") });
+        let at = scene.commands.stamps().begin(&mut encoder, "distant lights: the glow cull", nirender_wgpu::stamps::StampKind::Detail);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("distant lights, cull"), timestamp_writes: None });
             pass.set_pipeline(&glows.cull);
             pass.set_bind_group(0, &glows.cull_group, &[]);
             pass.dispatch_workgroups(glows.sources.div_ceil(256), 1, 1);
         }
+        scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
         self.frames += 1;
     }
