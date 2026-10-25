@@ -420,6 +420,7 @@ impl Ripples {
     }
 
     fn pass(&self, encoder: &mut wgpu::CommandEncoder, pipeline: &wgpu::RenderPipeline, source: &wgpu::BindGroup, target: &wgpu::TextureView, offset: u32) {
+        nirender_wgpu::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("ripples"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
@@ -436,6 +437,7 @@ impl Ripples {
 
 /// Makes a texture flat: all zeros.
 fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    nirender_wgpu::gpu::note_other_pass();
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("ripples clear"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],

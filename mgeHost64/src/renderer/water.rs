@@ -463,6 +463,7 @@ impl Water {
             })
             .create_view(&Default::default());
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water no land") });
+        nirender_wgpu::gpu::note_other_pass();
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("water no land"),
             color_attachments: &[],
@@ -569,6 +570,7 @@ impl Water {
     /// land, then calls `reflect_sky`, then ends the pass and submits the encoder.
     pub fn begin_reflection(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, frame: &WaterFrame) -> (wgpu::RenderPass<'static>, [f32; 16], [f32; 16]) {
         let clear = scene.fog_color;
+        nirender_wgpu::gpu::note_other_pass();
         let pass = encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("water reflection"),
@@ -603,6 +605,7 @@ impl Water {
             return;
         }
         for (source, target) in self.level_groups.iter().zip(&self.reflection_levels[1..]) {
+            nirender_wgpu::gpu::note_other_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("water reflection level"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
@@ -624,6 +627,7 @@ impl Water {
         let levels = if frame.blur_reflections && frame.blur_contact { self.reflection_levels.len() } else { 1 };
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection fill") });
         for (index, level) in self.reflection_levels[..levels].iter().enumerate() {
+            nirender_wgpu::gpu::note_other_pass();
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("water reflection fill"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

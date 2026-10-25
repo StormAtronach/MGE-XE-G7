@@ -318,6 +318,7 @@ impl Shadow {
     /// caller sets the layer with `set_layer`, draws the casters, and then ends the pass.
     pub fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) -> wgpu::RenderPass<'static> {
         self.frames += 1;
+        nirender_wgpu::gpu::note_other_pass();
         encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow map"),
@@ -349,6 +350,7 @@ impl Shadow {
     /// The two blurs, after the casters.
     pub fn blur(&self, encoder: &mut wgpu::CommandEncoder) {
         for (step, target) in [(&self.blur_view, 0usize), (&*self.atlas_view, 1usize)].into_iter().map(|(view, i)| (i, view)) {
+            nirender_wgpu::gpu::note_other_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow blur"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

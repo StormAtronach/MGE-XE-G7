@@ -5199,6 +5199,7 @@ pub(super) fn full_screen_pipeline(device: &wgpu::Device, label: &str, source: &
 }
 
 pub(super) fn full_screen_pass<'a>(encoder: &'a mut wgpu::CommandEncoder, target: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>) -> wgpu::RenderPass<'a> {
+    nirender_wgpu::gpu::note_other_pass();
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("post"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
