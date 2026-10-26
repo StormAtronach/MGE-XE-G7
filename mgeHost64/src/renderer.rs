@@ -65,6 +65,12 @@ use shadow::Shadow;
 const CELL: f32 = 8192.0;
 /// The near plane of the projection of the distant land.
 const NEAR: f32 = 64.0;
+/// A test mask (`MGE_XE_SKIP=water,terrain,statics,blend`): the parts named are not drawn, for a
+/// replay that tests one suspect at a time. Read once.
+fn skipped(part: &str) -> bool {
+    static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SKIP.get_or_init(|| std::env::var("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
+}
 /// The number of the environment data in the stream. `Deviceless::EnvironmentId` of MGE XE.
 const ENVIRONMENT_ID: u32 = 1;
 /// The state of a post shader that a mod loaded: see [`post::ShaderState`].
@@ -2273,7 +2279,7 @@ impl Extension for DistantLand {
         let mut drawn = 0;
         // The terrain is for an exterior; an interior cell has the statics of its own world
         // space over the clear colour.
-        if !scene.interior {
+        if !scene.interior && !skipped("terrain") {
             pass.push_debug_group("distant land");
             pass.set_pipeline(gpu.pipeline_for(scene));
             pass.set_bind_group(0, views.group(view::MAIN), &[]);
@@ -2440,7 +2446,7 @@ impl Extension for DistantLand {
             }
         }
         let far_water_wanted = self.volumes_ready && !scene.interior && !self.under_water();
-        if let Some(statics) = self.statics.as_mut() {
+        if let Some(statics) = self.statics.as_mut().filter(|_| !skipped("statics")) {
             let frame = statics::Frame { eye: eye_range, planes, fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end), time: game_time(self.environment, self.started) };
             pass.push_debug_group("distant statics");
             statics.draw(scene, pass, &frame, 0);
@@ -2618,7 +2624,7 @@ impl Extension for DistantLand {
 
     /// The water plane of MGE XE in place of the water plane of the game.
     fn draw_class(&mut self, class: u32, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
-        if class != 10 {
+        if class != 10 || skipped("water") {
             return;
         }
         // In a water volume whose surface was drawn, that surface is the water: the plane at
@@ -2636,6 +2642,9 @@ impl Extension for DistantLand {
     }
 
     fn blend(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView) {
+        if skipped("blend") {
+            return;
+        }
         // Without the view range from the game, 7168: the top of the game's "Render Distance",
         // as for the grass.
         let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
