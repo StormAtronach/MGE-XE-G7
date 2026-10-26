@@ -172,6 +172,10 @@ change. That start can take some minutes. With an older file, set it below
   memory budget of the GPU on Vulkan. Without a budget (Direct3D 12, or a driver without
   the extension) the limit is `statics_fallback_cap_mb` under `[distant_land]`: 1024 MB at
   the start, `0` for no limit. When the limit is full, a far static can show late.
+- The merged distant statics stay on the GPU after the camera leaves them, up to a high mark
+  (`statics_residency = "auto"` and `statics_resident_mb` under `[distant_land]`; `0` is half
+  of the limit), so a return to a place seen before does not load them again. `"all"` loads
+  all of them at the start when they fit; `"near"` keeps only those near the camera.
 - With `automatic_rebuild = true` under `[distant_land]`, the distant land is made again at
   the start when the load order or the generation settings changed, as with Direct3D 9.
 - Distant land data that this build cannot read (made by an older or newer MGE XE) is not

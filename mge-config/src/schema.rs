@@ -348,6 +348,35 @@ impl PerPixelMode {
     }
 }
 
+/// The wgpu renderer: which merged distant statics stay on the GPU.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaticsResidency {
+    /// They stay until their bytes pass the high mark (`statics_resident_mb`); then the ones
+    /// wanted least recently go.
+    #[default]
+    Auto,
+    /// They go when the camera is farther than the draw distance and two cells.
+    Near,
+    /// All of a world space go to the GPU when they fit under the high mark; else `Auto`.
+    All,
+}
+
+impl StaticsResidency {
+    pub fn runtime_value(self) -> u32 {
+        self as u32
+    }
+
+    pub fn from_runtime(value: u32) -> Option<Self> {
+        Some(match value {
+            0 => Self::Auto,
+            1 => Self::Near,
+            2 => Self::All,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraphicsSettings {
@@ -505,6 +534,11 @@ pub struct DistantLandSettings {
     /// The wgpu renderer: the most megabytes of merged distant statics on the GPU when the
     /// GPU does not give its memory budget (`VK_EXT_memory_budget`). 0: no limit.
     pub statics_fallback_cap_mb: u32,
+    /// The wgpu renderer: which merged distant statics stay on the GPU.
+    pub statics_residency: StaticsResidency,
+    /// The wgpu renderer: the high mark of the merged distant statics on the GPU, in
+    /// megabytes. 0: half of the room that the memory budget of the GPU leaves.
+    pub statics_resident_mb: u32,
     pub water: WaterSettings,
     pub fog: FogSettings,
     pub grass: GrassSettings,
@@ -546,6 +580,8 @@ impl Default for DistantLandSettings {
             far_static_min_size: 600.0,
             very_far_static_min_size: 800.0,
             statics_fallback_cap_mb: 1024,
+            statics_residency: StaticsResidency::Auto,
+            statics_resident_mb: 0,
             water: WaterSettings::default(),
             fog: FogSettings::default(),
             grass: GrassSettings::default(),

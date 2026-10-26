@@ -10,10 +10,14 @@
 //! - An ordinary static is one mesh for many places. All of them are on the GPU from the
 //!   start; they are a small part of the data.
 //! - A merged static has the statics of one exterior cell in one mesh, with one place. It is
-//!   most of the data. A merged subset is on the GPU only while the camera is near it: a
-//!   reader thread gets its bytes when the camera comes within the draw distance and one more
-//!   cell (`want_near`), and the renderer drops it when the camera is farther than the draw
-//!   distance and two more cells (`frame_work`, every 30 frames). The merged
+//!   most of the data. A reader thread gets the bytes of a merged subset when the camera
+//!   comes within the draw distance and one more cell (`want_near`). Then
+//!   `distant_land.statics_residency` decides: "auto" keeps it until the merged subsets pass
+//!   a high mark and then takes off the ones wanted least recently (`trim_resident`); "near"
+//!   drops it when the camera is farther than the draw distance and two more cells
+//!   (`frame_work`, every 30 frames); "all" asks for all of a world space when they fit under
+//!   the high mark. A subset of another world space (an interior cell with statics has its
+//!   own coordinates) counts as the farthest (`distance_here`). The merged
 //!   subsets on the GPU stay under a cap, as in the IPC host mode: what the memory budget of
 //!   the GPU (`VK_EXT_memory_budget`) leaves after the memory in use and a margin, lowered
 //!   when other programs take memory; without a budget, `distant_land.statics_fallback_cap_mb`.
@@ -70,7 +74,7 @@ use std::time::{Duration, Instant};
 
 use ash::vk;
 use distantland::mge_xe::usage_data::load_usage_data;
-use mge_config::ConfigDocument;
+use mge_config::{ConfigDocument, StaticsResidency};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::SceneView;
@@ -103,6 +107,14 @@ const HEADROOM_LEAST: u64 = 256 << 20;
 const HEADROOM_MOST: u64 = 1 << 30;
 const BUDGET_SAMPLE: Duration = Duration::from_millis(500);
 const LOWER_SAMPLES: u32 = 4;
+/// The cap goes up again at the twentieth higher sample in a row (10 seconds), so a short dip
+/// of another program's memory does not raise it.
+const HIGHER_SAMPLES: u32 = 20;
+/// With `distant_land.statics_residency` "auto" or "all": a merged subset that the camera
+/// wanted in the last minute stays, and the trim goes down to 85 % of the high mark, so the
+/// next trim is not at the next arrival.
+const KEEP_SECONDS: f32 = 60.0;
+const LOW_MARK_TWENTIETHS: u64 = 17;
 
 fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
@@ -725,6 +737,22 @@ fn cap_from_budget(budget: u64, used: u64, merged: u64) -> u64 {
     merged.saturating_add(budget.saturating_sub(used).saturating_sub(headroom))
 }
 
+/// The merged subsets that the trim takes off: `candidates` are (the time the camera last
+/// wanted it, the distance from the camera, the subset, its bytes). The least recently wanted
+/// go first, the farthest first among equals, until the bytes on the GPU are at most `low`.
+fn pick_trim(mut candidates: Vec<(f32, f32, u32, u64)>, mut bytes: u64, low: u64) -> Vec<u32> {
+    candidates.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
+    let mut gone = Vec::new();
+    for (_, _, subset, size) in candidates {
+        if bytes <= low {
+            break;
+        }
+        gone.push(subset);
+        bytes = bytes.saturating_sub(size);
+    }
+    gone
+}
+
 /// The choice of the cap of the merged subsets. `wanted` and `on_gpu` are (distance from the
 /// camera, subset, bytes); `wanted` is the nearest first, and `used` is the bytes on the GPU
 /// and asked for. Gives the subsets to ask for, the subsets to take off the GPU for them, and
@@ -768,6 +796,9 @@ struct Resident {
     /// The time of the arrival on the clock of [`Statics`], in seconds: the subset comes in
     /// over the fade time after it.
     arrived: f32,
+    /// The last time on that clock that the camera was within the draw distance and one cell
+    /// of a merged subset (`want_near`): the trim takes the least recent first.
+    wanted_at: f32,
     /// A grass subset with bent normals ([`Arrival::bent`]).
     bent: bool,
 }
@@ -1141,11 +1172,26 @@ pub struct Statics {
     merged_cap: u64,
     /// `distant_land.statics_fallback_cap_mb` in bytes, [`u64::MAX`] for no cap.
     fallback_cap: u64,
+    /// `distant_land.statics_residency`, and `distant_land.statics_resident_mb` in bytes (0:
+    /// half of the cap). See [`Statics::high_mark`].
+    residency: StaticsResidency,
+    resident_mark: u64,
+    /// With "all": the world space whose merged subsets were all asked for.
+    all_world: Option<Vec<u8>>,
+    /// The merged subsets of the world space of the frame. An interior cell with statics is a
+    /// world space of its own, with its own coordinates: a distance from the camera to a
+    /// subset of another world space means nothing, and such a subset counts as the farthest
+    /// (`distance_here`).
+    here: HashSet<u32>,
+    /// The merged subsets that the trim took off.
+    trimmed: u64,
     /// The time of the next sample of the memory budget, when the cap follows it, and the
-    /// lower samples in a row.
+    /// lower and higher samples in a row.
     next_budget_sample: Option<Instant>,
     lower_samples: u32,
+    higher_samples: u32,
     lowered: u64,
+    raised: u64,
     most_merged: u64,
     evicted: u64,
     capped_frames: u64,
@@ -1258,9 +1304,16 @@ impl Statics {
                 0 => u64::MAX,
                 mb => u64::from(mb) << 20,
             },
+            residency: land.statics_residency,
+            resident_mark: u64::from(land.statics_resident_mb) << 20,
+            all_world: None,
+            here: HashSet::new(),
+            trimmed: 0,
             next_budget_sample: None,
             lower_samples: 0,
+            higher_samples: 0,
             lowered: 0,
+            raised: 0,
             most_merged: 0,
             evicted: 0,
             capped_frames: 0,
@@ -1479,8 +1532,27 @@ impl Statics {
         if self.world != name {
             self.world = name.to_vec();
             self.request_world();
+            self.find_here();
         }
         self.catalog.as_ref().is_some_and(|catalog| catalog.worlds.contains_key(name))
+    }
+
+    /// The merged subsets of the world space of the frame (`here`).
+    fn find_here(&mut self) {
+        self.here.clear();
+        let Some(catalog) = self.catalog.as_ref() else { return };
+        if let Some(world) = catalog.worlds.get(&self.world) {
+            self.here.extend(world.merged.iter().map(|&index| catalog.instances[index as usize].subset));
+        }
+    }
+
+    /// The distance from the camera to the place of a merged subset across the ground; the
+    /// largest for a subset of another world space.
+    fn distance_here(&self, catalog: &Catalog, subset: u32, eye: [f32; 3]) -> f32 {
+        match (self.here.contains(&subset), catalog.merged_place.get(&subset)) {
+            (true, Some(&index)) => flat_distance(&catalog.instances[index as usize], eye),
+            _ => f32::INFINITY,
+        }
     }
 
     /// Asks the reader thread for the ordinary subsets of the places of the world space of
@@ -1532,11 +1604,18 @@ impl Statics {
                 println!("distant statics: the GPU gives no memory budget; the cap of the merged subsets is {} MB (distant_land.statics_fallback_cap_mb)", self.fallback_cap >> 20);
             }
         }
+        let high = self.high_mark();
+        println!(
+            "distant statics: residency {:?}, the high mark of the merged subsets {}",
+            self.residency,
+            if high >= u64::MAX / 2 { "none".to_string() } else { format!("{:.0} MB ({})", high as f64 / 1e6, if self.resident_mark > 0 { "distant_land.statics_resident_mb" } else { "half of the cap" }) }
+        );
     }
 
     /// A new sample of the memory budget each half second, when the cap follows it. The cap
     /// goes down to the fourth lower value in a row, not to the least of them, so that a
-    /// short peak of another program does not hold it low; it never goes up.
+    /// short peak of another program does not hold it low; it goes up again to the twentieth
+    /// higher value in a row, when the other program gave its memory back.
     fn sample_budget(&mut self, device: &wgpu::Device) {
         let Some(next) = self.next_budget_sample else { return };
         let now = Instant::now();
@@ -1546,10 +1625,29 @@ impl Statics {
         self.next_budget_sample = Some(now + BUDGET_SAMPLE);
         let Some((budget, used)) = memory_budget(device) else {
             self.lower_samples = 0;
+            self.higher_samples = 0;
             return;
         };
         let candidate = cap_from_budget(budget, used, self.merged_bytes);
-        if candidate >= self.merged_cap {
+        if candidate > self.merged_cap {
+            self.lower_samples = 0;
+            self.higher_samples += 1;
+            if self.higher_samples >= HIGHER_SAMPLES {
+                println!(
+                    "distant statics: the cap of the merged subsets goes up from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
+                    self.merged_cap as f64 / 1e6,
+                    candidate as f64 / 1e6,
+                    budget as f64 / 1e6,
+                    used as f64 / 1e6
+                );
+                self.merged_cap = candidate;
+                self.higher_samples = 0;
+                self.raised += 1;
+            }
+            return;
+        }
+        self.higher_samples = 0;
+        if candidate == self.merged_cap {
             self.lower_samples = 0;
             return;
         }
@@ -1591,7 +1689,7 @@ impl Statics {
         if self.merged_bytes <= self.merged_cap {
             return;
         }
-        let mut on_gpu: Vec<(f32, u32)> = self.resident.keys().filter_map(|subset| catalog.merged_place.get(subset).map(|index| (flat_distance(&catalog.instances[*index as usize], eye), *subset))).collect();
+        let mut on_gpu: Vec<(f32, u32)> = self.resident.keys().filter(|subset| catalog.merged_place.contains_key(subset)).map(|subset| (self.distance_here(catalog, *subset, eye), *subset)).collect();
         on_gpu.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
         for (_, subset) in on_gpu {
             if self.merged_bytes <= self.merged_cap {
@@ -1626,7 +1724,7 @@ impl Statics {
         let (admit, evict, waiting) = if used + wanted.iter().map(|w| w.2).sum::<u64>() <= self.merged_cap {
             (wanted.iter().map(|w| w.1).collect(), Vec::new(), false)
         } else {
-            let on_gpu = self.resident.iter().filter(|(subset, _)| catalog.merged_place.contains_key(subset)).map(|(subset, resident)| (distance(*subset), *subset, resident.bytes)).collect();
+            let on_gpu = self.resident.iter().filter(|(subset, _)| catalog.merged_place.contains_key(subset)).map(|(subset, resident)| (self.distance_here(catalog, *subset, eye), *subset, resident.bytes)).collect();
             plan_merged(&wanted, on_gpu, used, self.merged_cap)
         };
         for subset in evict {
@@ -1704,6 +1802,7 @@ impl Statics {
         self.apply_groups();
         // All ordinary subsets that a place of the world space uses go to the GPU now.
         self.request_world();
+        self.find_here();
     }
 
     /// Makes the buffers of the subsets that the reader thread has ready, for a part of a frame.
@@ -1764,7 +1863,8 @@ impl Statics {
                 self.grass_arrived += 1;
                 self.grass_bent += arrival.bent as u64;
             }
-            self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size, arrived, bent: arrival.bent });
+            let wanted_at = self.clock.elapsed().as_secs_f32();
+            self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size, arrived, wanted_at, bent: arrival.bent });
             self.resident_bytes += size;
             self.most_bytes = self.most_bytes.max(self.resident_bytes);
             let again = !self.ever_arrived.insert(arrival.subset);
@@ -2078,16 +2178,75 @@ impl Statics {
     /// nothing to draw in the world space of the frame.
     /// The merged subsets near enough to `eye` come to the GPU: the ones that are not there
     /// and not asked for go into `wanted`.
+    /// A merged subset on the GPU that is near enough is wanted now (`Resident::wanted_at`).
+    /// With "all", every merged subset of the world space is wanted once, when they fit
+    /// under the high mark.
     fn want_near(&mut self, catalog: &Catalog, eye: [f32; 3]) {
         let Some(world) = catalog.worlds.get(&self.world) else { return };
         let admit = self.settings.draw_distance + CELL;
+        let now = self.clock.elapsed().as_secs_f32();
+        let all = self.residency == StaticsResidency::All && self.all_world.as_deref() != Some(self.world.as_slice());
+        if all {
+            self.all_world = Some(self.world.clone());
+            let bytes: u64 = world.merged.iter().map(|&index| catalog.subsets[catalog.instances[index as usize].subset as usize].bytes()).sum();
+            let high = self.high_mark();
+            if bytes <= high {
+                println!("distant statics: residency all: the {:.0} MB of merged subsets of the world space fit under the high mark of {:.0} MB; all are asked for", bytes as f64 / 1e6, high as f64 / 1e6);
+            } else {
+                println!("distant statics: residency all: the {:.0} MB of merged subsets of the world space do not fit under the high mark of {:.0} MB; as auto", bytes as f64 / 1e6, high as f64 / 1e6);
+            }
+            if bytes <= high {
+                for &index in &world.merged {
+                    let instance = &catalog.instances[index as usize];
+                    if !hidden(&self.shown, instance.group) && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
+                        self.wanted.push(instance.subset);
+                    }
+                }
+            }
+        }
         for &index in &world.merged {
             let instance = &catalog.instances[index as usize];
-            if hidden(&self.shown, instance.group) {
+            if hidden(&self.shown, instance.group) || flat_distance(instance, eye) > admit + instance.radius {
                 continue;
             }
-            if flat_distance(instance, eye) <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
-                self.wanted.push(instance.subset);
+            match self.resident.get_mut(&instance.subset) {
+                Some(resident) => resident.wanted_at = now,
+                None if !self.requested.contains(&instance.subset) => self.wanted.push(instance.subset),
+                None => {}
+            }
+        }
+    }
+
+    /// The most bytes of merged subsets that stay on the GPU before the trim takes some off:
+    /// `distant_land.statics_resident_mb`, or half of the cap; never over the cap.
+    fn high_mark(&self) -> u64 {
+        if self.resident_mark > 0 { self.resident_mark.min(self.merged_cap) } else { self.merged_cap / 2 }
+    }
+
+    /// With "auto" and "all": when the merged subsets on the GPU pass the high mark, the ones
+    /// wanted least recently go (the farthest first among equals) down to the low mark. A
+    /// subset wanted in the last minute or within the draw distance and one cell stays.
+    fn trim_resident(&mut self, catalog: &Catalog, eye: [f32; 3]) {
+        let high = self.high_mark();
+        if self.merged_bytes <= high {
+            return;
+        }
+        let low = high / 20 * LOW_MARK_TWENTIETHS;
+        let now = self.clock.elapsed().as_secs_f32();
+        let admit = self.settings.draw_distance + CELL;
+        let candidates: Vec<(f32, f32, u32, u64)> = self
+            .resident
+            .iter()
+            .filter_map(|(subset, resident)| {
+                let instance = &catalog.instances[*catalog.merged_place.get(subset)? as usize];
+                let distance = self.distance_here(catalog, *subset, eye);
+                (now - resident.wanted_at > KEEP_SECONDS && distance > admit + instance.radius).then_some((resident.wanted_at, distance, *subset, resident.bytes))
+            })
+            .collect();
+        for subset in pick_trim(candidates, self.merged_bytes, low) {
+            if let Some(resident) = self.take_off(subset) {
+                self.merged_bytes -= resident.bytes;
+                self.trimmed += 1;
             }
         }
     }
@@ -2161,9 +2320,13 @@ impl Statics {
         }
         self.want_near(&catalog, eye);
         let retain = self.settings.draw_distance + CELL + CELL;
-        // The merged subsets that are too far go away. The check is for all of them, because
-        // the camera can go a long way in one frame.
-        if self.frames % 30 == 0 {
+        // With "auto" and "all" the merged subsets stay until the high mark (`trim_resident`).
+        if self.frames % 30 == 0 && self.residency != StaticsResidency::Near {
+            self.trim_resident(&catalog, eye);
+        }
+        // With "near" the merged subsets that are too far go away. The check is for all of
+        // them, because the camera can go a long way in one frame.
+        if self.frames % 30 == 0 && self.residency == StaticsResidency::Near {
             let far: Vec<u32> = self
                 .resident
                 .keys()
@@ -2387,12 +2550,16 @@ impl Drop for Statics {
             self.most_bytes as f64 / 1e6
         );
         println!(
-            "distant statics: at most {:.0} MB of merged subsets on the GPU, the cap at the end {}; the cap went down {} times, {} subsets taken off for nearer ones, {} frames in which some waited",
+            "distant statics: at most {:.0} MB of merged subsets on the GPU, the cap at the end {}; the cap went down {} times and up {} times, {} subsets taken off for nearer ones, {} frames in which some waited; residency {:?}, the high mark {}, {} subsets trimmed",
             self.most_merged as f64 / 1e6,
             if self.merged_cap == u64::MAX { "none".to_string() } else { format!("{:.0} MB", self.merged_cap as f64 / 1e6) },
             self.lowered,
+            self.raised,
             self.evicted,
-            self.capped_frames
+            self.capped_frames,
+            self.residency,
+            if self.high_mark() >= u64::MAX / 2 { "none".to_string() } else { format!("{:.0} MB", self.high_mark() as f64 / 1e6) },
+            self.trimmed
         );
         println!(
             "grass: {} frames, {:.0} records in a frame as a mean, {} frames with more than {GRASS_RECORDS}; {} subsets arrived, {} of them with bent normals",
@@ -2860,7 +3027,7 @@ fn make_grass_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, unifo
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_from_budget, flags_problem, half, hidden, normal_alignment, plan_merged, BENT_SHARE, VERTEX};
+    use super::{cap_from_budget, flags_problem, half, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
 
@@ -2946,6 +3113,16 @@ mod tests {
     #[test]
     fn a_full_budget_leaves_the_merged_bytes_on_the_gpu() {
         assert_eq!(cap_from_budget(4096 * MB, 5000 * MB, 300 * MB), 300 * MB);
+    }
+
+    #[test]
+    fn the_trim_takes_the_least_recently_wanted_first_down_to_the_low_mark() {
+        // (wanted at, distance, subset, bytes): 3 was wanted longest ago, then 1 and 2 at the
+        // same time, 2 farther.
+        let candidates = vec![(50.0, 9000.0, 1, 30), (50.0, 20000.0, 2, 30), (10.0, 5000.0, 3, 30), (90.0, 30000.0, 4, 30)];
+        assert_eq!(pick_trim(candidates.clone(), 200, 140), vec![3, 2]);
+        assert_eq!(pick_trim(candidates.clone(), 200, 200), Vec::<u32>::new());
+        assert_eq!(pick_trim(candidates, 200, 0), vec![3, 2, 1, 4]);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::schema::{
-    Alignment, Anisotropy, AntiAliasing, FogMode, PerPixelMode, ScreenshotFormat, ScreenshotSuffix, Settings, VSync,
+    Alignment, Anisotropy, AntiAliasing, FogMode, PerPixelMode, ScreenshotFormat, ScreenshotSuffix, Settings, StaticsResidency, VSync,
     WEATHER_NAMES, ZBufferFormat,
 };
 
@@ -173,6 +173,8 @@ impl Settings {
             "distant_land.far_static_min_size" => self.distant_land.far_static_min_size.into(),
             "distant_land.very_far_static_min_size" => self.distant_land.very_far_static_min_size.into(),
             "distant_land.statics_fallback_cap_mb" => self.distant_land.statics_fallback_cap_mb.into(),
+            "distant_land.statics_residency" => self.distant_land.statics_residency.runtime_value().into(),
+            "distant_land.statics_resident_mb" => self.distant_land.statics_resident_mb.into(),
             "distant_land.water.reflect_land" => bool_number(self.distant_land.water.reflect_land),
             "distant_land.water.reflect_near_statics" => bool_number(self.distant_land.water.reflect_near_statics),
             "distant_land.water.reflect_interiors" => bool_number(self.distant_land.water.reflect_interiors),
@@ -319,6 +321,11 @@ impl Settings {
             "distant_land.statics_fallback_cap_mb" => {
                 self.distant_land.statics_fallback_cap_mb = integer::<u32>(value, path)?
             }
+            "distant_land.statics_residency" => {
+                self.distant_land.statics_residency = StaticsResidency::from_runtime(integer::<u32>(value, path)?)
+                    .ok_or_else(|| format!("{path} has unknown runtime enum value {value}"))?
+            }
+            "distant_land.statics_resident_mb" => self.distant_land.statics_resident_mb = integer::<u32>(value, path)?,
             "distant_land.water.reflect_land" => self.distant_land.water.reflect_land = number_bool(value, path)?,
             "distant_land.water.reflect_near_statics" => {
                 self.distant_land.water.reflect_near_statics = number_bool(value, path)?

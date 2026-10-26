@@ -143,6 +143,14 @@ very_far_static_min_size = 800.0
 # takes from the memory budget of the GPU. When the GPU does not give a budget, this is
 # the limit in megabytes; 0 is no limit.
 statics_fallback_cap_mb = 1024
+# The wgpu renderer: which merged distant statics stay on the GPU. "auto": they stay until
+# their memory passes statics_resident_mb, then the ones wanted least recently go. "near":
+# they go when the camera is farther than the draw distance and two cells. "all": all of
+# them go to the GPU when they fit under statics_resident_mb, else as "auto".
+statics_residency = "auto"
+# The wgpu renderer: the most megabytes of merged distant statics that stay on the GPU;
+# 0 is half of the room that the memory budget of the GPU leaves.
+statics_resident_mb = 0
 # Enable fixed-function replacement lighting and select its scope.
 per_pixel_lighting = true
 per_pixel_mode = "always"

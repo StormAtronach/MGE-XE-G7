@@ -234,6 +234,25 @@ megabytes: `1024` by default, the range `0` to `65536`, and `0` is no limit. Whe
 is full, a merged static farther from the camera goes from the GPU for a nearer one, and a
 far one can show late.
 
+`distant_land.statics_residency` and `distant_land.statics_resident_mb` have no obsolete INI
+predecessor, and only the wgpu renderer reads them. They say which merged distant statics
+stay on the GPU under that limit:
+
+- `"auto"` (the default): a merged static comes to the GPU when the camera is within the
+  draw distance and one cell, and stays. When the merged statics pass the high mark
+  (`statics_resident_mb`), the ones the camera wanted least recently go, down to 85 % of the
+  mark; a static wanted in the last minute or near the camera stays. A return to a place
+  seen before finds its statics there.
+- `"near"`: a merged static goes when the camera is farther than the draw distance and two
+  cells (the rule before 2026-10-26). It uses the least memory and loads the most.
+- `"all"`: all merged statics of the world space go to the GPU at the start, when they fit
+  under the high mark; else as `"auto"`.
+
+`statics_resident_mb` is the high mark in megabytes: `0` (the default) is half of the limit
+above, the range `0` to `65536`. An interior cell with distant statics is a world space of its
+own: the statics of another world space count as the farthest, so a visit to an interior
+takes none off the GPU unless the high mark is passed.
+
 `distant_land.water.volume_reflection_cells` has no obsolete INI predecessor. It is how far
 from the camera, in cells, a water volume among the distant statics reflects what is on screen;
 farther away it reflects the sky only. A water volume that the game draws itself, near the
