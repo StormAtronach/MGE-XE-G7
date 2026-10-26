@@ -164,6 +164,19 @@ typedef struct MwseNativeLightRemovedV1 {
 	void* light;
 } MwseNativeLightRemovedV1;
 
+// The start of a frame of the game's main loop (0x41AAF0 `TES3Game::mainLoop`): before
+// 0x40F610 `WorldController::mainLoopBeforeInput`, which takes the time of the frame and
+// then reads the keyboard and the mouse. A listener that waits here (the pacing of a renderer
+// in another process) delays the input of the frame, and the time of the frame includes the
+// wait. A frame that the main loop skips (a cutscene, the window not active) does not fire
+// it. Main thread. Latest subscribe: none.
+#define MWSE_NATIVE_EVENT_FRAME_STARTED 8u
+typedef struct MwseNativeFrameStartedV1 {
+	uint32_t structSize;
+	// 1 in menu mode; else 0.
+	uint32_t menuMode;
+} MwseNativeFrameStartedV1;
+
 //
 // Overrides. The owner's function has the signature of the engine function. `engineFunction`
 // of `claim` gives the engine function, to call or not.
