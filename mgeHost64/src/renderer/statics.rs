@@ -11,8 +11,9 @@
 //!   start; they are a small part of the data.
 //! - A merged static has the statics of one exterior cell in one mesh, with one place. It is
 //!   most of the data. A merged subset is on the GPU only while the camera is near it: a
-//!   reader thread gets its bytes when the camera comes within the draw distance, and the
-//!   renderer drops it when the camera is farther than that and one more cell. The merged
+//!   reader thread gets its bytes when the camera comes within the draw distance and one more
+//!   cell (`want_near`), and the renderer drops it when the camera is farther than the draw
+//!   distance and two more cells (`frame_work`, every 30 frames). The merged
 //!   subsets on the GPU stay under a cap, as in the IPC host mode: what the memory budget of
 //!   the GPU (`VK_EXT_memory_budget`) leaves after the memory in use and a margin, lowered
 //!   when other programs take memory; without a budget, `distant_land.statics_fallback_cap_mb`.
