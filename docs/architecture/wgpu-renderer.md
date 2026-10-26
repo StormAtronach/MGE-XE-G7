@@ -191,8 +191,8 @@ flowchart TD
 | caustics, far water, volumes | `draw_held` | game pass | held shapes or far water |
 | post | `post` | own passes | chain not empty |
 
-The host opens a new game pass after every copy, target change or extension pass, and calls
-`BoundGroups::forget` there, so groups 0 to 2 of the game draws are set again.
+The host asks for a new game pass after every copy, target change or extension pass; the pass begins at its first draw, and a pass asked for that did not begin gives its clears to the next one on the same targets (nirender d057471; `MGE_XE_LAZY_PASS=0` for the old passes). A pass that begins calls
+`BoundGroups::forget` there, so groups 0 to 2 of the game draws are set again. The game's draws before the world and after the post chain (the sky, the interface) bind a small group 1 of their own textures, with copies of their records whose slots name it (nirender c11bbef; `MGE_XE_PASS_GROUPS=0` for the whole arrays): wgpu does work for each texture of a group at its first bind in a pass.
 
 ## 4. Pipelines and bind groups
 
@@ -215,7 +215,7 @@ pool (16 MB); the draw names its first index. Since 2026-10-16 (plan 0.5 entries
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
 | 0 | extension frame | 0 uniform `FrameParameters` (512 B), 1 texture (shadow atlas or white), 2 sampler, 3 uniform cluster grid, 4-5 storage cluster table and indexes, 6 storage lights of the frame, 7 storage bone palette (V), 8 storage records of the draws (`array<Draw>`, VF), 9 storage light indexes of the retained instances, 10 uniform `Scene` of a view (256 B, a dynamic offset: every set of group 0 passes one), 11 storage lights of the retained instances | frame |
-| 1 | draw texture arrays (an adapter with binding arrays: required since nirender 38eb32c) | 0 `binding_array<texture_2d>` of the frame's textures (the room of `runtime.renderer_texture_slots`: 16384 at most when automatic; the pinned textures of the retained instances and the frame's own share it, 256 stay the frame's; a texture pinned after the frame's start draws from a slot of the frame for that frame, nirender 82142ba), 1 `binding_array<sampler>` (64) (F); a stage reads by the slots in its record | pass (a variant for a pass into a rendered texture of the game) |
+| 1 | draw texture arrays (an adapter with binding arrays: required since nirender 38eb32c) | 0 `binding_array<texture_2d>` of the frame's textures (the room of `runtime.renderer_texture_slots`: 16384 at most when automatic; the pinned textures of the retained instances and the frame's own share it, 256 stay the frame's; a texture pinned after the frame's start draws from a slot of the frame for that frame, nirender 82142ba), 1 `binding_array<sampler>` (64) (F); a stage reads by the slots in its record | pass (a variant for a pass into a rendered texture of the game; a small group for the sky and the interface) |
 | 1, 2 | draw samplers, draw textures: REMOVED in nirender 38eb32c (an adapter without binding arrays stops the renderer; the plan's item for old hardware would bring a path like it back) | 0-5 sampler, 0-5 texture per stage (F) | material |
 
 The groups are set only when they change (`BoundGroups`), as are the pipeline, the stencil
