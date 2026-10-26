@@ -249,7 +249,10 @@ stay on the GPU under that limit:
   under the high mark; else as `"auto"`.
 
 `statics_resident_mb` is the high mark in megabytes: `0` (the default) is half of the limit
-above, the range `0` to `65536`. An interior cell with distant statics is a world space of its
+above as it is at the start of the session, the range `0` to `65536`. The mark never goes over
+the limit as it is now: when other programs take memory, the limit and then the mark go down.
+The limit moves only for a change of more than 64 MB or 1 % of the budget, whichever is
+larger. An interior cell with distant statics is a world space of its
 own: the statics of another world space count as the farthest, so a visit to an interior
 takes none off the GPU unless the high mark is passed.
 

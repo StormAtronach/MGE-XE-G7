@@ -81,6 +81,11 @@ impl Ranges {
     pub fn capacity(&self) -> u32 {
         self.capacity
     }
+
+    /// The free units in all ranges.
+    pub fn free_units(&self) -> u32 {
+        self.free.iter().map(|&(_, length)| length).sum()
+    }
 }
 
 /// The place of a subset in the pool of its texture.
@@ -173,6 +178,41 @@ impl Pools {
         Some(Slot { texture, base_vertex, first_index, vertex_count, index_count })
     }
 
+    /// Room in the pool of a texture for this many more vertices and indexes (the indexes of
+    /// each subset made even), in one growth to that size and not in doublings: for the
+    /// subsets that are all asked for at once (`distant_land.statics_residency = "all"`). A
+    /// subset that then finds no free range of its size grows the pool as before.
+    pub fn reserve(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, texture: u32, vertex_count: u32, index_count: u32) {
+        let Some(pool) = self.pools.get_mut(texture as usize) else { return };
+        if pool.is_none() {
+            // Multiples of 4 units, as `grow_to` makes them.
+            let vertex_capacity = FIRST_VERTICES.max((vertex_count + 3) & !3);
+            let index_capacity = FIRST_INDEXES.max((index_count + 3) & !3);
+            *pool = Some(Pool {
+                vertices: pool_buffer(device, vertex_capacity as u64 * VERTEX, wgpu::BufferUsages::VERTEX),
+                indexes: pool_buffer(device, index_capacity as u64 * 2, wgpu::BufferUsages::INDEX),
+                vertex_ranges: Ranges::new(vertex_capacity),
+                index_ranges: Ranges::new(index_capacity),
+            });
+            self.bytes += vertex_capacity as u64 * VERTEX + index_capacity as u64 * 2;
+            return;
+        }
+        let Some(pool) = pool.as_mut() else { return };
+        let (free_vertices, free_indexes) = (pool.vertex_ranges.free_units(), pool.index_ranges.free_units());
+        if vertex_count > free_vertices {
+            let capacity = pool.vertex_ranges.capacity() as u64 + (vertex_count - free_vertices) as u64;
+            if let Some(grown) = grow_to(device, queue, &mut pool.vertices, &mut pool.vertex_ranges, capacity, VERTEX, self.max_bytes) {
+                self.bytes += grown;
+            }
+        }
+        if index_count > free_indexes {
+            let capacity = pool.index_ranges.capacity() as u64 + (index_count - free_indexes) as u64;
+            if let Some(grown) = grow_to(device, queue, &mut pool.indexes, &mut pool.index_ranges, capacity, 2, self.max_bytes) {
+                self.bytes += grown;
+            }
+        }
+    }
+
     /// The slot of a subset that left the GPU: free from the next frame on.
     pub fn remove(&mut self, slot: Slot) {
         self.pending.push(slot);
@@ -198,12 +238,34 @@ fn pool_buffer(device: &wgpu::Device, size: u64, usage: wgpu::BufferUsages) -> w
     })
 }
 
-/// A larger buffer for a pool, with the bytes of the old one. Gives the bytes added.
+/// A larger buffer for a pool, with the bytes of the old one: a quarter larger, or more when
+/// `needed` does not fit in that. Not twice the size: a pool of the merged subsets of one
+/// texture reaches gigabytes, and a doubling then leaves as much unused (records entry 166).
+/// Gives the bytes added.
 fn grow(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &mut wgpu::Buffer, ranges: &mut Ranges, needed: u32, unit: u64, max_bytes: u64) -> Option<u64> {
+    let old = ranges.capacity() as u64;
+    let wanted = old + (old / 4).max(needed as u64);
+    if wanted.min(max_bytes / unit).min(u32::MAX as u64) < old + needed as u64 {
+        return None;
+    }
+    grow_to(device, queue, buffer, ranges, wanted, unit, max_bytes)
+}
+
+/// A capacity of a pool in units: a multiple of 4 units, at most the largest buffer of the
+/// device. A copy of a buffer and its size must be a multiple of 4 bytes, and an index is 2:
+/// a copy that is not fails as a GPU error, and the pool then loses its subsets (records entry
+/// 166).
+fn aligned_capacity(capacity: u64, unit: u64, max_bytes: u64) -> u32 {
+    let most = (max_bytes / unit).min(u32::MAX as u64) & !3;
+    (((capacity + 3) & !3).min(most)) as u32
+}
+
+/// A buffer for a pool of `capacity` units (at most the largest buffer of the device), with
+/// the bytes of the old one. Gives the bytes added; [`None`] when it would not be larger.
+fn grow_to(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &mut wgpu::Buffer, ranges: &mut Ranges, capacity: u64, unit: u64, max_bytes: u64) -> Option<u64> {
     let old = ranges.capacity();
-    let wanted = (old as u64 * 2).max(old as u64 + needed as u64);
-    let capacity = wanted.min(max_bytes / unit).min(u32::MAX as u64) as u32;
-    if capacity < old + needed {
+    let capacity = aligned_capacity(capacity, unit, max_bytes);
+    if capacity <= old {
         return None;
     }
     let larger = pool_buffer(device, capacity as u64 * unit, buffer.usage() & (wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX));
@@ -680,5 +742,26 @@ mod tests {
         ranges.grow(25);
         assert_eq!(ranges.alloc(15), Some(10));
         assert_eq!(ranges.capacity(), 25);
+    }
+
+    #[test]
+    fn a_pool_capacity_is_a_multiple_of_four_units_under_the_largest_buffer() {
+        // 1638401 indexes would be an odd number of bytes over 4.
+        assert_eq!(super::aligned_capacity(1_638_401, 2, 1 << 40), 1_638_404);
+        assert_eq!(super::aligned_capacity(1_638_400, 2, 1 << 40), 1_638_400);
+        // The largest buffer of 1 GB, 20 bytes a vertex: at most 53687088 vertices, a multiple of 4.
+        assert_eq!(super::aligned_capacity(u32::MAX as u64, 20, 1 << 30), 53_687_088);
+    }
+
+    #[test]
+    fn ranges_count_their_free_units_in_all_ranges() {
+        let mut ranges = Ranges::new(100);
+        assert_eq!(ranges.free_units(), 100);
+        assert_eq!(ranges.alloc(30), Some(0));
+        assert_eq!(ranges.alloc(30), Some(30));
+        ranges.free(0, 30);
+        assert_eq!(ranges.free_units(), 70);
+        ranges.grow(130);
+        assert_eq!(ranges.free_units(), 100);
     }
 }

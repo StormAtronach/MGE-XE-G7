@@ -110,6 +110,8 @@ const LOWER_SAMPLES: u32 = 4;
 /// The cap goes up again at the twentieth higher sample in a row (10 seconds), so a short dip
 /// of another program's memory does not raise it.
 const HIGHER_SAMPLES: u32 = 20;
+/// The least dead band of the cap ([`cap_move`]).
+const CAP_BAND_LEAST: u64 = 64 << 20;
 /// With `distant_land.statics_residency` "auto" or "all": a merged subset that the camera
 /// wanted in the last minute stays, and the trim goes down to 85 % of the high mark, so the
 /// next trim is not at the next arrival.
@@ -737,6 +739,22 @@ fn cap_from_budget(budget: u64, used: u64, merged: u64) -> u64 {
     merged.saturating_add(budget.saturating_sub(used).saturating_sub(headroom))
 }
 
+/// Whether a new value of the cap from the memory budget is lower (-1) or higher (1) than the
+/// cap, or the same (0): a move within a dead band of the larger of 64 MB and 1 % of the
+/// budget is the same. The budget's samples move by a few megabytes from frame to frame; a
+/// merged subset is a few megabytes, and the margin of the cap (an eighth of the budget, at
+/// least 256 MB) holds the band.
+fn cap_move(cap: u64, candidate: u64, budget: u64) -> i32 {
+    let band = CAP_BAND_LEAST.max(budget / 100);
+    if candidate > cap.saturating_add(band) {
+        1
+    } else if candidate.saturating_add(band) < cap {
+        -1
+    } else {
+        0
+    }
+}
+
 /// The merged subsets that the trim takes off: `candidates` are (the time the camera last
 /// wanted it, the distance from the camera, the subset, its bytes). The least recently wanted
 /// go first, the farthest first among equals, until the bytes on the GPU are at most `low`.
@@ -1173,9 +1191,13 @@ pub struct Statics {
     /// `distant_land.statics_fallback_cap_mb` in bytes, [`u64::MAX`] for no cap.
     fallback_cap: u64,
     /// `distant_land.statics_residency`, and `distant_land.statics_resident_mb` in bytes (0:
-    /// half of the cap). See [`Statics::high_mark`].
+    /// half of the first cap). See [`Statics::high_mark`].
     residency: StaticsResidency,
     resident_mark: u64,
+    /// The first cap of the session: half of it is the automatic high mark. The cap that
+    /// follows the budget falls as the statics' own pools grow, so half of it would chase
+    /// the data down.
+    first_cap: u64,
     /// With "all": the world space whose merged subsets were all asked for.
     all_world: Option<Vec<u8>>,
     /// The merged subsets of the world space of the frame. An interior cell with statics is a
@@ -1306,6 +1328,7 @@ impl Statics {
             },
             residency: land.statics_residency,
             resident_mark: u64::from(land.statics_resident_mb) << 20,
+            first_cap: u64::MAX,
             all_world: None,
             here: HashSet::new(),
             trimmed: 0,
@@ -1604,18 +1627,20 @@ impl Statics {
                 println!("distant statics: the GPU gives no memory budget; the cap of the merged subsets is {} MB (distant_land.statics_fallback_cap_mb)", self.fallback_cap >> 20);
             }
         }
+        self.first_cap = self.merged_cap;
         let high = self.high_mark();
         println!(
             "distant statics: residency {:?}, the high mark of the merged subsets {}",
             self.residency,
-            if high >= u64::MAX / 2 { "none".to_string() } else { format!("{:.0} MB ({})", high as f64 / 1e6, if self.resident_mark > 0 { "distant_land.statics_resident_mb" } else { "half of the cap" }) }
+            if high >= u64::MAX / 2 { "none".to_string() } else { format!("{:.0} MB ({})", high as f64 / 1e6, if self.resident_mark > 0 { "distant_land.statics_resident_mb" } else { "half of the first cap" }) }
         );
     }
 
     /// A new sample of the memory budget each half second, when the cap follows it. The cap
     /// goes down to the fourth lower value in a row, not to the least of them, so that a
     /// short peak of another program does not hold it low; it goes up again to the twentieth
-    /// higher value in a row, when the other program gave its memory back.
+    /// higher value in a row, when the other program gave its memory back. A value counts as
+    /// lower or higher only beyond the dead band of [`cap_move`].
     fn sample_budget(&mut self, device: &wgpu::Device) {
         let Some(next) = self.next_budget_sample else { return };
         let now = Instant::now();
@@ -1629,7 +1654,8 @@ impl Statics {
             return;
         };
         let candidate = cap_from_budget(budget, used, self.merged_bytes);
-        if candidate > self.merged_cap {
+        let way = cap_move(self.merged_cap, candidate, budget);
+        if way > 0 {
             self.lower_samples = 0;
             self.higher_samples += 1;
             if self.higher_samples >= HIGHER_SAMPLES {
@@ -1647,7 +1673,7 @@ impl Statics {
             return;
         }
         self.higher_samples = 0;
-        if candidate == self.merged_cap {
+        if way == 0 {
             self.lower_samples = 0;
             return;
         }
@@ -2196,10 +2222,34 @@ impl Statics {
                 println!("distant statics: residency all: the {:.0} MB of merged subsets of the world space do not fit under the high mark of {:.0} MB; as auto", bytes as f64 / 1e6, high as f64 / 1e6);
             }
             if bytes <= high {
+                // The pools grow once to hold them all, not in doublings (with doublings
+                // 3175 MB of subsets took 4720 MB of pools, records entry 164).
+                let mut room: HashMap<u32, (u32, u32)> = HashMap::new();
                 for &index in &world.merged {
                     let instance = &catalog.instances[index as usize];
                     if !hidden(&self.shown, instance.group) && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
                         self.wanted.push(instance.subset);
+                        let s = &catalog.subsets[instance.subset as usize];
+                        if s.pooled() {
+                            let entry = room.entry(s.texture).or_default();
+                            entry.0 += s.vertex_count;
+                            entry.1 += (s.triangle_count * 3 + 1) & !1;
+                        }
+                    }
+                }
+                // The subsets asked for and not yet there take room in the same pools: the
+                // ordinary subsets of the world space come in the same seconds.
+                for &subset in &self.requested {
+                    let s = &catalog.subsets[subset as usize];
+                    if s.pooled() {
+                        let entry = room.entry(s.texture).or_default();
+                        entry.0 += s.vertex_count;
+                        entry.1 += (s.triangle_count * 3 + 1) & !1;
+                    }
+                }
+                if let (Some(gpu), Some(device), Some(queue)) = (self.gpu.as_mut(), self.device.as_ref(), self.queue.as_ref()) {
+                    for (texture, (vertices, indexes)) in room {
+                        gpu.pools.reserve(device, queue, texture, vertices, indexes);
                     }
                 }
             }
@@ -2218,9 +2268,11 @@ impl Statics {
     }
 
     /// The most bytes of merged subsets that stay on the GPU before the trim takes some off:
-    /// `distant_land.statics_resident_mb`, or half of the cap; never over the cap.
+    /// `distant_land.statics_resident_mb`, or half of the first cap of the session; never over
+    /// the cap as it is now (another program that takes memory lowers it).
     fn high_mark(&self) -> u64 {
-        if self.resident_mark > 0 { self.resident_mark.min(self.merged_cap) } else { self.merged_cap / 2 }
+        let mark = if self.resident_mark > 0 { self.resident_mark } else { self.first_cap / 2 };
+        mark.min(self.merged_cap)
     }
 
     /// With "auto" and "all": when the merged subsets on the GPU pass the high mark, the ones
@@ -3027,7 +3079,7 @@ fn make_grass_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, unifo
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_from_budget, flags_problem, half, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
+    use super::{cap_from_budget, cap_move, flags_problem, half, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
 
@@ -3113,6 +3165,19 @@ mod tests {
     #[test]
     fn a_full_budget_leaves_the_merged_bytes_on_the_gpu() {
         assert_eq!(cap_from_budget(4096 * MB, 5000 * MB, 300 * MB), 300 * MB);
+    }
+
+    #[test]
+    fn the_cap_moves_only_beyond_its_dead_band() {
+        // A budget of 11718 MB: the band is 1 % of it, 117 MB.
+        let budget = 11718 * MB;
+        assert_eq!(cap_move(7882 * MB, 7891 * MB, budget), 0);
+        assert_eq!(cap_move(7882 * MB, 7882 * MB - 100 * MB, budget), 0);
+        assert_eq!(cap_move(7882 * MB, 7882 * MB + 200 * MB, budget), 1);
+        assert_eq!(cap_move(7882 * MB, 6472 * MB, budget), -1);
+        // A budget of 4096 MB: the band is the least, 64 MB.
+        assert_eq!(cap_move(2000 * MB, 2050 * MB, 4096 * MB), 0);
+        assert_eq!(cap_move(2000 * MB, 2070 * MB, 4096 * MB), 1);
     }
 
     #[test]
