@@ -482,6 +482,9 @@ pub struct RuntimeSettings {
     /// at most 16384), or the most slots, 256 to 1048576 (at most the adapter's room). Read
     /// by numidium.exe when it starts.
     pub renderer_texture_slots: u32,
+    /// The frames of the wgpu renderer that may wait for the GPU, 1 to 3: the least lag of
+    /// the mouse with 1, more frames with 2. Read by numidium.exe when it starts.
+    pub renderer_frame_latency: u32,
     pub skip_intro: bool,
     pub menu_caching: bool,
     pub custom_camera: bool,
@@ -500,6 +503,7 @@ impl Default for RuntimeSettings {
             renderer_wgpu: true,
             renderer_backend: RendererBackend::Auto,
             renderer_texture_slots: 0,
+            renderer_frame_latency: 2,
             skip_intro: true,
             menu_caching: false,
             custom_camera: false,

@@ -89,6 +89,7 @@ the same mapping ten times.
 | (new, no INI key) | `runtime.renderer_wgpu` |
 | (new, no INI key) | `runtime.renderer_backend` |
 | (new, no INI key) | `runtime.renderer_texture_slots` |
+| (new, no INI key) | `runtime.renderer_frame_latency` |
 | `[Misc] Skip Intro Movies` | `runtime.skip_intro` |
 | `[Misc] Use Menu Background Caching` | `runtime.menu_caching` |
 | `[Misc] Customize 3rd Person Camera` | `runtime.custom_camera` |
@@ -197,6 +198,17 @@ reads them.
   the parts that get the wrap light); the sun light wraps past the side of a blade, and
   0.4 of it comes through from the back. The shader is
   `mgeHost64/src/renderer/statics/grass.wgsl`.
+
+- `runtime.renderer_frame_latency` (default `2`, the range `1` to `3`): the frames of the wgpu
+  renderer that may wait for the graphics card before the window shows them. With `1` the
+  mouse has the least lag when the graphics card is the slow part (the mouse is read when the
+  game's frame starts, so each frame that waits adds a frame of lag), but the renderer and the
+  card take turns: in a test with an RTX 5070 the frame rate fell by a third (237.7 against
+  343.4 frames a second in Balmora). `2` keeps both busy. Read by numidium.exe when it starts. The F10 panel
+  shows how long the renderer waits for a picture of the window: a long wait means the card
+  is behind. For a test, `MGE_XE_FRAME_LATENCY` overrides it, and `MGE_XE_PRESENT`
+  (`immediate`, `mailbox`, `fifo`, `auto`) sets the present mode; nirender-host.log names the
+  present mode in use.
 
 - `runtime.renderer_texture_slots` (default `0`): the room for the textures of a frame of
   the wgpu renderer (its texture arrays). `0` lets the renderer choose: the room of the

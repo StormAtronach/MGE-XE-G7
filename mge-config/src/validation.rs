@@ -287,6 +287,7 @@ pub(crate) fn validate_bounds(settings: &mut Settings) -> Result<Vec<Warning>, V
             &mut warnings,
         );
     }
+    clamp_u32(&mut settings.runtime.renderer_frame_latency, 1, 3, "runtime.renderer_frame_latency", &mut warnings);
     clamp_f32(
         &mut settings.runtime.camera_x,
         -250.0,

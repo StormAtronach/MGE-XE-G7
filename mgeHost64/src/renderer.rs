@@ -452,6 +452,8 @@ pub struct DistantLand {
     samples: u32,
     /// The room of the texture arrays (`runtime.renderer_texture_slots`): 0 is automatic.
     texture_slots: u32,
+    /// The frames that may wait for the GPU (`runtime.renderer_frame_latency`).
+    frame_latency: u32,
     /// The post-processing chain, when the settings have shaders; [`None`] before the first
     /// frame with the water (it needs the wave texture).
     post: Option<Post>,
@@ -788,6 +790,7 @@ impl DistantLand {
             anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
             samples: (document.settings().graphics.anti_aliasing.runtime_value() as u32).max(1),
             texture_slots: document.settings().runtime.renderer_texture_slots,
+            frame_latency: document.settings().runtime.renderer_frame_latency,
             post: None,
             menu_keep: None,
             menu_kept: false,
@@ -1763,6 +1766,10 @@ impl Extension for DistantLand {
 
     fn texture_slots(&self) -> u32 {
         self.texture_slots
+    }
+
+    fn frame_latency(&self) -> u32 {
+        self.frame_latency
     }
 
     fn offline(&mut self) {

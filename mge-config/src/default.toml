@@ -85,6 +85,11 @@ renderer_backend = "auto"
 # (another value counts as 0). A texture past a full room draws white, and
 # nirender-host.log says so. Read by numidium.exe when it starts.
 renderer_texture_slots = 0
+# The frames of the wgpu renderer that may wait for the graphics card, 1 to 3. 1 gives the
+# least lag of the mouse when the graphics card is the slow part, but the renderer and the
+# card then take turns (a third fewer frames in a test with a fast card); 2 keeps both busy.
+# Read by numidium.exe when it starts.
+renderer_frame_latency = 2
 # Skip intro movies.
 skip_intro = true
 # Cache menu backgrounds.
