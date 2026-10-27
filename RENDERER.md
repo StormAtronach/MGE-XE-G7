@@ -274,3 +274,31 @@ mouse pointer of the menus follows your hand late, send us this line.
    stopped), the renderer cannot draw any more. Quit the game and start it again, and send
    `nirender-host.log`. A fault of the GPU that is not a loss does not stop the game: a
    part of the picture can be missing, and `nirender-host.log` has lines `gpu error`.
+
+## Switches for a developer's test
+
+Never for a game. Each is an environment variable of the game process or of a replay, read
+by MGE XE's part of `numidium.exe`. The helper's other switches are in the README of the
+`nirender` plugin.
+
+- `MGE_XE_SKIP=water,terrain,statics,grass,blend`: the parts named are not drawn, for a
+  replay that tests one suspect at a time.
+- `MGE_XE_WATER_DEBUG=<n>`: the water shows one term of its shader: 1 the reflection, 2 the
+  refraction, 3 the depth under the water, 4 the Fresnel weight, 5 the fog, 6 the distance,
+  7 the normal, 8 the view depth, 9 the heights of the waves.
+- `MGE_XE_POST_DEBUG=<n>`: 1 tints the result of the post chain, 2 shows its linear depth
+  over 10000 units as grey.
+- `MGE_XE_SHADOW_DEBUG=1`: the atlas of the shadow map in the lower left of the picture.
+- `MGE_XE_SHADOW_LAYERS=1`: each pixel coloured by the layer of the shadow map that serves
+  it: red the first, green the second, blue outside both, grey a draw without the shadow
+  test; darker where the map shadows it.
+- `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
+- `MGE_XE_STATICS_CULL=cpu`: the distant statics are culled on the CPU, not on the GPU.
+- `MGE_XE_STATICS_CAP_MB=<n>`: a fixed cap of the merged subsets of the distant statics, in
+  place of `distant_land.statics_fallback_cap_mb`.
+- `MGE_XE_LIST_WORLDS=1`: the report lists every interior world space of the distant
+  statics, not the first 12.
+- `MGE_XE_DISTANT_LAND_DIR=<folder>`: the distant land of another folder, for a replay or a
+  test.
+- `MGE_XE_GAME_DIR=<folder>`: the folder of the game (its Data Files and archives), for a
+  replay where the distant land is elsewhere.
