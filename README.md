@@ -158,10 +158,15 @@ screen.
 There is no installer. Extract the archive into your Morrowind folder, the one
 containing `Morrowind.exe`, overwriting when asked.
 
-The archive includes `d3d9.dll`, the custom build of DXVK that this release
-requires. Do not replace it with an official DXVK release. Doing so will cause
-out-of-memory crashes as well as the removal of several of our features and
-performance improvements.
+The MGE XE G7 archive includes `d3d9.dll`, the custom build of DXVK that this
+release requires on Direct3D 9. Do not replace it with an official DXVK release.
+Doing so will cause out-of-memory crashes as well as the removal of several of
+our features and performance improvements.
+
+The test archive with the wgpu renderer (its name ends in `-nirender-v<version>`)
+does not include `d3d9.dll`: the wgpu renderer does not use it, and MGE XE on
+Direct3D 9 then runs with the `d3d9.dll` you have, or with the one of Windows.
+`MGE XE Renderer Readme.md` has the install steps of that archive.
 
 After installing run `MGEXEgui.exe` from the Morrowind folder:
 
@@ -186,9 +191,10 @@ errors. Post-process shaders should be fine.
 
 ## Uninstall
 
-Delete `d3d8.dll`, `d3d9.dll`, `dinput8.dll`, `MGEXEgui.exe`, `numidium.exe`,
-`mgeXE.toml`, `mge3\MGE XE Default Statics Classifiers.toml`, and `Data
-Files\distantland`.
+Delete `d3d8.dll`, `d3d9.dll` (if present), `dinput8.dll`, `MGEXEgui.exe`,
+`numidium.exe`, `mgeXE.toml`, `mge3\MGE XE Default Statics Classifiers.toml`,
+and `Data Files\distantland`. The test archive with the wgpu renderer has more
+files: `MGE XE Renderer Readme.md` lists them.
 
 ## Credits
 

@@ -215,14 +215,18 @@ change. That start can take some minutes. With an older file, set it below
 
 ## Known issues
 
+The open issues of each build are in its release notes on GitHub:
+<https://github.com/StormAtronach/nirender-plugin/releases>. Read the notes of your build
+before you report one. This file does not repeat them, so that the two cannot disagree.
+
+Differences from MGE XE on Direct3D 9 that are by design, not issues:
+
 - The shadow on an object that has a scale (a tree at two times its size) is lighter than
-  on Direct3D 9. This is intended: the Direct3D 9 path makes that shadow deeper with the
-  scale of the object, and the wgpu renderer does not.
+  on Direct3D 9. The Direct3D 9 path makes that shadow deeper with the scale of the
+  object, and the wgpu renderer does not.
 - An interior that behaves as an exterior (the Mournhold plazas and some mod cells) is
   drawn with its distant statics, shadows and sky. A plain interior cell that has distant
   statics in the generated data gets its statics and grass, with the fog of the game.
-- The dry spaces among the distant statics are not cut: far away, a boat's hold can show
-  water. Near the camera they are cut.
 - The grass receives the shadows of the distant land and the distant statics, as on
   Direct3D 9. Where the shadow map ends (about 4000 units ahead) and in the fog, its shadow
   fades as the shadow on the ground under it does; Direct3D 9 ends it at once. The
@@ -230,15 +234,6 @@ change. That start can take some minutes. With an older file, set it below
   1 (as Direct3D 9), 0 (no shadow on the grass).
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
   `Morrowind.ini` names under `[Inventory]`; Direct3D 9 draws it wrong.
-- The three new shaders have first settings and no keys in `mgeXE.toml` yet.
-- After a capture with F11, the picture of the character in the inventory is empty until
-  the inventory changes (put an item on or off).
-- MSOC (the occlusion culling mod for MWSE) is not supported with this renderer: switch it
-  off. It hides objects from the game itself, and this renderer draws what the game shows.
-  A cull on the GPU will take its place.
-- With `renderer_backend = "dx12"` the mouse pointer of the menus can follow the hand late.
-- Only tested at 1920 x 1080 on one machine (NVIDIA, Vulkan). Other GPU vendors, other
-  resolutions, windowed modes and long sessions are not tested.
 
 ## The debug overlay
 
