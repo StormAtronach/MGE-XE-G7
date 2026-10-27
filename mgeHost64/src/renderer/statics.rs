@@ -669,7 +669,9 @@ impl Arrival {
 /// the far tier, then the rest. A subset that cannot be read gets an answer too
 /// ([`Arrival::unreadable`]): every request is answered.
 fn reader(catalog: Arc<Catalog>, requests: Receiver<u32>, arrivals: Sender<Arrival>) {
-    let mut files: HashMap<u16, File> = HashMap::new();
+    // A shard that could not be opened is remembered as None: its subsets are answered
+    // without another try.
+    let mut files: HashMap<u16, Option<File>> = HashMap::new();
     for subset in requests {
         let Some(arrival) = read_subset(&catalog, &mut files, subset) else {
             if arrivals.send(Arrival::unreadable(subset)).is_err() {
@@ -683,20 +685,18 @@ fn reader(catalog: Arc<Catalog>, requests: Receiver<u32>, arrivals: Sender<Arriv
     }
 }
 
-/// The bytes of one subset from its shard; [`None`] when the shard cannot be opened or read.
-fn read_subset(catalog: &Catalog, files: &mut HashMap<u16, File>, subset: u32) -> Option<Arrival> {
+/// The bytes of one subset from its shard; [`None`] when the shard cannot be opened, or the
+/// read fails or ends short (a truncated shard would arrive zero-filled otherwise).
+fn read_subset(catalog: &Catalog, files: &mut HashMap<u16, Option<File>>, subset: u32) -> Option<Arrival> {
     let s = &catalog.subsets[subset as usize];
-    let file = match files.entry(s.shard) {
-        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            let path = catalog.folder.join("statics").join(format!("static_meshes_{:03}", s.shard));
-            entry.insert(File::open(path).ok()?)
-        }
-    };
+    let file = files
+        .entry(s.shard)
+        .or_insert_with(|| File::open(catalog.folder.join("statics").join(format!("static_meshes_{:03}", s.shard))).ok())
+        .as_ref()?;
     let mut vertices = vec![0u8; s.vertex_count as usize * VERTEX];
     let mut source = vec![0u8; s.triangle_count as usize * TRIANGLE];
-    file.seek_read(&mut vertices, s.vertex_offset).ok()?;
-    file.seek_read(&mut source, s.index_offset).ok()?;
+    read_whole(file, &mut vertices, s.vertex_offset)?;
+    read_whole(file, &mut source, s.index_offset)?;
     let mut faces = [s.triangle_count; 3];
     let indexes = if s.components.is_empty() {
         source
@@ -718,6 +718,19 @@ fn read_subset(catalog: &Catalog, files: &mut HashMap<u16, File>, subset: u32) -
     };
     let bent = s.grass && normal_alignment(&vertices, &indexes).is_some_and(|share| share >= BENT_SHARE);
     Some(Arrival { subset, unreadable: false, vertices, indexes, faces, bent })
+}
+
+/// Fills `buffer` from `file` at `offset`; [`None`] on an error or when the file ends first.
+fn read_whole(file: &File, buffer: &mut [u8], offset: u64) -> Option<()> {
+    let mut done = 0;
+    while done < buffer.len() {
+        let count = file.seek_read(&mut buffer[done..], offset + done as u64).ok()?;
+        if count == 0 {
+            return None;
+        }
+        done += count;
+    }
+    Some(())
 }
 
 /// The distance from the camera to the centre of a place, across the ground.
@@ -1627,7 +1640,8 @@ impl Statics {
         wanted.sort_unstable();
         wanted.dedup();
         for subset in wanted {
-            if self.may_ask(subset) && self.requested.insert(subset) {
+            if self.may_ask(subset) {
+                self.requested.insert(subset);
                 let _ = requests.send(subset);
                 if let Some(wait) = self.wait.as_mut() {
                     wait.asked += 1;
@@ -1732,16 +1746,12 @@ impl Statics {
     fn take_off(&mut self, subset: u32) -> Option<Resident> {
         let resident = self.resident.remove(&subset)?;
         self.resident_bytes -= resident.bytes;
-        if let Geometry::Pool(slot) = resident.geometry {
-            // The pool has room again: the subsets it refused may be asked for.
-            if let Some(catalog) = self.catalog.as_ref() {
-                self.refused.retain(|refused| catalog.subsets[*refused as usize].texture != slot.texture);
-            }
-            if let Some(gpu) = self.gpu.as_mut() {
-                gpu.pools.remove(slot);
-                if let (Some(culling), Some(queue)) = (gpu.culling.as_ref(), self.queue.as_ref()) {
-                    queue.write_buffer(&culling.subsets, subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&cull::Subset::default()));
-                }
+        if let Geometry::Pool(slot) = resident.geometry
+            && let Some(gpu) = self.gpu.as_mut()
+        {
+            gpu.pools.remove(slot);
+            if let (Some(culling), Some(queue)) = (gpu.culling.as_ref(), self.queue.as_ref()) {
+                queue.write_buffer(&culling.subsets, subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&cull::Subset::default()));
             }
         }
         Some(resident)
@@ -1884,8 +1894,8 @@ impl Statics {
         // The places of the merged subsets that arrived in play, counted after the loop.
         let mut in_play = Vec::new();
         while self.synchronous || (count < ARRIVALS_IN_FRAME && bytes < ARRIVAL_BYTES_IN_FRAME) {
-            // Synchronous: all that was asked for comes now. A subset that the reader thread
-            // could not read never comes: a limit of time.
+            // Synchronous: all that was asked for comes now; every request is answered, so
+            // the limit of time covers a dead reader thread only.
             let arrival = if self.synchronous {
                 if self.requested.is_empty() {
                     break;
@@ -1907,14 +1917,13 @@ impl Statics {
             }
             let Some(catalog) = self.catalog.as_ref() else { continue };
             let s = &catalog.subsets[arrival.subset as usize];
-            if arrival.unreadable {
+            // A subset with no triangles would be asked for again each frame: it goes with
+            // the unreadable ones.
+            if arrival.unreadable || arrival.indexes.is_empty() {
                 if self.unreadable.is_empty() {
-                    println!("distant statics: subset {} cannot be read from statics/static_meshes_{:03}; an unreadable subset is not drawn and not asked for again (the count is in the summary)", arrival.subset, s.shard);
+                    println!("distant statics: subset {} {} statics/static_meshes_{:03}; such a subset is not drawn and not asked for again (the count is in the summary)", arrival.subset, if arrival.unreadable { "cannot be read from" } else { "has no triangles in" }, s.shard);
                 }
                 self.unreadable.insert(arrival.subset);
-                continue;
-            }
-            if arrival.indexes.is_empty() {
                 continue;
             }
             let size = (arrival.vertices.len() + arrival.indexes.len()) as u64;
@@ -2410,7 +2419,11 @@ impl Statics {
         if self.frame_ended {
             self.frame_ended = false;
             if let Some(gpu) = self.gpu.as_mut() {
-                gpu.pools.next_frame();
+                let freed = gpu.pools.next_frame();
+                // Those pools have room again: the subsets they refused may be asked for.
+                if let (false, Some(catalog)) = (freed.is_empty(), self.catalog.as_ref()) {
+                    self.refused.retain(|refused| !freed.contains(&catalog.subsets[*refused as usize].texture));
+                }
             }
         }
         // The merged subsets that the draws before wanted are asked for before the arrivals
@@ -3301,7 +3314,23 @@ mod reader_tests {
     use std::sync::Arc;
     use std::sync::mpsc::channel;
 
-    use super::{Catalog, Subset, reader};
+    use super::{Catalog, Subset, read_whole, reader};
+
+    /// A read past the end of the shard is a failure, not a zero-filled buffer.
+    #[test]
+    fn a_short_read_is_a_failure() {
+        let path = std::env::temp_dir().join("mge-xe-reader-test-short.bin");
+        std::fs::write(&path, [7u8; 10]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut whole = [0u8; 4];
+        assert_eq!(read_whole(&file, &mut whole, 6), Some(()));
+        assert_eq!(whole, [7; 4]);
+        let mut short = [0u8; 16];
+        assert_eq!(read_whole(&file, &mut short, 0), None);
+        assert_eq!(read_whole(&file, &mut whole, 10), None);
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
 
     /// A catalog of one subset in shard 7 of a folder that has no shards.
     fn catalog_of_a_missing_shard() -> Catalog {

@@ -942,8 +942,17 @@ impl DistantLand {
     /// Makes the buffers, the textures and the pipeline when the loader thread is done.
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(receiver) = self.loading.as_ref() else { return };
-        let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
-        let Some(result) = result else { return };
+        // A loader thread that ended without an answer (a panic) is a failed load, not a
+        // load still to come.
+        let result = if self.synchronous {
+            receiver.recv().unwrap_or_else(|_| Err("the loader thread ended without an answer".to_string()))
+        } else {
+            match receiver.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => Err("the loader thread ended without an answer".to_string()),
+            }
+        };
         self.loading = None;
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
         match result.and_then(|loaded| make_gpu(scene, &loaded, &views.layout)) {
@@ -2512,7 +2521,11 @@ impl Extension for DistantLand {
         let view_projection = multiply(&scene.view, &scene.projection);
         let eye = scene.eye.map(|v| v as f32);
         let environment = self.environment;
-        let (sun_mult, ambient_mult) = environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
+        // The multipliers of the weather for the light reach the distant land only with the
+        // light for each pixel on, as `DistantLand::setView` of the Direct3D 9 path applies
+        // them to SunCol and SunAmb only when it is; the shadow of the ground (`shadow_sun`)
+        // takes the same sun.
+        let (sun_mult, ambient_mult) = self.shade.map_or((1.0, 1.0), |p| (p.sun, p.ambient));
         let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
         let frame = statics::GrassFrame {
             // The view range of the game is the end of the grass. Without it from the game,
