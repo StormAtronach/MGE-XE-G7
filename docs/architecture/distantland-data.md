@@ -314,7 +314,9 @@ serializes regeneration, the host logs progress to `mgeHost64.log`, and a sessio
 disables distant land in-memory if generation fails.
 
 The wgpu helper makes the same call from `DistantLand::start` under the same switch, in a game
-session only (not in a replay), then checks the version byte after the generation.
+session only (not in a replay), then checks the version byte after the generation. Its lines
+go into the helper's own log (`nirender-host.log`), not into `mgeHost64.log`, which only the
+IPC host mode of the Direct3D 9 path writes.
 After a successful GUI run, MGEXEgui re-reads the outputs and auto-enables the distant-land
 checkboxes. Its live-session probe is advisory and bounded; an active game session surfaces the
 shared "close Morrowind first" message instead of attempting generation, and the exclusive

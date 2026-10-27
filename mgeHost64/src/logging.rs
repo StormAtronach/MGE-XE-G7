@@ -20,10 +20,30 @@ pub fn init_logger(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
     Ok(guard)
 }
 
-/// The same log without the panic hook: for the wgpu renderer mode, where the crate of the
-/// renderer reports a panic in its own log.
-pub fn init_file_logger(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
-    init_subscriber(path)
+/// The log of the wgpu renderer mode: the tracing lines (the startup generation check of the
+/// distant land) go to this program's standard output, which `--log` sends into the helper's
+/// own log, so that a wgpu start writes one log of this program. No panic hook: the crate of
+/// the renderer reports a panic in that log.
+pub fn init_stdout_logger() -> Result<(), HostError> {
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_writer(io::stdout)
+        .with_ansi(false)
+        .with_target(false)
+        .with_span_events(FmtSpan::CLOSE);
+    tracing_subscriber::registry()
+        .with(level_filter())
+        .with(stdout_layer)
+        .with(distantland::TraceReportLayer::with_handle(distantland::trace_report_handle()))
+        .try_init()
+        .map_err(|e| HostError::init(format!("Failed to initialize logger: {e:?}")))
+}
+
+/// INFO and above, unless RUST_LOG says otherwise.
+fn level_filter() -> EnvFilter {
+    EnvFilter::builder()
+        .with_default_directive(Level::INFO.into())
+        .with_regex(false)
+        .from_env_lossy()
 }
 
 fn init_subscriber(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
@@ -36,10 +56,7 @@ fn init_subscriber(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
     // as they come (the abort of a panic skips the guard, which would flush a buffer).
     let (writer, guard) = tracing_appender::non_blocking(file);
 
-    let filter = EnvFilter::builder()
-        .with_default_directive(Level::INFO.into())
-        .with_regex(false)
-        .from_env_lossy();
+    let filter = level_filter();
 
     let file_layer = tracing_subscriber::fmt::layer()
         .pretty()
