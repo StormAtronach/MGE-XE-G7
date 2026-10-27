@@ -449,11 +449,11 @@ static bool probeSaysUsable() {
     char answer[1024] = {};
     char lines[4096] = {};
     const DWORD started = GetTickCount();
-    const unsigned result = mge_probe_check("numidium.exe", kProbeCache, key.c_str(), MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer), lines, sizeof(lines));
+    const unsigned verdict = mge_probe_check("numidium.exe", kProbeCache, key.c_str(), MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer), lines, sizeof(lines));
     const DWORD ms = GetTickCount() - started;
-    const bool usable = (result & 1) != 0;
-    if (result >= 2) {
+    if (verdict == MgeProbeCachedNone || verdict == MgeProbeCachedUsable) {
         // The cache had this key: no probe ran. A cached none turned the path off in DllMain.
+        const bool usable = verdict == MgeProbeCachedUsable;
         LOG::logline("-- wgpu renderer: the cached answer for this machine: %s %s", usable ? "usable," : "none:", answer);
         return usable;
     }
@@ -465,10 +465,19 @@ static bool probeSaysUsable() {
         LOG::logline("-- wgpu renderer: %.*s", int(length), line);
         line += length + (end ? 1 : 0);
     }
-    if (usable) {
+    if (verdict == MgeProbeUsable) {
         LOG::logline("-- wgpu renderer: the probe says %s (%lu ms)", answer, ms);
         if (!Configuration.RendererWgpu) {
             LOG::logline("-- wgpu renderer: usable again on this machine; this start stays on Direct3D 9, the next uses the wgpu renderer");
+        }
+        return true;
+    }
+    if (verdict == MgeProbeNoAnswer) {
+        // The probe was ended at its limit. It is not a none: the wgpu path is tried, and a GPU
+        // that cannot run it gets the live helper's refusal (code 20). The next start asks again.
+        LOG::logline("-- wgpu renderer: %s", answer);
+        if (!Configuration.RendererWgpu) {
+            LOG::logline("-- wgpu renderer: this start stays on Direct3D 9; the next start asks the probe again");
         }
         return true;
     }
@@ -478,9 +487,12 @@ static bool probeSaysUsable() {
         LOG::logline("-- wgpu renderer: the probe says none again: %s", answer);
         return false;
     }
+    const std::string why = verdict == MgeProbeNoAnswerTwice
+        ? std::string("The test of the graphics card (numidium.exe --probe) gave no answer twice in a row, 5 s each.\n")
+        : std::string("The graphics card or its driver lacks what it needs: ") + answer + ".\n";
     wgpuPathOff((std::string("the probe says none: ") + answer).c_str(),
         std::string("The wgpu renderer of MGE XE is not in use on this machine.\n")
-            + "The graphics card or its driver lacks what it needs: " + answer + ".\n"
+            + why
             + "For this start the game runs on Direct3D 9 without the distant land; from the next start MGE XE runs on Direct3D 9 with it.\n"
             + "To use the wgpu renderer anyway, set renderer_probe = false under [runtime] in mgeXE.toml; to ask again, delete " + kProbeCache + ".\n"
             + "mgeXE.log in the folder of the game has the details.");

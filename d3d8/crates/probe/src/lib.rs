@@ -4,10 +4,12 @@
 //! The probe prints one line for each backend it asks, then `probe: use <backend>` or
 //! `probe: none: <reason>`, then its time, and exits with 0 or the code of a refusal
 //! (`EXIT_GPU` of the host crate, `MGE_PROBE_EXIT_GPU` of `mgeversion.h`; the C++ side gives
-//! the number). Any other end counts as none: a crash of the probe with its code, or no
-//! answer within the limit, so that the game plays on Direct3D 9 and the log says why
-//! (the failure-path page of the project, section 4). A crate of its own, so that the
-//! tests run: the `d3d8` crate is the library the game loads and builds no test program.
+//! the number). A crash of the probe counts as none, with its code, so that the game plays on
+//! Direct3D 9 and the log says why (the failure-path page of the project, section 4). A probe
+//! with no answer within the limit is ended and is not a none: the start tries the wgpu path,
+//! and the next start asks again; a second "no answer" in a row for the same machine counts as
+//! none ([`Verdict`]; the page's section 6 (a)). A crate of its own, so that the tests run: the
+//! `d3d8` crate is the library the game loads and builds no test program.
 //!
 //! Never call [`run`] or [`check`] from `DllMain`: a child process and a wait do not belong
 //! under the loader lock, and a thread made there cannot start until the lock is free (the
@@ -31,12 +33,24 @@ pub struct Answer {
     pub reason: String,
 }
 
-/// One run of the probe: its answer, its end (the exit code, or `None` when it did not start
-/// or was ended at the limit), and its lines for mgeXE.log ([`probe_lines`]).
+/// How a run of the probe ended.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum End {
+    /// The probe ended by itself, with this exit code.
+    Code(i32),
+    /// The probe gave no answer within the limit and was ended (TerminateProcess).
+    Limit,
+    /// The probe did not start (a scanner that holds the new copy of numidium.exe, for
+    /// example): that says nothing about the machine.
+    NotStarted,
+}
+
+/// One run of the probe: its answer, how it ended, and its lines for mgeXE.log
+/// ([`probe_lines`]).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Run {
     pub answer: Answer,
-    pub end: Option<i32>,
+    pub end: End,
     pub lines: Vec<String>,
 }
 
@@ -103,7 +117,7 @@ fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> Run {
         // that holds the new copy of numidium.exe) says nothing about the machine.
         Err(error) => {
             let answer = Answer { usable: false, reason: format!("the probe did not start: {error}") };
-            return Run { answer, end: None, lines: Vec::new() };
+            return Run { answer, end: End::NotStarted, lines: Vec::new() };
         }
     };
     let mut stdout = child.stdout.take().expect("the probe's output is piped");
@@ -128,85 +142,157 @@ fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> Run {
     };
     // The probe has ended, so its end of the pipe is closed and the reader ends.
     let output = reader.join().unwrap_or_default();
-    Run { answer: answer(&output, code, exit_gpu, seconds), end: code, lines: probe_lines(&output) }
+    let end = code.map_or(End::Limit, End::Code);
+    Run { answer: answer(&output, code, exit_gpu, seconds), end, lines: probe_lines(&output) }
 }
 
-/// The answer that the cache file of the probe holds (`mgeXE-renderer-probe.txt` beside
-/// mgeXE.log): one line of the key, the answer and its reason, separated by tabs. The file is
+/// What a cache line says about its machine.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Said {
+    Usable,
+    None,
+    /// The last probe gave no answer within the limit: the next start asks again.
+    NoAnswer,
+}
+
+impl Said {
+    /// The word of the cache line.
+    fn word(self) -> &'static str {
+        match self {
+            Said::Usable => "usable",
+            Said::None => "none",
+            Said::NoAnswer => "no answer",
+        }
+    }
+}
+
+/// The line that the cache file of the probe holds (`mgeXE-renderer-probe.txt` beside
+/// mgeXE.log): the key, what the probe said and its reason, separated by tabs. The file is
 /// read in `DllMain` (a file read only) and written after a probe.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Cached {
     pub key: String,
-    pub answer: Answer,
+    pub said: Said,
+    pub reason: String,
 }
 
-/// The cached answer of a file's text, or `None` for a text that is not one.
+/// The cache line of a file's text, or `None` for a text that is not one.
 pub fn parse_cache(text: &str) -> Option<Cached> {
     let line = text.lines().next()?;
     let mut parts = line.splitn(3, '\t');
     let key = parts.next()?.to_string();
-    let usable = match parts.next()? {
-        "usable" => true,
-        "none" => false,
+    let said = match parts.next()? {
+        "usable" => Said::Usable,
+        "none" => Said::None,
+        "no answer" => Said::NoAnswer,
         _ => return None,
     };
     let reason = parts.next().unwrap_or("").to_string();
-    (!key.is_empty()).then_some(Cached { key, answer: Answer { usable, reason } })
+    (!key.is_empty()).then_some(Cached { key, said, reason })
 }
 
-/// The text of a cache file: the line of the key and the answer. Tabs and line ends in the
-/// reason become spaces, so that the line stays one line of three fields.
-pub fn format_cache(key: &str, answer: &Answer) -> String {
+/// The text of a cache file: one line. Tabs and line ends in the reason become spaces, so
+/// that the line stays one line of three fields.
+pub fn format_cache(key: &str, said: Said, reason: &str) -> String {
     let clean = |text: &str| text.replace(['\t', '\r', '\n'], " ");
-    format!("{}\t{}\t{}\n", clean(key), if answer.usable { "usable" } else { "none" }, clean(&answer.reason))
+    format!("{}\t{}\t{}\n", clean(key), said.word(), clean(reason))
 }
 
-/// The cached answer of the file at `path`, or `None` when there is no such file or it is
-/// not one.
+/// The cache line of the file at `path`, or `None` when there is no such file or it is not
+/// one.
 pub fn read_cache(path: &str) -> Option<Cached> {
     parse_cache(&std::fs::read_to_string(path).ok()?)
 }
 
-/// Where an answer of [`check`] came from.
+/// What a start does about the wgpu path, as the number that d3d8.dll gets from
+/// `mge_probe_check` (`MgeProbeVerdict` of `mge_probe_ffi.h`).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Source {
-    /// The cache had the same key: no probe ran.
-    Cache,
-    /// The key differed or there was no cache: the probe ran and the cache has its answer now.
-    Probe,
+#[repr(u32)]
+pub enum Verdict {
+    /// The probe said none, crashed or did not start: Direct3D 9, and the box.
+    ProbeNone = 0,
+    /// The probe said usable: the wgpu path.
+    ProbeUsable = 1,
+    /// The cache said none for this machine: Direct3D 9 (DllMain chose it), no box.
+    CachedNone = 2,
+    /// The cache said usable for this machine: the wgpu path, no probe.
+    CachedUsable = 3,
+    /// The probe gave no answer within the limit, the first time for this machine: it was
+    /// ended, and the start tries the wgpu path. A GPU that cannot run it gets the live
+    /// helper's refusal (code 20).
+    NoAnswer = 4,
+    /// The probe gave no answer twice in a row for this machine: none, with a box that says
+    /// so, so that a probe that hangs on a broken driver cannot keep every start blind.
+    NoAnswerTwice = 5,
 }
 
-/// The result of [`check`]: the answer, where it came from, and the probe's lines for
-/// mgeXE.log (none for a cached answer). The cache file holds the key and the answer only.
+impl Verdict {
+    /// Whether the start takes the wgpu path.
+    pub fn wgpu(self) -> bool {
+        matches!(self, Verdict::ProbeUsable | Verdict::CachedUsable | Verdict::NoAnswer)
+    }
+
+    /// Whether the start shows the box of a none.
+    pub fn shows_box(self) -> bool {
+        matches!(self, Verdict::ProbeNone | Verdict::NoAnswerTwice)
+    }
+}
+
+/// The result of [`check`]: the verdict, its reason for the log and the box, and the probe's
+/// lines for mgeXE.log (none when no probe ran).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Outcome {
-    pub answer: Answer,
-    pub source: Source,
+    pub verdict: Verdict,
+    pub reason: String,
     pub lines: Vec<String>,
 }
 
-/// The answer for this machine: the cache's when its key is `key`, else the probe's, which
-/// then goes into the cache. A cache that cannot be written leaves the answer as it is; the
-/// probe then runs again at the next start.
+/// The verdict for this machine: the cache's when its key is `key` and it holds an answer,
+/// else the probe's ([`decide`]), whose cache line then goes into the file. A cache that
+/// cannot be written leaves the verdict as it is; the probe then runs again at the next start.
 pub fn check(exe: &str, path: &str, key: &str, exit_gpu: i32, seconds: u64) -> Outcome {
-    check_with(path, key, || run_full(exe, exit_gpu, seconds))
+    check_with(path, key, seconds, || run_full(exe, exit_gpu, seconds))
 }
 
-/// [`check`] with the probe as a function that gives its run. A probe that did not start or
-/// was ended at the limit gave no answer of its own: its none is used for this start and not
-/// written into the cache, so that a slow or blocked start never stores a none for the
-/// machine; its reason says so, for the log line.
-fn check_with(path: &str, key: &str, probe: impl FnOnce() -> Run) -> Outcome {
-    if let Some(cached) = read_cache(path).filter(|cached| cached.key == key) {
-        return Outcome { answer: cached.answer, source: Source::Cache, lines: Vec::new() };
+/// [`check`] with the probe as a function that gives its run.
+fn check_with(path: &str, key: &str, seconds: u64, probe: impl FnOnce() -> Run) -> Outcome {
+    let no_answer_before = match read_cache(path).filter(|cached| cached.key == key) {
+        Some(Cached { said: Said::Usable, reason, .. }) => return Outcome { verdict: Verdict::CachedUsable, reason, lines: Vec::new() },
+        Some(Cached { said: Said::None, reason, .. }) => return Outcome { verdict: Verdict::CachedNone, reason, lines: Vec::new() },
+        Some(Cached { said: Said::NoAnswer, .. }) => true,
+        None => false,
+    };
+    let run = probe();
+    let (verdict, reason, line) = decide(no_answer_before, &run, seconds);
+    if let Some((said, cached_reason)) = line {
+        let _ = std::fs::write(path, format_cache(key, said, &cached_reason));
     }
-    let Run { mut answer, end, lines } = probe();
-    if end.is_some() {
-        let _ = std::fs::write(path, format_cache(key, &answer));
-    } else {
-        answer.reason.push_str("; not cached, the next start probes again");
+    Outcome { verdict, reason, lines: run.lines }
+}
+
+/// The decision after a probe ran: from how the probe ended and whether the cache said "no
+/// answer" for this machine before, the verdict, its reason, and the cache line to write
+/// (what it says and its reason; `None`: the file stays as it is).
+///
+/// - An answer (an exit code): usable or none, cached.
+/// - No answer within the limit: the first time the wgpu path is tried and "no answer" is
+///   cached, so that the next start, warm, asks again; the second time in a row it is none.
+/// - No start: none for this start, not cached: a scanner that holds a new copy of
+///   numidium.exe says nothing about the machine.
+fn decide(no_answer_before: bool, run: &Run, seconds: u64) -> (Verdict, String, Option<(Said, String)>) {
+    let answer = &run.answer;
+    match run.end {
+        End::Code(_) => {
+            let (verdict, said) = if answer.usable { (Verdict::ProbeUsable, Said::Usable) } else { (Verdict::ProbeNone, Said::None) };
+            (verdict, answer.reason.clone(), Some((said, answer.reason.clone())))
+        }
+        End::Limit if no_answer_before => {
+            let reason = format!("the probe gave no answer twice in a row ({seconds} s each)");
+            (Verdict::NoAnswerTwice, reason.clone(), Some((Said::None, reason)))
+        }
+        End::Limit => (Verdict::NoAnswer, format!("{}; the wgpu path is tried", answer.reason), Some((Said::NoAnswer, answer.reason.clone()))),
+        End::NotStarted => (Verdict::ProbeNone, format!("{}; not cached, the next start probes again", answer.reason), None),
     }
-    Outcome { answer, source: Source::Probe, lines }
 }
 
 #[cfg(test)]
@@ -224,46 +310,103 @@ mod tests {
         command.raw_arg("/C \"(for /L %i in (1,1,4000) do @echo line %i of a long output of the probe) & echo probe: use vulkan\"");
         let started = Instant::now();
         let run = run_command(command, 20, 30);
-        assert_eq!(run.end, Some(0), "{:?}", run.answer);
+        assert_eq!(run.end, End::Code(0), "{:?}", run.answer);
         assert_eq!(run.answer, Answer { usable: true, reason: "use vulkan".to_string() });
         // Only the probe's own line goes to the log, not the 4000 others.
         assert_eq!(run.lines, vec!["probe: use vulkan".to_string()]);
         assert!(started.elapsed() < Duration::from_secs(30));
     }
 
-    /// A run with no lines, for the tests of the cache.
-    fn ran(answer: Answer, end: Option<i32>) -> Run {
-        Run { answer, end, lines: Vec::new() }
+    /// A folder of its own for a test's cache file, and the file's path.
+    fn cache_file(test: &str) -> (std::path::PathBuf, String) {
+        let folder = std::env::temp_dir().join(format!("mge-probe-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("cache.txt").to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&path);
+        (folder, path)
     }
 
-    /// A probe ended at the limit is not written into the cache; a probe that answered is.
+    /// The probe's runs of the decision table, with no lines.
+    fn ran(usable: bool, reason: &str, end: End) -> Run {
+        Run { answer: Answer { usable, reason: reason.to_string() }, end, lines: Vec::new() }
+    }
+    fn usable() -> Run {
+        ran(true, "use dx12", End::Code(0))
+    }
+    fn none() -> Run {
+        ran(false, "dx12: lacks x", End::Code(20))
+    }
+    fn silent() -> Run {
+        ran(false, "the probe gave no answer in 5 s", End::Limit)
+    }
+    fn unstarted() -> Run {
+        ran(false, "the probe did not start: access denied", End::NotStarted)
+    }
+
+    /// The decision table of a start (the failure-path page, section 6 (a)): the cache line of
+    /// this machine before and how the probe ended (no probe: the cache answers) give the
+    /// verdict, its path and its box, and the cache line after.
     #[test]
-    fn a_probe_ended_at_the_limit_is_not_cached() {
-        let folder = std::env::temp_dir().join(format!("mge-probe-limit-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join("cache.txt");
-        let path = path.to_str().unwrap();
-        let _ = std::fs::remove_file(path);
-        let outcome = check_with(path, "key", || ran(answer("", None, 20, 5), None));
-        assert_eq!(outcome.source, Source::Probe);
-        assert_eq!(outcome.answer.reason, "the probe gave no answer in 5 s; not cached, the next start probes again");
-        assert!(read_cache(path).is_none(), "a probe ended at the limit was cached");
-        let outcome = check_with(path, "key", || ran(Answer { usable: true, reason: "use dx12".to_string() }, Some(0)));
-        assert_eq!(outcome.source, Source::Probe);
-        assert_eq!(read_cache(path).unwrap().answer.reason, "use dx12");
-        let _ = std::fs::remove_file(path);
+    fn the_decisions_of_a_start() {
+        use Verdict::*;
+        let (folder, path) = cache_file("table");
+        type Row = (Option<Said>, Option<fn() -> Run>, Verdict, bool, bool, Option<Said>);
+        #[rustfmt::skip]
+        let table: [Row; 10] = [
+            // before,              probe,            verdict,       wgpu,  box,   after
+            (None,                  Some(usable),     ProbeUsable,   true,  false, Some(Said::Usable)),
+            (None,                  Some(none),       ProbeNone,     false, true,  Some(Said::None)),
+            (None,                  Some(silent),     NoAnswer,      true,  false, Some(Said::NoAnswer)),
+            (None,                  Some(unstarted),  ProbeNone,     false, true,  None),
+            (Some(Said::Usable),    None,             CachedUsable,  true,  false, Some(Said::Usable)),
+            (Some(Said::None),      None,             CachedNone,    false, false, Some(Said::None)),
+            (Some(Said::NoAnswer),  Some(usable),     ProbeUsable,   true,  false, Some(Said::Usable)),
+            (Some(Said::NoAnswer),  Some(none),       ProbeNone,     false, true,  Some(Said::None)),
+            (Some(Said::NoAnswer),  Some(silent),     NoAnswerTwice, false, true,  Some(Said::None)),
+            (Some(Said::NoAnswer),  Some(unstarted),  ProbeNone,     false, true,  Some(Said::NoAnswer)),
+        ];
+        for (row, (before, probe, verdict, wgpu, shows_box, after)) in table.into_iter().enumerate() {
+            let _ = std::fs::remove_file(&path);
+            if let Some(said) = before {
+                std::fs::write(&path, format_cache("key", said, "before")).unwrap();
+            }
+            let outcome = check_with(&path, "key", 5, || match probe {
+                Some(probe) => probe(),
+                None => panic!("row {row}: a probe ran though the cache had the answer"),
+            });
+            assert_eq!(outcome.verdict, verdict, "row {row}");
+            assert_eq!((outcome.verdict.wgpu(), outcome.verdict.shows_box()), (wgpu, shows_box), "row {row}");
+            assert_eq!(read_cache(&path).map(|cached| cached.said), after, "row {row}");
+        }
+
+        // The reasons of the two verdicts of a silent probe, in the log, the box and the cache.
+        let _ = std::fs::remove_file(&path);
+        let first = check_with(&path, "key", 5, silent);
+        assert_eq!(first.reason, "the probe gave no answer in 5 s; the wgpu path is tried");
+        assert_eq!(read_cache(&path).unwrap().reason, "the probe gave no answer in 5 s");
+        let second = check_with(&path, "key", 5, silent);
+        assert_eq!(second.reason, "the probe gave no answer twice in a row (5 s each)");
+        assert_eq!(read_cache(&path).unwrap().reason, "the probe gave no answer twice in a row (5 s each)");
+
+        // A "no answer" of another machine (another key) is no line for this one: the first
+        // silence of this machine tries the wgpu path.
+        std::fs::write(&path, format_cache("another key", Said::NoAnswer, "before")).unwrap();
+        assert_eq!(check_with(&path, "key", 5, silent).verdict, NoAnswer);
+
+        let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&folder);
     }
 
     #[test]
     fn a_cache_line_reads_back_as_written() {
-        let usable = Answer { usable: true, reason: "use vulkan".to_string() };
-        let text = format_cache("NVIDIA GeForce RTX 5070 32.0.16.1714; numidium.exe 46896640 133000", &usable);
-        assert_eq!(parse_cache(&text), Some(Cached { key: "NVIDIA GeForce RTX 5070 32.0.16.1714; numidium.exe 46896640 133000".to_string(), answer: usable }));
-        let none = Answer { usable: false, reason: "dx12: lacks\tthe arrays\nand more".to_string() };
-        let read = parse_cache(&format_cache("k", &none)).unwrap();
-        assert_eq!(read.answer.reason, "dx12: lacks the arrays and more");
-        assert!(!read.answer.usable);
+        let key = "NVIDIA GeForce RTX 5070 32.0.16.1714; numidium.exe 46896640 133000";
+        let text = format_cache(key, Said::Usable, "use vulkan");
+        assert_eq!(parse_cache(&text), Some(Cached { key: key.to_string(), said: Said::Usable, reason: "use vulkan".to_string() }));
+        let read = parse_cache(&format_cache("k", Said::None, "dx12: lacks\tthe arrays\nand more")).unwrap();
+        assert_eq!((read.said, read.reason.as_str()), (Said::None, "dx12: lacks the arrays and more"));
+        let read = parse_cache(&format_cache("k", Said::NoAnswer, "the probe gave no answer in 5 s")).unwrap();
+        assert_eq!(read.said, Said::NoAnswer);
+        assert_eq!(text.lines().count(), 1);
     }
 
     #[test]
@@ -276,27 +419,21 @@ mod tests {
 
     #[test]
     fn the_cache_answers_for_its_key_and_the_probe_for_another() {
-        let folder = std::env::temp_dir().join(format!("mge-probe-test-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join("cache.txt");
-        let path = path.to_str().unwrap();
-        std::fs::write(path, format_cache("key A", &Answer { usable: false, reason: "lacks x".to_string() })).unwrap();
+        let (folder, path) = cache_file("keys");
+        std::fs::write(&path, format_cache("key A", Said::None, "lacks x")).unwrap();
         // The same key: the cache answers, no probe runs (the program is not there), and there
         // are no probe lines for the log.
-        let outcome = check("a-program-that-is-not-there.exe", path, "key A", 20, 1);
-        assert_eq!(outcome.source, Source::Cache);
-        assert_eq!(outcome.answer, Answer { usable: false, reason: "lacks x".to_string() });
-        assert!(outcome.lines.is_empty());
+        let outcome = check("a-program-that-is-not-there.exe", &path, "key A", 20, 1);
+        assert_eq!(outcome, Outcome { verdict: Verdict::CachedNone, reason: "lacks x".to_string(), lines: Vec::new() });
         // Another key: the probe runs and answers with its lines; the cache has the new key
         // and the answer, one line, and not the probe's lines.
         let lines = probe_lines(OK);
-        let outcome = check_with(path, "key B", || Run { answer: Answer { usable: true, reason: "use vulkan".to_string() }, end: Some(0), lines: lines.clone() });
-        assert_eq!(outcome.source, Source::Probe);
-        assert!(outcome.answer.usable);
+        let outcome = check_with(&path, "key B", 5, || Run { lines: lines.clone(), ..usable() });
+        assert_eq!(outcome.verdict, Verdict::ProbeUsable);
         assert_eq!(outcome.lines, lines);
-        assert_eq!(read_cache(path).unwrap().key, "key B");
-        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 1);
-        let _ = std::fs::remove_file(path);
+        assert_eq!(read_cache(&path).unwrap().key, "key B");
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
+        let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&folder);
     }
 
@@ -304,16 +441,12 @@ mod tests {
     /// a new copy of numidium.exe at its first start): the cache keeps what it had.
     #[test]
     fn a_probe_that_cannot_start_is_not_cached() {
-        let folder = std::env::temp_dir().join(format!("mge-probe-start-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join("cache.txt");
-        let path = path.to_str().unwrap();
-        let _ = std::fs::remove_file(path);
-        let Outcome { answer, source, .. } = check("a-program-that-is-not-there.exe", path, "key", 20, 1);
-        assert_eq!(source, Source::Probe);
-        assert!(!answer.usable && answer.reason.starts_with("the probe did not start"), "{}", answer.reason);
-        assert!(answer.reason.ends_with("; not cached, the next start probes again"), "{}", answer.reason);
-        assert!(read_cache(path).is_none(), "a probe that did not start was cached");
+        let (folder, path) = cache_file("start");
+        let outcome = check("a-program-that-is-not-there.exe", &path, "key", 20, 1);
+        assert_eq!(outcome.verdict, Verdict::ProbeNone);
+        assert!(outcome.reason.starts_with("the probe did not start"), "{}", outcome.reason);
+        assert!(outcome.reason.ends_with("; not cached, the next start probes again"), "{}", outcome.reason);
+        assert!(read_cache(&path).is_none(), "a probe that did not start was cached");
         let _ = std::fs::remove_dir(&folder);
     }
 
@@ -332,13 +465,29 @@ mod tests {
         assert!(answer.reason.starts_with("vulkan: A card: lacks room in the binding arrays: has 1 textures"), "{}", answer.reason);
     }
 
+    /// A crash is a none with its code; a silence has its own reason (its verdict is
+    /// [`decide`]'s).
     #[test]
-    fn a_crash_and_a_silence_count_as_none_with_their_cause() {
+    fn a_crash_and_a_silence_have_their_cause() {
         // A fast fail of a Rust panic, as Windows reports it (0xC0000409 as a signed code).
         assert_eq!(answer("", Some(-1073740791), 20, 5).reason, "the probe ended with the code 0xc0000409 and no answer");
         assert!(!answer("", Some(-1073740791), 20, 5).usable);
         assert_eq!(answer("probe: use vulkan\n", Some(3), 20, 5).reason, "the probe said \"use vulkan\" and ended with the code 0x3");
         assert_eq!(answer("probe: vulkan: A card: lacks x\n", None, 20, 5).reason, "the probe gave no answer in 5 s");
+    }
+
+    /// A probe that runs past the limit is ended (TerminateProcess), so that no probe runs
+    /// beside the live helper, and its run ends at the limit, not at its own end.
+    #[test]
+    fn a_probe_past_the_limit_is_ended() {
+        // ping is one process of its own: about 9 s for 10 echoes.
+        let mut command = Command::new("ping");
+        command.args(["-n", "10", "127.0.0.1"]);
+        let started = Instant::now();
+        let run = run_command(command, 20, 1);
+        assert_eq!(run.end, End::Limit);
+        assert_eq!(run.answer.reason, "the probe gave no answer in 1 s");
+        assert!(started.elapsed() < Duration::from_secs(4), "{:?}", started.elapsed());
     }
 
     #[test]
