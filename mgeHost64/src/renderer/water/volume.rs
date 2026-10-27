@@ -754,9 +754,7 @@ pub fn water_shader_source(file: &str) -> Result<String, String> {
         return Err("no line `//! interface: mge-xe-water-wgsl 1` at its start".to_string());
     }
     let source = shader_with(file);
-    use wgpu::naga;
-    let module = naga::front::wgsl::parse_str(&source).map_err(|error| error.emit_to_string(&source))?;
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).map_err(|error| error.emit_to_string(&source))?;
+    crate::renderer::shader_check::check("the water shader", &source)?;
     Ok(source)
 }
 
@@ -1409,10 +1407,7 @@ mod tests {
     /// The shader compiles: the WGSL is read and checked as the device does it.
     #[test]
     fn the_shader_is_valid() {
-        use wgpu::naga;
-        let source = shader();
-        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
+        let module = crate::renderer::shader_check::check("water volume", &shader()).unwrap();
         for entry in ["vs", "vs_far", "fs", "fs_depth"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }

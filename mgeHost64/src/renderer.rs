@@ -41,6 +41,7 @@ mod gpu_time;
 mod menu_keep;
 mod post;
 mod post_jop;
+mod shader_check;
 mod shadow;
 mod statics;
 mod ripples;
@@ -3140,6 +3141,32 @@ impl DistantLand {
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade, original })
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    use super::*;
+
+    /// The shaders of the land compile as the device checks them: the terrain of the main
+    /// view and the mirror, and the caster of the shadow map.
+    #[test]
+    fn the_land_shaders_are_valid() {
+        shader_check::check("distant land", &format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl())).unwrap();
+        shader_check::check("distant land shadow", &format!("{}{LAND_SHADOW_SHADER}", view::wgsl())).unwrap();
+    }
+
+    /// The world shader of the host with the text of this extension compiles as the device
+    /// checks it. The join is the one of `nirender_wgpu` (`extension_shaders` of its
+    /// extension.rs, then the shader module of its renderer.rs): the sky part, the draw part,
+    /// the record of the draw read as `draws[record]`, the depth functions after the text.
+    #[test]
+    fn the_world_shader_with_the_extension_is_valid() {
+        let text = include_str!("../../../nirender-plugin/host/src/shader.wgsl");
+        let extension = format!("{SKY_SHADER}\n{DRAW_SHADER}\n").replace("draw.", "draws[record].");
+        let extension = nirender_wgpu::rewrite_extension_text(&extension);
+        let source = format!("{text}\n{}\n{extension}", nirender_wgpu::depth::wgsl());
+        shader_check::check("shader.wgsl with the extension", &source).unwrap();
     }
 }
 

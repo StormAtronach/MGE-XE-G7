@@ -23,6 +23,9 @@ arc-swap = "1.9"
 nirender_wgpu = { package = "nirender-host", path = "../../nirender-plugin/host" }
 # For the answer of an error scope of wgpu (the compile of a shader file of a mod).
 pollster = "0.3"
+# The map from the features of a device to the capabilities of naga, as wgpu makes it: the
+# check of a shader without a GPU (`renderer::shader_check`).
+wgpu-naga-bridge = "30.0.1"
 # The memory budget of the GPU for the cap of the distant statics, through the Vulkan device
 # of wgpu: the version of wgpu-hal.
 ash = "0.38"

@@ -719,6 +719,16 @@ impl Culling {
 mod tests {
     use super::Ranges;
 
+    /// The compute shader of the cull compiles as the device checks it, with the 8 storage
+    /// buffers of a stage that the limits allow.
+    #[test]
+    fn the_cull_shader_is_valid() {
+        let module = crate::renderer::shader_check::check("distant statics, cull", super::SHADER).unwrap();
+        for entry in ["cull", "compact"] {
+            assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
+        }
+    }
+
     #[test]
     fn ranges_give_the_first_fit_and_join_the_free_ones() {
         let mut ranges = Ranges::new(100);

@@ -937,6 +937,15 @@ pub(super) fn flat_wave_texture(scene: &SceneView) -> wgpu::TextureView {
 mod tests {
     use super::*;
 
+    /// The shaders of the water compile as the device checks them: the plane of the sea,
+    /// and the level of the reflection.
+    #[test]
+    fn the_shaders_of_the_water_are_valid() {
+        let check = crate::renderer::shader_check::check;
+        check("water", &shader()).unwrap();
+        check("water reflection level", LEVEL_SHADER).unwrap();
+    }
+
     #[test]
     fn the_discs_have_the_sizes_of_the_direct3d_9_path() {
         // numWaterVerts = resS * resT + 1; numWaterTris = 2 * resS * resT - resS.

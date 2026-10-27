@@ -5211,6 +5211,21 @@ pub(super) fn full_screen_pass<'a>(encoder: &'a mut wgpu::CommandEncoder, target
 }
 
 #[cfg(test)]
+mod shader_tests {
+    use super::*;
+
+    /// The shaders of the chain itself compile as the device checks them: the depth frame,
+    /// the blit of a picture, and the debug tint.
+    #[test]
+    fn the_shaders_of_the_chain_are_valid() {
+        let check = crate::renderer::shader_check::check;
+        check("post depth", &format!("{}{DEPTH_SHADER}", nirender_wgpu::depth::wgsl())).unwrap();
+        check("post blit", BLIT_SHADER).unwrap();
+        check("post debug", DEBUG_BLIT_SHADER).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -5372,16 +5387,13 @@ mod tests {
         for shader in ports() {
             let definition = Definition::of_port(shader);
             let source = format!("{COMMON}\n{}\n{}", variables_wgsl(&definition.variables), shader.source);
-            let module = match naga::front::wgsl::parse_str(&source) {
+            let module = match crate::renderer::shader_check::check(shader.name, &source) {
                 Ok(module) => module,
-                Err(error) => {
-                    problems.push(format!("{}: {}", shader.name, error.emit_to_string(&source)));
+                Err(problem) => {
+                    problems.push(problem);
                     continue;
                 }
             };
-            if let Err(error) = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module) {
-                problems.push(format!("{}: {}", shader.name, error.emit_to_string(&source)));
-            }
             for pass in shader.passes {
                 if !module.entry_points.iter().any(|entry| entry.name == pass.entry && entry.stage == naga::ShaderStage::Fragment) {
                     problems.push(format!("{}: the pass {} is not a fragment function", shader.name, pass.entry));
