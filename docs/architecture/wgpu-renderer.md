@@ -54,7 +54,7 @@ Morrowind.exe (32-bit)                                 numidium.exe --live (64-b
 | 7 | water masks (dry spaces) | yes | on a change |
 | 8 | vis groups | yes | on a cell change or a load |
 | 9 | status text (`StatusOverlay::setStatus`): warning, ms to show, text | no | at Present after a new text |
-| 10 | the place of the player after a teleport, or of a wait of a game load (`distant_land.wait_on_load`): version, serial, position, interior name | no | at MWSE's native event 5 (a teleport across more than one cell, or to or from an interior), and at the resolve hook of a load with the wait on |
+| 10 | the place of the player after a teleport, or of a wait of a game load (`distant_land.wait_on_load`): version, serial, position, interior name | no | at MWSE's native event 5: a game load (the move to the loaded place, after the engine's resolve), or a teleport across more than one cell or to or from an interior |
 
 A kept record (bit `0x80000000`) stays in the stream, so a capture file holds it. Use kept
 records for state. The next free id is 11. The ids are constants at the top of `renderer.rs`
@@ -124,7 +124,8 @@ Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export
   into the multisampled colour (`Player::load_color`) for the draws of the interface. The
   grass and the distant statics of the frame draw with alpha to coverage when
   `graphics.transparency_antialiasing` is on, and write no alpha into the back buffer.
-- Surface: `AutoNoVsync`, frame latency 2.
+- Surface: the present mode from `graphics.vsync` (FIFO with vsync on, else `AutoNoVsync`;
+  `MGE_XE_PRESENT` over it for a test), frame latency 2.
 
 ## 3. The frame
 

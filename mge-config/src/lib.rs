@@ -21,6 +21,14 @@ mod tests {
     const EMPTY_MAP_LEAF: &str = "{}";
 
     #[test]
+    fn every_vsync_interval_but_immediate_waits_for_the_screen() {
+        assert!(!VSync::Immediate.waits_for_screen());
+        for interval in [VSync::One, VSync::Two, VSync::Three, VSync::Four] {
+            assert!(interval.waits_for_screen(), "{interval:?}");
+        }
+    }
+
+    #[test]
     fn template_covers_every_typed_default_entry() {
         let template: toml_edit::DocumentMut = DEFAULT_DOCUMENT.parse().unwrap();
         let defaults = toml_edit::ser::to_document(&Settings::default()).unwrap();

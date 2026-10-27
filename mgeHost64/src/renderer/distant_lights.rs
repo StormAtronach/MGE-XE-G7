@@ -620,6 +620,15 @@ pub fn night_of(sun_color: [f32; 3]) -> f32 {
 mod tests {
     use super::*;
 
+    /// The shaders of the distant lights compile as the device checks them: the cull of the
+    /// glows in view, and the glows.
+    #[test]
+    fn the_shaders_of_the_lights_are_valid() {
+        let check = crate::renderer::shader_check::check;
+        check("distant lights, cull", CULL_SHADER).unwrap();
+        check("distant lights, glows", &format!("{}{GLOW_SHADER}", super::super::view::wgsl())).unwrap();
+    }
+
     #[test]
     fn the_night_is_whole_in_moonlight_and_gone_in_the_day() {
         assert_eq!(night_of([0.23137257, 0.3803922, 0.6901961]), 1.0);

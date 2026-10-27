@@ -41,6 +41,7 @@ mod gpu_time;
 mod menu_keep;
 mod post;
 mod post_jop;
+mod shader_check;
 mod shadow;
 mod statics;
 mod ripples;
@@ -184,6 +185,135 @@ const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// streams for it at the end of each frame until a world frame comes, and gives the number
 /// back with its [`ARRIVED`].
 const PREFETCH_ID: u32 = 10;
+/// The hello of MGE XE's d3d8.dll (`Deviceless::sendHello`), sent once at the plugin's load
+/// and kept: version 1, the extension format of d3d8.dll, then its build id as 64 bytes of
+/// ASCII. This build compares the format with [`EXTENSION_FORMAT`] and stops on a
+/// difference; a live session without the record stops at its first world frame (a d3d8.dll
+/// from before the handshake). A replay plays on: a capture from before the record has none.
+const HELLO_ID: u32 = 11;
+/// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
+/// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
+/// record's layout or of an id's meaning.
+const EXTENSION_FORMAT: u32 = 1;
+/// The bytes of a hello record: the version, the format, then the build id.
+const HELLO_BUILD_ID_AT: usize = 8;
+const HELLO_BUILD_ID_BYTES: usize = 64;
+
+/// The build id of this program: its name, its version and its commit (`build.rs` puts the
+/// commit into MGE_COMMIT).
+fn build_id() -> String {
+    format!("numidium v{} {}", env!("CARGO_PKG_VERSION"), env!("MGE_COMMIT"))
+}
+
+/// The build id of d3d8.dll from its hello record, or why this build refuses the record.
+fn hello_check(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() < HELLO_BUILD_ID_AT {
+        return Err(mismatch_text("d3d8.dll (a hello record too short to read)", "writes an extension format that this build cannot read"));
+    }
+    let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let (version, format) = (word(0), word(4));
+    let build = match bytes.get(HELLO_BUILD_ID_AT..HELLO_BUILD_ID_AT + HELLO_BUILD_ID_BYTES) {
+        Some(text) => {
+            let end = text.iter().position(|&byte| byte == 0).unwrap_or(text.len());
+            String::from_utf8_lossy(&text[..end]).into_owned()
+        }
+        None => String::new(),
+    };
+    if version == 0 {
+        return Err(mismatch_text(&format!("d3d8.dll ({build})"), "writes a hello record of version 0, which this build cannot read"));
+    }
+    if format == EXTENSION_FORMAT {
+        return Ok(build);
+    }
+    Err(mismatch_text(&format!("d3d8.dll ({build})"), &format!("writes the extension format {format}")))
+}
+
+/// The refusal of a live session whose d3d8.dll sent no hello record.
+fn no_hello_text() -> String {
+    mismatch_text("d3d8.dll (a build from before the handshake)", "sent no hello record")
+}
+
+/// The message of a refusal: the writer and what it writes, then this build and what it
+/// reads, then what to do. The same form as the host crate's for the stream format.
+fn mismatch_text(writer: &str, writes: &str) -> String {
+    format!(
+        "The parts of the wgpu renderer of MGE XE do not match.\n\
+         {writer} {writes}.\n\
+         numidium.exe ({}, {}) reads the extension format {EXTENSION_FORMAT}.\n\
+         Install akulakhan.dll, numidium.exe and d3d8.dll from one archive.",
+        nirender_wgpu::BUILD_ID,
+        build_id()
+    )
+}
+
+/// Ends this program for a d3d8.dll of another build: the lines in the log, one message box,
+/// the exit code that the plugin reads (it shows no second box).
+fn stop_mismatch(message: &str) -> ! {
+    for line in message.lines() {
+        println!("{line}");
+    }
+    nirender_wgpu::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
+    nirender_wgpu::gpu::exit_now(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT)
+}
+
+/// True the first time `id` is seen: the log names an extension id without a reader once.
+fn first_time(seen: &mut Vec<u32>, id: u32) -> bool {
+    if seen.contains(&id) {
+        return false;
+    }
+    seen.push(id);
+    true
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+
+    fn hello(version: u32, format: u32, build: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&version.to_le_bytes());
+        bytes.extend_from_slice(&format.to_le_bytes());
+        let mut text = [0u8; HELLO_BUILD_ID_BYTES];
+        text[..build.len()].copy_from_slice(build.as_bytes());
+        bytes.extend_from_slice(&text);
+        bytes
+    }
+
+    #[test]
+    fn a_hello_of_this_format_gives_the_build_of_d3d8() {
+        assert_eq!(hello_check(&hello(1, EXTENSION_FORMAT, "MGE-XE G7 Fork v0.21.0 846ed77")).unwrap(), "MGE-XE G7 Fork v0.21.0 846ed77");
+    }
+
+    #[test]
+    fn a_hello_of_another_format_is_refused_with_both_builds_named() {
+        let message = hello_check(&hello(1, EXTENSION_FORMAT + 1, "MGE-XE G7 Fork v0.22.0 abcdef0")).unwrap_err();
+        assert!(message.contains("d3d8.dll (MGE-XE G7 Fork v0.22.0 abcdef0) writes the extension format 2"), "{message}");
+        assert!(message.contains(&format!("numidium.exe ({}, {}) reads the extension format 1", nirender_wgpu::BUILD_ID, build_id())), "{message}");
+        assert!(message.contains("one archive"), "{message}");
+    }
+
+    #[test]
+    fn a_short_hello_and_a_missing_hello_are_refused() {
+        assert!(hello_check(&[1, 0, 0, 0]).unwrap_err().contains("too short"));
+        assert!(hello_check(&hello(0, EXTENSION_FORMAT, "x")).unwrap_err().contains("a hello record of version 0"));
+        assert!(no_hello_text().contains("d3d8.dll (a build from before the handshake) sent no hello record"));
+    }
+
+    #[test]
+    fn the_extension_format_of_the_cpp_is_the_one_of_this_build() {
+        let header = include_str!("../../d3d8/cpp/mge/mgeversion.h");
+        let define = header.lines().find_map(|line| line.strip_prefix("#define MGE_EXTENSION_FORMAT ")).expect("mgeversion.h defines MGE_EXTENSION_FORMAT");
+        assert_eq!(define.trim().parse::<u32>().unwrap(), EXTENSION_FORMAT);
+    }
+
+    #[test]
+    fn an_unknown_id_is_named_once() {
+        let mut seen = Vec::new();
+        assert!(first_time(&mut seen, 99));
+        assert!(!first_time(&mut seen, 99));
+        assert!(first_time(&mut seen, 100));
+    }
+}
 
 /// Runs the renderer with the distant land of MGE XE.
 pub fn run(mut arguments: Vec<String>) {
@@ -210,17 +340,20 @@ fn game_time(environment: Option<Environment>, started: Instant) -> f32 {
 
 /// The startup generation of distant land, as the IPC host mode does it in `main.rs`: when
 /// the output does not match the generation job of mgeXE.toml, the generator makes it again.
-/// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread.
-fn generate_at_start() {
+/// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread. False when the
+/// generation failed and left no valid output: the distant land stays off then, as in that
+/// mode (`handle_generation_failure` turns it off in the configuration).
+fn generate_at_start() -> bool {
     let Ok(root) = std::env::current_dir() else {
         println!("distant land: no folder of the game; no startup generation");
-        return;
+        return true;
     };
     let _log = crate::logging::init_file_logger(root.join("mgeHost64.log")).ok();
     let mut configuration = crate::config::Configuration::load_at(&root);
     let started = Instant::now();
     let status = crate::startup_generation::ensure_distant_land_ready(&mut configuration, &root);
     println!("distant land: startup generation {status:?} in {:.1} s", started.elapsed().as_secs_f32());
+    status != crate::startup_generation::DistantLandStartupStatus::GenerationFailedDistantLandDisabled
 }
 
 /// The state of the game for a frame, from the 32-bit part of MGE XE. The layout is that of
@@ -355,8 +488,9 @@ pub struct DistantLand {
     settings_fog: (f32, f32),
     environment: Option<Environment>,
     loading: Option<Receiver<Result<Loaded, String>>>,
-    /// The startup generation of a game session: a message when it is done.
-    generation: Option<Receiver<()>>,
+    /// The startup generation of a game session: when it is done, whether the distant land
+    /// is usable after it (false: the generation failed and left no valid output).
+    generation: Option<Receiver<bool>>,
     /// The folder of the statics to start after the startup generation.
     statics_after_generation: Option<PathBuf>,
     gpu: Option<Gpu>,
@@ -428,6 +562,10 @@ pub struct DistantLand {
     /// world frame comes; and the number of the wait that [`ARRIVED`] answers (0 for none).
     prefetch: Option<(Vec<u8>, [f32; 3])>,
     arrival_serial: u32,
+    /// The build id of d3d8.dll from its hello record ([`HELLO_ID`]), once it came.
+    hello: Option<String>,
+    /// The extension ids without a reader in this build that came: each is in the log once.
+    unknown_ids: Vec<u32>,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -460,6 +598,9 @@ pub struct DistantLand {
     texture_slots: u32,
     /// The frames that may wait for the GPU (`runtime.renderer_frame_latency`).
     frame_latency: u32,
+    /// Whether the window waits for the refresh of the screen (`graphics.vsync`, any
+    /// interval but `immediate`).
+    vsync: bool,
     /// The post-processing chain, when the settings have shaders; [`None`] before the first
     /// frame with the water (it needs the wave texture).
     post: Option<Post>,
@@ -781,6 +922,8 @@ impl DistantLand {
             arrival: None,
             prefetch: None,
             arrival_serial: 0,
+            hello: None,
+            unknown_ids: Vec::new(),
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -797,6 +940,7 @@ impl DistantLand {
             samples: (document.settings().graphics.anti_aliasing.runtime_value() as u32).max(1),
             texture_slots: document.settings().runtime.renderer_texture_slots,
             frame_latency: document.settings().runtime.renderer_frame_latency,
+            vsync: document.settings().graphics.vsync.waits_for_screen(),
             post: None,
             menu_keep: None,
             menu_kept: false,
@@ -867,9 +1011,9 @@ impl DistantLand {
                 land.generation = Some(generation);
                 land.statics_after_generation = statics_wanted.then(|| folder.clone());
                 thread::spawn(move || {
-                    generate_at_start();
-                    let _ = done.send(());
-                    let _ = sender.send(load(&folder));
+                    let usable = generate_at_start();
+                    let _ = done.send(usable);
+                    let _ = sender.send(load_after_generation(usable, &folder));
                 });
             } else {
                 // Data of another version: `load` gives the problem, and no statics start.
@@ -886,14 +1030,22 @@ impl DistantLand {
     }
 
     /// Starts the statics when the startup generation is done: their files are then the
-    /// new ones.
+    /// new ones. Not after a failed generation with no valid output: the terrain load fails
+    /// then too ([`DistantLand::finish_load`] turns the distant land off).
     fn finish_generation(&mut self) {
         let Some(generation) = self.generation.as_ref() else { return };
-        if matches!(generation.try_recv(), Err(TryRecvError::Empty)) {
+        let usable = match generation.try_recv() {
+            Ok(usable) => usable,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => false,
+        };
+        self.generation = None;
+        // Taken either way: no statics start on the output of a failed generation.
+        let folder = self.statics_after_generation.take();
+        if !usable {
             return;
         }
-        self.generation = None;
-        if let Some(folder) = self.statics_after_generation.take().filter(|folder| version_problem(folder).is_none()) {
+        if let Some(folder) = folder.filter(|folder| version_problem(folder).is_none()) {
             let document = ConfigDocument::open(self.root.join(FILE_NAME));
             self.lights = Some(distant_lights::DistantLights::start(&folder));
             let mut statics = statics::Statics::start(&document, folder);
@@ -930,8 +1082,17 @@ impl DistantLand {
     /// Makes the buffers, the textures and the pipeline when the loader thread is done.
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(receiver) = self.loading.as_ref() else { return };
-        let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
-        let Some(result) = result else { return };
+        // A loader thread that ended without an answer (a panic) is a failed load, not a
+        // load still to come.
+        let result = if self.synchronous {
+            receiver.recv().unwrap_or_else(|_| Err("the loader thread ended without an answer".to_string()))
+        } else {
+            match receiver.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => Err("the loader thread ended without an answer".to_string()),
+            }
+        };
         self.loading = None;
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
         match result.and_then(|loaded| make_gpu(scene, &loaded, &views.layout)) {
@@ -978,6 +1139,15 @@ impl Drop for DistantLand {
             println!("{}", timer.report());
         }
     }
+}
+
+/// The terrain after the startup generation: loaded from `folder`, or the problem when the
+/// generation failed and left no valid output (the files there are stale or mixed).
+fn load_after_generation(usable: bool, folder: &Path) -> Result<Loaded, String> {
+    if !usable {
+        return Err("the startup generation failed and left no valid distant land (mgeHost64.log)".to_string());
+    }
+    load(folder)
 }
 
 fn load(folder: &Path) -> Result<Loaded, String> {
@@ -1745,7 +1915,7 @@ fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
 
 impl Extension for DistantLand {
     fn name(&self) -> String {
-        format!("numidium v{}", env!("CARGO_PKG_VERSION"))
+        build_id()
     }
 
     fn overlay_lines(&self) -> Vec<String> {
@@ -1779,6 +1949,10 @@ impl Extension for DistantLand {
         self.frame_latency
     }
 
+    fn vsync(&self) -> bool {
+        self.vsync
+    }
+
     fn offline(&mut self) {
         self.synchronous = true;
         if let Some(statics) = self.statics.as_mut() {
@@ -1789,6 +1963,11 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
+        // The kept records came before the first frame: a live session without the hello of
+        // d3d8.dll has a d3d8.dll from before the handshake (the owner's choice: stop).
+        if !self.synchronous && self.hello.is_none() {
+            stop_mismatch(&no_hello_text());
+        }
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
@@ -2064,6 +2243,24 @@ impl Extension for DistantLand {
     fn data(&mut self, id: u32, bytes: &[u8]) {
         // A plugin from before the kept records leaves their bit in the number.
         let id = id & !0x8000_0000;
+        if id == HELLO_ID {
+            match hello_check(bytes) {
+                Ok(build) => {
+                    println!("d3d8.dll {build}, extension format {EXTENSION_FORMAT}");
+                    self.hello = Some(build);
+                }
+                // A replay of a capture of another format plays on, as for the stream format
+                // (the owner's answer 1): the picture can differ.
+                Err(message) if self.synchronous => {
+                    println!("capture of another extension format; the picture can differ:");
+                    for line in message.lines().skip(1).take(2) {
+                        println!("  {line}");
+                    }
+                }
+                Err(message) => stop_mismatch(&message),
+            }
+            return;
+        }
         if id == WATER_LOOKS_ID {
             if let Some(table) = water::Look::read_table(bytes) {
                 self.water_looks = table;
@@ -2091,6 +2288,19 @@ impl Extension for DistantLand {
         if id == TUNE_ID {
             if core::str::from_utf8(bytes).is_ok_and(|text| text.trim() == "gpu lose device") {
                 self.lose_device = true;
+                return;
+            }
+            // `crash panic` and `crash fault`: a panic, or an access violation, of this program
+            // on purpose, for a test of its crash data (the backtrace, the minidump, the logs
+            // kept). The plugin takes `crash panic plugin` the same way.
+            if let Some(kind) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("crash ")) {
+                match kind.trim() {
+                    "panic" => panic!("a panic asked by nirender.tune"),
+                    // SAFETY: the write goes to an address that no page holds: the access
+                    // violation that the command asks for, and nothing else.
+                    "fault" => unsafe { core::ptr::write_volatile(0x10 as *mut u32, 0) },
+                    other => println!("tune: crash {other}: not panic or fault"),
+                }
                 return;
             }
             // `lights world` or `lights engine`: the lights of a lit draw of the world, for an
@@ -2206,6 +2416,9 @@ impl Extension for DistantLand {
                 }
                 self.environment = Some(environment);
             }
+        }
+        if id != ENVIRONMENT_ID && first_time(&mut self.unknown_ids, id) {
+            println!("extension id {id}: no reader in this build; d3d8.dll is another build");
         }
     }
 
@@ -2491,7 +2704,11 @@ impl Extension for DistantLand {
         let view_projection = multiply(&scene.view, &scene.projection);
         let eye = scene.eye.map(|v| v as f32);
         let environment = self.environment;
-        let (sun_mult, ambient_mult) = environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
+        // The multipliers of the weather for the light reach the distant land only with the
+        // light for each pixel on, as `DistantLand::setView` of the Direct3D 9 path applies
+        // them to SunCol and SunAmb only when it is; the shadow of the ground (`shadow_sun`)
+        // takes the same sun.
+        let (sun_mult, ambient_mult) = self.shade.map_or((1.0, 1.0), |p| (p.sun, p.ambient));
         let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
         let frame = statics::GrassFrame {
             // The view range of the game is the end of the grass. Without it from the game,
@@ -2515,6 +2732,7 @@ impl Extension for DistantLand {
                 layers: shadow.viewproj,
                 rcp: 1.0 / shadow.resolution as f32,
                 sun_vis: environment.map_or(0.0, |e| e.sun_vis),
+                day: self.shadow_day,
                 above_sea: eye[2] > environment.map_or(-1.0, |e| e.sea_plane()),
                 edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
             })
@@ -3125,9 +3343,9 @@ impl DistantLand {
         let (d, diffuse) = self.scene_sun?;
         let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
         let mult = self.shade.map_or(1.0, |p| p.sun);
-        let luminance = (diffuse[0] * 0.36 + diffuse[1] * 0.53 + diffuse[2] * 0.11) * mult;
         let sun_vis = self.environment.map_or(0.0, |e| e.sun_vis);
-        Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [luminance * (0.25 + 0.75 * sun_vis) * self.shadow_day, 0.0, 0.0, 0.0]))
+        let light = shadow::sun_light([diffuse[0], diffuse[1], diffuse[2]], sun_vis, self.shadow_day) * mult;
+        Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [light, 0.0, 0.0, 0.0]))
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {
@@ -3140,6 +3358,32 @@ impl DistantLand {
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade, original })
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    use super::*;
+
+    /// The shaders of the land compile as the device checks them: the terrain of the main
+    /// view and the mirror, and the caster of the shadow map.
+    #[test]
+    fn the_land_shaders_are_valid() {
+        shader_check::check("distant land", &format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl())).unwrap();
+        shader_check::check("distant land shadow", &format!("{}{LAND_SHADOW_SHADER}", view::wgsl())).unwrap();
+    }
+
+    /// The world shader of the host with the text of this extension compiles as the device
+    /// checks it. The join is the one of `nirender_wgpu` (`extension_shaders` of its
+    /// extension.rs, then the shader module of its renderer.rs): the sky part, the draw part,
+    /// the record of the draw read as `draws[record]`, the depth functions after the text.
+    #[test]
+    fn the_world_shader_with_the_extension_is_valid() {
+        let text = include_str!("../../../nirender-plugin/host/src/shader.wgsl");
+        let extension = format!("{SKY_SHADER}\n{DRAW_SHADER}\n").replace("draw.", "draws[record].");
+        let extension = nirender_wgpu::rewrite_extension_text(&extension);
+        let source = format!("{text}\n{}\n{extension}", nirender_wgpu::depth::wgsl());
+        shader_check::check("shader.wgsl with the extension", &source).unwrap();
     }
 }
 
@@ -3240,5 +3484,21 @@ mod settings_tests {
         assert_eq!(Settings::changed_flags(None, a).len(), 12);
         let c = Settings { flags: a.flags | REFLECT_SKY, ..a };
         assert_eq!(Settings::changed_flags(Some(a), c), vec!["sky in the reflections on".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    /// A failed startup generation with no valid output loads nothing, whatever the folder
+    /// holds: the distant land goes off, as in the IPC host mode.
+    #[test]
+    fn a_failed_generation_loads_no_distant_land() {
+        let folder = std::env::temp_dir().join("mge-xe-generation-test-no-files");
+        let problem = load_after_generation(false, &folder).err().expect("no load after a failed generation");
+        assert!(problem.contains("startup generation failed"), "{problem}");
+        // With a usable generation the folder decides: this one has no files.
+        assert!(load_after_generation(true, &folder).is_err());
     }
 }

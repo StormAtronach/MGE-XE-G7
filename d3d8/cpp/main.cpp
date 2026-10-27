@@ -20,7 +20,7 @@ extern void* CreateInputWrapper(void*);
 static FARPROC getProc1(const char* lib, const char* funcname);
 static void setDPIScalingAware();
 
-static const char* welcomeMessage = XE_VERSION_STRING;
+static const char* welcomeMessage = MGE_BUILD_ID;
 static bool isMW;
 
 
@@ -153,6 +153,50 @@ void sendToRenderer(UINT id, const void* data, UINT length) {
     }
 }
 
+// A message box of MGE XE with the caption "MGE XE". The rule of every box of the three parts
+// (the failure-path design of the Numidium docs, sections 5 and 5.1; the plugin's and the
+// helper's boxes follow it too): each line goes to mgeXE.log first as "box: "; with
+// MGE_XE_BOX_SECONDS=<n> in the environment the box closes itself after n seconds, through
+// MessageBoxTimeoutA of user32 (not in the documented API, so taken by GetProcAddress; without
+// it the box is only logged); without the switch it waits for the click. The old-plugin case
+// only logs since D10 (a); the box of the hardware fallback (C3) is the caller.
+static void showMessageBox(const char* text) {
+    std::string lines(text);
+    for (size_t start = 0; start <= lines.size();) {
+        size_t end = lines.find('\n', start);
+        if (end == std::string::npos) {
+            end = lines.size();
+        }
+        LOG::logline("box: %s", lines.substr(start, end - start).c_str());
+        start = end + 1;
+    }
+    char value[16] = {};
+    GetEnvironmentVariableA("MGE_XE_BOX_SECONDS", value, sizeof(value));
+    // 0 to 3600: a negative value is 0, and the timeout in ms must not overflow.
+    const int asked = std::atoi(value);
+    const unsigned seconds = asked <= 0 ? 0u : (asked > 3600 ? 3600u : unsigned(asked));
+    const UINT flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+    const DWORD started = GetTickCount();
+    if (seconds == 0) {
+        MessageBoxA(NULL, text, "MGE XE", flags);
+    } else {
+        typedef int (WINAPI * MessageBoxTimeoutProc)(HWND, LPCSTR, LPCSTR, UINT, WORD, DWORD);
+        MessageBoxTimeoutProc timed = (MessageBoxTimeoutProc)GetProcAddress(GetModuleHandleA("user32.dll"), "MessageBoxTimeoutA");
+        if (!timed) {
+            LOG::logline("box: not shown: this Windows has no MessageBoxTimeoutA");
+            return;
+        }
+        timed(NULL, text, "MGE XE", flags, 0, seconds * 1000);
+    }
+    // The elapsed time tells a timeout from a click: MessageBoxTimeout answers IDOK on the
+    // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
+    if (seconds != 0 && GetTickCount() - started >= seconds * 1000) {
+        LOG::logline("box: closed after %u s, no click", seconds);
+    } else {
+        LOG::logline("box: closed by a click");
+    }
+}
+
 static void* createStreamedD3D(UINT version) {
     char path[MAX_PATH];
     DWORD length = GetModuleFileNameA(NULL, path, MAX_PATH);
@@ -176,8 +220,26 @@ static void* createStreamedD3D(UINT version) {
         return nullptr;
     }
     streamExtension = (void (__cdecl *)(UINT, const void*, UINT))GetProcAddress(plugin, "nirender_stream_extension");
-    LOG::logline("-- wgpu renderer: the nirender plugin gives the game its Direct3D 8");
-    return create(version);
+    // The build id of the plugin, for the log. A plugin without the export is from before the
+    // handshake: the game goes on with its device, and the helper refuses its stream (no
+    // stream format in the HEADER) with one box and the exit code 10. No Direct3D 9 fallback:
+    // the plugin's live ports, installed early, leave that frame black (the owner's D10 (a),
+    // 2026-10-27, after run 4c of records entry 192).
+    typedef const char* (__cdecl * BuildIdProc) ();
+    BuildIdProc buildId = (BuildIdProc)GetProcAddress(plugin, "nirender_build_id");
+    if (!buildId) {
+        LOG::logline("!! wgpu renderer: akulakhan.dll is from before the version handshake (no nirender_build_id); this d3d8.dll is " MGE_BUILD_ID "; the helper refuses its stream");
+    }
+    LOG::logline("-- wgpu renderer: the nirender plugin (%s) gives the game its Direct3D 8", buildId ? buildId() : "a build from before the handshake");
+    // Before the stream starts: the plugin keeps the record and writes it after the header.
+    Deviceless::sendHello();
+    void* d3d = create(version);
+    // A plugin that refuses (no ports) gives the game no device: the Direct3D 9 path must not
+    // send the plugin its records then.
+    if (!d3d) {
+        streamExtension = nullptr;
+    }
+    return d3d;
 }
 
 // The nirender plugin asks this when it loads: nonzero when the game gets its Direct3D 8
