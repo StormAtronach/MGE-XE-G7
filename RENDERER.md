@@ -323,6 +323,22 @@ change. That start can take some minutes. With an older file, set it below
   so. The game cannot show a new picture after that: quit and start again, and send
   `nirender-host.log` and `nirender.log`.
 
+## Licenses
+
+Each part of the archive, with its license. The texts are in the archive:
+`COPYING-GPL-2.0.txt` (the GNU General Public License, version 2), `LICENSE-nirender.txt`
+(MIT), `THIRD-PARTY-NOTICES.txt` (the crates inside the programs), and True Water's own two
+files. `SOURCES.txt` names the source repository and the commit of each part: the complete
+source of every program here is public at those commits.
+
+| Part | License |
+| --- | --- |
+| MGE XE G7: `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`, the MGE XE part of `numidium.exe`, the shaders, the textures, the meshes, `XE Sky Variations.esp`, the MGE XE Options mod | GNU General Public License, version 2 |
+| `MWSE.dll` (a build of our fork of MWSE, with the part the renderer needs) | GNU General Public License, version 2 |
+| nirender: `Data Files\MWSE\lib\akulakhan.dll`, `Data Files\MWSE\mods\nirender`, and the host crate inside `numidium.exe` | MIT. `numidium.exe` as a whole is distributed under the GNU General Public License, version 2, since it contains the code of MGE XE G7 |
+| True Water: `Data Files\MWSE\lib\watervolumes.dll`, `Data Files\MWSE\mods\waterVolumes`, the `meshes\wv*` folders, `Water Volumes Kit.esm` | MIT for the mod's files; `watervolumes.dll` under the GNU General Public License, version 2, since it is built with the code of MWSE (its readme and license files say so) |
+| The Rust crates inside `numidium.exe`, `MGEXEgui.exe`, `d3d8.dll` and `dinput8.dll` | each under its own license, named in `THIRD-PARTY-NOTICES.txt` with its text |
+
 ## Known issues
 
 The open issues of each build are in its release notes on GitHub:
