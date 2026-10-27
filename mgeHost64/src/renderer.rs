@@ -210,17 +210,20 @@ fn game_time(environment: Option<Environment>, started: Instant) -> f32 {
 
 /// The startup generation of distant land, as the IPC host mode does it in `main.rs`: when
 /// the output does not match the generation job of mgeXE.toml, the generator makes it again.
-/// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread.
-fn generate_at_start() {
+/// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread. False when the
+/// generation failed and left no valid output: the distant land stays off then, as in that
+/// mode (`handle_generation_failure` turns it off in the configuration).
+fn generate_at_start() -> bool {
     let Ok(root) = std::env::current_dir() else {
         println!("distant land: no folder of the game; no startup generation");
-        return;
+        return true;
     };
     let _log = crate::logging::init_file_logger(root.join("mgeHost64.log")).ok();
     let mut configuration = crate::config::Configuration::load_at(&root);
     let started = Instant::now();
     let status = crate::startup_generation::ensure_distant_land_ready(&mut configuration, &root);
     println!("distant land: startup generation {status:?} in {:.1} s", started.elapsed().as_secs_f32());
+    status != crate::startup_generation::DistantLandStartupStatus::GenerationFailedDistantLandDisabled
 }
 
 /// The state of the game for a frame, from the 32-bit part of MGE XE. The layout is that of
@@ -355,8 +358,9 @@ pub struct DistantLand {
     settings_fog: (f32, f32),
     environment: Option<Environment>,
     loading: Option<Receiver<Result<Loaded, String>>>,
-    /// The startup generation of a game session: a message when it is done.
-    generation: Option<Receiver<()>>,
+    /// The startup generation of a game session: when it is done, whether the distant land
+    /// is usable after it (false: the generation failed and left no valid output).
+    generation: Option<Receiver<bool>>,
     /// The folder of the statics to start after the startup generation.
     statics_after_generation: Option<PathBuf>,
     gpu: Option<Gpu>,
@@ -867,9 +871,9 @@ impl DistantLand {
                 land.generation = Some(generation);
                 land.statics_after_generation = statics_wanted.then(|| folder.clone());
                 thread::spawn(move || {
-                    generate_at_start();
-                    let _ = done.send(());
-                    let _ = sender.send(load(&folder));
+                    let usable = generate_at_start();
+                    let _ = done.send(usable);
+                    let _ = sender.send(load_after_generation(usable, &folder));
                 });
             } else {
                 // Data of another version: `load` gives the problem, and no statics start.
@@ -886,14 +890,22 @@ impl DistantLand {
     }
 
     /// Starts the statics when the startup generation is done: their files are then the
-    /// new ones.
+    /// new ones. Not after a failed generation with no valid output: the terrain load fails
+    /// then too ([`DistantLand::finish_load`] turns the distant land off).
     fn finish_generation(&mut self) {
         let Some(generation) = self.generation.as_ref() else { return };
-        if matches!(generation.try_recv(), Err(TryRecvError::Empty)) {
+        let usable = match generation.try_recv() {
+            Ok(usable) => usable,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => false,
+        };
+        self.generation = None;
+        // Taken either way: no statics start on the output of a failed generation.
+        let folder = self.statics_after_generation.take();
+        if !usable {
             return;
         }
-        self.generation = None;
-        if let Some(folder) = self.statics_after_generation.take().filter(|folder| version_problem(folder).is_none()) {
+        if let Some(folder) = folder.filter(|folder| version_problem(folder).is_none()) {
             let document = ConfigDocument::open(self.root.join(FILE_NAME));
             self.lights = Some(distant_lights::DistantLights::start(&folder));
             let mut statics = statics::Statics::start(&document, folder);
@@ -978,6 +990,15 @@ impl Drop for DistantLand {
             println!("{}", timer.report());
         }
     }
+}
+
+/// The terrain after the startup generation: loaded from `folder`, or the problem when the
+/// generation failed and left no valid output (the files there are stale or mixed).
+fn load_after_generation(usable: bool, folder: &Path) -> Result<Loaded, String> {
+    if !usable {
+        return Err("the startup generation failed and left no valid distant land (mgeHost64.log)".to_string());
+    }
+    load(folder)
 }
 
 fn load(folder: &Path) -> Result<Loaded, String> {
@@ -3240,5 +3261,21 @@ mod settings_tests {
         assert_eq!(Settings::changed_flags(None, a).len(), 12);
         let c = Settings { flags: a.flags | REFLECT_SKY, ..a };
         assert_eq!(Settings::changed_flags(Some(a), c), vec!["sky in the reflections on".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    /// A failed startup generation with no valid output loads nothing, whatever the folder
+    /// holds: the distant land goes off, as in the IPC host mode.
+    #[test]
+    fn a_failed_generation_loads_no_distant_land() {
+        let folder = std::env::temp_dir().join("mge-xe-generation-test-no-files");
+        let problem = load_after_generation(false, &folder).err().expect("no load after a failed generation");
+        assert!(problem.contains("startup generation failed"), "{problem}");
+        // With a usable generation the folder decides: this one has no files.
+        assert!(load_after_generation(true, &folder).is_err());
     }
 }
