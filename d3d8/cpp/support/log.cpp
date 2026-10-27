@@ -11,6 +11,26 @@
 namespace LOG {
 
     static HANDLE handle = INVALID_HANDLE_VALUE;
+    // The writes of the log from more than one thread (the plugin logs from the engine's cell
+    // worker too): one line is one write under the lock, so lines do not mix. SRWLOCK_INIT
+    // needs no call, so the lock works from DllMain on. The lock is not re-entrant: under it
+    // there are only the file writes (and the pointer steps of MGE_LogLine's split), nothing
+    // that logs; a write error goes to stdout, not to this log.
+    static SRWLOCK writeLock = SRWLOCK_INIT;
+
+    // A write of `size` bytes without the lock: for a caller that holds it, and for the
+    // crash path, which must not wait for a thread that crashed inside a write.
+    static void writeBytes(const char* bytes, std::size_t size) {
+        DWORD written;
+        if (handle == INVALID_HANDLE_VALUE || size == 0) {
+            return;
+        }
+        if (!WriteFile(handle, bytes, (DWORD)size, &written, NULL)) {
+            char errormsg[512] = "\0";
+            FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, 0, GetLastError(), 0, errormsg, sizeof(errormsg), 0);
+            std::printf("LOG: write error: %s\n", errormsg);
+        }
+    }
 
 
     // Keeps the log of the run before as `<filename>.1`, in place of the one of the run before
@@ -45,22 +65,13 @@ namespace LOG {
     }
 
     std::size_t write(const char* str) {
-        std::size_t sz = 0;
-        DWORD written;
-
-        if (handle != INVALID_HANDLE_VALUE) {
-            if (str) {
-                sz = std::strlen(str);
-                BOOL result = WriteFile(handle, str, (DWORD)sz, &written, NULL);
-
-                if (!result) {
-                    char errormsg[512] = "\0";
-                    FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, 0, GetLastError(), 0, errormsg, sizeof(errormsg), 0);
-                    std::printf("LOG: write error: %s\n", errormsg);
-                }
-            }
+        if (!str) {
+            return 0;
         }
-
+        std::size_t sz = std::strlen(str);
+        AcquireSRWLockExclusive(&writeLock);
+        writeBytes(str, sz);
+        ReleaseSRWLockExclusive(&writeLock);
         return sz;
     }
 
@@ -178,7 +189,40 @@ namespace LOG {
 }
 
 extern "C" void __cdecl mge_log_panic(const char* message) noexcept {
-    LOG::write(message);
-    LOG::write("\r\n");
+    // Without the lock: the panic can come inside a write of this thread.
+    if (message) {
+        LOG::writeBytes(message, std::strlen(message));
+    }
+    LOG::writeBytes("\r\n", 2);
     LOG::flush();
+}
+
+// The plugin's lines in mgeXE.log (the contract mge_render_link.h, the logs-and-files design of
+// the Numidium notes): each line of `text` (a text can have more than one, at its '\n') is
+// written as "nirender: <line>\r\n", with no limit of length, all under the lock, so that the
+// lines of another thread do not come between them. Any thread may call it.
+extern "C" void __cdecl MGE_LogLine(const char* text) noexcept {
+    static const char prefix[] = "nirender: ";
+    if (!text) {
+        return;
+    }
+    AcquireSRWLockExclusive(&LOG::writeLock);
+    const char* line = text;
+    for (;;) {
+        const char* end = std::strchr(line, '\n');
+        std::size_t size = end ? static_cast<std::size_t>(end - line) : std::strlen(line);
+        // A text that ends with its line end has no empty line after it.
+        if (!end && size == 0 && line != text) {
+            break;
+        }
+        std::size_t kept = (size > 0 && line[size - 1] == '\r') ? size - 1 : size;
+        LOG::writeBytes(prefix, sizeof(prefix) - 1);
+        LOG::writeBytes(line, kept);
+        LOG::writeBytes("\r\n", 2);
+        if (!end) {
+            break;
+        }
+        line = end + 1;
+    }
+    ReleaseSRWLockExclusive(&LOG::writeLock);
 }

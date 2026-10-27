@@ -162,8 +162,9 @@ To remove the archive:
 
 1. From the Morrowind folder: `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`, `numidium.exe`,
    `mgeXE.toml`, `mge3\MGE XE Default Statics Classifiers.toml`, the readme and license
-   files of the archive, and the files the renderer wrote: `nirender.log`,
-   `nirender-host.log` and `mgeXE.log` (each with its `.1`, the log of the run before),
+   files of the archive, and the files the renderer wrote: `mgeXE.log` and
+   `nirender-host.log` (each with its `.1`, the log of the run before), `nirender.log` (from
+   an older build),
    `mgeXE-shaders.txt` and the folder `nirender-captures` (the captures of the F11 key).
 2. `MWSE.dll`: put your copy back, or run `MWSE-Update.exe` to get the public MWSE back.
 3. From `Data Files`: `MWSE\lib\akulakhan.dll`, `MWSE\mods\nirender`,
@@ -196,7 +197,7 @@ change. That start can take some minutes. With an older file, set it below
 - MWSE 2.1 with the native ABI for DLL modules. Public MWSE does not have it yet, so this
   test build ships an `MWSE.dll` in its Morrowind folder: install it over yours. With an
   MWSE.dll without the ABI the renderer is refused for the session, the game runs on
-  Direct3D 9, and `nirender.log` says "the MWSE.dll of the game has no native ABI". Do not
+  Direct3D 9, and `mgeXE.log` says "the MWSE.dll of the game has no native ABI". Do not
   run `MWSE-Update.exe` while you test this build: it puts the public MWSE.dll back. The
   plugin loads as an MWSE plugin (`Data Files/MWSE/lib/akulakhan.dll`,
   `Data Files/MWSE/mods/nirender/main.lua`); with a mod manager, check that it does not leave
@@ -206,7 +207,7 @@ change. That start can take some minutes. With an older file, set it below
   that the Code Patch makes in them. At the start it compares the code of each function
   with its database; a change that it does not know turns the renderer off for the session,
   and the game runs on Direct3D 9 through MGE XE's proxy, without the distant land for that
-  session. The message box after the load says so; the reasons are in `nirender.log`. Set
+  session. The message box after the load says so; the reasons are in `mgeXE.log`. Set
   `renderer_wgpu = false` to get MGE XE with its distant land back until the cause is
   known.
 - Another mod that changes the renderer code of the game (not its Lua) has the same effect.
@@ -231,7 +232,7 @@ change. That start can take some minutes. With an older file, set it below
   says so.
 - The same fallback applies when the Lua side of the plugin does not run (the Lua of MWSE
   failed to start, or `Data Files/MWSE/mods/nirender/main.lua` is missing): the game runs
-  on Direct3D 9 through the proxy for that session, and `nirender.log` says why.
+  on Direct3D 9 through the proxy for that session, and `mgeXE.log` says why.
 
 ## What you get
 
@@ -337,7 +338,7 @@ change. That start can take some minutes. With an older file, set it below
   `docs/architecture/mwse-api.md`). It works on Direct3D 9 too.
 - If the renderer program stops (`numidium.exe` crashed or was ended), a message box says
   so. The game cannot show a new picture after that: quit and start again, and send
-  `nirender-host.log` and `nirender.log`.
+  `nirender-host.log` and `mgeXE.log`.
 
 ## Licenses
 
@@ -405,10 +406,11 @@ asks for the files below. There is no other address.
    too large to attach, put it on a file host and paste the link. Some pictures of the
    menus are not in the file (the game cannot give them a second time), so a menu can
    have blank parts in it.
-2. Attach that file with `mgeXE.log`, `MWSE.log`, `nirender.log` and `nirender-host.log`
+2. Attach that file with `mgeXE.log`, `MWSE.log` and `nirender-host.log`
    from the Morrowind folder, your `mgeXE.toml`, and a screenshot. Name the archive you
    installed. The logs and the dump attach as they are; zip `mgeXE.toml` and a save
-   (`.ess`) before you attach them, since GitHub does not take those file types. The first lines of `nirender.log` and `nirender-host.log` name the versions,
+   (`.ess`) before you attach them, since GitHub does not take those file types. The line of `mgeXE.log` that starts with `nirender: nirender v` and the first line
+   of `nirender-host.log` name the versions,
    and the line `adapter:` of `nirender-host.log` names the graphics card, the backend and
    the driver. With Mod Organizer 2 and Root Builder, these files are in `overwrite\Root`
    of the instance after the game has ended.

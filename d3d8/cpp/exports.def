@@ -14,3 +14,4 @@ MGE_StreamTransform
 MGE_StreamSceneBegin
 MGE_StreamMessage
 MGE_DistantLandReadyNext
+MGE_LogLine
