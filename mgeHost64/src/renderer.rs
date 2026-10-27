@@ -2659,6 +2659,7 @@ impl Extension for DistantLand {
                 let projection = Water::far_projection(scene, frame.draw_distance);
                 sets.push(statics::CullSet { set: 1, planes: Water::reflection_planes(&mirrored_view, &projection), eye, fog_end: fog_end.min(self.near_static_end) });
             }
+            statics.set_waiting(self.arrival.is_some());
             statics.prepare(scene, &sets);
         }
         // The glows of the distant lights at night, past the handoff to the game.
