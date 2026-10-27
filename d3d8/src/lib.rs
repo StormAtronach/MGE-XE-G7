@@ -4,6 +4,8 @@ use std::sync::Once;
 
 use mge_config::ffi::FfiDocument;
 
+mod probe;
+
 unsafe extern "C" {
     fn mge_log_panic(message: *const c_char);
 }

@@ -24,6 +24,9 @@ max-perf = []
 
 [dependencies]
 mge-config = { path = "../mge-config" }
+# The probe of the wgpu renderer and the seconds of a test run's box: a crate of its own,
+# so that its tests run (this crate builds no test program).
+mge-probe = { path = "crates/probe" }
 
 [build-dependencies]
 cc = "1"

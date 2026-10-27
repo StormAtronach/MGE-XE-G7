@@ -12,6 +12,11 @@
 // EXTENSION_FORMAT in mgeHost64/src/renderer.rs (a unit test compares the two). Bump both
 // with any change of a record's layout or of an id's meaning.
 #define MGE_EXTENSION_FORMAT 1
+// The exit codes of `numidium.exe --probe` that d3d8.dll reads: 0 a usable GPU, 20 none.
+// The twin of 20 is EXIT_GPU in nirender-plugin's src/stream_format.rs (a unit test of
+// mgeHost64 compares the two); any other code of the probe counts as none.
+#define MGE_PROBE_EXIT_OK 0
+#define MGE_PROBE_EXIT_GPU 20
 #define MGE_MAJOR_VERSION 4
 #define MGE_MINOR_VERSION 21
 #define MGE_BUILD_VERSION 0
