@@ -1843,6 +1843,9 @@ namespace Deviceless {
         }
         if (mwBridge->IsLoaded()) {
             updateFrameLogic(mwBridge);
+            // The menu background video, as the proxy device's Present runs it; its frames
+            // go to the helper as the game's films do.
+            VideoPatch::monitorStreamed(width, height);
             scanVisGroups(mwBridge);
             if (Configuration.ScreenFOV > 0) {
                 mwBridge->SetFOV(Configuration.ScreenFOV);
