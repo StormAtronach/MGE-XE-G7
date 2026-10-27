@@ -246,14 +246,14 @@ fn mismatch_text(writer: &str, writes: &str) -> String {
     )
 }
 
-/// Ends this program for a d3d8.dll of another build: the lines in the log, one message box,
-/// the exit code that the plugin reads (it shows no second box).
+/// Ends this program for a d3d8.dll of another build: the lines in the log, then the refusal
+/// of the host crate (one message box, the exit code that the plugin reads; it shows no
+/// second box).
 fn stop_mismatch(message: &str) -> ! {
     for line in message.lines() {
         println!("{line}");
     }
-    nirender_wgpu::gpu::stop_box(&format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."));
-    nirender_wgpu::gpu::exit_now(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT)
+    nirender_wgpu::gpu::refuse(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."))
 }
 
 /// True the first time `id` is seen: the log names an extension id without a reader once.
