@@ -27,6 +27,9 @@ pub fn init_file_logger(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError
 }
 
 fn init_subscriber(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
+    // The log of the run before stays as `<path>.1`: a player who starts the game again after
+    // a crash still has it.
+    nirender_wgpu::rotate_log(path.as_ref());
     let file = File::create(path).map_err(HostError::io)?;
 
     let (writer, guard) = tracing_appender::non_blocking(BufWriter::new(file));

@@ -2093,6 +2093,19 @@ impl Extension for DistantLand {
                 self.lose_device = true;
                 return;
             }
+            // `crash panic` and `crash fault`: a panic, or an access violation, of this program
+            // on purpose, for a test of its crash data (the backtrace, the minidump, the logs
+            // kept). The plugin takes `crash panic plugin` the same way.
+            if let Some(kind) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("crash ")) {
+                match kind.trim() {
+                    "panic" => panic!("a panic asked by nirender.tune"),
+                    // SAFETY: the write goes to an address that no page holds: the access
+                    // violation that the command asks for, and nothing else.
+                    "fault" => unsafe { core::ptr::write_volatile(0x10 as *mut u32, 0) },
+                    other => println!("tune: crash {other}: not panic or fault"),
+                }
+                return;
+            }
             // `lights world` or `lights engine`: the lights of a lit draw of the world, for an
             // A/B inside one run (`FrameParameters::world_lights`).
             if let Some(mode) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("lights ")) {
