@@ -1,5 +1,6 @@
 //! The tests of MGE XE's log (`d3d8/cpp/support/log.cpp`): a line longer than the log's buffer,
-//! the binary dump, and the log of the run before as `.1`. Against the code before the fix the test fails at the long line's
+//! the binary dump, the log of the run before as `.1`, and the plugin's lines through the export
+//! `MGE_LogLine`. Against the code before the fix the test fails at the long line's
 //! length: its line end went to `buf + 5000`, past the 4096-byte buffer and past MSVC's stack
 //! cookie, so the write corrupted the stack without a crash, and the file got no line end.
 
@@ -11,6 +12,8 @@ mod tests {
     unsafe extern "C" {
         fn mge_log_test_write(path: *const c_char) -> c_int;
         fn mge_log_test_run(path: *const c_char, line: *const c_char) -> c_int;
+        fn mge_log_test_plugin_text(path: *const c_char, text: *const c_char) -> c_int;
+        fn mge_log_test_two_threads(path: *const c_char, count: c_int) -> c_int;
     }
 
     /// The log is one file of the process (one handle in log.cpp): the tests take turns.
@@ -71,5 +74,49 @@ mod tests {
         assert_eq!((read(&path).as_str(), read(&before).as_str()), ("run 3\r\n", "run 2\r\n"));
 
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// A log file of its own for one test, in a folder of its own.
+    fn test_log(name: &str) -> (std::path::PathBuf, CString) {
+        let folder = std::env::temp_dir().join(format!("mge-log-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("mgeXE.log");
+        let text = CString::new(path.to_str().unwrap()).unwrap();
+        (path, text)
+    }
+
+    /// Each line of the plugin's text gets the prefix and the log's line end, a text that ends
+    /// with its line end has no empty line after it, a CRLF inside keeps one line end, a long
+    /// line is whole (the log's own lines stop at 4091 characters), and a null text writes
+    /// nothing.
+    #[test]
+    fn the_plugin_lines_get_the_prefix_each() {
+        let _log = ONE_LOG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (path, path_text) = test_log("plugin");
+        let long = "y".repeat(6000);
+        let text = CString::new(format!("own device: made\nstream: two\r\nlines\n{long}\n")).unwrap();
+        // SAFETY: NUL-terminated strings that live through the call.
+        assert_eq!(unsafe { mge_log_test_plugin_text(path_text.as_ptr(), text.as_ptr()) }, 0);
+        let written = std::fs::read_to_string(&path).unwrap();
+        let expected = format!("before\r\nnirender: own device: made\r\nnirender: stream: two\r\nnirender: lines\r\nnirender: {long}\r\nafter\r\n");
+        assert_eq!(written, expected);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// Two threads write at once: every line of the file is one whole line of one of them,
+    /// and every line is there.
+    #[test]
+    fn the_lines_of_two_threads_do_not_mix() {
+        let _log = ONE_LOG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (path, path_text) = test_log("threads");
+        // SAFETY: a NUL-terminated string that lives through the call.
+        assert_eq!(unsafe { mge_log_test_two_threads(path_text.as_ptr(), 2000) }, 0);
+        let written = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = written.split_terminator("\r\n").collect();
+        let plugin = lines.iter().filter(|line| **line == "nirender: plugin line of the cell worker").count();
+        let own = lines.iter().filter(|line| **line == "own line of MGE XE").count();
+        assert_eq!((plugin, own, lines.len()), (2000, 2000, 4000), "a line mixed with another");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
