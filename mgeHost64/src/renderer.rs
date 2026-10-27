@@ -66,6 +66,10 @@ use shadow::Shadow;
 const CELL: f32 = 8192.0;
 /// The near plane of the projection of the distant land.
 const NEAR: f32 = 64.0;
+/// With one depth buffer (`nirender_wgpu::depth::one_buffer`): the near plane of the distant
+/// land as a part of the game's. A smaller near plane puts the land behind a draw of the game
+/// at the same distance, by 0.25 % of the distance, as Direct3D 9's 4 - 0.01 against 4.
+const LAND_NEAR_SCALE: f32 = 0.9975;
 /// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend`): the parts named are not drawn, for a
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
@@ -804,7 +808,8 @@ struct LandUniforms {
     atlas_more: [f32; 4],
     /// Of the patterns: the tile size, the gutter, the physical size, the patterns in a row.
     patterns: [f32; 4],
-    /// x: the view range of the game.
+    /// x: the view range of the game; y: 1 with the sink of the land off, z: a raise of the
+    /// land in units (the fault injections of a replay, `nirender_wgpu::depth::control`).
     range: [f32; 4],
 }
 
@@ -845,7 +850,10 @@ struct Out {
         // landBias: the land goes down near the camera, so that a mesh with less detail
         // does not come through the land of the game.
         let distance = length(world - u.eye.xyz);
-        world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
+        if land.range.y == 0.0 {
+            world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
+        }
+        world.z += land.range.z;
     }
     out.position = clip_of(world);
     out.normal = normal.xyz * 2.0 - 1.0;
@@ -2605,7 +2613,9 @@ impl Extension for DistantLand {
         };
         // The eye with the view range of the game, as the statics and the glows take it.
         let eye_range = [eye[0], eye[1], eye[2], view_range];
-        let land = LandUniforms { terrain: gpu.terrain, atlas: gpu.atlas, atlas_more: gpu.atlas_more, patterns: gpu.patterns, range: [view_range, 0.0, 0.0, 0.0] };
+        let control = nirender_wgpu::depth::control();
+        let range = [view_range, if control.sink { 0.0 } else { 1.0 }, control.raise, 0.0];
+        let land = LandUniforms { terrain: gpu.terrain, atlas: gpu.atlas, atlas_more: gpu.atlas_more, patterns: gpu.patterns, range };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
         // The baked light of the distant lights: at night, in the exterior. The night is the
         // game's, from the hour against the weather's sunrise and sunset (the environment
@@ -3163,10 +3173,17 @@ impl DistantLand {
     /// plane (64) is MGE XE's own value. The game's near plane is 1.0 (0x4049C2), and
     /// `renderStage0` of the Direct3D 9 path uses 4. A draw of the game then wins the depth
     /// test against the same geometry among the statics (a static of the cell itself, in an
-    /// interior).
+    /// interior). With one depth buffer the near plane is the game's times
+    /// [`LAND_NEAR_SCALE`] (or the replay's `--depth-control k`), and the GPU gets the
+    /// projection with an infinite far plane (`nirender_wgpu::depth::world_projection`).
     fn land_projection(&self, scene: &SceneView) -> [f32; 16] {
         let mut projection = scene.projection;
-        let near = NEAR - 1e-2;
+        let near = if nirender_wgpu::depth::one_buffer() {
+            let game_near = -scene.projection[14] / scene.projection[10];
+            game_near * nirender_wgpu::depth::control().near_scale.unwrap_or(LAND_NEAR_SCALE)
+        } else {
+            NEAR - 1e-2
+        };
         let far = self.draw_distance.max(NEAR * 2.0);
         projection[10] = far / (far - near);
         projection[14] = -near * far / (far - near);
