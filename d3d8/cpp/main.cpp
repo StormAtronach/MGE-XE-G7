@@ -23,14 +23,21 @@ static void setDPIScalingAware();
 
 static const char* welcomeMessage = MGE_BUILD_ID;
 static bool isMW;
+// The wgpu path is wanted for this session: the setting is on and its files are there. The
+// probe's key is checked at the first ask (wgpuPathOn) on both paths, so that a cached none
+// is probed again when the graphics card, its driver or numidium.exe change.
+static bool wgpuWanted = false;
+// The cache of the probe's last answer, beside mgeXE.log (the failure-path design, section 6).
+static const char* const kProbeCache = "mgeXE-renderer-probe.txt";
 
 static void showMessageBox(const char* text);
 
 // The wgpu path is off for this session: the log line with the reason, the box once when
 // `box` has a text for the player (the four parts of the pattern: what, why, what the game
 // does now, where the details are), and the setting of the session. The callers: the probe
-// at the load of this library (all of MGE XE on Direct3D 9), and the plugin that cannot
-// serve when the game asks for its Direct3D 8 (the proxy, no distant land).
+// (through wgpuPathOn, at the plugin's ask or at the game's Direct3DCreate8) and the plugin
+// that cannot serve when the game asks for its Direct3D 8 (the proxy, no distant land). The
+// box runs on its own thread (showMessageBox); the game goes on at once.
 static void wgpuPathOff(const char* reason, const std::string& box) {
     LOG::logline("!! wgpu renderer: not in use, %s. MGE XE continues with Direct3D 9", reason);
     Configuration.RendererWgpu = false;
@@ -111,6 +118,19 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             }
             if (missing) {
                 wgpuPathOff((std::string("a part is missing: ") + missing).c_str(), "");
+            }
+        }
+
+        if (Configuration.RendererWgpu) {
+            wgpuWanted = true;
+            // The probe's last answer, from its cache file: a file read only, since this is
+            // DllMain (no child process and no wait under the loader lock). A cached none
+            // takes all of MGE XE on Direct3D 9 for this start, with no box; the key is
+            // checked later (wgpuPathOn).
+            char reason[512] = {};
+            if (mge_probe_cached(kProbeCache, reason, sizeof(reason)) == 0) {
+                wgpuPathOff((std::string("the last probe said none (") + kProbeCache + "): " + reason
+                    + "; the probe runs again when the graphics card, its driver or numidium.exe change").c_str(), "");
             }
         }
 
@@ -293,7 +313,7 @@ static bool probeSaysUsable();
 // must hear the answer before it puts its renderer code on, since its code stays on and a
 // Direct3D 9 frame under it is black.
 static bool wgpuPathOn() {
-    if (!isMW || !Configuration.RendererWgpu) {
+    if (!isMW || !wgpuWanted) {
         return false;
     }
     static const bool usable = probeSaysUsable();
@@ -342,20 +362,71 @@ extern "C" void __cdecl MGE_StreamMessage(UINT id, const void* data, UINT length
 // crash of it leaves the game on Direct3D 9 with the code in the log. It runs once, through
 // wgpuPathOn, and never in DllMain: a child process and a wait under the loader lock hung
 // the game (the first live run, 2026-10-27).
+// The key of this machine for the probe's cache: each display adapter of the registry (its
+// name and its driver version) and the size and the write time of numidium.exe. A new card,
+// a new driver or a new build of the helper changes it.
+static std::string probeKey() {
+    std::string key;
+    HKEY adapters;
+    const char* displayClass = "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}";
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, displayClass, 0, KEY_READ, &adapters) == ERROR_SUCCESS) {
+        char name[256];
+        for (DWORD index = 0;; ++index) {
+            DWORD nameLength = sizeof(name);
+            if (RegEnumKeyExA(adapters, index, name, &nameLength, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) {
+                break;
+            }
+            char description[256] = {};
+            char version[64] = {};
+            DWORD size = sizeof(description);
+            // A subkey without a driver description is not an adapter (the "Properties" key).
+            if (RegGetValueA(adapters, name, "DriverDesc", RRF_RT_REG_SZ, nullptr, description, &size) != ERROR_SUCCESS) {
+                continue;
+            }
+            size = sizeof(version);
+            RegGetValueA(adapters, name, "DriverVersion", RRF_RT_REG_SZ, nullptr, version, &size);
+            key += std::string(description) + " " + version + "; ";
+        }
+        RegCloseKey(adapters);
+    }
+    WIN32_FILE_ATTRIBUTE_DATA helper;
+    if (GetFileAttributesExA("numidium.exe", GetFileExInfoStandard, &helper)) {
+        char text[96];
+        std::snprintf(text, sizeof(text), "numidium.exe %lu %08lx%08lx", helper.nFileSizeLow, helper.ftLastWriteTime.dwHighDateTime, helper.ftLastWriteTime.dwLowDateTime);
+        key += text;
+    }
+    return key;
+}
+
 static bool probeSaysUsable() {
+    const std::string key = probeKey();
     char answer[1024] = {};
     const DWORD started = GetTickCount();
-    const unsigned usable = mge_probe_wgpu("numidium.exe", MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer));
+    const unsigned result = mge_probe_check("numidium.exe", kProbeCache, key.c_str(), MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer));
     const DWORD ms = GetTickCount() - started;
+    const bool usable = (result & 1) != 0;
+    if (result >= 2) {
+        // The cache had this key: no probe ran. A cached none turned the path off in DllMain.
+        LOG::logline("-- wgpu renderer: the cached answer for this machine: %s %s", usable ? "usable," : "none:", answer);
+        return usable;
+    }
     if (usable) {
         LOG::logline("-- wgpu renderer: the probe says %s (%lu ms)", answer, ms);
+        if (!Configuration.RendererWgpu) {
+            LOG::logline("-- wgpu renderer: usable again on this machine; this start stays on Direct3D 9, the next uses the wgpu renderer");
+        }
         return true;
     }
     LOG::logline("-- wgpu renderer: the probe took %lu ms", ms);
+    if (!Configuration.RendererWgpu) {
+        // A cached none, a new key, and still none: the log line only.
+        LOG::logline("-- wgpu renderer: the probe says none again: %s", answer);
+        return false;
+    }
     wgpuPathOff((std::string("the probe says none: ") + answer).c_str(),
         std::string("The wgpu renderer of MGE XE is not in use on this machine.\n")
             + "The graphics card or its driver lacks what it needs: " + answer + ".\n"
-            + "The game goes on without the distant land.\n"
+            + "For this start the game goes on without the distant land; from the next start MGE XE runs on Direct3D 9.\n"
             + "mgeXE.log in the folder of the game has the details.");
     return false;
 }

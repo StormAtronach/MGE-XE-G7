@@ -74,9 +74,105 @@ pub fn run(exe: &str, exit_gpu: i32, seconds: u64) -> Answer {
     answer(&output, code, exit_gpu, seconds)
 }
 
+/// The answer that the cache file of the probe holds (`mgeXE-renderer-probe.txt` beside
+/// mgeXE.log): one line of the key, the answer and its reason, separated by tabs. The file is
+/// read in `DllMain` (a file read only) and written after a probe.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Cached {
+    pub key: String,
+    pub answer: Answer,
+}
+
+/// The cached answer of a file's text, or `None` for a text that is not one.
+pub fn parse_cache(text: &str) -> Option<Cached> {
+    let line = text.lines().next()?;
+    let mut parts = line.splitn(3, '\t');
+    let key = parts.next()?.to_string();
+    let usable = match parts.next()? {
+        "usable" => true,
+        "none" => false,
+        _ => return None,
+    };
+    let reason = parts.next().unwrap_or("").to_string();
+    (!key.is_empty()).then_some(Cached { key, answer: Answer { usable, reason } })
+}
+
+/// The text of a cache file: the line of the key and the answer. Tabs and line ends in the
+/// reason become spaces, so that the line stays one line of three fields.
+pub fn format_cache(key: &str, answer: &Answer) -> String {
+    let clean = |text: &str| text.replace(['\t', '\r', '\n'], " ");
+    format!("{}\t{}\t{}\n", clean(key), if answer.usable { "usable" } else { "none" }, clean(&answer.reason))
+}
+
+/// The cached answer of the file at `path`, or `None` when there is no such file or it is
+/// not one.
+pub fn read_cache(path: &str) -> Option<Cached> {
+    parse_cache(&std::fs::read_to_string(path).ok()?)
+}
+
+/// Where an answer of [`check`] came from.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Source {
+    /// The cache had the same key: no probe ran.
+    Cache,
+    /// The key differed or there was no cache: the probe ran and the cache has its answer now.
+    Probe,
+}
+
+/// The answer for this machine: the cache's when its key is `key`, else the probe's, which
+/// then goes into the cache. A cache that cannot be written leaves the answer as it is; the
+/// probe then runs again at the next start.
+pub fn check(exe: &str, path: &str, key: &str, exit_gpu: i32, seconds: u64) -> (Answer, Source) {
+    if let Some(cached) = read_cache(path).filter(|cached| cached.key == key) {
+        return (cached.answer, Source::Cache);
+    }
+    let answer = run(exe, exit_gpu, seconds);
+    let _ = std::fs::write(path, format_cache(key, &answer));
+    (answer, Source::Probe)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cache_line_reads_back_as_written() {
+        let usable = Answer { usable: true, reason: "use vulkan".to_string() };
+        let text = format_cache("NVIDIA GeForce RTX 5070 32.0.16.1714; numidium.exe 46896640 133000", &usable);
+        assert_eq!(parse_cache(&text), Some(Cached { key: "NVIDIA GeForce RTX 5070 32.0.16.1714; numidium.exe 46896640 133000".to_string(), answer: usable }));
+        let none = Answer { usable: false, reason: "dx12: lacks\tthe arrays\nand more".to_string() };
+        let read = parse_cache(&format_cache("k", &none)).unwrap();
+        assert_eq!(read.answer.reason, "dx12: lacks the arrays and more");
+        assert!(!read.answer.usable);
+    }
+
+    #[test]
+    fn a_text_that_is_not_a_cache_line_is_none() {
+        assert_eq!(parse_cache(""), None);
+        assert_eq!(parse_cache("key\tmaybe\treason\n"), None);
+        assert_eq!(parse_cache("\tusable\tx\n"), None);
+        assert_eq!(parse_cache("only a key\n"), None);
+    }
+
+    #[test]
+    fn the_cache_answers_for_its_key_and_the_probe_for_another() {
+        let folder = std::env::temp_dir().join(format!("mge-probe-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("cache.txt");
+        let path = path.to_str().unwrap();
+        std::fs::write(path, format_cache("key A", &Answer { usable: false, reason: "lacks x".to_string() })).unwrap();
+        // The same key: the cache answers, no probe runs (the program is not there).
+        let (answer, source) = check("a-program-that-is-not-there.exe", path, "key A", 20, 1);
+        assert_eq!(source, Source::Cache);
+        assert_eq!(answer, Answer { usable: false, reason: "lacks x".to_string() });
+        // Another key: the probe runs (and fails to start: none), and the cache has the new key.
+        let (answer, source) = check("a-program-that-is-not-there.exe", path, "key B", 20, 1);
+        assert_eq!(source, Source::Probe);
+        assert!(!answer.usable && answer.reason.starts_with("the probe did not start"), "{}", answer.reason);
+        assert_eq!(read_cache(path).unwrap().key, "key B");
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(&folder);
+    }
 
     const OK: &str = "nirender-host v0.1.0\nprobe: vulkan: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14): ok; binding arrays 16384 textures and 64 samplers (needs 256 and 8), BC yes, sampled textures 524288 (needs 32), depth Depth32FloatStencil8\nprobe: use vulkan\nprobe: 0.26 s\n";
     const NONE: &str = "nirender-host v0.1.0\nprobe: vulkan: A card: lacks room in the binding arrays: has 1 textures and 64 samplers, needs 256 and 8\nprobe: dx12: A card: lacks room in the binding arrays: has 1 textures and 64 samplers, needs 256 and 8\nprobe: none: vulkan: A card: lacks room in the binding arrays: has 1 textures and 64 samplers, needs 256 and 8; dx12: A card: lacks room in the binding arrays: has 1 textures and 64 samplers, needs 256 and 8\nprobe: 0.34 s\n";
