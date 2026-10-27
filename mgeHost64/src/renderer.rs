@@ -2419,16 +2419,22 @@ impl Extension for DistantLand {
             // `crash panic` and `crash fault`: a panic, or an access violation, of this program
             // on purpose, for a test of its crash data (the backtrace, the minidump, the logs
             // kept). `crash stall` holds the frame thread for 60 s: the test of the watchdog,
-            // or of the plugin's own limit with `MGE_XE_WATCHDOG=0`. The plugin takes
-            // `crash panic plugin` the same way.
+            // or of the plugin's own limit with `MGE_XE_WATCHDOG=0`. `crash panic hold` is the
+            // panic with its dump held for good (`nirender_wgpu::hold_next_dump`): the test of
+            // the plugin's limit on a dump that hangs. The plugin takes `crash panic plugin`
+            // the same way.
             if let Some(kind) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("crash ")) {
                 match kind.trim() {
                     "panic" => panic!("a panic asked by nirender.tune"),
+                    "panic hold" => {
+                        nirender_wgpu::hold_next_dump();
+                        panic!("a panic asked by nirender.tune, its dump held");
+                    }
                     // SAFETY: the write goes to an address that no page holds: the access
                     // violation that the command asks for, and nothing else.
                     "fault" => unsafe { core::ptr::write_volatile(0x10 as *mut u32, 0) },
                     "stall" => std::thread::sleep(Duration::from_secs(60)),
-                    other => println!("tune: crash {other}: not panic, fault or stall"),
+                    other => println!("tune: crash {other}: not panic, panic hold, fault or stall"),
                 }
                 return;
             }
