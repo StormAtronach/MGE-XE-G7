@@ -942,7 +942,10 @@ mod tests {
     #[test]
     fn the_shaders_of_the_water_are_valid() {
         let check = crate::renderer::shader_check::check;
-        check("water", &shader()).unwrap();
+        let module = check("water", &shader()).unwrap();
+        for entry in ["vs", "fs"] {
+            assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
+        }
         check("water reflection level", LEVEL_SHADER).unwrap();
     }
 
@@ -964,17 +967,4 @@ mod tests {
         assert!(before > 8192.0 && before < 9600.0, "{before}");
     }
 
-    /// The shader compiles: the WGSL is read and checked as the device does it.
-    #[test]
-    fn the_shader_is_valid() {
-        use wgpu::naga;
-        let source = shader();
-        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
-        for entry in ["vs", "fs"] {
-            assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
-        }
-        let level = naga::front::wgsl::parse_str(LEVEL_SHADER).unwrap_or_else(|error| panic!("{}", error.emit_to_string(LEVEL_SHADER)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&level).unwrap_or_else(|error| panic!("{error:?}"));
-    }
 }

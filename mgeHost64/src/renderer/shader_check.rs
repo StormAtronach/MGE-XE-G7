@@ -11,17 +11,23 @@
 
 use nirender_wgpu::wgpu::{self, naga};
 
-/// The features the request requires of every adapter. The optional ones of the request
-/// (the line mode, the timestamps, the indirect draws, the float depth) map to no capability
-/// of naga, so they play no part in a shader.
+// Copies of the host's FEATURES, limits and the shader join (the world shader test of
+// renderer.rs) until the host exports them: the C3 branch, which builds the one request
+// function of the helper, exports them and the check takes them from there.
+
+/// The features the request requires of every adapter: a copy of `required_features` of the
+/// request (host/src/renderer.rs:388-399). The optional ones of the request (the line mode,
+/// the timestamps, the indirect draws, the float depth) map to no capability of naga, so
+/// they play no part in a shader.
 pub(crate) const FEATURES: wgpu::Features = wgpu::Features::TEXTURE_COMPRESSION_BC
     .union(wgpu::Features::TEXTURE_BINDING_ARRAY)
     .union(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING)
     .union(wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY);
 
-/// The limits of the request that a shader can exceed by itself: the bind groups, and the
-/// bindings of each class in one stage. The request raises the sampled textures to 32 and
-/// keeps the default of wgpu for the rest.
+/// The limits that this check compares: the bind groups, and the bindings of each class in
+/// one stage. A copy of `required_limits` of the request (host/src/renderer.rs:400-412): the
+/// sampled textures raised to 32, the default of wgpu for the rest. The elements of a
+/// binding array, the workgroup size and the varyings are not compared here.
 pub(crate) fn limits() -> wgpu::Limits {
     wgpu::Limits { max_sampled_textures_per_shader_stage: 32, ..wgpu::Limits::default() }
 }
@@ -30,7 +36,8 @@ pub(crate) fn limits() -> wgpu::Limits {
 /// validation of naga, the bind groups within [`limits`], and for each entry point the
 /// bindings it uses within the limits of a stage. The error names the shader by `label`.
 pub(crate) fn check(label: &str, source: &str) -> Result<naga::Module, String> {
-    let downlevel = wgpu::DownlevelFlags::compliant();
+    // No downlevel flag: the request asks for none, so a shader gets no capability from one.
+    let downlevel = wgpu::DownlevelFlags::empty();
     let capabilities = wgpu_naga_bridge::features_to_naga_capabilities(FEATURES, downlevel);
     let mut options = naga::front::wgsl::Options::new();
     options.capabilities = capabilities;
@@ -55,9 +62,7 @@ pub(crate) fn check(label: &str, source: &str) -> Result<naga::Module, String> {
     Ok(module)
 }
 
-/// The bindings an entry point uses, by the class that has a limit for each stage. A
-/// binding array counts as one binding of its own class: its elements have their own limit,
-/// which the request takes from the adapter.
+/// The bindings an entry point uses, by the class that has a limit for each stage.
 #[derive(Default)]
 struct Counts {
     uniform_buffers: u32,
@@ -65,13 +70,14 @@ struct Counts {
     sampled_textures: u32,
     storage_textures: u32,
     samplers: u32,
-    binding_arrays: u32,
 }
 
 impl Counts {
     fn add(&mut self, kind: &naga::TypeInner, space: naga::AddressSpace) {
         match kind {
-            naga::TypeInner::BindingArray { .. } => self.binding_arrays += 1,
+            // A binding array has its own limit on its elements, which the request takes from
+            // the adapter: nothing to compare here.
+            naga::TypeInner::BindingArray { .. } => {}
             naga::TypeInner::Image { class: naga::ImageClass::Storage { .. }, .. } => self.storage_textures += 1,
             naga::TypeInner::Image { .. } => self.sampled_textures += 1,
             naga::TypeInner::Sampler { .. } => self.samplers += 1,

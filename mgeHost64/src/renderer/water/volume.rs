@@ -737,10 +737,11 @@ fn shader() -> String {
     shader_with(STANDARD)
 }
 
-/// The source of a water shader of a mod (`Data Files/shaders/water/<name>.wgsl`), checked as
-/// the device checks it. The file starts with the line `//! interface: mge-xe-water-wgsl 1`;
-/// the rest is WGSL with the function `water_shader` (`docs/water-shaders.md`).
-pub fn water_shader_source(file: &str) -> Result<String, String> {
+/// The source of the water shader `name` of a mod (`Data Files/shaders/water/<name>.wgsl`),
+/// checked as the device checks it. The file starts with the line
+/// `//! interface: mge-xe-water-wgsl 1`; the rest is WGSL with the function `water_shader`
+/// (`docs/water-shaders.md`).
+pub fn water_shader_source(name: &str, file: &str) -> Result<String, String> {
     let mut interface = false;
     for line in file.lines() {
         let Some(rest) = line.strip_prefix("//!") else { break };
@@ -754,7 +755,7 @@ pub fn water_shader_source(file: &str) -> Result<String, String> {
         return Err("no line `//! interface: mge-xe-water-wgsl 1` at its start".to_string());
     }
     let source = shader_with(file);
-    crate::renderer::shader_check::check("the water shader", &source)?;
+    crate::renderer::shader_check::check(name, &source)?;
     Ok(source)
 }
 
@@ -1023,7 +1024,7 @@ impl Volumes {
     /// Adds the water shader of a mod by its name, from its file ([`None`]: there is none). A
     /// shader that fails has the standard look, and the reason is returned.
     pub fn add_shader(&mut self, device: &wgpu::Device, name: &str, file: Option<&str>) -> Result<(), String> {
-        let result = file.ok_or_else(|| "no file shaders/water/<name>.wgsl".to_string()).and_then(water_shader_source);
+        let result = file.ok_or_else(|| "no file shaders/water/<name>.wgsl".to_string()).and_then(|file| water_shader_source(name, file));
         let index = match &result {
             Ok(source) => {
                 let label = format!("water shader {name}");
@@ -1426,8 +1427,8 @@ fn water_shader(surface: WaterSurface) -> vec4f {
     return finish_water(surface, shade, look);
 }
 ";
-        assert!(water_shader_source(file).is_ok(), "{:?}", water_shader_source(file).err());
-        assert!(water_shader_source("fn water_shader(surface: WaterSurface) -> vec4f { return vec4f(1.0); }").unwrap_err().contains("interface"));
-        assert!(water_shader_source("//! interface: mge-xe-water-wgsl 1\nfn water_shader(x: f32) -> f32 { return x; }").is_err());
+        assert!(water_shader_source("test", file).is_ok(), "{:?}", water_shader_source("test", file).err());
+        assert!(water_shader_source("test", "fn water_shader(surface: WaterSurface) -> vec4f { return vec4f(1.0); }").unwrap_err().contains("interface"));
+        assert!(water_shader_source("test", "//! interface: mge-xe-water-wgsl 1\nfn water_shader(x: f32) -> f32 { return x; }").is_err());
     }
 }
