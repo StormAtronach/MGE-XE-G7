@@ -6,7 +6,7 @@
 //! with more bindings of a class than the limits give a stage. This module does the same
 //! with the smallest set the request can get, so that a shader which uses a feature the
 //! request lacks, or more bindings than the limits allow, fails a unit test here, or the
-//! load of a mod's water shader, and not a player's game. [`FEATURES`] and [`limits`] copy
+//! load of a mod's water shader, and not a player's game. [`features`] and [`limits`] copy
 //! the request: a change there changes them.
 
 use nirender_wgpu::wgpu::{self, naga};
