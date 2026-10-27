@@ -1,6 +1,7 @@
 
 #include "mge/configuration.h"
 #include "mge/mgeversion.h"
+#include "mge_probe_ffi.h"
 #include "mge/mwinitpatch.h"
 #include "mge/mged3d8device.h"
 #include "mge/startupgen.h"
@@ -22,6 +23,27 @@ static void setDPIScalingAware();
 
 static const char* welcomeMessage = MGE_BUILD_ID;
 static bool isMW;
+
+static void showMessageBox(const char* text);
+
+// The wgpu path is off for this session: the log line with the reason, the box once when
+// `box` has a text for the player (the four parts of the pattern: what, why, what the game
+// does now, where the details are), and the setting of the session. The callers: the probe
+// at the load of this library (all of MGE XE on Direct3D 9), and the plugin that cannot
+// serve when the game asks for its Direct3D 8 (the proxy, no distant land).
+static void wgpuPathOff(const char* reason, const std::string& box) {
+    LOG::logline("!! wgpu renderer: not in use, %s. MGE XE continues with Direct3D 9", reason);
+    Configuration.RendererWgpu = false;
+    if (box.empty()) {
+        return;
+    }
+    static bool shown = false;
+    if (shown) {
+        return;
+    }
+    shown = true;
+    showMessageBox(box.c_str());
+}
 
 
 
@@ -88,8 +110,26 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
                 missing = "MWSE (the setting runtime.mwse_disabled is on)";
             }
             if (missing) {
-                LOG::logline("!! wgpu renderer: not in use, a part is missing: %s. MGE XE continues with Direct3D 9", missing);
-                Configuration.RendererWgpu = false;
+                wgpuPathOff((std::string("a part is missing: ") + missing).c_str(), "");
+            }
+        }
+
+        if (Configuration.RendererWgpu) {
+            // The GPU: `numidium.exe --probe` asks the backends for what the renderer needs,
+            // without a window, and answers with its last line and its exit code
+            // (MGE_PROBE_EXIT_OK or MGE_PROBE_EXIT_GPU). It takes about 0.3 s. Any other end
+            // of the probe counts as none, so that a crash of it leaves the game on
+            // Direct3D 9 with the code in the log.
+            char answer[1024] = {};
+            const unsigned usable = mge_probe_wgpu("numidium.exe", MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer));
+            if (usable) {
+                LOG::logline("-- wgpu renderer: the probe says %s", answer);
+            } else {
+                wgpuPathOff((std::string("the probe says none: ") + answer).c_str(),
+                    std::string("The wgpu renderer of MGE XE is not in use on this machine.\n")
+                        + "The graphics card or its driver lacks what it needs: " + answer + ".\n"
+                        + "The game goes on with MGE XE on Direct3D 9.\n"
+                        + "mgeXE.log in the folder of the game has the details.");
             }
         }
 
@@ -221,8 +261,7 @@ static void* createStreamedD3D(UINT version) {
     typedef const char* (__cdecl * BuildIdProc) ();
     BuildIdProc buildId = (BuildIdProc)GetProcAddress(plugin, "nirender_build_id");
     if (!buildId) {
-        LOG::logline("!! wgpu renderer: akulakhan.dll is from before the version handshake (no nirender_build_id); this d3d8.dll is " MGE_BUILD_ID);
-        showMessageBox(
+        wgpuPathOff("akulakhan.dll is from before the version handshake (no nirender_build_id); this d3d8.dll is " MGE_BUILD_ID,
             "The parts of the wgpu renderer of MGE XE do not match.\n"
             "akulakhan.dll is from before the version handshake.\n"
             "d3d8.dll is " MGE_BUILD_ID ".\n\n"
@@ -280,7 +319,10 @@ extern "C" void* _stdcall FakeDirect3DCreate(UINT version) {
         if (void* d3d = createStreamedD3D(version)) {
             return d3d;
         }
-        LOG::logline("!! wgpu renderer: not available, MGE XE continues with Direct3D 9 in proxy-only mode");
+        // The plugin did not serve; a caller that said why has turned the path off already.
+        if (Configuration.RendererWgpu) {
+            wgpuPathOff("the plugin did not give the game its Direct3D 8 (proxy-only mode)", "");
+        }
     }
     if (isMW) {
         Configuration.EnsureSettingsFile();

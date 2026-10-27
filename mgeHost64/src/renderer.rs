@@ -302,6 +302,14 @@ mod handshake_tests {
         assert_eq!(define.trim().parse::<u32>().unwrap(), EXTENSION_FORMAT);
     }
 
+    /// The exit code of the probe that d3d8.dll reads is the one the helper exits with.
+    #[test]
+    fn the_probe_exit_code_of_the_cpp_is_the_one_of_the_helper() {
+        let header = include_str!("../../d3d8/cpp/mge/mgeversion.h");
+        let define = header.lines().find_map(|line| line.strip_prefix("#define MGE_PROBE_EXIT_GPU ")).expect("mgeversion.h defines MGE_PROBE_EXIT_GPU");
+        assert_eq!(define.trim().parse::<u32>().unwrap(), nirender_wgpu::stream_format::EXIT_GPU);
+    }
+
     #[test]
     fn an_unknown_id_is_named_once() {
         let mut seen = Vec::new();
