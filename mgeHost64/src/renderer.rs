@@ -1284,17 +1284,21 @@ fn version_problem(folder: &Path) -> Option<String> {
     version_byte_problem(std::fs::read(folder.join("version")).ok().as_deref())
 }
 
+/// The player's words for the crate's check of the byte (`distantland::check_version_byte`).
 fn version_byte_problem(bytes: Option<&[u8]>) -> Option<String> {
-    let needed = crate::abi::constants::MGE_DL_VERSION;
-    match bytes {
-        Some(&[version]) if version == needed => None,
-        Some(&[version]) if version > needed => Some(format!(
+    use distantland::VersionProblem;
+    let needed = distantland::MGE_DL_VERSION;
+    match distantland::check_version_byte(bytes) {
+        Ok(()) => None,
+        Err(VersionProblem::Newer(version)) => Some(format!(
             "the data is version {version}, from a newer MGE XE, and this MGE XE reads version {needed}: update MGE XE, or generate distant land again in the MGE XE GUI"
         )),
-        Some(&[version]) => Some(format!(
+        Err(VersionProblem::Older(version)) => Some(format!(
             "the data is version {version}, and this MGE XE reads version {needed}: generate distant land again in the MGE XE GUI"
         )),
-        _ => Some("the file distantland\\version is missing or not one byte: generate distant land in the MGE XE GUI".to_string()),
+        Err(VersionProblem::Missing) => {
+            Some("the file distantland\\version is missing or not one byte: generate distant land in the MGE XE GUI".to_string())
+        }
     }
 }
 

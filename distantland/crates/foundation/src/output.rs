@@ -15,6 +15,30 @@ use serde::{Deserialize, Serialize};
 /// MGE XE distant land format version (must match `d3d8/cpp/mge/mgeversion.h`;
 /// `mgeHost64/src/abi/constants.rs` asserts the two are equal).
 pub const MGE_DL_VERSION: u8 = 22;
+
+/// What the byte of a `distantland\version` file says against [`MGE_DL_VERSION`], when it is
+/// not that version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionProblem {
+    /// No file, or a file that is not one byte.
+    Missing,
+    /// The data of an older generator: generate the distant land again.
+    Older(u8),
+    /// The data of a newer MGE XE.
+    Newer(u8),
+}
+
+/// Checks the bytes of a `distantland\version` file (`None`: no file) against
+/// [`MGE_DL_VERSION`]. A reader of the distant land data that tells a player what to do builds
+/// its words on this.
+pub fn check_version_byte(bytes: Option<&[u8]>) -> Result<(), VersionProblem> {
+    match bytes {
+        Some(&[version]) if version == MGE_DL_VERSION => Ok(()),
+        Some(&[version]) if version > MGE_DL_VERSION => Err(VersionProblem::Newer(version)),
+        Some(&[version]) => Err(VersionProblem::Older(version)),
+        _ => Err(VersionProblem::Missing),
+    }
+}
 /// Filename prefix shared by every opaque static-atlas page.
 pub const OPAQUE_ATLAS_PREFIX: &str = "_mge_xe_atlas";
 
@@ -299,5 +323,20 @@ impl OutputPaths {
             })
             .sorted_by(|left, right| left.relative_path.cmp(&right.relative_path))
             .collect_vec()
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn the_version_byte_is_checked_against_this_version() {
+        assert_eq!(check_version_byte(Some(&[MGE_DL_VERSION])), Ok(()));
+        assert_eq!(check_version_byte(Some(&[MGE_DL_VERSION - 1])), Err(VersionProblem::Older(MGE_DL_VERSION - 1)));
+        assert_eq!(check_version_byte(Some(&[MGE_DL_VERSION + 1])), Err(VersionProblem::Newer(MGE_DL_VERSION + 1)));
+        assert_eq!(check_version_byte(None), Err(VersionProblem::Missing));
+        assert_eq!(check_version_byte(Some(&[])), Err(VersionProblem::Missing));
+        assert_eq!(check_version_byte(Some(&[MGE_DL_VERSION, 0])), Err(VersionProblem::Missing));
     }
 }
