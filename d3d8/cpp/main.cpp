@@ -172,7 +172,9 @@ static void showMessageBox(const char* text) {
     }
     char value[16] = {};
     GetEnvironmentVariableA("MGE_XE_BOX_SECONDS", value, sizeof(value));
-    const unsigned seconds = unsigned(std::atoi(value));
+    // 0 to 3600: a negative value is 0, and the timeout in ms must not overflow.
+    const int asked = std::atoi(value);
+    const unsigned seconds = asked <= 0 ? 0u : (asked > 3600 ? 3600u : unsigned(asked));
     const UINT flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
     const DWORD started = GetTickCount();
     if (seconds == 0) {
@@ -231,7 +233,13 @@ static void* createStreamedD3D(UINT version) {
     LOG::logline("-- wgpu renderer: the nirender plugin (%s) gives the game its Direct3D 8", buildId ? buildId() : "a build from before the handshake");
     // Before the stream starts: the plugin keeps the record and writes it after the header.
     Deviceless::sendHello();
-    return create(version);
+    void* d3d = create(version);
+    // A plugin that refuses (no ports) gives the game no device: the Direct3D 9 path must not
+    // send the plugin its records then.
+    if (!d3d) {
+        streamExtension = nullptr;
+    }
+    return d3d;
 }
 
 // The nirender plugin asks this when it loads: nonzero when the game gets its Direct3D 8
