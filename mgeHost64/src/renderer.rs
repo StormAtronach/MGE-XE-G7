@@ -185,6 +185,135 @@ const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// streams for it at the end of each frame until a world frame comes, and gives the number
 /// back with its [`ARRIVED`].
 const PREFETCH_ID: u32 = 10;
+/// The hello of MGE XE's d3d8.dll (`Deviceless::sendHello`), sent once at the plugin's load
+/// and kept: version 1, the extension format of d3d8.dll, then its build id as 64 bytes of
+/// ASCII. This build compares the format with [`EXTENSION_FORMAT`] and stops on a
+/// difference; a live session without the record stops at its first world frame (a d3d8.dll
+/// from before the handshake). A replay plays on: a capture from before the record has none.
+const HELLO_ID: u32 = 11;
+/// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
+/// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
+/// record's layout or of an id's meaning.
+const EXTENSION_FORMAT: u32 = 1;
+/// The bytes of a hello record: the version, the format, then the build id.
+const HELLO_BUILD_ID_AT: usize = 8;
+const HELLO_BUILD_ID_BYTES: usize = 64;
+
+/// The build id of this program: its name, its version and its commit (`build.rs` puts the
+/// commit into MGE_COMMIT).
+fn build_id() -> String {
+    format!("numidium v{} {}", env!("CARGO_PKG_VERSION"), env!("MGE_COMMIT"))
+}
+
+/// The build id of d3d8.dll from its hello record, or why this build refuses the record.
+fn hello_check(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() < HELLO_BUILD_ID_AT {
+        return Err(mismatch_text("d3d8.dll (a hello record too short to read)", "writes an extension format that this build cannot read"));
+    }
+    let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let (version, format) = (word(0), word(4));
+    let build = match bytes.get(HELLO_BUILD_ID_AT..HELLO_BUILD_ID_AT + HELLO_BUILD_ID_BYTES) {
+        Some(text) => {
+            let end = text.iter().position(|&byte| byte == 0).unwrap_or(text.len());
+            String::from_utf8_lossy(&text[..end]).into_owned()
+        }
+        None => String::new(),
+    };
+    if version == 0 {
+        return Err(mismatch_text(&format!("d3d8.dll ({build})"), "writes a hello record of version 0, which this build cannot read"));
+    }
+    if format == EXTENSION_FORMAT {
+        return Ok(build);
+    }
+    Err(mismatch_text(&format!("d3d8.dll ({build})"), &format!("writes the extension format {format}")))
+}
+
+/// The refusal of a live session whose d3d8.dll sent no hello record.
+fn no_hello_text() -> String {
+    mismatch_text("d3d8.dll (a build from before the handshake)", "sent no hello record")
+}
+
+/// The message of a refusal: the writer and what it writes, then this build and what it
+/// reads, then what to do. The same form as the host crate's for the stream format.
+fn mismatch_text(writer: &str, writes: &str) -> String {
+    format!(
+        "The parts of the wgpu renderer of MGE XE do not match.\n\
+         {writer} {writes}.\n\
+         numidium.exe ({}, {}) reads the extension format {EXTENSION_FORMAT}.\n\
+         Install akulakhan.dll, numidium.exe and d3d8.dll from one archive.",
+        nirender_wgpu::BUILD_ID,
+        build_id()
+    )
+}
+
+/// Ends this program for a d3d8.dll of another build: the lines in the log, one message box,
+/// the exit code that the plugin reads (it shows no second box).
+fn stop_mismatch(message: &str) -> ! {
+    for line in message.lines() {
+        println!("{line}");
+    }
+    nirender_wgpu::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
+    nirender_wgpu::gpu::exit_now(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT)
+}
+
+/// True the first time `id` is seen: the log names an extension id without a reader once.
+fn first_time(seen: &mut Vec<u32>, id: u32) -> bool {
+    if seen.contains(&id) {
+        return false;
+    }
+    seen.push(id);
+    true
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+
+    fn hello(version: u32, format: u32, build: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&version.to_le_bytes());
+        bytes.extend_from_slice(&format.to_le_bytes());
+        let mut text = [0u8; HELLO_BUILD_ID_BYTES];
+        text[..build.len()].copy_from_slice(build.as_bytes());
+        bytes.extend_from_slice(&text);
+        bytes
+    }
+
+    #[test]
+    fn a_hello_of_this_format_gives_the_build_of_d3d8() {
+        assert_eq!(hello_check(&hello(1, EXTENSION_FORMAT, "MGE-XE G7 Fork v0.21.0 846ed77")).unwrap(), "MGE-XE G7 Fork v0.21.0 846ed77");
+    }
+
+    #[test]
+    fn a_hello_of_another_format_is_refused_with_both_builds_named() {
+        let message = hello_check(&hello(1, EXTENSION_FORMAT + 1, "MGE-XE G7 Fork v0.22.0 abcdef0")).unwrap_err();
+        assert!(message.contains("d3d8.dll (MGE-XE G7 Fork v0.22.0 abcdef0) writes the extension format 2"), "{message}");
+        assert!(message.contains(&format!("numidium.exe ({}, {}) reads the extension format 1", nirender_wgpu::BUILD_ID, build_id())), "{message}");
+        assert!(message.contains("one archive"), "{message}");
+    }
+
+    #[test]
+    fn a_short_hello_and_a_missing_hello_are_refused() {
+        assert!(hello_check(&[1, 0, 0, 0]).unwrap_err().contains("too short"));
+        assert!(hello_check(&hello(0, EXTENSION_FORMAT, "x")).unwrap_err().contains("a hello record of version 0"));
+        assert!(no_hello_text().contains("d3d8.dll (a build from before the handshake) sent no hello record"));
+    }
+
+    #[test]
+    fn the_extension_format_of_the_cpp_is_the_one_of_this_build() {
+        let header = include_str!("../../d3d8/cpp/mge/mgeversion.h");
+        let define = header.lines().find_map(|line| line.strip_prefix("#define MGE_EXTENSION_FORMAT ")).expect("mgeversion.h defines MGE_EXTENSION_FORMAT");
+        assert_eq!(define.trim().parse::<u32>().unwrap(), EXTENSION_FORMAT);
+    }
+
+    #[test]
+    fn an_unknown_id_is_named_once() {
+        let mut seen = Vec::new();
+        assert!(first_time(&mut seen, 99));
+        assert!(!first_time(&mut seen, 99));
+        assert!(first_time(&mut seen, 100));
+    }
+}
 
 /// Runs the renderer with the distant land of MGE XE.
 pub fn run(mut arguments: Vec<String>) {
@@ -433,6 +562,10 @@ pub struct DistantLand {
     /// world frame comes; and the number of the wait that [`ARRIVED`] answers (0 for none).
     prefetch: Option<(Vec<u8>, [f32; 3])>,
     arrival_serial: u32,
+    /// The build id of d3d8.dll from its hello record ([`HELLO_ID`]), once it came.
+    hello: Option<String>,
+    /// The extension ids without a reader in this build that came: each is in the log once.
+    unknown_ids: Vec<u32>,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -789,6 +922,8 @@ impl DistantLand {
             arrival: None,
             prefetch: None,
             arrival_serial: 0,
+            hello: None,
+            unknown_ids: Vec::new(),
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -1780,7 +1915,7 @@ fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
 
 impl Extension for DistantLand {
     fn name(&self) -> String {
-        format!("numidium v{}", env!("CARGO_PKG_VERSION"))
+        build_id()
     }
 
     fn overlay_lines(&self) -> Vec<String> {
@@ -1828,6 +1963,11 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
+        // The kept records came before the first frame: a live session without the hello of
+        // d3d8.dll has a d3d8.dll from before the handshake (the owner's choice: stop).
+        if !self.synchronous && self.hello.is_none() {
+            stop_mismatch(&no_hello_text());
+        }
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
@@ -2103,6 +2243,24 @@ impl Extension for DistantLand {
     fn data(&mut self, id: u32, bytes: &[u8]) {
         // A plugin from before the kept records leaves their bit in the number.
         let id = id & !0x8000_0000;
+        if id == HELLO_ID {
+            match hello_check(bytes) {
+                Ok(build) => {
+                    println!("d3d8.dll {build}, extension format {EXTENSION_FORMAT}");
+                    self.hello = Some(build);
+                }
+                // A replay of a capture of another format plays on, as for the stream format
+                // (the owner's answer 1): the picture can differ.
+                Err(message) if self.synchronous => {
+                    println!("capture of another extension format; the picture can differ:");
+                    for line in message.lines().skip(1).take(2) {
+                        println!("  {line}");
+                    }
+                }
+                Err(message) => stop_mismatch(&message),
+            }
+            return;
+        }
         if id == WATER_LOOKS_ID {
             if let Some(table) = water::Look::read_table(bytes) {
                 self.water_looks = table;
@@ -2258,6 +2416,9 @@ impl Extension for DistantLand {
                 }
                 self.environment = Some(environment);
             }
+        }
+        if id != ENVIRONMENT_ID && first_time(&mut self.unknown_ids, id) {
+            println!("extension id {id}: no reader in this build; d3d8.dll is another build");
         }
     }
 

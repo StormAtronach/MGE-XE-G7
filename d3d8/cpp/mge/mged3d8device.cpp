@@ -1624,6 +1624,25 @@ namespace Deviceless {
     static const UINT PrefetchId = 10;
     static const DWORD WaitLimitMs = 15000;
 
+    // The hello of this d3d8.dll: record 11 (HELLO_ID in mgeHost64/src/renderer.rs), kept,
+    // so that the ring and each capture file start with it. The helper stops when the
+    // format is not its own, or when a live session has no hello at its first world frame.
+    struct Hello {
+        UINT version;
+        UINT format;
+        // MGE_BUILD_ID, zero-ended: 64 bytes hold a longer version and a dirty mark.
+        char buildId[64];
+    };
+    static const UINT HelloId = 11 | 0x80000000u;
+
+    void sendHello() {
+        Hello hello = {};
+        hello.version = 1;
+        hello.format = MGE_EXTENSION_FORMAT;
+        std::strncpy(hello.buildId, MGE_BUILD_ID, sizeof(hello.buildId) - 1);
+        sendToRenderer(HelloId, &hello, sizeof(hello));
+    }
+
     // The place of the player goes to the helper (record 10): it streams the distant land
     // there, and says when the distant statics around the player are there (its arrival, the
     // event distantLandReady "arrived"). With `wait`, from distant_land.wait_on_load, the game

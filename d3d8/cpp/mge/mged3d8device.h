@@ -64,4 +64,6 @@ namespace Deviceless {
     void sceneBegin(const MgeLinkSceneV1* scene);
     // A message of the extension in the helper (Extension::messages of the crate).
     void message(unsigned id, const void* data, unsigned length);
+    // The build of this d3d8.dll and the format of its records, for the helper's check.
+    void sendHello();
 }
