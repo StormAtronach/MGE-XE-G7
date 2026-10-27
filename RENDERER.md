@@ -219,8 +219,10 @@ change. That start can take some minutes. With an older file, set it below
   runs `numidium.exe --probe`, which asks the backends and answers in about a third of a
   second. When the answer is none, a box says what is lacking once, the game runs on
   Direct3D 9 without the distant land for that start, and `mgeXE.log` has the probe's
-  lines. A probe that crashes counts as none, with its exit code in the log; a probe that
-  gives no answer in 5 s counts as none for that start only. MGE XE keeps the answer in
+  lines. A probe that crashes counts as none, with its exit code in the log. A probe that
+  gives no answer in 5 s is ended, and that start tries the wgpu renderer (a card that cannot
+  run it then stops the game with the reason); the next start asks again, and a second "no
+  answer" in a row counts as none, with a box that says so. MGE XE keeps the answer in
   `mgeXE-renderer-probe.txt` beside `mgeXE.log`, so the next starts do not ask again: after
   a none they run all of MGE XE on Direct3D 9, with no box, until the graphics card, its
   driver or `numidium.exe` change. To ask again, delete that file. To use the wgpu renderer

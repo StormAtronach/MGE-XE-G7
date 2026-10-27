@@ -66,6 +66,10 @@ use shadow::Shadow;
 const CELL: f32 = 8192.0;
 /// The near plane of the projection of the distant land.
 const NEAR: f32 = 64.0;
+/// With one depth buffer (`nirender_wgpu::depth::one_buffer`): the near plane of the distant
+/// land as a part of the game's. A smaller near plane puts the land behind a draw of the game
+/// at the same distance, by 0.25 % of the distance, as Direct3D 9's 4 - 0.01 against 4.
+const LAND_NEAR_SCALE: f32 = 0.9975;
 /// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend`): the parts named are not drawn, for a
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
@@ -246,14 +250,14 @@ fn mismatch_text(writer: &str, writes: &str) -> String {
     )
 }
 
-/// Ends this program for a d3d8.dll of another build: the lines in the log, one message box,
-/// the exit code that the plugin reads (it shows no second box).
+/// Ends this program for a d3d8.dll of another build: the lines in the log, then the refusal
+/// of the host crate (one message box, the exit code that the plugin reads; it shows no
+/// second box).
 fn stop_mismatch(message: &str) -> ! {
     for line in message.lines() {
         println!("{line}");
     }
-    nirender_wgpu::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
-    nirender_wgpu::gpu::exit_now(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT)
+    nirender_wgpu::gpu::refuse(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."))
 }
 
 /// True the first time `id` is seen: the log names an extension id without a reader once.
@@ -804,7 +808,8 @@ struct LandUniforms {
     atlas_more: [f32; 4],
     /// Of the patterns: the tile size, the gutter, the physical size, the patterns in a row.
     patterns: [f32; 4],
-    /// x: the view range of the game.
+    /// x: the view range of the game; y: 1 with the sink of the land off, z: a raise of the
+    /// land in units (the fault injections of a replay, `nirender_wgpu::depth::control`).
     range: [f32; 4],
 }
 
@@ -845,7 +850,10 @@ struct Out {
         // landBias: the land goes down near the camera, so that a mesh with less detail
         // does not come through the land of the game.
         let distance = length(world - u.eye.xyz);
-        world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
+        if land.range.y == 0.0 {
+            world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
+        }
+        world.z += land.range.z;
     }
     out.position = clip_of(world);
     out.normal = normal.xyz * 2.0 - 1.0;
@@ -2069,6 +2077,10 @@ impl Extension for DistantLand {
         self.vsync
     }
 
+    fn loading(&self) -> bool {
+        self.loading.is_some() || self.generation.is_some()
+    }
+
     fn offline(&mut self) {
         self.synchronous = true;
         if let Some(statics) = self.statics.as_mut() {
@@ -2419,14 +2431,23 @@ impl Extension for DistantLand {
             }
             // `crash panic` and `crash fault`: a panic, or an access violation, of this program
             // on purpose, for a test of its crash data (the backtrace, the minidump, the logs
-            // kept). The plugin takes `crash panic plugin` the same way.
+            // kept). `crash stall` holds the frame thread for 60 s: the test of the watchdog,
+            // or of the plugin's own limit with `MGE_XE_WATCHDOG=0`. `crash panic hold` is the
+            // panic with its dump held for good (`nirender_wgpu::hold_next_dump`): the test of
+            // the plugin's limit on a dump that hangs. The plugin takes `crash panic plugin`
+            // the same way.
             if let Some(kind) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("crash ")) {
                 match kind.trim() {
                     "panic" => panic!("a panic asked by nirender.tune"),
+                    "panic hold" => {
+                        nirender_wgpu::hold_next_dump();
+                        panic!("a panic asked by nirender.tune, its dump held");
+                    }
                     // SAFETY: the write goes to an address that no page holds: the access
                     // violation that the command asks for, and nothing else.
                     "fault" => unsafe { core::ptr::write_volatile(0x10 as *mut u32, 0) },
-                    other => println!("tune: crash {other}: not panic or fault"),
+                    "stall" => std::thread::sleep(Duration::from_secs(60)),
+                    other => println!("tune: crash {other}: not panic, panic hold, fault or stall"),
                 }
                 return;
             }
@@ -2605,7 +2626,9 @@ impl Extension for DistantLand {
         };
         // The eye with the view range of the game, as the statics and the glows take it.
         let eye_range = [eye[0], eye[1], eye[2], view_range];
-        let land = LandUniforms { terrain: gpu.terrain, atlas: gpu.atlas, atlas_more: gpu.atlas_more, patterns: gpu.patterns, range: [view_range, 0.0, 0.0, 0.0] };
+        let control = nirender_wgpu::depth::control();
+        let range = [view_range, if control.sink { 0.0 } else { 1.0 }, control.raise, 0.0];
+        let land = LandUniforms { terrain: gpu.terrain, atlas: gpu.atlas, atlas_more: gpu.atlas_more, patterns: gpu.patterns, range };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
         // The baked light of the distant lights: at night, in the exterior. The night is the
         // game's, from the hour against the weather's sunrise and sunset (the environment
@@ -3163,10 +3186,17 @@ impl DistantLand {
     /// plane (64) is MGE XE's own value. The game's near plane is 1.0 (0x4049C2), and
     /// `renderStage0` of the Direct3D 9 path uses 4. A draw of the game then wins the depth
     /// test against the same geometry among the statics (a static of the cell itself, in an
-    /// interior).
+    /// interior). With one depth buffer the near plane is the game's times
+    /// [`LAND_NEAR_SCALE`] (or the replay's `--depth-control k`), and the GPU gets the
+    /// projection with an infinite far plane (`nirender_wgpu::depth::world_projection`).
     fn land_projection(&self, scene: &SceneView) -> [f32; 16] {
         let mut projection = scene.projection;
-        let near = NEAR - 1e-2;
+        let near = if nirender_wgpu::depth::one_buffer() {
+            let game_near = -scene.projection[14] / scene.projection[10];
+            game_near * nirender_wgpu::depth::control().near_scale.unwrap_or(LAND_NEAR_SCALE)
+        } else {
+            NEAR - 1e-2
+        };
         let far = self.draw_distance.max(NEAR * 2.0);
         projection[10] = far / (far - near);
         projection[14] = -near * far / (far - near);
