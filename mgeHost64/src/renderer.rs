@@ -2536,6 +2536,7 @@ impl Extension for DistantLand {
                 layers: shadow.viewproj,
                 rcp: 1.0 / shadow.resolution as f32,
                 sun_vis: environment.map_or(0.0, |e| e.sun_vis),
+                day: self.shadow_day,
                 above_sea: eye[2] > environment.map_or(-1.0, |e| e.sea_plane()),
                 edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
             })
@@ -3146,9 +3147,9 @@ impl DistantLand {
         let (d, diffuse) = self.scene_sun?;
         let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
         let mult = self.shade.map_or(1.0, |p| p.sun);
-        let luminance = (diffuse[0] * 0.36 + diffuse[1] * 0.53 + diffuse[2] * 0.11) * mult;
         let sun_vis = self.environment.map_or(0.0, |e| e.sun_vis);
-        Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [luminance * (0.25 + 0.75 * sun_vis) * self.shadow_day, 0.0, 0.0, 0.0]))
+        let light = shadow::sun_light([diffuse[0], diffuse[1], diffuse[2]], sun_vis, self.shadow_day) * mult;
+        Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [light, 0.0, 0.0, 0.0]))
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {

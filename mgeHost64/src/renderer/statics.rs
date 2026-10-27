@@ -926,6 +926,9 @@ pub struct GrassShadow {
     pub rcp: f32,
     /// The visibility of the sun, for the light that `shadowSunEstimate` gives.
     pub sun_vis: f32,
+    /// The day of the hour (1 less the night): the shadow fades out through dusk and in
+    /// through dawn, as the shadow of the ground under the grass does.
+    pub day: f32,
     /// The camera is above the sea: the fog weakens the shadow less below it.
     pub above_sea: bool,
     /// The shadow of a blade ends as the shadow of the ground under it: the fade at the edge
@@ -951,8 +954,9 @@ struct GrassUniforms {
     /// `shadecolor`, and `shade` of `shadowSunEstimate`.
     shade: [f32; 4],
     /// x: 1 with a shadow map. y: the light of the sun for `shadowSunEstimate` (the luminance
-    /// of its colour, times 0.25 + 0.75 of its visibility). z: 1 above the sea. w: 1 for the
-    /// fade of the ground at the edge and in the fog.
+    /// of its colour, times 0.25 + 0.75 of its visibility, times the day of the hour as the
+    /// ground gets it). z: 1 above the sea. w: 1 for the fade of the ground at the edge and in
+    /// the fog.
     shadow: [f32; 4],
     /// The looks of Remiros' Groundcover: x soft end, y vertex colour sway, z wrap lighting.
     look: [f32; 4],
@@ -2069,8 +2073,7 @@ impl Statics {
             shade: [super::shadow::SHADE_COLOR[0], super::shadow::SHADE_COLOR[1], super::shadow::SHADE_COLOR[2], super::shadow::SHADE],
             shadow: frame.shadow.as_ref().map_or([0.0; 4], |shadow| {
                 let c = frame.sun_color;
-                let luminance = c[0] * 0.36 + c[1] * 0.53 + c[2] * 0.11;
-                [1.0, luminance * (0.25 + 0.75 * shadow.sun_vis), shadow.above_sea as u32 as f32, shadow.edge as u32 as f32]
+                [1.0, super::shadow::sun_light([c[0], c[1], c[2]], shadow.sun_vis, shadow.day), shadow.above_sea as u32 as f32, shadow.edge as u32 as f32]
             }),
             look: frame.look,
         };
