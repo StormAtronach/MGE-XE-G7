@@ -3532,11 +3532,15 @@ mod shader_tests {
 
     /// The world shader of the host with the text of this extension compiles as the device
     /// checks it: the sky part and the draw part joined as `extension_shaders` of
-    /// `nirender_wgpu` joins them, through the host's own `world_shader_source`.
+    /// `nirender_wgpu` joins them, through the host's own `world_shader_source`. Both texture
+    /// tiers: tier A with the binding arrays of its request, tier C with the request of every
+    /// adapter.
     #[test]
     fn the_world_shader_with_the_extension_is_valid() {
         let source = nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{DRAW_SHADER}\n"));
-        shader_check::check("shader.wgsl with the extension", &source).unwrap();
+        let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
+        shader_check::check_with("shader.wgsl with the extension, tier a", &source, tier_a).unwrap();
+        shader_check::check("shader.wgsl with the extension, tier c", &nirender_wgpu::tier_c_shader_source(&source)).unwrap();
     }
 }
 

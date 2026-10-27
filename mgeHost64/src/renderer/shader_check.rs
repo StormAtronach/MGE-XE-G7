@@ -6,7 +6,7 @@
 //! with more bindings of a class than the limits give a stage. This module does the same
 //! with the smallest set the request can get, so that a shader which uses a feature the
 //! request lacks, or more bindings than the limits allow, fails a unit test here, or the
-//! load of a mod's water shader, and not a player's game. [`FEATURES`] and [`limits`] copy
+//! load of a mod's water shader, and not a player's game. [`features`] and [`limits`] copy
 //! the request: a change there changes them.
 
 use nirender_wgpu::wgpu::{self, naga};
@@ -30,9 +30,15 @@ fn limits() -> wgpu::Limits {
 /// validation of naga, the bind groups within [`limits`], and for each entry point the
 /// bindings it uses within the limits of a stage. The error names the shader by `label`.
 pub(crate) fn check(label: &str, source: &str) -> Result<naga::Module, String> {
+    check_with(label, source, features())
+}
+
+/// [`check`] with the features of one texture tier of the request
+/// (`nirender_wgpu::required_features_of`): the world shader of tier A takes the binding
+/// arrays of its tier.
+pub(crate) fn check_with(label: &str, source: &str, features: wgpu::Features) -> Result<naga::Module, String> {
     // No downlevel flag: the request asks for none, so a shader gets no capability from one.
     let downlevel = wgpu::DownlevelFlags::empty();
-    let features = features();
     let capabilities = wgpu_naga_bridge::features_to_naga_capabilities(features, downlevel);
     let mut options = naga::front::wgsl::Options::new();
     options.capabilities = capabilities;
@@ -115,12 +121,15 @@ mod tests {
     }
 
     #[test]
-    fn binding_arrays_with_a_varying_index_pass() {
+    fn binding_arrays_fail() {
+        // An adapter of texture tier C has no binding arrays: the request of every adapter
+        // lacks them.
         let source = format!(
             "enable wgpu_binding_array;\n{VERTEX}@group(0) @binding(0) var textures: binding_array<texture_2d<f32>>;\n@group(0) @binding(1) var samplers: binding_array<sampler>;\n\
              @fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f {{ let i = u32(p.x); return textureSample(textures[i], samplers[i], p.xy); }}"
         );
-        check("arrays", &source).unwrap();
+        let problem = check("arrays", &source).unwrap_err();
+        assert!(problem.starts_with("arrays:"), "{problem}");
     }
 
     #[test]
