@@ -300,8 +300,8 @@ impl Shadow {
             _blur_uniforms: blur_uniforms,
             debug_pipeline,
             debug_group,
-            debug: std::env::var("MGE_XE_SHADOW_DEBUG").is_ok_and(|v| v != "0"),
-            layers_debug: std::env::var("MGE_XE_SHADOW_LAYERS").is_ok_and(|v| v != "0"),
+            debug: nirender_wgpu::switches::on("MGE_XE_SHADOW_DEBUG") == Some(true),
+            layers_debug: nirender_wgpu::switches::on("MGE_XE_SHADOW_LAYERS") == Some(true),
             viewproj: [[0.0; 16]; 2],
             frames: 0,
         }

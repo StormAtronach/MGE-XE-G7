@@ -69,7 +69,7 @@ const NEAR: f32 = 64.0;
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
     static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SKIP.get_or_init(|| std::env::var("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
+    SKIP.get_or_init(|| nirender_wgpu::switches::text("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
 }
 /// The number of the environment data in the stream. `Deviceless::EnvironmentId` of MGE XE.
 const ENVIRONMENT_ID: u32 = 1;

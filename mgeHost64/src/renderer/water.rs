@@ -538,7 +538,7 @@ impl Water {
             reflection_depth_read,
             no_land,
             reflected: false,
-            debug: std::env::var("MGE_XE_WATER_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            debug: nirender_wgpu::switches::number("MGE_XE_WATER_DEBUG", 0.0),
             frames: 0,
             reflections: 0,
         })

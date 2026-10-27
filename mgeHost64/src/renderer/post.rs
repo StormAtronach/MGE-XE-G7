@@ -4700,7 +4700,7 @@ impl Post {
             entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
-        let debug = std::env::var("MGE_XE_POST_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let debug = nirender_wgpu::switches::number("MGE_XE_POST_DEBUG", 0.0);
         let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post debug"),
             entries: &[
