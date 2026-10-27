@@ -4409,8 +4409,9 @@ pub const SHADERS: &[Shader] = &[
 
 /// The linear depth of the frame, as the depth frame of the Direct3D 9 path has it
 /// (`DistantLand::renderDepth`): the depth of the game where the game drew, else the depth
-/// of the distant land and the distant statics, else `1e38`. `p` has the two depth numbers
-/// of the projection of the game, then those of the projection of the distant stage.
+/// of the distant land and the distant statics, else `1e38`. `p` has the depth terms of the
+/// projection of the game, then those of the projection of the distant stage
+/// (`nirender_wgpu::depth`).
 const DEPTH_SHADER: &str = "
 @group(0) @binding(0) var<uniform> p: vec4f;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -4428,12 +4429,12 @@ struct Quad {
 
 @fragment fn fs(in: Quad) -> @location(0) vec4f {
     let d = textureLoad(depth, vec2i(in.position.xy), 0);
-    if d < 1.0 {
-        return vec4f(p.y / (d - p.x), 0.0, 0.0, 1.0);
+    if !depth_empty(d) {
+        return vec4f(view_distance(d, p.xy), 0.0, 0.0, 1.0);
     }
     let far = textureLoad(distant, vec2i(in.position.xy), 0);
-    if far < 1.0 {
-        return vec4f(p.w / (far - p.z), 0.0, 0.0, 1.0);
+    if !depth_empty(far) {
+        return vec4f(view_distance(far, p.zw), 0.0, 0.0, 1.0);
     }
     return vec4f(1.0e38, 0.0, 0.0, 1.0);
 }
@@ -4692,7 +4693,7 @@ impl Post {
                 texture(2, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
             ],
         });
-        let depth_pipeline = full_screen_pipeline(device, "post depth", DEPTH_SHADER, &depth_layout, wgpu::TextureFormat::R32Float);
+        let depth_pipeline = full_screen_pipeline(device, "post depth", &format!("{}{}", nirender_wgpu::depth::WGSL, DEPTH_SHADER), &depth_layout, wgpu::TextureFormat::R32Float);
         let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post depth"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post blit"),
@@ -5011,9 +5012,8 @@ impl Post {
     }
 
     /// Runs the chain on the picture and writes the result into `target`.
-    /// `distant` has the two depth numbers of the projection of the distant stage (the
-    /// places 10 and 14 of a projection of Direct3D), when its depth is a part of the depth
-    /// frame.
+    /// `distant` has the depth terms of the projection of the distant stage
+    /// (`nirender_wgpu::depth::terms`), when its depth is a part of the depth frame.
     pub fn run(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, variables: &Variables, environment_flags: u32, distant: Option<[f32; 2]>) {
         let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return };
         if self.is_empty() {
@@ -5036,7 +5036,7 @@ impl Post {
             (Some(view), Some(numbers)) => (view, numbers),
             _ => (depth, [0.0, 0.0]),
         };
-        scene.queue.write_buffer(&self.depth_uniform, 0, bytemuck::cast_slice(&[variables.mproj[2][2], variables.mproj[3][2], distant[0], distant[1]]));
+        scene.queue.write_buffer(&self.depth_uniform, 0, bytemuck::cast_slice(&[nirender_wgpu::depth::terms(&scene.projection), distant].concat()));
         let depth_view = &self.depth.as_ref().unwrap().1.clone();
         // The depth frame only when a shader of the chain of this frame reads it, or the
         // look at it is on.

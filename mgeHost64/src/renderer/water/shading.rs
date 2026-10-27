@@ -153,10 +153,10 @@ fn distance_at(uv: vec2f) -> f32 {
     let size = vec2i(textureDimensions(depth));
     let at = clamp(vec2i(uv * water.size.xy), vec2i(0), size - 1);
     let d = textureLoad(depth, at, 0);
-    if d >= 1.0 {
+    if depth_empty(d) {
         return 1e30;
     }
-    return water.projection.y / (d - water.projection.x);
+    return view_distance(d, water.projection.xy);
 }
 
 // The same for the distant land, which has a projection of its own.
@@ -164,10 +164,10 @@ fn land_distance_at(uv: vec2f) -> f32 {
     let size = vec2i(textureDimensions(land_depth));
     let at = clamp(vec2i(uv * vec2f(size)), vec2i(0), size - 1);
     let d = textureLoad(land_depth, at, 0);
-    if d >= 1.0 {
+    if depth_empty(d) {
         return 1e30;
     }
-    return water.land.y / (d - water.land.x);
+    return view_distance(d, water.land.xy);
 }
 
 // The view depth of the nearest thing at a point of the picture: what the game drew, and
@@ -189,7 +189,7 @@ fn mirror_way(uv: vec2f, w: f32) -> f32 {
     let size = vec2i(textureDimensions(mirror_depth));
     let at = clamp(vec2i(uv * vec2f(size)), vec2i(0), size - 1);
     let d = textureLoad(mirror_depth, at, 0);
-    return max(0.0, water.mirror.y / (d - water.mirror.x) - w);
+    return max(0.0, view_distance(d, water.mirror.xy) - w);
 }
 
 // The blur that is sharp at the waterline. The water is not flat, so each point of it

@@ -52,10 +52,10 @@ struct Corner {
     let d = textureLoad(depth, at, 0);
     // The depth of the pixel along the view of the camera. Nothing drawn, or past the view
     // range of the game: no caustics.
-    if d >= 1.0 {
+    if depth_empty(d) {
         discard;
     }
-    let z = c.projection.w / (d - c.projection.z);
+    let z = view_distance(d, c.projection.zw);
     if z > c.values.y {
         discard;
     }
@@ -93,7 +93,7 @@ fn draws(strength: f32) -> u32 {
 }
 
 fn shader() -> String {
-    format!("{}{}{}{}", super::view::wgsl(), SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
+    format!("{}{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::WGSL, SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
 }
 
 /// What the caustics need from the frame.
@@ -201,7 +201,8 @@ impl Caustics {
         let strength = super::water::caustic_strength(self.intensity, frame.sun_vis, frame.fog_color_far);
         let mut values = [0.0f32; 16 + 16];
         values[..16].copy_from_slice(&scene.view);
-        values[16..20].copy_from_slice(&[scene.projection[0], scene.projection[5], scene.projection[10], scene.projection[14]]);
+        let [depth_a, depth_b] = nirender_wgpu::depth::terms(&scene.projection);
+        values[16..20].copy_from_slice(&[scene.projection[0], scene.projection[5], depth_a, depth_b]);
         values[20..24].copy_from_slice(&[scene.target_size.0 as f32, scene.target_size.1 as f32, super::blend::ZONE, 0.0]);
         values[24..28].copy_from_slice(&[frame.water_level, frame.time, 0.0, 0.0]);
         values[28..32].copy_from_slice(&[strength, frame.near_view_range, 0.0, 0.0]);

@@ -66,7 +66,7 @@ struct Mask {
 ";
 
 fn shader() -> String {
-    format!("{}{}{}", super::super::view::wgsl(), shading::COMMON, DRY)
+    format!("{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::WGSL, shading::COMMON, DRY)
 }
 
 pub(super) struct Dry {

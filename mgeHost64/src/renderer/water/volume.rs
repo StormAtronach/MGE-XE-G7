@@ -729,7 +729,7 @@ fn water_shader(surface: WaterSurface) -> vec4f {
 /// The shader of the surfaces with the water shader of the look: the shared shading, the
 /// entry points of a surface, and the function `water_shader`.
 fn shader_with(water: &str) -> String {
-    format!("{}{}{}{}{}", super::super::view::wgsl(), shading::COMMON, shading::CAUSTICS, VOLUME, water).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
+    format!("{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::WGSL, shading::COMMON, shading::CAUSTICS, VOLUME, water).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
 }
 
 /// The shader of the surfaces with the standard look.

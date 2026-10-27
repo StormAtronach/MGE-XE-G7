@@ -47,7 +47,7 @@ pub(super) use shading::{CAUSTICS, caustic_strength};
 
 /// The shader of the plane: the shared shading and the entry points of the plane.
 fn shader() -> String {
-    format!("{}{}{}", super::view::wgsl(), shading::COMMON, PLANE)
+    format!("{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::WGSL, shading::COMMON, PLANE)
 }
 
 /// The entry points of the plane, after the shared shading.
@@ -708,7 +708,10 @@ impl Water {
             sun_col: [frame.sun_color[0] * sunlight, frame.sun_color[1] * sunlight, frame.sun_color[2] * sunlight, wind_factor],
             sky_col: [frame.sky_color[0], frame.sky_color[1], frame.sky_color[2], frame.nice_weather],
             modes: [self.debug, if frame.underwater { 1.0 } else { 0.0 }, 0.0, 0.0],
-            projection: [scene.projection[10], scene.projection[14], frame.blur_tune[2], 0.0],
+            projection: {
+                let [a, b] = nirender_wgpu::depth::terms(&scene.projection);
+                [a, b, frame.blur_tune[2], 0.0]
+            },
             size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), match (frame.blur_reflections, frame.blur_contact) {
                 (false, _) => 0.0,
                 (true, false) => 1.0,
@@ -718,12 +721,13 @@ impl Water {
             mirror: {
                 let projection = Self::far_projection(scene, frame.draw_distance);
                 // The cone of the mirror: wider with more wind, as the waves are.
-                [projection[10], projection[14], scene.projection[0], frame.blur_tune[0] + frame.blur_tune[1] * wind_factor]
+                let [a, b] = nirender_wgpu::depth::terms(&projection);
+                [a, b, scene.projection[0], frame.blur_tune[0] + frame.blur_tune[1] * wind_factor]
             },
             land: {
                 // The depth of the distant land, and the clip depth of the plane: the near plane
                 // of the game and the far plane of the distant land.
-                let (land_a, land_b) = (frame.land_projection[10], frame.land_projection[14]);
+                let [land_a, land_b] = nirender_wgpu::depth::terms(&frame.land_projection);
                 let near = -scene.projection[14] / scene.projection[10];
                 let far = land_b / (1.0 - land_a);
                 [land_a, land_b, far / (far - near), -near * far / (far - near)]

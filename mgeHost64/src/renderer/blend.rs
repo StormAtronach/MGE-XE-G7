@@ -43,8 +43,8 @@ struct Uniforms {
 /// The distance by which the blend takes a pixel of the game into the distant land: for the
 /// blend, and for the caustics, which go out with it (`caustics.rs`).
 pub(super) const DISTANCE: &str = "
-// The distance from the camera at a pixel, from the depth of the game. `depth_of` has the two
-// numbers of the projection that give the depth, `scale` the two for the width and the height,
+// The distance from the camera at a pixel, from the depth of the game. `depth_of` has the depth
+// terms of the projection (`depth_empty`, `view_distance`), `scale` the two for the width and the height,
 // and `size` is the size of the picture. A pixel that the game did not draw is very far. The
 // original has the distance along the view of the camera; the fog of the draws of the game is
 // on the distance from the camera here, and the blend must start where that fog ends for each
@@ -52,11 +52,11 @@ pub(super) const DISTANCE: &str = "
 fn blend_distance_at(depth_texture: texture_depth_2d, at: vec2i, depth_of: vec2f, scale: vec2f, size: vec2f) -> f32 {
     let limit = vec2i(textureDimensions(depth_texture));
     let d = textureLoad(depth_texture, clamp(at, vec2i(0), limit - 1), 0);
-    if d >= 1.0 {
+    if depth_empty(d) {
         return 1e30;
     }
     let ndc = (vec2f(at) + 0.5) / size * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
-    return depth_of.y / (d - depth_of.x) * length(vec3f(ndc / scale, 1.0));
+    return view_distance(d, depth_of) * length(vec3f(ndc / scale, 1.0));
 }
 
 // The distance of a pixel for the blend: past `bound`, the nearest of the pixel and its four
@@ -74,7 +74,7 @@ fn blend_distance(depth_texture: texture_depth_2d, at: vec2i, depth_of: vec2f, s
 ";
 
 fn shader() -> String {
-    format!("{}{}", SHADER, DISTANCE)
+    format!("{}{}{}", nirender_wgpu::depth::WGSL, SHADER, DISTANCE)
 }
 
 /// The length of the blend, in the units of the game: `zone` of `MGEBlendPS`.
@@ -139,10 +139,10 @@ impl Blend {
 
     /// Draws the blend. `near_view_range` is the view range of the game.
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, before: &wgpu::TextureView, depth: &wgpu::TextureView, near_view_range: f32) {
-        // A projection of Direct3D gives the depth (p10 * z + p14) / z for the distance z.
+        let [depth_a, depth_b] = nirender_wgpu::depth::terms(&scene.projection);
         let values = [
-            scene.projection[10],
-            scene.projection[14],
+            depth_a,
+            depth_b,
             near_view_range - ZONE,
             ZONE,
             scene.projection[0],

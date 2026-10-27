@@ -2674,6 +2674,7 @@ impl DistantLand {
     /// The chain of post shaders into `target`, with the values of the frame. False without
     /// the chain or the environment.
     fn run_post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
+        let land_terms = nirender_wgpu::depth::terms(&self.land_projection(scene));
         let (Some(post), Some(e)) = (self.post.as_mut(), self.environment) else { return false };
         let eye = scene.eye.map(|v| v as f32);
         let rows = |m: &[f32; 16]| -> [[f32; 4]; 4] { core::array::from_fn(|r| [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]]) };
@@ -2730,8 +2731,7 @@ impl DistantLand {
         // above the water only, as `DistantLand::renderDepth` of the Direct3D 9 path has
         // it. The numbers are those of the projection of `before_world`. With distant land
         // off there is no distant stage, and the depth of the game stands in for it.
-        let (near, far) = (NEAR - 1e-2, self.draw_distance.max(NEAR * 2.0));
-        let distant = (self.enabled && !underwater).then_some([far / (far - near), -near * far / (far - near)]);
+        let distant = (self.enabled && !underwater).then_some(land_terms);
         post.run(scene, encoder, target, &variables, flags, distant);
         true
     }
