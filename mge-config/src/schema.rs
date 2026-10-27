@@ -168,6 +168,13 @@ pub enum VSync {
 }
 
 impl VSync {
+    /// Whether a frame waits for the refresh of the screen: every interval but `immediate`.
+    /// The wgpu renderer has no interval of 2 or more: each of them is a wait for the next
+    /// refresh.
+    pub fn waits_for_screen(self) -> bool {
+        self != Self::Immediate
+    }
+
     pub fn runtime_value(self) -> u8 {
         match self {
             Self::Immediate => 255,

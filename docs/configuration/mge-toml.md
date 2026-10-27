@@ -206,9 +206,17 @@ reads them.
   card take turns: in a test with an RTX 5070 the frame rate fell by a third (237.7 against
   343.4 frames a second in Balmora). `2` keeps both busy. Read by numidium.exe when it starts. The F10 panel
   shows how long the renderer waits for a picture of the window: a long wait means the card
-  is behind. For a test, `MGE_XE_FRAME_LATENCY` overrides it, and `MGE_XE_PRESENT`
-  (`immediate`, `mailbox`, `fifo`, `auto`) sets the present mode; nirender-host.log names the
-  present mode in use.
+  is behind. For a test, `MGE_XE_FRAME_LATENCY` overrides it.
+
+- `graphics.vsync` on the wgpu renderer: with `immediate` (the default) the window shows a
+  frame when the game gives one, and the frame rate is not capped (the present mode
+  `AutoNoVsync`: immediate, mailbox or FIFO, the first that the graphics card has). With
+  `one`, `two`, `three` or `four` the window waits for the next refresh of the screen (the
+  present mode `Fifo`), so the frame rate is capped at the refresh rate; the wgpu renderer has
+  no interval of 2 or more refreshes, so the four values are the same. Read by numidium.exe
+  when it starts; the in-game menu of MGE XE does not change it. For a test, `MGE_XE_PRESENT`
+  (`immediate`, `mailbox`, `fifo`, `auto`) sets the present mode over the key;
+  nirender-host.log names the present mode in use.
 
 - `runtime.renderer_texture_slots` (default `0`): the room for the textures of a frame of
   the wgpu renderer (its texture arrays). `0` lets the renderer choose: the room of the
