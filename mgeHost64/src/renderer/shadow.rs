@@ -9,6 +9,11 @@ use std::rc::Rc;
 
 use nirender_wgpu::{SceneView, wgpu};
 
+/// `MGE_XE_SHADOW_DEBUG` and `MGE_XE_SHADOW_LAYERS`, read once: the shadows are made again
+/// at a change of the resolution.
+static SHADOW_DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static SHADOW_LAYERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 use super::multiply;
 
 /// The constants of `XE Mod Shadow Data.fx`.
@@ -300,8 +305,8 @@ impl Shadow {
             _blur_uniforms: blur_uniforms,
             debug_pipeline,
             debug_group,
-            debug: nirender_wgpu::switches::on("MGE_XE_SHADOW_DEBUG") == Some(true),
-            layers_debug: nirender_wgpu::switches::on("MGE_XE_SHADOW_LAYERS") == Some(true),
+            debug: *SHADOW_DEBUG.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_SHADOW_DEBUG") == Some(true)),
+            layers_debug: *SHADOW_LAYERS.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_SHADOW_LAYERS") == Some(true)),
             viewproj: [[0.0; 16]; 2],
             frames: 0,
         }

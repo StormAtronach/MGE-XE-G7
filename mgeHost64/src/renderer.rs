@@ -670,8 +670,8 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
     let name = Path::new("Data Files").join(relative);
     let mut places = vec![root.join(&name)];
-    if let Some(game) = std::env::var_os("MGE_XE_GAME_DIR") {
-        places.push(PathBuf::from(game).join(&name));
+    if let Some(game) = nirender_wgpu::switches::path("MGE_XE_GAME_DIR") {
+        places.push(game.join(&name));
     }
     if let Some(exe) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
         places.push(exe.join(&name));
@@ -858,7 +858,7 @@ impl DistantLand {
         }
         if land.enabled {
             // For a test, the distant land of another folder: MGE_XE_DISTANT_LAND_DIR.
-            let folder: PathBuf = std::env::var_os("MGE_XE_DISTANT_LAND_DIR").map_or_else(|| root.join("Data Files").join("distantland"), PathBuf::from);
+            let folder: PathBuf = nirender_wgpu::switches::path("MGE_XE_DISTANT_LAND_DIR").unwrap_or_else(|| root.join("Data Files").join("distantland"));
             let statics_wanted = settings.statics || settings.render_grass;
             let (sender, receiver) = channel();
             land.loading = Some(receiver);

@@ -13,6 +13,9 @@
 
 use nirender_wgpu::{SceneView, wgpu};
 
+/// `MGE_XE_POST_DEBUG`, read once: the chain is made again at a change of the shaders.
+static POST_DEBUG: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
 /// The variables that MGE XE gives a shader (section 2 of the specification), as one
 /// uniform. The matrices are the rows of Direct3D, so that `mview[row][col]` of HLSL is
 /// `u.mview[row][col]` here.
@@ -4700,7 +4703,7 @@ impl Post {
             entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
-        let debug = nirender_wgpu::switches::number("MGE_XE_POST_DEBUG", 0.0);
+        let debug = *POST_DEBUG.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_POST_DEBUG", 0.0));
         let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post debug"),
             entries: &[
