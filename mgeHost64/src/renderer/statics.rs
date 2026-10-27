@@ -73,6 +73,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ash::vk;
+use distantland::mge_xe::distant_statics::{load_static_tables, StaticTables};
 use distantland::mge_xe::usage_data::load_usage_data;
 use mge_config::{ConfigDocument, StaticsResidency};
 use nirender_wgpu::wgpu;
@@ -117,18 +118,6 @@ const CAP_BAND_LEAST: u64 = 64 << 20;
 /// next trim is not at the next arrival.
 const KEEP_SECONDS: f32 = 60.0;
 const LOW_MARK_TWENTIETHS: u64 = 17;
-
-fn word(bytes: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-}
-
-fn long(bytes: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(core::array::from_fn(|i| bytes[at + i]))
-}
-
-fn float(bytes: &[u8], at: usize) -> f32 {
-    f32::from_bits(word(bytes, at))
-}
 
 /// An IEEE half float (the positions of a statics vertex) as f32.
 fn half(bytes: &[u8], at: usize) -> f32 {
@@ -356,12 +345,6 @@ fn transform(world: &[f32; 16], point: [f32; 3]) -> [f32; 3] {
     core::array::from_fn(|i| point[0] * world[i] + point[1] * world[4 + i] + point[2] * world[8 + i] + world[12 + i])
 }
 
-/// The subset flags that the generator writes and this build knows: alpha (0x01), a UV
-/// controller (0x02), water (0x04), water that reflects only the sky (0x08) and a dry space
-/// (0x10).
-/// Direct3D 9 checks the same mask (`KnownFlagsMask`).
-const KNOWN_SUBSET_FLAGS: u32 = 0x1F;
-
 /// Why the catalog of the statics did not load.
 enum CatalogError {
     /// A file is not there or cannot be read: no distant statics.
@@ -377,36 +360,28 @@ impl From<String> for CatalogError {
     }
 }
 
-/// The problem with the flags of a subset, if there is one.
-fn flags_problem(flags: u32, file: &Path) -> Option<String> {
-    let unknown = flags & !KNOWN_SUBSET_FLAGS;
-    (unknown != 0).then(|| {
-        format!("a subset in {} has the flags {unknown:#x}, which this MGE XE does not know: generate distant land again in the MGE XE GUI", file.display())
+/// The tables of one statics file, through the formats crate: the generator's own reader, with
+/// every check of the file's layout and ranges (risk 9: a bad index in a table panicked the
+/// helper's own reader). A file that cannot be read leaves the statics off (`Missing`); a file
+/// that the crate refuses is data that this build cannot use (`Rejected`), with its reason.
+fn read_tables(path: &Path) -> Result<StaticTables, CatalogError> {
+    load_static_tables(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::InvalidData => {
+            CatalogError::Rejected(format!("{}: {error}: generate distant land again in the MGE XE GUI", path.display()))
+        }
+        _ => CatalogError::Missing(format!("{}: {error}", path.display())),
     })
 }
 
-/// The problem with the subset flags of the statics files in `folder` (the distant land
-/// folder), if there is one. It reads only the headers and the subset tables: for the loader
-/// of the land, which must not draw from data that the statics reject. A file that cannot be
-/// read is the problem of the loader of the statics, not of this check.
-pub(super) fn flags_problem_in(folder: &Path) -> Option<String> {
-    for shard in 0..SHARDS {
-        let path = folder.join("statics").join(format!("static_meshes_{shard:03}"));
-        let Ok(file) = File::open(&path) else { continue };
-        let mut header = [0u8; 160];
-        if file.seek_read(&mut header, 0).ok() != Some(160) || &header[0..8] != b"XESTAT06" {
-            continue;
-        }
-        let (subset_count, subset_table) = (word(&header, 36) as usize, long(&header, 56));
-        let mut table = vec![0u8; subset_count * 168];
-        if file.seek_read(&mut table, subset_table).ok() != Some(table.len()) {
-            continue;
-        }
-        if let Some(problem) = table.chunks_exact(168).find_map(|r| flags_problem(word(r, 72), &path)) {
-            return Some(problem);
-        }
-    }
-    None
+/// The problem with the statics files in `folder` (the distant land folder), if the formats
+/// crate refuses one: for the loader of the land, which must not draw from data that the statics
+/// reject. It reads the tables only, not the geometry. A file that cannot be read is the problem
+/// of the loader of the statics, not of this check.
+pub(super) fn tables_problem_in(folder: &Path) -> Option<String> {
+    (0..SHARDS).find_map(|shard| match read_tables(&folder.join("statics").join(format!("static_meshes_{shard:03}"))) {
+        Err(CatalogError::Rejected(problem)) => Some(problem),
+        _ => None,
+    })
 }
 
 /// Reads the tables of the 128 files and the places of `usage.data`.
@@ -422,96 +397,68 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
 
     for shard in 0..SHARDS {
         let path = statics_folder.join(format!("static_meshes_{shard:03}"));
-        let file = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let mut header = [0u8; 160];
-        file.seek_read(&mut header, 0).map_err(|error| format!("{}: {error}", path.display()))?;
-        if &header[0..8] != b"XESTAT06" || word(&header, 8) != 6 || word(&header, 16) != 52 || word(&header, 20) != 168 || word(&header, 24) != VERTEX as u32 {
-            return Err(format!("{} is not a statics file of version 6", path.display()).into());
-        }
-        let geometry = long(&header, 88) as usize;
-        let mut tables = vec![0u8; geometry];
-        file.seek_read(&mut tables, 0).map_err(|error| format!("{}: {error}", path.display()))?;
-        let (static_count, subset_count) = (word(&header, 32) as usize, word(&header, 36) as usize);
-        let (static_table, subset_table) = (long(&header, 40) as usize, long(&header, 56) as usize);
-        let (component_table, palette_table) = (long(&header, 112) as usize, long(&header, 136) as usize);
-        if subset_table + subset_count * 168 > geometry || static_table + static_count * 52 > geometry {
-            return Err(format!("{} has tables past its geometry", path.display()).into());
-        }
+        let tables = read_tables(&path)?;
         let subset_base = subsets.len() as u32;
 
-        for i in 0..subset_count {
-            let r = &tables[subset_table + i * 168..];
-            let (texture_at, texture_length) = (long(r, 40) as usize, word(r, 76) as usize);
-            let name = String::from_utf8_lossy(tables.get(texture_at..texture_at + texture_length).unwrap_or(&[])).into_owned();
+        for subset in tables.statics.iter().flat_map(|model| &model.subsets) {
+            let record = &subset.record;
+            let name = subset.texture.to_string();
             let texture = *texture_ids.entry(name.clone()).or_insert_with(|| {
                 textures.push(name);
                 textures.len() as u32 - 1
             });
-            let flags = word(r, 72);
-            if let Some(problem) = flags_problem(flags, &path) {
-                return Err(CatalogError::Rejected(problem));
-            }
-            let water = if flags & 0x10 != 0 {
-                3
-            } else if flags & 0x04 != 0 {
-                if flags & 0x08 != 0 { 2 } else { 1 }
-            } else {
-                0
-            };
-            // The look line of a water subset, in the texture blob.
-            let (look_at, look_length) = (long(r, 152) as usize, word(r, 160) as usize);
-            let line = (water != 0 && water != 3 && look_length != 0).then(|| tables.get(look_at..look_at + look_length)).flatten().map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-            let look = matches!(water, 1 | 2).then(|| Look::of_distant(water, line.as_deref()));
-            let (vertex_count, triangle_count) = (word(r, 64), word(r, 68));
-            let (first_component, component_count) = (word(r, 136) as usize, word(r, 140) as usize);
-            let (first_palette, palette_count) = (word(r, 144) as usize, word(r, 148) as usize);
-            let palette = if palette_count == 0 {
+            let water = subset.water();
+            // The look line of a water subset: empty for one without a line of its own.
+            let line = (!subset.water_look.is_empty()).then_some(&*subset.water_look);
+            let look = matches!(water, 1 | 2).then(|| Look::of_distant(water, line));
+            let palette = if subset.palette.is_empty() {
                 0
             } else {
                 let at = palettes.len() as u32;
-                for p in 0..palette_count {
-                    let entry = palette_table + (first_palette + p) * 16;
-                    palettes.push(core::array::from_fn(|lane| float(&tables, entry + lane * 4)));
-                }
+                palettes.extend(subset.palette.iter().map(|entry| entry.bound));
                 at
             };
-            let mut components = Vec::with_capacity(component_count);
-            for c in 0..component_count {
-                let entry = &tables[component_table + (first_component + c) * 16..];
-                let tier = tier_of(entry[12] as u32, float(entry, 8), settings).unwrap_or(0);
-                components.push(Component { first_triangle: word(entry, 0), triangle_count: word(entry, 4), tier });
-            }
-            let bytes = vertex_count as u64 * VERTEX as u64 + triangle_count as u64 * TRIANGLE as u64;
+            let components: Vec<Component> = subset
+                .components
+                .iter()
+                .map(|component| Component {
+                    first_triangle: component.first_triangle,
+                    triangle_count: component.triangle_count,
+                    tier: tier_of(u32::from(component.classification), component.radius, settings).unwrap_or(0),
+                })
+                .collect();
+            let bytes = record.vertex_count as u64 * VERTEX as u64 + record.triangle_count as u64 * TRIANGLE as u64;
             if components.is_empty() {
                 ordinary_bytes += bytes;
             } else {
                 merged_bytes += bytes;
             }
+            let sphere = record.sphere;
             subsets.push(Subset {
                 shard: shard as u16,
-                vertex_offset: long(r, 48),
-                index_offset: long(r, 56),
-                vertex_count,
-                triangle_count,
-                has_alpha: flags & 1 != 0,
-                animate_uv: flags & 2 != 0,
+                vertex_offset: record.vertex_offset,
+                index_offset: record.index_offset,
+                vertex_count: record.vertex_count,
+                triangle_count: record.triangle_count,
+                has_alpha: record.flags & 1 != 0,
+                animate_uv: record.flags & 2 != 0,
                 water,
                 look,
-                sphere: [float(r, 4), float(r, 8), float(r, 12), float(r, 0)],
+                sphere: [sphere.center.x, sphere.center.y, sphere.center.z, sphere.radius],
                 texture,
                 palette,
                 components,
                 grass: false,
             });
         }
-        for i in 0..static_count {
-            let r = &tables[static_table + i * 52..];
+        for model in &tables.statics {
+            let sphere = model.record.sphere;
             statics.push(Static {
-                kind: word(r, 0),
-                radius: float(r, 4),
-                center: [float(r, 8), float(r, 12), float(r, 16)],
-                first_subset: subset_base + word(r, 44),
-                subset_count: word(r, 48),
+                kind: model.record.static_type,
+                radius: sphere.radius,
+                center: [sphere.center.x, sphere.center.y, sphere.center.z],
+                first_subset: subset_base + model.record.first_subset_index,
+                subset_count: model.record.subset_count,
             });
         }
     }
@@ -3168,7 +3115,7 @@ mod shader_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_from_budget, cap_move, flags_problem, half, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
+    use super::{cap_from_budget, cap_move, half, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
 
@@ -3228,13 +3175,45 @@ mod tests {
         assert_eq!(normal_alignment(&ordinary, &[]), None);
     }
 
+    /// A statics file that the formats crate refuses is rejected with its reason, never a
+    /// panic (risk 9: a palette range past the table panicked the helper's own reader); a file
+    /// that is not there is missing.
     #[test]
-    fn a_subset_flag_that_is_not_known_rejects_the_data() {
-        let file = std::path::Path::new("static_meshes_000");
-        assert_eq!(flags_problem(0x1F, file), None);
-        assert_eq!(flags_problem(0, file), None);
-        let problem = flags_problem(0x41, file).unwrap();
-        assert!(problem.contains("0x40") && problem.contains("generate distant land again"), "{problem}");
+    fn a_bad_statics_file_is_rejected_with_its_reason() {
+        use distantland::mge_xe::distant_statics::{
+            PackedDistantStatic, PackedSubset, PackedVertex, StaticMeshesFileHeader, StaticType, SubsetRecord, UvBoundRecord, HEADER_SIZE,
+            SUBSET_RECORD_SIZE,
+        };
+        let subset = PackedSubset {
+            texture: "a.dds".into(),
+            vertices: vec![PackedVertex::default(); 3],
+            triangles: vec![[0, 1, 2]],
+            palette: vec![UvBoundRecord { bound: [0.0, 1.0, 0.0, 1.0] }],
+            ..Default::default()
+        };
+        let mut statics = distantland::mge_xe::PackedDistantStatics::default();
+        statics.insert("a.nif".into(), PackedDistantStatic { static_type: StaticType::StaticNear, subsets: vec![subset], ..Default::default() });
+        let mut bytes = distantland::mge_xe::serialize_static_meshes(&statics).unwrap();
+
+        let folder = std::env::temp_dir().join(format!("mgehost64-statics-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("static_meshes_000");
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(read_tables(&path).is_ok());
+
+        let header: StaticMeshesFileHeader = bytemuck::pod_read_unaligned(&bytes[..HEADER_SIZE]);
+        let at = header.subset_table_offset as usize;
+        let mut record: SubsetRecord = bytemuck::pod_read_unaligned(&bytes[at..at + SUBSET_RECORD_SIZE]);
+        record.palette_count = 1000;
+        bytes[at..at + SUBSET_RECORD_SIZE].copy_from_slice(bytemuck::bytes_of(&record));
+        std::fs::write(&path, &bytes).unwrap();
+        match read_tables(&path) {
+            Err(CatalogError::Rejected(problem)) => assert!(problem.contains("palette range") && problem.contains("generate distant land again"), "{problem}"),
+            _ => panic!("a palette range past the table was not rejected"),
+        }
+
+        assert!(matches!(read_tables(&folder.join("static_meshes_001")), Err(CatalogError::Missing(_))));
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

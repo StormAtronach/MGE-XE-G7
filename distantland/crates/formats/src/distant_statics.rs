@@ -392,28 +392,114 @@ pub struct SubsetRecord {
     pub reserved: u32,
 }
 
-/// Deserializes a complete v6 `static_meshes` file into its stored static records.
-///
-/// Source mesh keys are not present in the file, so the returned vector follows the file's
-/// static-table order. All file offsets, table sizes, record ranges, texture strings, look lines,
-/// component ranges, palette ranges, vertex strides, and triangle indices are validated before a value is
-/// returned. Per-vertex palette ordinals are not validated: a wrong-but-in-range ordinal selects
-/// the wrong atlas tile, which the writer's cap check already rejects at the producer.
+/// The most bytes of the table area of one file: the header, the tables and the texture blob,
+/// everything before the geometry blob. A read of the tables is never larger. The largest file of
+/// the owner's data had 145,784 bytes there (128 files, 2026-10-27); the cap is about 460 times
+/// that, so that a header that lies about its geometry offset cannot ask for a large read.
+pub const MAX_TABLE_AREA: u64 = 64 << 20;
+
+/// The tables of one `static_meshes` file: all of it but the content of its geometry, with every
+/// check of [`deserialize_static_meshes`] but those of the vertex bytes and the triangle indexes.
+/// The geometry of each subset is checked as two ranges of the file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StaticTables {
+    /// The header of the file.
+    pub header: StaticMeshesFileHeader,
+    /// The statics in the order of the static table.
+    pub statics: Vec<TableStatic>,
+}
+
+/// One static of [`StaticTables`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableStatic {
+    /// The record of the static table.
+    pub record: StaticRecord,
+    /// The classification of the record.
+    pub static_type: StaticType,
+    /// The subsets of the static, in the order of the subset table.
+    pub subsets: Vec<TableSubset>,
+}
+
+/// One subset of [`StaticTables`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableSubset {
+    /// The record of the subset table.
+    pub record: SubsetRecord,
+    /// The texture path.
+    pub texture: Box<str>,
+    /// The look line of distant water; empty when there is none.
+    pub water_look: Box<str>,
+    /// The components of a merged static; empty for an ordinary one.
+    pub components: Vec<ComponentRecord>,
+    /// The atlas rects of the subset; empty for grass.
+    pub palette: Vec<UvBoundRecord>,
+    /// The bytes of the vertices in the file.
+    pub vertex_range: Range<usize>,
+    /// The bytes of the triangle indexes in the file.
+    pub index_range: Range<usize>,
+}
+
+impl TableSubset {
+    /// The water of the subset as [`PackedSubset::water`] has it.
+    pub fn water(&self) -> u8 {
+        match (self.record.flags >> 2) & 7 {
+            0 => 0,
+            1 => 1,
+            3 => 2,
+            _ => SUBSET_WATER_DRY_SPACE,
+        }
+    }
+}
+
+/// The size of the table area of a file whose first bytes are `header_bytes` and whose length is
+/// `file_len`, checked before the tables are read: the magic, the version, the fixed layout of the
+/// header, a geometry offset inside the file, and [`MAX_TABLE_AREA`]. The read of the tables is
+/// this many bytes from the start of the file.
 ///
 /// # Errors
 ///
-/// Returns [`io::ErrorKind::InvalidData`] when the bytes are truncated, use an unsupported
-/// format, contain an invalid range or record, or have unexpected trailing data.
-pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantStatic>> {
-    if bytes.len() < HEADER_SIZE {
+/// Returns [`io::ErrorKind::InvalidData`] when the header is truncated or not one of version 6, or
+/// when its geometry offset is past the end of the file or past the cap.
+pub fn static_tables_size(header_bytes: &[u8], file_len: u64) -> io::Result<usize> {
+    if header_bytes.len() < HEADER_SIZE {
         return Err(invalid_data(format!(
             "static_meshes is truncated: expected at least {HEADER_SIZE} header bytes, found {}",
-            bytes.len()
+            header_bytes.len()
         )));
     }
-
-    let header = bytemuck::pod_read_unaligned::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
+    let header = bytemuck::pod_read_unaligned::<StaticMeshesFileHeader>(&header_bytes[..HEADER_SIZE]);
     validate_header(&header)?;
+    let tables = header.geometry_blob_offset;
+    if tables > file_len {
+        return Err(invalid_data(format!(
+            "static_meshes geometry blob offset {tables} is past the end of the file ({file_len} bytes)"
+        )));
+    }
+    if tables > MAX_TABLE_AREA {
+        return Err(invalid_data(format!(
+            "static_meshes table area of {tables} bytes is over the limit of {MAX_TABLE_AREA}"
+        )));
+    }
+    usize::try_from(tables).map_err(|_| invalid_data("static_meshes table area exceeds usize"))
+}
+
+/// Reads the tables of a `static_meshes` file from `prefix`, its first bytes, at least
+/// [`static_tables_size`] of them, and the length of the whole file. See [`StaticTables`].
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidData`] when the header, a table, a range, a record or a string
+/// is not valid, naming the static, the subset or the component and why.
+pub fn read_static_tables(prefix: &[u8], file_len: u64) -> io::Result<StaticTables> {
+    let tables_size = static_tables_size(prefix, file_len)?;
+    if prefix.len() < tables_size {
+        return Err(invalid_data(format!(
+            "static_meshes tables are truncated: {} bytes read, the table area has {tables_size}",
+            prefix.len()
+        )));
+    }
+    let file_len = usize::try_from(file_len).map_err(|_| invalid_data("static_meshes file length exceeds usize"))?;
+    let header = bytemuck::pod_read_unaligned::<StaticMeshesFileHeader>(&prefix[..HEADER_SIZE]);
 
     let static_table_size = checked_product(header.static_count, STATIC_RECORD_SIZE, "static_meshes static table size")?;
     let subset_table_size = checked_product(header.subset_count, SUBSET_RECORD_SIZE, "static_meshes subset table size")?;
@@ -428,42 +514,17 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
     require_size(header.component_table_size, component_table_size, "component table")?;
     require_size(header.palette_table_size, palette_table_size, "palette table")?;
 
-    let static_range = checked_file_range(
-        header.static_table_offset,
-        header.static_table_size,
-        bytes.len(),
-        "static table",
-    )?;
-    let subset_range = checked_file_range(
-        header.subset_table_offset,
-        header.subset_table_size,
-        bytes.len(),
-        "subset table",
-    )?;
+    let static_range = checked_file_range(header.static_table_offset, header.static_table_size, file_len, "static table")?;
+    let subset_range = checked_file_range(header.subset_table_offset, header.subset_table_size, file_len, "subset table")?;
     let component_range = checked_file_range(
         header.component_table_offset,
         header.component_table_size,
-        bytes.len(),
+        file_len,
         "component table",
     )?;
-    let palette_range = checked_file_range(
-        header.palette_table_offset,
-        header.palette_table_size,
-        bytes.len(),
-        "palette table",
-    )?;
-    let texture_range = checked_file_range(
-        header.texture_blob_offset,
-        header.texture_blob_size,
-        bytes.len(),
-        "texture blob",
-    )?;
-    let geometry_range = checked_file_range(
-        header.geometry_blob_offset,
-        header.geometry_blob_size,
-        bytes.len(),
-        "geometry blob",
-    )?;
+    let palette_range = checked_file_range(header.palette_table_offset, header.palette_table_size, file_len, "palette table")?;
+    let texture_range = checked_file_range(header.texture_blob_offset, header.texture_blob_size, file_len, "texture blob")?;
+    let geometry_range = checked_file_range(header.geometry_blob_offset, header.geometry_blob_size, file_len, "geometry blob")?;
 
     if header.static_table_offset != HEADER_SIZE as u64 {
         return Err(invalid_data(format!(
@@ -484,6 +545,8 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
             )));
         }
     }
+    // The tables and the texture blob end before the geometry blob, so they are inside the
+    // prefix: the reads below index the prefix only.
     require_ordered_ranges(
         [
             ("static table", &static_range),
@@ -493,14 +556,14 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
             ("texture blob", &texture_range),
             ("geometry blob", &geometry_range),
         ],
-        bytes.len(),
+        file_len,
     )?;
 
-    let static_records = read_pod_table::<StaticRecord>(bytes, static_range, header.static_count, "static table")?;
-    let subset_records = read_pod_table::<SubsetRecord>(bytes, subset_range, header.subset_count, "subset table")?;
+    let static_records = read_pod_table::<StaticRecord>(prefix, static_range, header.static_count, "static table")?;
+    let subset_records = read_pod_table::<SubsetRecord>(prefix, subset_range, header.subset_count, "subset table")?;
     let component_records =
-        read_pod_table::<ComponentRecord>(bytes, component_range, header.component_count, "component table")?;
-    let palette_records = read_pod_table::<UvBoundRecord>(bytes, palette_range, header.palette_count, "palette table")?;
+        read_pod_table::<ComponentRecord>(prefix, component_range, header.component_count, "component table")?;
+    let palette_records = read_pod_table::<UvBoundRecord>(prefix, palette_range, header.palette_count, "palette table")?;
 
     let mut expected_subset = 0_u32;
     let mut expected_component = 0_u32;
@@ -534,9 +597,9 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
 
         let mut subsets = Vec::with_capacity(record.subset_count as usize);
         for subset_index in record.first_subset_index..subset_end {
-            let subset_record = subset_records[subset_index as usize];
-            let decoded = decode_subset(
-                bytes,
+            let subset = table_subset(
+                prefix,
+                file_len,
                 &header,
                 &texture_range,
                 &geometry_range,
@@ -544,20 +607,15 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
                 &palette_records,
                 subset_index,
                 static_type,
-                subset_record,
+                subset_records[subset_index as usize],
                 &mut expected_component,
                 &mut expected_palette,
                 &mut geometry_cursor,
             )?;
-            subsets.push(decoded);
+            subsets.push(subset);
         }
         expected_subset = subset_end;
-        statics.push(PackedDistantStatic {
-            bounding_sphere: record.sphere,
-            bounding_box: record.aabb,
-            static_type,
-            subsets,
-        });
+        statics.push(TableStatic { record, static_type, subsets });
     }
 
     if expected_subset != header.subset_count {
@@ -585,10 +643,89 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
         )));
     }
 
+    Ok(StaticTables { header, statics })
+}
+
+/// Reads the tables of the `static_meshes` file at `path`: the header first, then exactly the
+/// table area that [`static_tables_size`] allows. The geometry is not read.
+///
+/// # Errors
+///
+/// Returns an I/O error if the file cannot be read, or [`io::ErrorKind::InvalidData`] if its
+/// tables fail [`read_static_tables`].
+pub fn load_static_tables(path: &Path) -> io::Result<StaticTables> {
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let mut header = [0_u8; HEADER_SIZE];
+    let header_read = read_up_to(&mut file, &mut header)?;
+    let tables_size = static_tables_size(&header[..header_read], file_len)?;
+    let mut prefix = vec![0_u8; tables_size];
+    prefix[..HEADER_SIZE].copy_from_slice(&header);
+    file.read_exact(&mut prefix[HEADER_SIZE..])?;
+    read_static_tables(&prefix, file_len)
+}
+
+/// Reads into `buffer` until it is full or the file ends; the number of bytes read.
+fn read_up_to(file: &mut fs::File, buffer: &mut [u8]) -> io::Result<usize> {
+    use std::io::Read;
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match file.read(&mut buffer[filled..])? {
+            0 => break,
+            read => filled += read,
+        }
+    }
+    Ok(filled)
+}
+
+/// Deserializes a complete v6 `static_meshes` file into its stored static records.
+///
+/// Source mesh keys are not present in the file, so the returned vector follows the file's
+/// static-table order. The tables are read and checked by [`read_static_tables`]; then each
+/// subset's vertices and triangles are decoded, and each triangle index is checked against the
+/// subset's vertex count. Per-vertex palette ordinals are not validated: a wrong-but-in-range
+/// ordinal selects the wrong atlas tile, which the writer's cap check already rejects at the
+/// producer.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidData`] when the bytes are truncated, use an unsupported
+/// format, contain an invalid range or record, or have unexpected trailing data.
+pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantStatic>> {
+    let tables = read_static_tables(bytes, bytes.len() as u64)?;
+    let mut statics = Vec::with_capacity(tables.statics.len());
+    for table_static in tables.statics {
+        let mut subsets = Vec::with_capacity(table_static.subsets.len());
+        for (offset, subset) in table_static.subsets.into_iter().enumerate() {
+            let subset_index = table_static.record.first_subset_index + offset as u32;
+            let (vertices, triangles) = decode_geometry(bytes, table_static.static_type, &subset, subset_index)?;
+            subsets.push(PackedSubset {
+                bounding_sphere: subset.record.sphere,
+                bounding_box: subset.record.aabb,
+                vertices,
+                triangles,
+                has_alpha: (subset.record.flags & 1) as u8,
+                has_uv_controller: ((subset.record.flags >> 1) & 1) as u8,
+                water: subset.water(),
+                horizon_footprint: subset.record.horizon_footprint,
+                components: subset.components,
+                palette: subset.palette,
+                texture: subset.texture,
+                water_look: subset.water_look,
+            });
+        }
+        statics.push(PackedDistantStatic {
+            bounding_sphere: table_static.record.sphere,
+            bounding_box: table_static.record.aabb,
+            static_type: table_static.static_type,
+            subsets,
+        });
+    }
     Ok(statics)
 }
 
-/// Loads and deserializes a v5 `static_meshes` file.
+/// Loads and deserializes a v6 `static_meshes` file.
 ///
 /// # Errors
 ///
@@ -602,9 +739,11 @@ pub fn load_static_meshes(path: &Path) -> io::Result<Vec<PackedDistantStatic>> {
     deserialize_static_meshes(&bytes)
 }
 
+/// The checks of one subset record and its ranges, without the content of its geometry.
 #[allow(clippy::too_many_arguments)]
-fn decode_subset(
-    bytes: &[u8],
+fn table_subset(
+    prefix: &[u8],
+    file_len: usize,
     header: &StaticMeshesFileHeader,
     texture_blob: &Range<usize>,
     geometry_blob: &Range<usize>,
@@ -616,7 +755,7 @@ fn decode_subset(
     expected_component: &mut u32,
     expected_palette: &mut u32,
     geometry_cursor: &mut usize,
-) -> io::Result<PackedSubset> {
+) -> io::Result<TableSubset> {
     // Bit 3 says what distant water reflects, so it is valid only with bit 2. A dry space
     // (bit 4) is not water.
     if record.flags & !0b1_1111 != 0
@@ -629,8 +768,8 @@ fn decode_subset(
         )));
     }
     validate_horizon_footprint(record.horizon_footprint, subset_index)?;
-    let texture = decode_texture_path(bytes, texture_blob, subset_index, record)?;
-    let water_look = decode_water_look(bytes, texture_blob, subset_index, record)?;
+    let texture = decode_texture_path(prefix, texture_blob, subset_index, record)?;
+    let water_look = decode_water_look(prefix, texture_blob, subset_index, record)?;
 
     if record.first_component_index != *expected_component {
         return Err(invalid_data(format!(
@@ -691,8 +830,8 @@ fn decode_subset(
         .checked_mul(3)
         .ok_or_else(|| invalid_data(format!("static_meshes subset {subset_index} index count overflows u32")))?;
     let index_bytes = checked_product(index_count, INDEX_ELEMENT_SIZE, "static_meshes index payload size")?;
-    let vertex_range = checked_file_range(record.vertex_offset, vertex_bytes, bytes.len(), "subset vertex payload")?;
-    let index_range = checked_file_range(record.index_offset, index_bytes, bytes.len(), "subset index payload")?;
+    let vertex_range = checked_file_range(record.vertex_offset, vertex_bytes, file_len, "subset vertex payload")?;
+    let index_range = checked_file_range(record.index_offset, index_bytes, file_len, "subset index payload")?;
     if vertex_range.start != *geometry_cursor {
         return Err(invalid_data(format!(
             "static_meshes subset {subset_index} vertex payload begins at byte {}, expected {}",
@@ -710,9 +849,22 @@ fn decode_subset(
             "static_meshes subset {subset_index} geometry payload lies outside the geometry blob"
         )));
     }
+    *geometry_cursor = index_range.end;
 
+    Ok(TableSubset { record, texture, water_look, components, palette, vertex_range, index_range })
+}
+
+/// The vertices and triangles of one subset whose ranges [`read_static_tables`] checked; each
+/// triangle index must be below the subset's vertex count.
+fn decode_geometry(
+    bytes: &[u8],
+    static_type: StaticType,
+    subset: &TableSubset,
+    subset_index: u32,
+) -> io::Result<(Vec<PackedVertex>, Vec<[u16; 3]>)> {
+    let record = subset.record;
     let vertices = if static_type == StaticType::StaticGrass {
-        read_pod_table::<PackedGrassVertex>(bytes, vertex_range, record.vertex_count, "grass vertex payload")?
+        read_pod_table::<PackedGrassVertex>(bytes, subset.vertex_range.clone(), record.vertex_count, "grass vertex payload")?
             .iter()
             .map(|&vertex| PackedVertex {
                 position: vertex.position,
@@ -722,10 +874,10 @@ fn decode_subset(
             })
             .collect()
     } else {
-        read_pod_table::<PackedVertex>(bytes, vertex_range, record.vertex_count, "static vertex payload")?.into_owned()
+        read_pod_table::<PackedVertex>(bytes, subset.vertex_range.clone(), record.vertex_count, "static vertex payload")?.into_owned()
     };
     let triangles =
-        read_pod_table::<[u16; 3]>(bytes, index_range.clone(), record.triangle_count, "triangle payload")?.into_owned();
+        read_pod_table::<[u16; 3]>(bytes, subset.index_range.clone(), record.triangle_count, "triangle payload")?.into_owned();
     for (triangle_index, triangle) in triangles.iter().enumerate() {
         for index in triangle {
             if u32::from(*index) >= record.vertex_count {
@@ -736,27 +888,7 @@ fn decode_subset(
             }
         }
     }
-    *geometry_cursor = index_range.end;
-
-    Ok(PackedSubset {
-        bounding_sphere: record.sphere,
-        bounding_box: record.aabb,
-        vertices,
-        triangles,
-        components,
-        palette,
-        has_alpha: (record.flags & 1) as u8,
-        has_uv_controller: ((record.flags >> 1) & 1) as u8,
-        water: match (record.flags >> 2) & 7 {
-            0 => 0,
-            1 => 1,
-            3 => 2,
-            _ => SUBSET_WATER_DRY_SPACE,
-        },
-        horizon_footprint: record.horizon_footprint,
-        texture,
-        water_look,
-    })
+    Ok((vertices, triangles))
 }
 
 fn validate_header(header: &StaticMeshesFileHeader) -> io::Result<()> {

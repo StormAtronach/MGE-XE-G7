@@ -565,3 +565,131 @@ fn water_look_offset_length_termination_and_owner_are_validated() {
     });
     assert_invalid(&bytes);
 }
+
+fn assert_tables_invalid(bytes: &[u8], file_len: u64) {
+    let error = read_static_tables(bytes, file_len).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData, "{error}");
+}
+
+/// The table reader gives what the full reader gives of the tables, from the table area alone.
+#[test]
+fn the_tables_match_the_full_reader_from_the_table_area_alone() {
+    let (_, bytes) = fixture();
+    let full = deserialize_static_meshes(&bytes).unwrap();
+    let size = static_tables_size(&bytes, bytes.len() as u64).unwrap();
+    assert!(size < bytes.len());
+
+    let tables = read_static_tables(&bytes[..size], bytes.len() as u64).unwrap();
+    assert_eq!(tables.statics.len(), full.len());
+    for (table, packed) in tables.statics.iter().zip(&full) {
+        assert_eq!(table.static_type, packed.static_type);
+        assert_eq!(table.record.sphere, packed.bounding_sphere);
+        assert_eq!(table.subsets.len(), packed.subsets.len());
+        for (subset, packed) in table.subsets.iter().zip(&packed.subsets) {
+            assert_eq!(subset.texture, packed.texture);
+            assert_eq!(subset.water_look, packed.water_look);
+            assert_eq!(subset.components, packed.components);
+            assert_eq!(subset.palette, packed.palette);
+            assert_eq!(subset.water(), packed.water);
+            assert_eq!(subset.record.vertex_count as usize, packed.vertices.len());
+            assert_eq!(subset.record.triangle_count as usize, packed.triangles.len());
+        }
+    }
+
+    // One byte short of the table area is refused before a table is read.
+    assert_tables_invalid(&bytes[..size - 1], bytes.len() as u64);
+}
+
+/// The size of the read comes from the header, which a bad file can lie in: it is checked
+/// against the file's length and the cap before anything is read or allocated.
+#[test]
+fn a_header_that_lies_about_its_table_area_is_refused_before_a_read() {
+    let (_, original) = fixture();
+    let len = original.len() as u64;
+
+    let mut bytes = original.clone();
+    rewrite_header(&mut bytes, |header| header.geometry_blob_offset = len + 8);
+    let error = static_tables_size(&bytes, len).unwrap_err();
+    assert!(error.to_string().contains("past the end of the file"), "{error}");
+
+    let mut bytes = original.clone();
+    rewrite_header(&mut bytes, |header| header.geometry_blob_offset = MAX_TABLE_AREA + 8);
+    let error = static_tables_size(&bytes, MAX_TABLE_AREA * 2).unwrap_err();
+    assert!(error.to_string().contains("over the limit"), "{error}");
+
+    assert!(static_tables_size(&original[..HEADER_SIZE - 1], len).is_err());
+}
+
+/// The faults of risk 9, a component or palette range past its table, and the like: the table
+/// reader refuses each with its reason.
+#[test]
+fn ranges_past_their_tables_are_refused_by_the_table_reader() {
+    let (_, original) = fixture();
+    let len = original.len() as u64;
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.component_count += 1000);
+    assert_tables_invalid(&bytes, len);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.palette_count += 1000);
+    assert_tables_invalid(&bytes, len);
+
+    let mut bytes = original.clone();
+    rewrite_static(&mut bytes, 0, |record| record.subset_count += 1000);
+    assert_tables_invalid(&bytes, len);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.texture_path_offset = len * 2);
+    assert_tables_invalid(&bytes, len);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.vertex_offset = len * 2);
+    assert_tables_invalid(&bytes, len);
+}
+
+#[test]
+fn load_static_tables_reads_the_tables_of_a_file() {
+    let (_, bytes) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("static_meshes");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let tables = load_static_tables(&path).unwrap();
+    assert_eq!(tables, read_static_tables(&bytes, bytes.len() as u64).unwrap());
+
+    std::fs::write(&path, &bytes[..HEADER_SIZE - 1]).unwrap();
+    assert_eq!(load_static_tables(&path).unwrap_err().kind(), ErrorKind::InvalidData);
+}
+
+/// A corruption of a valid file gives Ok or Err, never a panic: each truncation, and 4000 changes
+/// of one to four bytes at places from a fixed seed (a failure repeats), half of them in the
+/// table area.
+#[test]
+fn no_corruption_makes_a_reader_panic() {
+    let (_, original) = fixture();
+    let len = original.len() as u64;
+    let size = static_tables_size(&original, len).unwrap();
+
+    for end in 0..original.len() {
+        let _ = read_static_tables(&original[..end], len);
+        let _ = read_static_tables(&original[..end], end as u64);
+        let _ = deserialize_static_meshes(&original[..end]);
+    }
+
+    // A linear congruential generator (Knuth's MMIX constants).
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as usize
+    };
+    for _ in 0..4000 {
+        let mut bytes = original.clone();
+        for _ in 0..1 + next() % 4 {
+            let at = if next() % 2 == 0 { next() % size } else { next() % bytes.len() };
+            bytes[at] = next() as u8;
+        }
+        let _ = read_static_tables(&bytes, len);
+        let _ = deserialize_static_meshes(&bytes);
+    }
+}

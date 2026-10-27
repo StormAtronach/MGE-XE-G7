@@ -1263,7 +1263,7 @@ fn load_after_generation(usable: bool, folder: &Path) -> Result<Loaded, String> 
 }
 
 fn load(folder: &Path) -> Result<Loaded, String> {
-    if let Some(problem) = version_problem(folder).or_else(|| statics::flags_problem_in(folder)) {
+    if let Some(problem) = version_problem(folder).or_else(|| statics::tables_problem_in(folder)) {
         return Err(problem);
     }
     let read = |name: &str| std::fs::read(folder.join(name)).map_err(|error| format!("{name}: {error}"));
