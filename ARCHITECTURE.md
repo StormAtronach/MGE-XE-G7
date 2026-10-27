@@ -93,7 +93,7 @@ process must remain Win32.
 | `MGE3\MGE XE Default Statics Classifiers.toml` | shipped assets | generator | Default global distant-land overrides, enabled in new generation jobs and written as a commented example of the mod-metadata schema. External GUI localization files are intentionally not supported in this schema revision. |
 | `Data Files\distantland\…` | MGEXEgui, or mgeHost64 startup generation (committed in place, one exclusive writer) | d3d8.dll + mgeHost64 host | Generated distant-land data set. See [distantland-data.md](docs/architecture/distantland-data.md). |
 | `Data Files\shaders\core` / `core-mods` / `XEshaders` | shipped assets / users | d3d8.dll | Core HLSL effects, core shader-mod overlays, and user post-process shaders. Compiled at runtime, not into the DLL. |
-| `mgeXE.log`, `mgeHost64*.log` | runtime / host | users, MGEXEgui log viewer | Diagnostics. |
+| `mgeXE.log` (and `mgeXE.log.1`, the run before), `mgeHost64*.log` | runtime / host | users, MGEXEgui log viewer | Diagnostics. |
 
 ---
 

@@ -163,7 +163,8 @@ To remove the archive:
 1. From the Morrowind folder: `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`, `numidium.exe`,
    `mgeXE.toml`, `mge3\MGE XE Default Statics Classifiers.toml`, the readme and license
    files of the archive, and the files the renderer wrote: `nirender.log`,
-   `nirender-host.log`, `mgeXE.log`, `mgeXE-shaders.txt` and any `nirender-<date>.nircap`.
+   `nirender-host.log` and `mgeXE.log` (each with its `.1`, the log of the run before),
+   `mgeXE-shaders.txt` and any `nirender-<date>.nircap`.
 2. `MWSE.dll`: put your copy back, or run `MWSE-Update.exe` to get the public MWSE back.
 3. From `Data Files`: `MWSE\lib\akulakhan.dll`, `MWSE\mods\nirender`,
    `MWSE\config\nirender.json` (if it exists), `MWSE\mods\MGE XE Options`,

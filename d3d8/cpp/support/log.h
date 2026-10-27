@@ -4,6 +4,8 @@
 
 
 namespace LOG {
+    // Opens the log at `filename` for this run; the log of the run before stays as
+    // `<filename>.1`.
     bool open(const char* filename);
     std::size_t write(const char* str);
     std::size_t log(const char* fmt, ...);
