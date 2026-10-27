@@ -87,9 +87,18 @@ git clone https://github.com/Greatness7/MGE-XE.git
 cd MGE-XE
 ```
 
-There are no submodules and no sibling checkouts to arrange. Every dependency resolves from
-crates.io or a public rev-pinned git repository, so a fresh clone plus the prerequisites below
-is the whole setup.
+There are no submodules. The wgpu renderer's branch (`feature/wgpu-renderer`) needs one
+sibling checkout, the nirender plugin's repository, beside this one as `..\nirender-plugin`:
+
+- `mgeHost64` takes the host crate from `../../nirender-plugin/host` (its `Cargo.toml`), so
+  `numidium.exe` is built from that checkout as it is;
+- `d3d8`'s build reads the plugin's contract header `contract/mge_render_link.h` from it and
+  stops when the header is not there;
+- `cargo xtask` copies the plugin (`akulakhan.dll` and its Lua) from it into the build.
+
+`NIRENDER_PLUGIN_DIR` names another place for the d3d8 build and for `cargo xtask`;
+`mgeHost64`'s path is fixed. Every other dependency resolves from crates.io or a public
+rev-pinned git repository.
 
 ## Prerequisites
 
