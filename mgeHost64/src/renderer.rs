@@ -218,7 +218,10 @@ fn hello_check(bytes: &[u8]) -> Result<String, String> {
         }
         None => String::new(),
     };
-    if version >= 1 && format == EXTENSION_FORMAT {
+    if version == 0 {
+        return Err(mismatch_text(&format!("d3d8.dll ({build})"), "writes a hello record of version 0, which this build cannot read"));
+    }
+    if format == EXTENSION_FORMAT {
         return Ok(build);
     }
     Err(mismatch_text(&format!("d3d8.dll ({build})"), &format!("writes the extension format {format}")))
@@ -291,6 +294,7 @@ mod handshake_tests {
     #[test]
     fn a_short_hello_and_a_missing_hello_are_refused() {
         assert!(hello_check(&[1, 0, 0, 0]).unwrap_err().contains("too short"));
+        assert!(hello_check(&hello(0, EXTENSION_FORMAT, "x")).unwrap_err().contains("a hello record of version 0"));
         assert!(no_hello_text().contains("d3d8.dll (a build from before the handshake) sent no hello record"));
     }
 
@@ -2205,6 +2209,14 @@ impl Extension for DistantLand {
                 Ok(build) => {
                     println!("d3d8.dll {build}, extension format {EXTENSION_FORMAT}");
                     self.hello = Some(build);
+                }
+                // A replay of a capture of another format plays on, as for the stream format
+                // (the owner's answer 1): the picture can differ.
+                Err(message) if self.synchronous => {
+                    println!("capture of another extension format; the picture can differ:");
+                    for line in message.lines().skip(1).take(2) {
+                        println!("  {line}");
+                    }
                 }
                 Err(message) => stop_mismatch(&message),
             }
