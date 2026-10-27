@@ -12,9 +12,14 @@ fn main() {
 
     // The contract of the nirender plugin (`mge_render_link.h`): the packets and the calls of
     // the wgpu path between the plugin and this DLL. The plugin's repository is a sibling of
-    // this one, as for mgeHost64's path dependency on its crate.
-    let contract_dir = manifest_dir.join("..").join("..").join("nirender-plugin").join("contract");
-    assert!(contract_dir.join("mge_render_link.h").exists(), "the nirender plugin's contract is not at {}", contract_dir.display());
+    // this one, as for mgeHost64's path dependency on its crate, or the one that
+    // NIRENDER_PLUGIN_DIR names, as for xtask's `plugin_dir`: a worktree of this repository
+    // builds against the contract of its paired plugin worktree, not of the main checkout
+    // (the C2382 of 2026-10-27 hid that way).
+    println!("cargo:rerun-if-env-changed=NIRENDER_PLUGIN_DIR");
+    let plugin_dir = env::var_os("NIRENDER_PLUGIN_DIR").map(PathBuf::from).unwrap_or_else(|| manifest_dir.join("..").join("..").join("nirender-plugin"));
+    let contract_dir = plugin_dir.join("contract");
+    assert!(contract_dir.join("mge_render_link.h").exists(), "the nirender plugin's contract is not at {} (NIRENDER_PLUGIN_DIR names the plugin's repository)", contract_dir.display());
 
     println!("cargo:rerun-if-changed={}", cpp_dir.display());
     println!("cargo:rerun-if-changed={}", def_file.display());
