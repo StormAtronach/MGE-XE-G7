@@ -646,6 +646,9 @@ pub fn unpadded(name: &[u8]) -> &[u8] {
 /// The bytes of a subset, from the reader thread.
 struct Arrival {
     subset: u32,
+    /// The reader could not open the shard of the subset or read its bytes: the rest is
+    /// empty, and the subset is not asked for again.
+    unreadable: bool,
     vertices: Vec<u8>,
     indexes: Vec<u8>,
     /// The triangles of the three levels of detail: all, far, very far.
@@ -655,50 +658,79 @@ struct Arrival {
     bent: bool,
 }
 
+impl Arrival {
+    fn unreadable(subset: u32) -> Arrival {
+        Arrival { subset, unreadable: true, vertices: Vec::new(), indexes: Vec::new(), faces: [0; 3], bent: false }
+    }
+}
+
 /// Reads the vertices and the indexes of the subsets that the renderer asks for. The indexes
 /// of a merged subset come out with the triangles of the very far tier first, then those of
-/// the far tier, then the rest.
+/// the far tier, then the rest. A subset that cannot be read gets an answer too
+/// ([`Arrival::unreadable`]): every request is answered.
 fn reader(catalog: Arc<Catalog>, requests: Receiver<u32>, arrivals: Sender<Arrival>) {
-    let mut files: HashMap<u16, File> = HashMap::new();
+    // A shard that could not be opened is remembered as None: its subsets are answered
+    // without another try.
+    let mut files: HashMap<u16, Option<File>> = HashMap::new();
     for subset in requests {
-        let s = &catalog.subsets[subset as usize];
-        let file = match files.entry(s.shard) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let path = catalog.folder.join("statics").join(format!("static_meshes_{:03}", s.shard));
-                let Ok(file) = File::open(path) else { continue };
-                entry.insert(file)
+        let Some(arrival) = read_subset(&catalog, &mut files, subset) else {
+            if arrivals.send(Arrival::unreadable(subset)).is_err() {
+                return;
             }
-        };
-        let mut vertices = vec![0u8; s.vertex_count as usize * VERTEX];
-        let mut source = vec![0u8; s.triangle_count as usize * TRIANGLE];
-        if file.seek_read(&mut vertices, s.vertex_offset).is_err() || file.seek_read(&mut source, s.index_offset).is_err() {
             continue;
-        }
-        let mut faces = [s.triangle_count; 3];
-        let indexes = if s.components.is_empty() {
-            source
-        } else {
-            let mut ordered = Vec::with_capacity(source.len());
-            let mut counts = [0u32; 3];
-            for tier in [2u8, 1, 0] {
-                for component in s.components.iter().filter(|c| c.tier == tier) {
-                    let from = component.first_triangle as usize * TRIANGLE;
-                    let to = from + component.triangle_count as usize * TRIANGLE;
-                    if let Some(bytes) = source.get(from..to) {
-                        ordered.extend_from_slice(bytes);
-                        counts[tier as usize] += component.triangle_count;
-                    }
-                }
-            }
-            faces = [counts[0] + counts[1] + counts[2], counts[2] + counts[1], counts[2]];
-            ordered
         };
-        let bent = s.grass && normal_alignment(&vertices, &indexes).is_some_and(|share| share >= BENT_SHARE);
-        if arrivals.send(Arrival { subset, vertices, indexes, faces, bent }).is_err() {
+        if arrivals.send(arrival).is_err() {
             return;
         }
     }
+}
+
+/// The bytes of one subset from its shard; [`None`] when the shard cannot be opened, or the
+/// read fails or ends short (a truncated shard would arrive zero-filled otherwise).
+fn read_subset(catalog: &Catalog, files: &mut HashMap<u16, Option<File>>, subset: u32) -> Option<Arrival> {
+    let s = &catalog.subsets[subset as usize];
+    let file = files
+        .entry(s.shard)
+        .or_insert_with(|| File::open(catalog.folder.join("statics").join(format!("static_meshes_{:03}", s.shard))).ok())
+        .as_ref()?;
+    let mut vertices = vec![0u8; s.vertex_count as usize * VERTEX];
+    let mut source = vec![0u8; s.triangle_count as usize * TRIANGLE];
+    read_whole(file, &mut vertices, s.vertex_offset)?;
+    read_whole(file, &mut source, s.index_offset)?;
+    let mut faces = [s.triangle_count; 3];
+    let indexes = if s.components.is_empty() {
+        source
+    } else {
+        let mut ordered = Vec::with_capacity(source.len());
+        let mut counts = [0u32; 3];
+        for tier in [2u8, 1, 0] {
+            for component in s.components.iter().filter(|c| c.tier == tier) {
+                let from = component.first_triangle as usize * TRIANGLE;
+                let to = from + component.triangle_count as usize * TRIANGLE;
+                if let Some(bytes) = source.get(from..to) {
+                    ordered.extend_from_slice(bytes);
+                    counts[tier as usize] += component.triangle_count;
+                }
+            }
+        }
+        faces = [counts[0] + counts[1] + counts[2], counts[2] + counts[1], counts[2]];
+        ordered
+    };
+    let bent = s.grass && normal_alignment(&vertices, &indexes).is_some_and(|share| share >= BENT_SHARE);
+    Some(Arrival { subset, unreadable: false, vertices, indexes, faces, bent })
+}
+
+/// Fills `buffer` from `file` at `offset`; [`None`] on an error or when the file ends first.
+fn read_whole(file: &File, buffer: &mut [u8], offset: u64) -> Option<()> {
+    let mut done = 0;
+    while done < buffer.len() {
+        let count = file.seek_read(&mut buffer[done..], offset + done as u64).ok()?;
+        if count == 0 {
+            return None;
+        }
+        done += count;
+    }
+    Some(())
 }
 
 /// The distance from the camera to the centre of a place, across the ground.
@@ -907,6 +939,9 @@ pub struct GrassShadow {
     pub rcp: f32,
     /// The visibility of the sun, for the light that `shadowSunEstimate` gives.
     pub sun_vis: f32,
+    /// The day of the hour (1 less the night): the shadow fades out through dusk and in
+    /// through dawn, as the shadow of the ground under the grass does.
+    pub day: f32,
     /// The camera is above the sea: the fog weakens the shadow less below it.
     pub above_sea: bool,
     /// The shadow of a blade ends as the shadow of the ground under it: the fade at the edge
@@ -932,8 +967,9 @@ struct GrassUniforms {
     /// `shadecolor`, and `shade` of `shadowSunEstimate`.
     shade: [f32; 4],
     /// x: 1 with a shadow map. y: the light of the sun for `shadowSunEstimate` (the luminance
-    /// of its colour, times 0.25 + 0.75 of its visibility). z: 1 above the sea. w: 1 for the
-    /// fade of the ground at the edge and in the fog.
+    /// of its colour, times 0.25 + 0.75 of its visibility, times the day of the hour as the
+    /// ground gets it). z: 1 above the sea. w: 1 for the fade of the ground at the edge and in
+    /// the fog.
     shadow: [f32; 4],
     /// The looks of Remiros' Groundcover: x soft end, y vertex colour sway, z wrap lighting.
     look: [f32; 4],
@@ -1228,6 +1264,14 @@ pub struct Statics {
     frame_ended: bool,
     /// A pool could not grow for a subset: said once.
     pool_full: bool,
+    /// The subsets the reader thread could not read (a shard missing or unreadable): not asked
+    /// for again. The first is said; the count is in the summary.
+    unreadable: HashSet<u32>,
+    /// The subsets that arrived and found no room in the pool of their texture (it cannot grow
+    /// past the largest buffer of the device): not asked for again until a slot of that pool
+    /// goes free.
+    refused: HashSet<u32>,
+    refused_count: u64,
     /// The sets that `prepare` chose for this frame.
     prepared: [bool; 4],
     /// The view groups of the frame, one for each set, and their layout (group 0 of the
@@ -1346,6 +1390,9 @@ impl Statics {
             queue: None,
             frame_ended: false,
             pool_full: false,
+            unreadable: HashSet::new(),
+            refused: HashSet::new(),
+            refused_count: 0,
             prepared: [false; 4],
             view_layout: None,
             view_groups: Vec::new(),
@@ -1593,7 +1640,8 @@ impl Statics {
         wanted.sort_unstable();
         wanted.dedup();
         for subset in wanted {
-            if !self.resident.contains_key(&subset) && self.requested.insert(subset) {
+            if self.may_ask(subset) {
+                self.requested.insert(subset);
                 let _ = requests.send(subset);
                 if let Some(wait) = self.wait.as_mut() {
                     wait.asked += 1;
@@ -1698,15 +1746,21 @@ impl Statics {
     fn take_off(&mut self, subset: u32) -> Option<Resident> {
         let resident = self.resident.remove(&subset)?;
         self.resident_bytes -= resident.bytes;
-        if let Geometry::Pool(slot) = resident.geometry {
-            if let Some(gpu) = self.gpu.as_mut() {
-                gpu.pools.remove(slot);
-                if let (Some(culling), Some(queue)) = (gpu.culling.as_ref(), self.queue.as_ref()) {
-                    queue.write_buffer(&culling.subsets, subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&cull::Subset::default()));
-                }
+        if let Geometry::Pool(slot) = resident.geometry
+            && let Some(gpu) = self.gpu.as_mut()
+        {
+            gpu.pools.remove(slot);
+            if let (Some(culling), Some(queue)) = (gpu.culling.as_ref(), self.queue.as_ref()) {
+                queue.write_buffer(&culling.subsets, subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&cull::Subset::default()));
             }
         }
         Some(resident)
+    }
+
+    /// True when `subset` may be asked for from the reader thread: it is not on the GPU, not
+    /// asked for already, and neither unreadable nor refused by a full pool.
+    fn may_ask(&self, subset: u32) -> bool {
+        !self.resident.contains_key(&subset) && !self.requested.contains(&subset) && !self.unreadable.contains(&subset) && !self.refused.contains(&subset)
     }
 
     /// Takes the farthest merged subsets off the GPU while their bytes are over the cap: after
@@ -1742,7 +1796,9 @@ impl Statics {
             return;
         };
         let distance = |subset: u32| flat_distance(&catalog.instances[catalog.merged_place[&subset] as usize], eye);
-        let mut wanted: Vec<(f32, u32, u64)> = self.wanted.drain(..).filter(|subset| !self.resident.contains_key(subset) && !self.requested.contains(subset)).map(|subset| (distance(subset), subset, catalog.subsets[subset as usize].bytes())).collect();
+        let mut pending = std::mem::take(&mut self.wanted);
+        let mut wanted: Vec<(f32, u32, u64)> = pending.drain(..).filter(|subset| self.may_ask(*subset)).map(|subset| (distance(subset), subset, catalog.subsets[subset as usize].bytes())).collect();
+        self.wanted = pending;
         wanted.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         wanted.dedup_by_key(|w| w.1);
         let asked: u64 = self.requested.iter().filter(|subset| catalog.merged_place.contains_key(subset)).map(|subset| catalog.subsets[*subset as usize].bytes()).sum();
@@ -1838,8 +1894,8 @@ impl Statics {
         // The places of the merged subsets that arrived in play, counted after the loop.
         let mut in_play = Vec::new();
         while self.synchronous || (count < ARRIVALS_IN_FRAME && bytes < ARRIVAL_BYTES_IN_FRAME) {
-            // Synchronous: all that was asked for comes now. A subset that the reader thread
-            // could not read never comes: a limit of time.
+            // Synchronous: all that was asked for comes now; every request is answered, so
+            // the limit of time covers a dead reader thread only.
             let arrival = if self.synchronous {
                 if self.requested.is_empty() {
                     break;
@@ -1856,19 +1912,30 @@ impl Statics {
                 break;
             };
             // The camera can be far away again.
-            if !self.requested.remove(&arrival.subset) || arrival.indexes.is_empty() {
+            if !self.requested.remove(&arrival.subset) {
+                continue;
+            }
+            let Some(catalog) = self.catalog.as_ref() else { continue };
+            let s = &catalog.subsets[arrival.subset as usize];
+            // A subset with no triangles would be asked for again each frame: it goes with
+            // the unreadable ones.
+            if arrival.unreadable || arrival.indexes.is_empty() {
+                if self.unreadable.is_empty() {
+                    println!("distant statics: subset {} {} statics/static_meshes_{:03}; such a subset is not drawn and not asked for again (the count is in the summary)", arrival.subset, if arrival.unreadable { "cannot be read from" } else { "has no triangles in" }, s.shard);
+                }
+                self.unreadable.insert(arrival.subset);
                 continue;
             }
             let size = (arrival.vertices.len() + arrival.indexes.len()) as u64;
-            let Some(catalog) = self.catalog.as_ref() else { continue };
-            let s = &catalog.subsets[arrival.subset as usize];
             let geometry = if s.pooled() {
                 let Some(gpu) = self.gpu.as_mut() else { continue };
                 let Some(slot) = gpu.pools.put(device, queue, s.texture, &arrival.vertices, &arrival.indexes) else {
                     if !self.pool_full {
                         self.pool_full = true;
-                        println!("distant statics: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn");
+                        println!("distant statics: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn until a slot of the pool goes free");
                     }
+                    self.refused.insert(arrival.subset);
+                    self.refused_count += 1;
                     continue;
                 };
                 if let Some(culling) = gpu.culling.as_ref() {
@@ -2015,8 +2082,7 @@ impl Statics {
             shade: [super::shadow::SHADE_COLOR[0], super::shadow::SHADE_COLOR[1], super::shadow::SHADE_COLOR[2], super::shadow::SHADE],
             shadow: frame.shadow.as_ref().map_or([0.0; 4], |shadow| {
                 let c = frame.sun_color;
-                let luminance = c[0] * 0.36 + c[1] * 0.53 + c[2] * 0.11;
-                [1.0, luminance * (0.25 + 0.75 * shadow.sun_vis), shadow.above_sea as u32 as f32, shadow.edge as u32 as f32]
+                [1.0, super::shadow::sun_light([c[0], c[1], c[2]], shadow.sun_vis, shadow.day), shadow.above_sea as u32 as f32, shadow.edge as u32 as f32]
             }),
             look: frame.look,
         };
@@ -2113,7 +2179,7 @@ impl Statics {
                     let subset = &catalog.subsets[instance.subset as usize];
                     let Some(look) = subset.look else { continue };
                     let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
-                    if !subset.components.is_empty() && (to[0] * to[0] + to[1] * to[1]).sqrt() <= admit + instance.radius && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
+                    if !subset.components.is_empty() && (to[0] * to[0] + to[1] * to[1]).sqrt() <= admit + instance.radius && self.may_ask(instance.subset) {
                         self.wanted.push(instance.subset);
                     }
                     let Some(Resident { geometry: Geometry::Own { vertices, indexes }, faces, .. }) = self.resident.get(&instance.subset) else { continue };
@@ -2227,7 +2293,7 @@ impl Statics {
                 let mut room: HashMap<u32, (u32, u32)> = HashMap::new();
                 for &index in &world.merged {
                     let instance = &catalog.instances[index as usize];
-                    if !hidden(&self.shown, instance.group) && !self.resident.contains_key(&instance.subset) && !self.requested.contains(&instance.subset) {
+                    if !hidden(&self.shown, instance.group) && self.may_ask(instance.subset) {
                         self.wanted.push(instance.subset);
                         let s = &catalog.subsets[instance.subset as usize];
                         if s.pooled() {
@@ -2259,10 +2325,10 @@ impl Statics {
             if hidden(&self.shown, instance.group) || flat_distance(instance, eye) > admit + instance.radius {
                 continue;
             }
-            match self.resident.get_mut(&instance.subset) {
-                Some(resident) => resident.wanted_at = now,
-                None if !self.requested.contains(&instance.subset) => self.wanted.push(instance.subset),
-                None => {}
+            if let Some(resident) = self.resident.get_mut(&instance.subset) {
+                resident.wanted_at = now;
+            } else if self.may_ask(instance.subset) {
+                self.wanted.push(instance.subset);
             }
         }
     }
@@ -2353,7 +2419,11 @@ impl Statics {
         if self.frame_ended {
             self.frame_ended = false;
             if let Some(gpu) = self.gpu.as_mut() {
-                gpu.pools.next_frame();
+                let freed = gpu.pools.next_frame();
+                // Those pools have room again: the subsets they refused may be asked for.
+                if let (false, Some(catalog)) = (freed.is_empty(), self.catalog.as_ref()) {
+                    self.refused.retain(|refused| !freed.contains(&catalog.subsets[*refused as usize].texture));
+                }
             }
         }
         // The merged subsets that the draws before wanted are asked for before the arrivals
@@ -2613,6 +2683,9 @@ impl Drop for Statics {
             if self.high_mark() >= u64::MAX / 2 { "none".to_string() } else { format!("{:.0} MB", self.high_mark() as f64 / 1e6) },
             self.trimmed
         );
+        if !self.unreadable.is_empty() || self.refused_count > 0 {
+            println!("distant statics: {} subsets could not be read, {} arrivals found no room in a full pool", self.unreadable.len(), self.refused_count);
+        }
         println!(
             "grass: {} frames, {:.0} records in a frame as a mean, {} frames with more than {GRASS_RECORDS}; {} subsets arrived, {} of them with bent normals",
             self.grass_frames,
@@ -3248,5 +3321,80 @@ mod tests {
         assert!(!hidden(&[0, 0], 0));
         assert!(!hidden(&[], 2));
         assert!(!hidden(&[1, 0], 9));
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::mpsc::channel;
+
+    use super::{Catalog, Subset, read_whole, reader};
+
+    /// A read past the end of the shard is a failure, not a zero-filled buffer.
+    #[test]
+    fn a_short_read_is_a_failure() {
+        let path = std::env::temp_dir().join("mge-xe-reader-test-short.bin");
+        std::fs::write(&path, [7u8; 10]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut whole = [0u8; 4];
+        assert_eq!(read_whole(&file, &mut whole, 6), Some(()));
+        assert_eq!(whole, [7; 4]);
+        let mut short = [0u8; 16];
+        assert_eq!(read_whole(&file, &mut short, 0), None);
+        assert_eq!(read_whole(&file, &mut whole, 10), None);
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A catalog of one subset in shard 7 of a folder that has no shards.
+    fn catalog_of_a_missing_shard() -> Catalog {
+        let subset = Subset {
+            shard: 7,
+            vertex_offset: 0,
+            index_offset: 0,
+            vertex_count: 3,
+            triangle_count: 1,
+            has_alpha: false,
+            animate_uv: false,
+            water: 0,
+            look: None,
+            sphere: [0.0; 4],
+            texture: 0,
+            palette: 0,
+            components: Vec::new(),
+            grass: false,
+        };
+        Catalog {
+            folder: std::env::temp_dir().join("mge-xe-reader-test-no-shards"),
+            subsets: vec![subset],
+            instances: Vec::new(),
+            worlds: HashMap::new(),
+            textures: Vec::new(),
+            palettes: Vec::new(),
+            merged_place: HashMap::new(),
+            grass: Vec::new(),
+            groups: 1,
+            ordinary_bytes: 0,
+            merged_bytes: 0,
+        }
+    }
+
+    /// A request the reader cannot serve is answered, as unreadable: the renderer takes the
+    /// subset out of the ones asked for, and asks for it no more.
+    #[test]
+    fn a_subset_of_a_missing_shard_is_answered_as_unreadable() {
+        let (requests, request_receiver) = channel();
+        let (arrival_sender, arrivals) = channel();
+        let catalog = Arc::new(catalog_of_a_missing_shard());
+        let thread = std::thread::spawn(move || reader(catalog, request_receiver, arrival_sender));
+        requests.send(0).unwrap();
+        drop(requests);
+        let arrival = arrivals.recv_timeout(std::time::Duration::from_secs(5)).expect("an answer for the unreadable subset");
+        assert_eq!(arrival.subset, 0);
+        assert!(arrival.unreadable);
+        assert!(arrival.vertices.is_empty() && arrival.indexes.is_empty());
+        thread.join().unwrap();
     }
 }
