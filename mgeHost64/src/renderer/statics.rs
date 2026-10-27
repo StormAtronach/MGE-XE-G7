@@ -3078,6 +3078,22 @@ fn make_grass_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, unifo
 }
 
 #[cfg(test)]
+mod shader_tests {
+    use super::{GRASS_SHADER, SET_WGSL, SHADER, SHADOW_SHADER};
+
+    /// The shaders of the distant statics compile as the device checks them: the statics of
+    /// a set, their caster of the shadow map, and the grass.
+    #[test]
+    fn the_shaders_of_the_statics_are_valid() {
+        let check = crate::renderer::shader_check::check;
+        let view = crate::renderer::view::wgsl();
+        check("distant statics", &format!("{view}{SET_WGSL}{SHADER}{}", crate::renderer::FOG_FUNCTION)).unwrap();
+        check("distant statics shadow", &format!("{view}{SET_WGSL}{SHADOW_SHADER}")).unwrap();
+        check("grass", &format!("{view}{GRASS_SHADER}")).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{cap_from_budget, cap_move, flags_problem, half, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 

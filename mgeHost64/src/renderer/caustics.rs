@@ -230,10 +230,7 @@ mod tests {
     /// The shader compiles: the WGSL is read and checked as the device does it.
     #[test]
     fn the_shader_is_valid() {
-        use nirender_wgpu::wgpu::naga;
-        let source = super::shader();
-        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
+        crate::renderer::shader_check::check("caustics", &super::shader()).unwrap();
     }
 
     /// The chain has a draw for each doubling of the most factor, 1 + the strength: one to a

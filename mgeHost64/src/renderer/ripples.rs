@@ -521,9 +521,7 @@ mod tests {
     /// The shader compiles: the WGSL is read and checked as the device does it.
     #[test]
     fn the_shader_is_valid() {
-        use wgpu::naga;
-        let module = naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|error| panic!("{}", error.emit_to_string(SHADER)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
+        let module = crate::renderer::shader_check::check("ripples", SHADER).unwrap();
         for entry in ["vs", "step_fs", "player_fs"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
