@@ -102,7 +102,11 @@ Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export
   `max_sampled_textures_per_shader_stage` = min(adapter, 32), `max_buffer_size` = the
   adapter's. So there are 4 bind groups and 8 storage buffers per stage; the statics cull uses
   all 8 in one stage.
-- Formats: depth `Depth24PlusStencil8` everywhere (stencil bit `0x02` counts the dry spaces).
+- Formats: one depth format everywhere (`scene.depth_format`): `Depth32FloatStencil8` when
+  the adapter has it, else `Depth24PlusStencil8` (stencil bit `0x02` counts the dry spaces).
+  With the float format the depth of the world view is reversed (near 1, far 0): the nirender
+  host's `depth.rs` gives each pipeline its compare and each clear its value, and the shadow
+  map keeps the plain convention.
   The game draws into an off-screen back buffer (`Bgra8Unorm`, else the first non-sRGB
   format of the surface; `Rgba8Unorm` in a replay), copied to the surface at the end of the
   frame.
