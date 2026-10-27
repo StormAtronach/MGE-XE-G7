@@ -164,9 +164,10 @@ Doing so will cause out-of-memory crashes as well as the removal of several of
 our features and performance improvements.
 
 The test archive with the wgpu renderer (its name ends in `-nirender-v<version>`)
-does not include `d3d9.dll`: the wgpu renderer does not use it, and MGE XE on
-Direct3D 9 then runs with the `d3d9.dll` you have, or with the one of Windows.
-`MGE XE Renderer Readme.md` has the install steps of that archive.
+does not include `d3d9.dll`: the wgpu renderer does not use it. To use MGE XE on
+Direct3D 9 from that archive (`renderer_wgpu = false`), take `d3d9.dll` from the
+MGE XE G7 archive. `MGE XE Renderer Readme.md` has the install steps of the test
+archive.
 
 After installing run `MGEXEgui.exe` from the Morrowind folder:
 

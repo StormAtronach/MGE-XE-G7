@@ -33,8 +33,8 @@ a warning about an unknown key.
 To go back to MGE XE on Direct3D 9, set the line to `false`. The plugin is then idle.
 
 This archive does not have the `d3d9.dll` (DXVK) of MGE XE G7. The new renderer does not
-use it. MGE XE on Direct3D 9 runs with the `d3d9.dll` that you have, or with the one of
-Windows.
+use it. To use MGE XE on Direct3D 9 (`renderer_wgpu = false`), take `d3d9.dll` from the
+MGE XE G7 archive: its distant land on Direct3D 9 needs that build of DXVK.
 
 How to know that the new renderer is in use:
 
@@ -124,7 +124,8 @@ In both ways, add `MGEXEgui.exe` as an executable of Mod Organizer 2 and run it 
 there, so that the distant land generator sees your mods. Check that the mod has the
 `.dll` files (`MWSE\lib\akulakhan.dll`, `MWSE\lib\watervolumes.dll`): a mod manager that
 leaves them out gives you MGE XE on Direct3D 9 without the distant land, and `MWSE.log`
-says `akulakhan.dll not loaded`.
+has the line `[nirender] akulakhan.dll not loaded. If you use a mod manager, check that it
+did not leave .dll files out.`
 
 ### The settings you may need
 
@@ -135,13 +136,14 @@ yours. Each key goes below its section line.
 | --- | --- | --- | --- |
 | `renderer_wgpu` | `[runtime]` | `true` | a file from an earlier test build has `false`; `false` goes back to Direct3D 9 |
 | `renderer_backend` | `[runtime]` | `"auto"`, `"vulkan"` or `"dx12"` | to name the backend; a window capture of the game (OBS) needs `"dx12"` |
-| `renderer_texture_slots` | `[runtime]` | `0`, or `32768` | some textures draw white and `nirender-host.log` says the room is full |
+| `renderer_texture_slots` | `[runtime]` | `0` (automatic); a larger number only if `nirender-host.log` says the room is full | some textures draw white; see "The switch" above |
 | `automatic_rebuild` | `[distant_land]` | `true` | the distant land is made again at the start when your mods or the data version change; a new file has it |
 
 ### Upgrade from an earlier test build
 
 - From v0.2.11 or later: extract the whole archive over the old files, overwriting. Every
-  archive since v0.2.11 has the same file names, so there is nothing to delete. With Mod
+  file name of an archive since v0.2.11 is in the later archives too (True Water came in
+  with v0.2.15), so there is nothing to delete. With Mod
   Organizer 2, replace the content of the mod. Read the release notes of the new build:
   they say when the distant land must be generated again, when a setting changed, and
   whether `MWSE.dll` changed.
