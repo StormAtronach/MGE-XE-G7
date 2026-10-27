@@ -186,7 +186,7 @@ const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// back with its [`ARRIVED`].
 const PREFETCH_ID: u32 = 10;
 /// The hello of MGE XE's d3d8.dll (`Deviceless::sendHello`), sent once at the plugin's load
-/// and kept: version 1, the extension format of d3d8.dll, then its build id as 32 bytes of
+/// and kept: version 1, the extension format of d3d8.dll, then its build id as 64 bytes of
 /// ASCII. This build compares the format with [`EXTENSION_FORMAT`] and stops on a
 /// difference; a live session without the record stops at its first world frame (a d3d8.dll
 /// from before the handshake). A replay plays on: a capture from before the record has none.
@@ -197,7 +197,7 @@ const HELLO_ID: u32 = 11;
 const EXTENSION_FORMAT: u32 = 1;
 /// The bytes of a hello record: the version, the format, then the build id.
 const HELLO_BUILD_ID_AT: usize = 8;
-const HELLO_BUILD_ID_BYTES: usize = 32;
+const HELLO_BUILD_ID_BYTES: usize = 64;
 
 /// The build id of this program: its name, its version and its commit (`build.rs` puts the
 /// commit into MGE_COMMIT).

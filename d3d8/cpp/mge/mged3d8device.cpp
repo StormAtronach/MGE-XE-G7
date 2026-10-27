@@ -1630,7 +1630,8 @@ namespace Deviceless {
     struct Hello {
         UINT version;
         UINT format;
-        char buildId[32];
+        // MGE_BUILD_ID, zero-ended: 64 bytes hold a longer version and a dirty mark.
+        char buildId[64];
     };
     static const UINT HelloId = 11 | 0x80000000u;
 

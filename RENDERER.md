@@ -427,6 +427,15 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   it: red the first, green the second, blue outside both, grey a draw without the shadow
   test; darker where the map shadows it.
 - `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
+- `MGE_XE_BOX_SECONDS=<n>`: a message box of d3d8.dll, of the helper or of the plugin
+  closes itself after n seconds, and its text is in that part's log as `box:` lines
+  (always); unset or 0, the box waits for the click. The test runner sets 5.
+- `MGE_XE_STALL_LOG=1` (d3d8.dll): a line in mgeXE.log for each scan of the vis groups with
+  the time the cell worker stalled for it; without it, a line only when a scan or its waits
+  take 2 ms or more.
+- `NIRENDER_HOST_EXE`: not a switch of a player. d3d8.dll sets it to `numidium.exe` of the
+  game folder before it loads the plugin, which starts the program it names as the helper
+  (the plugin's README has the other `NIRENDER_*` variables).
 - `MGE_XE_STATICS_CULL=cpu`: the distant statics are culled on the CPU, not on the GPU.
 - `MGE_XE_STATICS_CAP_MB=<n>`: a fixed cap of the merged subsets of the distant statics, in
   place of `distant_land.statics_fallback_cap_mb`.

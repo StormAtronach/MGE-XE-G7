@@ -153,6 +153,45 @@ void sendToRenderer(UINT id, const void* data, UINT length) {
     }
 }
 
+// A message box of MGE XE with the caption "MGE XE". The rule of every box of the three parts
+// (the failure-path design of the Numidium docs, sections 5 and 5.1; the plugin's and the
+// helper's boxes follow it too): each line goes to mgeXE.log first as "box: "; with
+// MGE_XE_BOX_SECONDS=<n> in the environment the box closes itself after n seconds, through
+// MessageBoxTimeoutA of user32 (not in the documented API, so taken by GetProcAddress; without
+// it the box is only logged); without the switch it waits for the click.
+static void showMessageBox(const char* text) {
+    std::string lines(text);
+    for (size_t start = 0; start <= lines.size();) {
+        size_t end = lines.find('\n', start);
+        if (end == std::string::npos) {
+            end = lines.size();
+        }
+        LOG::logline("box: %s", lines.substr(start, end - start).c_str());
+        start = end + 1;
+    }
+    char value[16] = {};
+    GetEnvironmentVariableA("MGE_XE_BOX_SECONDS", value, sizeof(value));
+    const unsigned seconds = unsigned(std::atoi(value));
+    const UINT flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+    int answer;
+    if (seconds == 0) {
+        answer = MessageBoxA(NULL, text, "MGE XE", flags);
+    } else {
+        typedef int (WINAPI * MessageBoxTimeoutProc)(HWND, LPCSTR, LPCSTR, UINT, WORD, DWORD);
+        MessageBoxTimeoutProc timed = (MessageBoxTimeoutProc)GetProcAddress(GetModuleHandleA("user32.dll"), "MessageBoxTimeoutA");
+        if (!timed) {
+            LOG::logline("box: not shown: this Windows has no MessageBoxTimeoutA");
+            return;
+        }
+        answer = timed(NULL, text, "MGE XE", flags, 0, seconds * 1000);
+    }
+    if (answer == 32000) {
+        LOG::logline("box: closed after %u s, no click", seconds);
+    } else {
+        LOG::logline("box: closed by a click");
+    }
+}
+
 static void* createStreamedD3D(UINT version) {
     char path[MAX_PATH];
     DWORD length = GetModuleFileNameA(NULL, path, MAX_PATH);
@@ -183,13 +222,13 @@ static void* createStreamedD3D(UINT version) {
     BuildIdProc buildId = (BuildIdProc)GetProcAddress(plugin, "nirender_build_id");
     if (!buildId) {
         LOG::logline("!! wgpu renderer: akulakhan.dll is from before the version handshake (no nirender_build_id); this d3d8.dll is " MGE_BUILD_ID);
-        MessageBoxA(NULL,
+        showMessageBox(
             "The parts of the wgpu renderer of MGE XE do not match.\n"
             "akulakhan.dll is from before the version handshake.\n"
             "d3d8.dll is " MGE_BUILD_ID ".\n\n"
             "Install akulakhan.dll, numidium.exe and d3d8.dll from one archive.\n"
-            "The game goes on with Direct3D 9.",
-            "MGE XE", MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+            "The game goes on with Direct3D 9.\n"
+            "mgeXE.log in the folder of the game has the details.");
         return nullptr;
     }
     LOG::logline("-- wgpu renderer: the nirender plugin (%s) gives the game its Direct3D 8", buildId());
