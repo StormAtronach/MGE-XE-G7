@@ -36,7 +36,8 @@ unsafe fn copy_out(text: &str, out: *mut c_char, capacity: usize) {
 }
 
 /// The cached answer of the probe, for `DllMain` (a file read only): 0 none, 1 usable, 2 no
-/// cache or a file that is not one. The reason of the cached answer goes into `reason`.
+/// answer to use (no cache, a file that is not one, or a "no answer" line: the probe asks
+/// again). The reason of the cached line goes into `reason`.
 ///
 /// # Safety
 /// - `path` is a NUL-terminated string that lives through the call, or null.
@@ -45,21 +46,23 @@ unsafe fn copy_out(text: &str, out: *mut c_char, capacity: usize) {
 pub unsafe extern "C" fn mge_probe_cached(path: *const c_char, reason: *mut c_char, capacity: usize) -> u32 {
     // SAFETY: the caller's pointers, as documented.
     let path = unsafe { text_of(path, "mgeXE-renderer-probe.txt") };
-    match mge_probe::read_cache(&path) {
-        Some(cached) => {
-            // SAFETY: as documented.
-            unsafe { copy_out(&cached.answer.reason, reason, capacity) };
-            u32::from(cached.answer.usable)
-        }
-        None => 2,
+    let Some(cached) = mge_probe::read_cache(&path) else {
+        return 2;
+    };
+    // SAFETY: as documented.
+    unsafe { copy_out(&cached.reason, reason, capacity) };
+    match cached.said {
+        mge_probe::Said::None => 0,
+        mge_probe::Said::Usable => 1,
+        mge_probe::Said::NoAnswer => 2,
     }
 }
 
-/// The answer for this machine (`mge_probe::check`): the cache's for the same `key`, else
-/// `numidium.exe --probe`'s (`exe`, the refusal code `exit_gpu`, the limit `seconds`), which
-/// then goes into the cache at `path`. Returns 0 a probe's none, 1 a probe's usable, 2 a
-/// cached none, 3 a cached usable; the reason goes into `reason`, and the probe's own lines
-/// for mgeXE.log into `lines`, one per line end (empty for a cached answer).
+/// The verdict for this machine (`mge_probe::check`): the cache's for the same `key`, else
+/// `numidium.exe --probe`'s (`exe`, the refusal code `exit_gpu`, the limit `seconds`), whose
+/// line then goes into the cache at `path`. Returns the number of `mge_probe::Verdict`
+/// (`MgeProbeVerdict` of mge_probe_ffi.h); the reason goes into `reason`, and the probe's own
+/// lines for mgeXE.log into `lines`, one per line end (empty when no probe ran).
 ///
 /// # Safety
 /// - `exe`, `path` and `key` are NUL-terminated strings that live through the call, or null.
@@ -82,12 +85,8 @@ pub unsafe extern "C" fn mge_probe_check(
     let outcome = mge_probe::check(&exe, &path, &key, exit_gpu, u64::from(seconds));
     // SAFETY: as documented.
     unsafe {
-        copy_out(&outcome.answer.reason, reason, capacity);
+        copy_out(&outcome.reason, reason, capacity);
         copy_out(&outcome.lines.join("\n"), lines, lines_capacity);
     }
-    let cached = match outcome.source {
-        mge_probe::Source::Cache => 2,
-        mge_probe::Source::Probe => 0,
-    };
-    cached + u32::from(outcome.answer.usable)
+    outcome.verdict as u32
 }
