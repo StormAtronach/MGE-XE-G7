@@ -124,7 +124,8 @@ Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export
   into the multisampled colour (`Player::load_color`) for the draws of the interface. The
   grass and the distant statics of the frame draw with alpha to coverage when
   `graphics.transparency_antialiasing` is on, and write no alpha into the back buffer.
-- Surface: `AutoNoVsync`, frame latency 2.
+- Surface: the present mode from `graphics.vsync` (FIFO with vsync on, else `AutoNoVsync`;
+  `MGE_XE_PRESENT` over it for a test), frame latency 2.
 
 ## 3. The frame
 
