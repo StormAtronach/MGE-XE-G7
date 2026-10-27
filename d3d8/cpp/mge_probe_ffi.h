@@ -10,9 +10,10 @@
 // the end).
 extern "C" unsigned int __cdecl mge_probe_cached(const char* path, char* reason, std::size_t capacity);
 
-// What a start does about the wgpu path (mge_probe::Verdict; the decision table is its test).
+// What a start does about the wgpu path (mge_probe::Verdict; the decision table is its test,
+// and a test of the crate compares this list with it).
 enum MgeProbeVerdict : unsigned int {
-    // The probe said none, crashed or did not start: Direct3D 9, and the box.
+    // The probe said none or crashed: Direct3D 9, and the box.
     MgeProbeNone = 0,
     // The probe said usable: the wgpu path.
     MgeProbeUsable = 1,
@@ -25,6 +26,9 @@ enum MgeProbeVerdict : unsigned int {
     MgeProbeNoAnswer = 4,
     // No answer twice in a row for this machine: none, with a box that says so.
     MgeProbeNoAnswerTwice = 5,
+    // The probe did not start (a program can hold numidium.exe): Direct3D 9 for this start,
+    // a box that blames no graphics card; not cached, the next start asks again.
+    MgeProbeNotStarted = 6,
 };
 
 // The verdict for this machine: the cache's when its key is `key` and it holds an answer, else

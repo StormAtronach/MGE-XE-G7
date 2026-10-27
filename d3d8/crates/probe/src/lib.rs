@@ -209,7 +209,7 @@ pub fn read_cache(path: &str) -> Option<Cached> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u32)]
 pub enum Verdict {
-    /// The probe said none, crashed or did not start: Direct3D 9, and the box.
+    /// The probe said none or crashed: Direct3D 9, and the box.
     ProbeNone = 0,
     /// The probe said usable: the wgpu path.
     ProbeUsable = 1,
@@ -224,17 +224,32 @@ pub enum Verdict {
     /// The probe gave no answer twice in a row for this machine: none, with a box that says
     /// so, so that a probe that hangs on a broken driver cannot keep every start blind.
     NoAnswerTwice = 5,
+    /// The probe did not start (another program, a virus scanner for example, can hold a new
+    /// copy of numidium.exe): Direct3D 9 for this start, with a box that says so and blames
+    /// no graphics card; not cached, so the next start asks again.
+    NotStarted = 6,
 }
 
 impl Verdict {
+    /// Every verdict, in the order of its number.
+    pub const ALL: [Verdict; 7] = [
+        Verdict::ProbeNone,
+        Verdict::ProbeUsable,
+        Verdict::CachedNone,
+        Verdict::CachedUsable,
+        Verdict::NoAnswer,
+        Verdict::NoAnswerTwice,
+        Verdict::NotStarted,
+    ];
+
     /// Whether the start takes the wgpu path.
     pub fn wgpu(self) -> bool {
         matches!(self, Verdict::ProbeUsable | Verdict::CachedUsable | Verdict::NoAnswer)
     }
 
-    /// Whether the start shows the box of a none.
+    /// Whether the start shows a box.
     pub fn shows_box(self) -> bool {
-        matches!(self, Verdict::ProbeNone | Verdict::NoAnswerTwice)
+        matches!(self, Verdict::ProbeNone | Verdict::NoAnswerTwice | Verdict::NotStarted)
     }
 }
 
@@ -291,7 +306,7 @@ fn decide(no_answer_before: bool, run: &Run, seconds: u64) -> (Verdict, String, 
             (Verdict::NoAnswerTwice, reason.clone(), Some((Said::None, reason)))
         }
         End::Limit => (Verdict::NoAnswer, format!("{}; the wgpu path is tried", answer.reason), Some((Said::NoAnswer, answer.reason.clone()))),
-        End::NotStarted => (Verdict::ProbeNone, format!("{}; not cached, the next start probes again", answer.reason), None),
+        End::NotStarted => (Verdict::NotStarted, format!("{}; not cached, the next start probes again", answer.reason), None),
     }
 }
 
@@ -357,13 +372,13 @@ mod tests {
             (None,                  Some(usable),     ProbeUsable,   true,  false, Some(Said::Usable)),
             (None,                  Some(none),       ProbeNone,     false, true,  Some(Said::None)),
             (None,                  Some(silent),     NoAnswer,      true,  false, Some(Said::NoAnswer)),
-            (None,                  Some(unstarted),  ProbeNone,     false, true,  None),
+            (None,                  Some(unstarted),  NotStarted,    false, true,  None),
             (Some(Said::Usable),    None,             CachedUsable,  true,  false, Some(Said::Usable)),
             (Some(Said::None),      None,             CachedNone,    false, false, Some(Said::None)),
             (Some(Said::NoAnswer),  Some(usable),     ProbeUsable,   true,  false, Some(Said::Usable)),
             (Some(Said::NoAnswer),  Some(none),       ProbeNone,     false, true,  Some(Said::None)),
             (Some(Said::NoAnswer),  Some(silent),     NoAnswerTwice, false, true,  Some(Said::None)),
-            (Some(Said::NoAnswer),  Some(unstarted),  ProbeNone,     false, true,  Some(Said::NoAnswer)),
+            (Some(Said::NoAnswer),  Some(unstarted),  NotStarted,    false, true,  Some(Said::NoAnswer)),
         ];
         for (row, (before, probe, verdict, wgpu, shows_box, after)) in table.into_iter().enumerate() {
             let _ = std::fs::remove_file(&path);
@@ -395,6 +410,25 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&folder);
+    }
+
+    /// The C++ reads the verdict as `MgeProbeVerdict` of mge_probe_ffi.h: each value there is
+    /// the number of the verdict of the same name here, and the two lists are the same.
+    #[test]
+    fn the_verdicts_of_the_cpp_are_the_ones_of_this_crate() {
+        let header = include_str!("../../../cpp/mge_probe_ffi.h");
+        let mut cpp: Vec<(String, u32)> = header
+            .lines()
+            .filter_map(|line| {
+                let (name, value) = line.trim().strip_suffix(',')?.split_once(" = ")?;
+                name.starts_with("MgeProbe").then(|| (name.to_string(), value.trim().parse().expect("a number")))
+            })
+            .collect();
+        // The C++ names drop the word "Probe" of a verdict that starts with it.
+        let mut rust: Vec<(String, u32)> = Verdict::ALL.iter().map(|&verdict| (format!("MgeProbe{}", format!("{verdict:?}").trim_start_matches("Probe")), verdict as u32)).collect();
+        cpp.sort();
+        rust.sort();
+        assert_eq!(cpp, rust);
     }
 
     #[test]
@@ -443,7 +477,7 @@ mod tests {
     fn a_probe_that_cannot_start_is_not_cached() {
         let (folder, path) = cache_file("start");
         let outcome = check("a-program-that-is-not-there.exe", &path, "key", 20, 1);
-        assert_eq!(outcome.verdict, Verdict::ProbeNone);
+        assert_eq!(outcome.verdict, Verdict::NotStarted);
         assert!(outcome.reason.starts_with("the probe did not start"), "{}", outcome.reason);
         assert!(outcome.reason.ends_with("; not cached, the next start probes again"), "{}", outcome.reason);
         assert!(read_cache(&path).is_none(), "a probe that did not start was cached");

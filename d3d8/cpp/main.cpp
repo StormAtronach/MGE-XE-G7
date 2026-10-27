@@ -482,6 +482,21 @@ static bool probeSaysUsable() {
         return true;
     }
     LOG::logline("-- wgpu renderer: the probe took %lu ms", ms);
+    if (verdict == MgeProbeNotStarted) {
+        // No answer about the machine: a program can hold numidium.exe. Not cached, so the
+        // next start asks again; the box blames no graphics card.
+        if (!Configuration.RendererWgpu) {
+            LOG::logline("-- wgpu renderer: %s", answer);
+            return false;
+        }
+        wgpuPathOff(answer,
+            std::string("The wgpu renderer of MGE XE is not in use for this start.\n")
+                + "The test of the graphics card (numidium.exe --probe) could not start. Another program may hold the file numidium.exe, a virus scanner for example.\n"
+                + "For this start the game runs on Direct3D 9 without the distant land; the next start runs the test again.\n"
+                + "To use the wgpu renderer without the test, set renderer_probe = false under [runtime] in mgeXE.toml.\n"
+                + "mgeXE.log in the folder of the game has the details.");
+        return false;
+    }
     if (!Configuration.RendererWgpu) {
         // A cached none, a new key, and still none: the log line only.
         LOG::logline("-- wgpu renderer: the probe says none again: %s", answer);
