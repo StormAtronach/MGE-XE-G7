@@ -63,6 +63,114 @@ renderer_texture_slots = 32768
 
 The F10 panel shows the slots in use in the line `textures`.
 
+## Install, upgrade and uninstall
+
+Written for a player who installs mods with Mod Organizer 2 and has not seen this project
+before. The archive is a whole MGE XE G7 with the renderer; `MGE XE Readme.md` has the
+requirements of MGE XE G7 itself.
+
+### What is in the archive
+
+The files go into two places:
+
+- The Morrowind folder, the one with `Morrowind.exe`: `d3d8.dll`, `dinput8.dll`,
+  `MGEXEgui.exe`, `numidium.exe`, `MWSE.dll`, the folder `mge3`, and the readme and
+  license files.
+- `Data Files`: the shaders of MGE XE (`shaders\core`, `shaders\XEshaders`,
+  `shaders\core-mods`), its textures (`textures\MGE`) and meshes (the `_dist.nif` files
+  in `meshes\x`, `meshes\f` and `meshes\i`), `XE Sky Variations.esp`, the plugin
+  (`MWSE\lib\akulakhan.dll` and `MWSE\mods\nirender`), the options mod of MGE XE
+  (`MWSE\mods\MGE XE Options`), and True Water (`MWSE\lib\watervolumes.dll`,
+  `MWSE\mods\waterVolumes`, `meshes\wv`, `meshes\wvs`, `meshes\wvm`, `meshes\wvb` and
+  `Water Volumes Kit.esm`; its own readme is in the archive).
+
+Install the whole archive: the plugin and `numidium.exe` must come from the same one.
+
+### Before you install
+
+- You need MWSE 2.1 and the Morrowind Code Patch (see "Requirements" below).
+- Make a copy of your `MWSE.dll`. The archive has its own `MWSE.dll`, which replaces yours:
+  the renderer needs a part of MWSE that the public MWSE does not have yet. Do not run
+  `MWSE-Update.exe` while you use this build: it puts the public `MWSE.dll` back, and the
+  renderer turns off.
+- MSOC (the occlusion culling mod for MWSE): switch it off.
+
+### Install into the Morrowind folder (no mod manager)
+
+1. Extract the whole archive into the Morrowind folder, overwriting when asked.
+2. Run `MGEXEgui.exe` from the Morrowind folder: set the resolution and the graphics
+   options on the Graphics tab, and generate the distant land on the Distant Land tab
+   (once; see "A new settings file" for the automatic generation after that).
+3. Start the game. "The switch" above says how to see that the renderer is in use.
+
+### Install with Mod Organizer 2
+
+Mod Organizer 2 gives the game only `Data Files` through its virtual folder. The files of
+the Morrowind folder must be in the Morrowind folder itself, in one of two ways:
+
+- With the Root Builder plugin of Mod Organizer 2 (its copy mode, which is the default):
+  make one mod from the archive. In the mod, put the files of the Morrowind folder into a
+  folder named `Root` (`Root\d3d8.dll`, `Root\dinput8.dll`, `Root\MGEXEgui.exe`,
+  `Root\numidium.exe`, `Root\MWSE.dll`, `Root\mge3`), and the content of `Data Files` at
+  the top of the mod (`shaders`, `textures`, `meshes`, `MWSE`, the esm and the esp). Root
+  Builder copies `Root` into the Morrowind folder each time you start the game, and takes
+  it out again after. Files that the game or the GUI write into the Morrowind folder
+  (`mgeXE.toml`, the logs, a capture, a crash dump) are then in `overwrite\Root` of the
+  instance after the game has ended.
+- Without Root Builder: extract the files of the Morrowind folder into the Morrowind
+  folder by hand (your copy of `MWSE.dll` first), and make a mod of `Data Files` only.
+
+In both ways, add `MGEXEgui.exe` as an executable of Mod Organizer 2 and run it from
+there, so that the distant land generator sees your mods. Check that the mod has the
+`.dll` files (`MWSE\lib\akulakhan.dll`, `MWSE\lib\watervolumes.dll`): a mod manager that
+leaves them out gives you MGE XE on Direct3D 9 without the distant land, and `MWSE.log`
+says `akulakhan.dll not loaded`.
+
+### The settings you may need
+
+`mgeXE.toml` in the Morrowind folder. A new file has the right values; a file you have keeps
+yours. Each key goes below its section line.
+
+| Key | Section | Set it to | When |
+| --- | --- | --- | --- |
+| `renderer_wgpu` | `[runtime]` | `true` | a file from an earlier test build has `false`; `false` goes back to Direct3D 9 |
+| `renderer_backend` | `[runtime]` | `"auto"`, `"vulkan"` or `"dx12"` | to name the backend; a window capture of the game (OBS) needs `"dx12"` |
+| `renderer_texture_slots` | `[runtime]` | `0`, or `32768` | some textures draw white and `nirender-host.log` says the room is full |
+| `automatic_rebuild` | `[distant_land]` | `true` | the distant land is made again at the start when your mods or the data version change; a new file has it |
+
+### Upgrade from an earlier test build
+
+- From v0.2.11 or later: extract the whole archive over the old files, overwriting. Every
+  archive since v0.2.11 has the same file names, so there is nothing to delete. With Mod
+  Organizer 2, replace the content of the mod. Read the release notes of the new build:
+  they say when the distant land must be generated again, when a setting changed, and
+  whether `MWSE.dll` changed.
+- From a build before v0.2.11: the plugin and the renderer had other names. Delete
+  `Data Files\MWSE\lib\nirender.dll` and `mgeHost64.exe` from the Morrowind folder (or
+  from the mod), then install as above.
+- Your `mgeXE.toml` keeps its values. "The switch" above says what an older file needs.
+
+### Uninstall
+
+To use MGE XE on Direct3D 9 and keep the files: set `renderer_wgpu = false`.
+
+To remove the archive:
+
+1. From the Morrowind folder: `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`, `numidium.exe`,
+   `mgeXE.toml`, `mge3\MGE XE Default Statics Classifiers.toml`, the readme and license
+   files of the archive, and the files the renderer wrote: `nirender.log`,
+   `nirender-host.log`, `mgeXE.log`, `mgeXE-shaders.txt` and any `nirender-<date>.nircap`.
+2. `MWSE.dll`: put your copy back, or run `MWSE-Update.exe` to get the public MWSE back.
+3. From `Data Files`: `MWSE\lib\akulakhan.dll`, `MWSE\mods\nirender`,
+   `MWSE\config\nirender.json` (if it exists), `MWSE\mods\MGE XE Options`,
+   `shaders\core`, `shaders\XEshaders` and `shaders\core-mods` (the files of the archive;
+   keep shader mods of your own), `textures\MGE`, the `_dist.nif` meshes of `meshes\x`,
+   `meshes\f` and `meshes\i`, `XE Sky Variations.esp`, the generated `distantland` folder,
+   and True Water: `MWSE\lib\watervolumes.dll`, `MWSE\mods\waterVolumes`, `meshes\wv`,
+   `meshes\wvs`, `meshes\wvm`, `meshes\wvb` and `Water Volumes Kit.esm`.
+4. With Mod Organizer 2: remove the mod; the `Root` files go with it. `overwrite\Root` may
+   still hold `mgeXE.toml`, the logs and captures.
+
 ## A new settings file
 
 A new `mgeXE.toml` (MGE XE writes one when there is none) starts with the settings that we
