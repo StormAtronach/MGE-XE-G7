@@ -246,14 +246,14 @@ fn mismatch_text(writer: &str, writes: &str) -> String {
     )
 }
 
-/// Ends this program for a d3d8.dll of another build: the lines in the log, one message box,
-/// the exit code that the plugin reads (it shows no second box).
+/// Ends this program for a d3d8.dll of another build: the lines in the log, then the refusal
+/// of the host crate (one message box, the exit code that the plugin reads; it shows no
+/// second box).
 fn stop_mismatch(message: &str) -> ! {
     for line in message.lines() {
         println!("{line}");
     }
-    nirender_wgpu::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
-    nirender_wgpu::gpu::exit_now(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT)
+    nirender_wgpu::gpu::refuse(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."))
 }
 
 /// True the first time `id` is seen: the log names an extension id without a reader once.
@@ -2069,6 +2069,10 @@ impl Extension for DistantLand {
         self.vsync
     }
 
+    fn loading(&self) -> bool {
+        self.loading.is_some() || self.generation.is_some()
+    }
+
     fn offline(&mut self) {
         self.synchronous = true;
         if let Some(statics) = self.statics.as_mut() {
@@ -2419,14 +2423,23 @@ impl Extension for DistantLand {
             }
             // `crash panic` and `crash fault`: a panic, or an access violation, of this program
             // on purpose, for a test of its crash data (the backtrace, the minidump, the logs
-            // kept). The plugin takes `crash panic plugin` the same way.
+            // kept). `crash stall` holds the frame thread for 60 s: the test of the watchdog,
+            // or of the plugin's own limit with `MGE_XE_WATCHDOG=0`. `crash panic hold` is the
+            // panic with its dump held for good (`nirender_wgpu::hold_next_dump`): the test of
+            // the plugin's limit on a dump that hangs. The plugin takes `crash panic plugin`
+            // the same way.
             if let Some(kind) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("crash ")) {
                 match kind.trim() {
                     "panic" => panic!("a panic asked by nirender.tune"),
+                    "panic hold" => {
+                        nirender_wgpu::hold_next_dump();
+                        panic!("a panic asked by nirender.tune, its dump held");
+                    }
                     // SAFETY: the write goes to an address that no page holds: the access
                     // violation that the command asks for, and nothing else.
                     "fault" => unsafe { core::ptr::write_volatile(0x10 as *mut u32, 0) },
-                    other => println!("tune: crash {other}: not panic or fault"),
+                    "stall" => std::thread::sleep(Duration::from_secs(60)),
+                    other => println!("tune: crash {other}: not panic, panic hold, fault or stall"),
                 }
                 return;
             }
