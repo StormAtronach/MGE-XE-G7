@@ -342,9 +342,10 @@ fn cmd_build(root: &Path, mode: BuildMode) {
 }
 
 /// The repository of the nirender plugin: the sibling folder `nirender-plugin`, or the one
-/// that NIRENDER_PLUGIN_DIR names.
+/// that NIRENDER_PLUGIN_DIR names; a relative value is from the workspace root, as in
+/// d3d8/build.rs, so that the two read one folder.
 fn plugin_dir(root: &Path) -> PathBuf {
-    env::var("NIRENDER_PLUGIN_DIR").map(PathBuf::from).unwrap_or_else(|_| root.parent().unwrap().join("nirender-plugin"))
+    env::var("NIRENDER_PLUGIN_DIR").map(|value| root.join(value)).unwrap_or_else(|_| root.parent().unwrap().join("nirender-plugin"))
 }
 
 /// The nirender plugin into the output, as the MWSE mod that the wgpu renderer needs: the
