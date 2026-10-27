@@ -37,10 +37,9 @@ pub fn watch_commit() {
     }
     // The branch file lives in the common folder of the repository, also for a work tree.
     let head = std::fs::read_to_string(Path::new(&git_dir).join("HEAD")).unwrap_or_default();
-    if let Some(reference) = head.strip_prefix("ref: ") {
-        if let Some(common) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
-            watch(Path::new(&common).join(reference.trim()));
-        }
+    let common = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    if let (Some(reference), Some(common)) = (head.strip_prefix("ref: "), common) {
+        watch(Path::new(&common).join(reference.trim()));
     }
 }
 
