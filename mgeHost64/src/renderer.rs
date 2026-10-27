@@ -41,6 +41,7 @@ mod gpu_time;
 mod menu_keep;
 mod post;
 mod post_jop;
+mod shader_check;
 mod shadow;
 mod statics;
 mod ripples;
@@ -69,7 +70,7 @@ const NEAR: f32 = 64.0;
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
     static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SKIP.get_or_init(|| std::env::var("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
+    SKIP.get_or_init(|| nirender_wgpu::switches::text("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
 }
 /// The number of the environment data in the stream. `Deviceless::EnvironmentId` of MGE XE.
 const ENVIRONMENT_ID: u32 = 1;
@@ -184,6 +185,227 @@ const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// streams for it at the end of each frame until a world frame comes, and gives the number
 /// back with its [`ARRIVED`].
 const PREFETCH_ID: u32 = 10;
+/// The hello of MGE XE's d3d8.dll (`Deviceless::sendHello`), sent once at the plugin's load
+/// and kept: version 1, the extension format of d3d8.dll, then its build id as 64 bytes of
+/// ASCII. This build compares the format with [`EXTENSION_FORMAT`] and stops on a
+/// difference; a live session without the record stops at its first world frame (a d3d8.dll
+/// from before the handshake). A replay plays on: a capture from before the record has none.
+const HELLO_ID: u32 = 11;
+/// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
+/// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
+/// record's layout or of an id's meaning.
+const EXTENSION_FORMAT: u32 = 1;
+/// The bytes of a hello record: the version, the format, then the build id.
+const HELLO_BUILD_ID_AT: usize = 8;
+const HELLO_BUILD_ID_BYTES: usize = 64;
+
+/// The build id of this program: its name, its version and its commit (`build.rs` puts the
+/// commit into MGE_COMMIT).
+fn build_id() -> String {
+    format!("numidium v{} {}", env!("CARGO_PKG_VERSION"), env!("MGE_COMMIT"))
+}
+
+/// The build id of d3d8.dll from its hello record, or why this build refuses the record.
+fn hello_check(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() < HELLO_BUILD_ID_AT {
+        return Err(mismatch_text("d3d8.dll (a hello record too short to read)", "writes an extension format that this build cannot read"));
+    }
+    let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let (version, format) = (word(0), word(4));
+    let build = match bytes.get(HELLO_BUILD_ID_AT..HELLO_BUILD_ID_AT + HELLO_BUILD_ID_BYTES) {
+        Some(text) => {
+            let end = text.iter().position(|&byte| byte == 0).unwrap_or(text.len());
+            String::from_utf8_lossy(&text[..end]).into_owned()
+        }
+        None => String::new(),
+    };
+    if version == 0 {
+        return Err(mismatch_text(&format!("d3d8.dll ({build})"), "writes a hello record of version 0, which this build cannot read"));
+    }
+    if format == EXTENSION_FORMAT {
+        return Ok(build);
+    }
+    Err(mismatch_text(&format!("d3d8.dll ({build})"), &format!("writes the extension format {format}")))
+}
+
+/// The refusal of a live session whose d3d8.dll sent no hello record.
+fn no_hello_text() -> String {
+    mismatch_text("d3d8.dll (a build from before the handshake)", "sent no hello record")
+}
+
+/// The message of a refusal: the writer and what it writes, then this build and what it
+/// reads, then what to do. The same form as the host crate's for the stream format.
+fn mismatch_text(writer: &str, writes: &str) -> String {
+    format!(
+        "The parts of the wgpu renderer of MGE XE do not match.\n\
+         {writer} {writes}.\n\
+         numidium.exe ({}, {}) reads the extension format {EXTENSION_FORMAT}.\n\
+         Install akulakhan.dll, numidium.exe and d3d8.dll from one archive.",
+        nirender_wgpu::BUILD_ID,
+        build_id()
+    )
+}
+
+/// Ends this program for a d3d8.dll of another build: the lines in the log, one message box,
+/// the exit code that the plugin reads (it shows no second box).
+fn stop_mismatch(message: &str) -> ! {
+    for line in message.lines() {
+        println!("{line}");
+    }
+    nirender_wgpu::gpu::stop_box(&format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."));
+    nirender_wgpu::gpu::exit_now(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT)
+}
+
+/// True the first time `id` is seen: the log names an extension id without a reader once.
+fn first_time(seen: &mut Vec<u32>, id: u32) -> bool {
+    if seen.contains(&id) {
+        return false;
+    }
+    seen.push(id);
+    true
+}
+
+/// The length that a record of an extension id needs before its reader takes it: the fixed
+/// part, and the variable parts that its counts name, as `tag::needed` of the host crate has
+/// it for the records of the stream. A record shorter than its fixed part needs the fixed
+/// part (the counts cannot be read yet). [`None`] for an id without a layout: the tune text,
+/// the hello (its own check names both builds), and an id this build does not know.
+fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
+    let word = |at: usize| bytes.get(at..at + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    let sum = |parts: &[usize]| parts.iter().fold(0usize, |total, part| total.saturating_add(*part));
+    // The ids below, except the environment and the settings, are read at version 1 only: a
+    // record of another version needs its version word, and its reader drops it.
+    let version_1_only = matches!(id, SHADER_STATE_ID | PICTURE_ID | WATER_LOOKS_ID | WATER_MASKS_ID | VIS_GROUPS_ID | STATUS_ID | PREFETCH_ID);
+    if version_1_only && word(0) != 1 {
+        return Some(4);
+    }
+    Some(match id {
+        // The end of the fields of the record's version: each version ends where the first
+        // member of the next one starts, and the newest needs the whole struct (a version
+        // that adds a member gives the version before it the offset of that member). A
+        // version the reader does not take needs its version word only.
+        ENVIRONMENT_ID => match word(0) {
+            4 => core::mem::offset_of!(Environment, interior_name),
+            5 => core::mem::offset_of!(Environment, precipitation),
+            6 => core::mem::offset_of!(Environment, night),
+            7 => core::mem::offset_of!(Environment, water_plane),
+            8.. => size_of::<Environment>(),
+            _ => 4,
+        },
+        // The version, the flags, the priority, the number of variables, the name (64), then
+        // for each variable its name (64), its kind, its count and its floats.
+        SHADER_STATE_ID => {
+            if bytes.len() < 80 {
+                return Some(80);
+            }
+            let mut at = 80usize;
+            for _ in 0..word(12) {
+                if bytes.len() < at.saturating_add(72) {
+                    return Some(at.saturating_add(72));
+                }
+                at = sum(&[at, 72, word(at + 68).saturating_mul(4)]);
+            }
+            at
+        }
+        // The version, the ui flag; the path to the end.
+        PICTURE_ID => 8,
+        // Version 1: the 13 words; a later version adds members at the end.
+        SETTINGS_ID => match word(0) {
+            0 => 4,
+            1 => Settings::V1_SIZE,
+            _ => size_of::<Settings>(),
+        },
+        // The version, the number of slots, then for each its number, its size and its look
+        // (at least 8 bytes).
+        WATER_LOOKS_ID => {
+            let mut at = 8usize;
+            for _ in 0..word(4) {
+                if bytes.len() < at.saturating_add(8) {
+                    return Some(at.saturating_add(8));
+                }
+                at = sum(&[at, 4, word(at + 4).max(8)]);
+            }
+            at
+        }
+        // The version, the number of triangles, then 36 bytes for each.
+        WATER_MASKS_ID => sum(&[8, word(4).saturating_mul(36)]),
+        // The version, the number of groups, then a byte for each.
+        VIS_GROUPS_ID => sum(&[8, word(4)]),
+        // The version, the warning flag, the milliseconds; the text to the end.
+        STATUS_ID => 12,
+        // The version, the serial, the place (3 floats); the name of the cell to the end.
+        PREFETCH_ID => 20,
+        _ => return None,
+    })
+}
+
+/// The name of an extension id, for the line of a refused record.
+fn extension_name(id: u32) -> &'static str {
+    match id {
+        ENVIRONMENT_ID => "environment",
+        SHADER_STATE_ID => "shader state",
+        PICTURE_ID => "picture request",
+        SETTINGS_ID => "settings",
+        TUNE_ID => "tune",
+        WATER_LOOKS_ID => "water looks",
+        WATER_MASKS_ID => "water masks",
+        VIS_GROUPS_ID => "vis groups",
+        STATUS_ID => "status text",
+        PREFETCH_ID => "prefetch",
+        HELLO_ID => "hello",
+        _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+
+    fn hello(version: u32, format: u32, build: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&version.to_le_bytes());
+        bytes.extend_from_slice(&format.to_le_bytes());
+        let mut text = [0u8; HELLO_BUILD_ID_BYTES];
+        text[..build.len()].copy_from_slice(build.as_bytes());
+        bytes.extend_from_slice(&text);
+        bytes
+    }
+
+    #[test]
+    fn a_hello_of_this_format_gives_the_build_of_d3d8() {
+        assert_eq!(hello_check(&hello(1, EXTENSION_FORMAT, "MGE-XE G7 Fork v0.21.0 846ed77")).unwrap(), "MGE-XE G7 Fork v0.21.0 846ed77");
+    }
+
+    #[test]
+    fn a_hello_of_another_format_is_refused_with_both_builds_named() {
+        let message = hello_check(&hello(1, EXTENSION_FORMAT + 1, "MGE-XE G7 Fork v0.22.0 abcdef0")).unwrap_err();
+        assert!(message.contains("d3d8.dll (MGE-XE G7 Fork v0.22.0 abcdef0) writes the extension format 2"), "{message}");
+        assert!(message.contains(&format!("numidium.exe ({}, {}) reads the extension format 1", nirender_wgpu::BUILD_ID, build_id())), "{message}");
+        assert!(message.contains("one archive"), "{message}");
+    }
+
+    #[test]
+    fn a_short_hello_and_a_missing_hello_are_refused() {
+        assert!(hello_check(&[1, 0, 0, 0]).unwrap_err().contains("too short"));
+        assert!(hello_check(&hello(0, EXTENSION_FORMAT, "x")).unwrap_err().contains("a hello record of version 0"));
+        assert!(no_hello_text().contains("d3d8.dll (a build from before the handshake) sent no hello record"));
+    }
+
+    #[test]
+    fn the_extension_format_of_the_cpp_is_the_one_of_this_build() {
+        let header = include_str!("../../d3d8/cpp/mge/mgeversion.h");
+        let define = header.lines().find_map(|line| line.strip_prefix("#define MGE_EXTENSION_FORMAT ")).expect("mgeversion.h defines MGE_EXTENSION_FORMAT");
+        assert_eq!(define.trim().parse::<u32>().unwrap(), EXTENSION_FORMAT);
+    }
+
+    #[test]
+    fn an_unknown_id_is_named_once() {
+        let mut seen = Vec::new();
+        assert!(first_time(&mut seen, 99));
+        assert!(!first_time(&mut seen, 99));
+        assert!(first_time(&mut seen, 100));
+    }
+}
 
 /// Runs the renderer with the distant land of MGE XE.
 pub fn run(mut arguments: Vec<String>) {
@@ -210,17 +432,20 @@ fn game_time(environment: Option<Environment>, started: Instant) -> f32 {
 
 /// The startup generation of distant land, as the IPC host mode does it in `main.rs`: when
 /// the output does not match the generation job of mgeXE.toml, the generator makes it again.
-/// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread.
-fn generate_at_start() {
+/// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread. False when the
+/// generation failed and left no valid output: the distant land stays off then, as in that
+/// mode (`handle_generation_failure` turns it off in the configuration).
+fn generate_at_start() -> bool {
     let Ok(root) = std::env::current_dir() else {
         println!("distant land: no folder of the game; no startup generation");
-        return;
+        return true;
     };
     let _log = crate::logging::init_file_logger(root.join("mgeHost64.log")).ok();
     let mut configuration = crate::config::Configuration::load_at(&root);
     let started = Instant::now();
     let status = crate::startup_generation::ensure_distant_land_ready(&mut configuration, &root);
     println!("distant land: startup generation {status:?} in {:.1} s", started.elapsed().as_secs_f32());
+    status != crate::startup_generation::DistantLandStartupStatus::GenerationFailedDistantLandDisabled
 }
 
 /// The state of the game for a frame, from the 32-bit part of MGE XE. The layout is that of
@@ -355,8 +580,9 @@ pub struct DistantLand {
     settings_fog: (f32, f32),
     environment: Option<Environment>,
     loading: Option<Receiver<Result<Loaded, String>>>,
-    /// The startup generation of a game session: a message when it is done.
-    generation: Option<Receiver<()>>,
+    /// The startup generation of a game session: when it is done, whether the distant land
+    /// is usable after it (false: the generation failed and left no valid output).
+    generation: Option<Receiver<bool>>,
     /// The folder of the statics to start after the startup generation.
     statics_after_generation: Option<PathBuf>,
     gpu: Option<Gpu>,
@@ -428,6 +654,13 @@ pub struct DistantLand {
     /// world frame comes; and the number of the wait that [`ARRIVED`] answers (0 for none).
     prefetch: Option<(Vec<u8>, [f32; 3])>,
     arrival_serial: u32,
+    /// The build id of d3d8.dll from its hello record ([`HELLO_ID`]), once it came.
+    hello: Option<String>,
+    /// The extension ids without a reader in this build that came: each is in the log once.
+    unknown_ids: Vec<u32>,
+    /// The ids whose first refused record is in the log, and the refused records counted.
+    refused_ids: Vec<u32>,
+    extension_refused: u32,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -673,8 +906,8 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
     let name = Path::new("Data Files").join(relative);
     let mut places = vec![root.join(&name)];
-    if let Some(game) = std::env::var_os("MGE_XE_GAME_DIR") {
-        places.push(PathBuf::from(game).join(&name));
+    if let Some(game) = nirender_wgpu::switches::path("MGE_XE_GAME_DIR") {
+        places.push(game.join(&name));
     }
     if let Some(exe) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
         places.push(exe.join(&name));
@@ -784,6 +1017,10 @@ impl DistantLand {
             arrival: None,
             prefetch: None,
             arrival_serial: 0,
+            hello: None,
+            unknown_ids: Vec::new(),
+            refused_ids: Vec::new(),
+            extension_refused: 0,
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -862,7 +1099,7 @@ impl DistantLand {
         }
         if land.enabled {
             // For a test, the distant land of another folder: MGE_XE_DISTANT_LAND_DIR.
-            let folder: PathBuf = std::env::var_os("MGE_XE_DISTANT_LAND_DIR").map_or_else(|| root.join("Data Files").join("distantland"), PathBuf::from);
+            let folder: PathBuf = nirender_wgpu::switches::path("MGE_XE_DISTANT_LAND_DIR").unwrap_or_else(|| root.join("Data Files").join("distantland"));
             let statics_wanted = settings.statics || settings.render_grass;
             let (sender, receiver) = channel();
             land.loading = Some(receiver);
@@ -871,9 +1108,9 @@ impl DistantLand {
                 land.generation = Some(generation);
                 land.statics_after_generation = statics_wanted.then(|| folder.clone());
                 thread::spawn(move || {
-                    generate_at_start();
-                    let _ = done.send(());
-                    let _ = sender.send(load(&folder));
+                    let usable = generate_at_start();
+                    let _ = done.send(usable);
+                    let _ = sender.send(load_after_generation(usable, &folder));
                 });
             } else {
                 // Data of another version: `load` gives the problem, and no statics start.
@@ -890,14 +1127,22 @@ impl DistantLand {
     }
 
     /// Starts the statics when the startup generation is done: their files are then the
-    /// new ones.
+    /// new ones. Not after a failed generation with no valid output: the terrain load fails
+    /// then too ([`DistantLand::finish_load`] turns the distant land off).
     fn finish_generation(&mut self) {
         let Some(generation) = self.generation.as_ref() else { return };
-        if matches!(generation.try_recv(), Err(TryRecvError::Empty)) {
+        let usable = match generation.try_recv() {
+            Ok(usable) => usable,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => false,
+        };
+        self.generation = None;
+        // Taken either way: no statics start on the output of a failed generation.
+        let folder = self.statics_after_generation.take();
+        if !usable {
             return;
         }
-        self.generation = None;
-        if let Some(folder) = self.statics_after_generation.take().filter(|folder| version_problem(folder).is_none()) {
+        if let Some(folder) = folder.filter(|folder| version_problem(folder).is_none()) {
             let document = ConfigDocument::open(self.root.join(FILE_NAME));
             self.lights = Some(distant_lights::DistantLights::start(&folder));
             let mut statics = statics::Statics::start(&document, folder);
@@ -934,8 +1179,17 @@ impl DistantLand {
     /// Makes the buffers, the textures and the pipeline when the loader thread is done.
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(receiver) = self.loading.as_ref() else { return };
-        let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
-        let Some(result) = result else { return };
+        // A loader thread that ended without an answer (a panic) is a failed load, not a
+        // load still to come.
+        let result = if self.synchronous {
+            receiver.recv().unwrap_or_else(|_| Err("the loader thread ended without an answer".to_string()))
+        } else {
+            match receiver.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => Err("the loader thread ended without an answer".to_string()),
+            }
+        };
         self.loading = None;
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
         match result.and_then(|loaded| make_gpu(scene, &loaded, &views.layout)) {
@@ -981,7 +1235,17 @@ impl Drop for DistantLand {
         if let Some(timer) = self.gpu_time.as_ref() {
             println!("{}", timer.report());
         }
+        println!("extension: {} records of any id shorter than their id needs, refused (the first of each id is in the log)", self.extension_refused);
     }
+}
+
+/// The terrain after the startup generation: loaded from `folder`, or the problem when the
+/// generation failed and left no valid output (the files there are stale or mixed).
+fn load_after_generation(usable: bool, folder: &Path) -> Result<Loaded, String> {
+    if !usable {
+        return Err("the startup generation failed and left no valid distant land (mgeHost64.log)".to_string());
+    }
+    load(folder)
 }
 
 fn load(folder: &Path) -> Result<Loaded, String> {
@@ -1749,7 +2013,7 @@ fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
 
 impl Extension for DistantLand {
     fn name(&self) -> String {
-        format!("numidium v{}", env!("CARGO_PKG_VERSION"))
+        build_id()
     }
 
     fn overlay_lines(&self) -> Vec<String> {
@@ -1801,6 +2065,11 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
+        // The kept records came before the first frame: a live session without the hello of
+        // d3d8.dll has a d3d8.dll from before the handshake (the owner's choice: stop).
+        if !self.synchronous && self.hello.is_none() {
+            stop_mismatch(&no_hello_text());
+        }
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
@@ -2076,6 +2345,35 @@ impl Extension for DistantLand {
     fn data(&mut self, id: u32, bytes: &[u8]) {
         // A plugin from before the kept records leaves their bit in the number.
         let id = id & !0x8000_0000;
+        if id == HELLO_ID {
+            match hello_check(bytes) {
+                Ok(build) => {
+                    println!("d3d8.dll {build}, extension format {EXTENSION_FORMAT}");
+                    self.hello = Some(build);
+                }
+                // A replay of a capture of another format plays on, as for the stream format
+                // (the owner's answer 1): the picture can differ.
+                Err(message) if self.synchronous => {
+                    println!("capture of another extension format; the picture can differ:");
+                    for line in message.lines().skip(1).take(2) {
+                        println!("  {line}");
+                    }
+                }
+                Err(message) => stop_mismatch(&message),
+            }
+            return;
+        }
+        // A record shorter than its id needs is refused: not read, counted, the first of
+        // each id in the log. The readers below keep their own checks as a second line.
+        if let Some(needed) = extension_needed(id, bytes)
+            && bytes.len() < needed
+        {
+            self.extension_refused += 1;
+            if first_time(&mut self.refused_ids, id) {
+                println!("extension record {id} ({}): {} bytes, {needed} needed: refused (the first such record of this id; the count is in the end report)", extension_name(id), bytes.len());
+            }
+            return;
+        }
         if id == WATER_LOOKS_ID {
             if let Some(table) = water::Look::read_table(bytes) {
                 self.water_looks = table;
@@ -2234,6 +2532,9 @@ impl Extension for DistantLand {
                 }
                 self.environment = Some(environment);
             }
+        }
+        if id != ENVIRONMENT_ID && first_time(&mut self.unknown_ids, id) {
+            println!("extension id {id}: no reader in this build; d3d8.dll is another build");
         }
     }
 
@@ -2519,7 +2820,11 @@ impl Extension for DistantLand {
         let view_projection = multiply(&scene.view, &scene.projection);
         let eye = scene.eye.map(|v| v as f32);
         let environment = self.environment;
-        let (sun_mult, ambient_mult) = environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
+        // The multipliers of the weather for the light reach the distant land only with the
+        // light for each pixel on, as `DistantLand::setView` of the Direct3D 9 path applies
+        // them to SunCol and SunAmb only when it is; the shadow of the ground (`shadow_sun`)
+        // takes the same sun.
+        let (sun_mult, ambient_mult) = self.shade.map_or((1.0, 1.0), |p| (p.sun, p.ambient));
         let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
         let frame = statics::GrassFrame {
             // The view range of the game is the end of the grass. Without it from the game,
@@ -2543,6 +2848,7 @@ impl Extension for DistantLand {
                 layers: shadow.viewproj,
                 rcp: 1.0 / shadow.resolution as f32,
                 sun_vis: environment.map_or(0.0, |e| e.sun_vis),
+                day: self.shadow_day,
                 above_sea: eye[2] > environment.map_or(-1.0, |e| e.sea_plane()),
                 edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
             })
@@ -3153,9 +3459,9 @@ impl DistantLand {
         let (d, diffuse) = self.scene_sun?;
         let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
         let mult = self.shade.map_or(1.0, |p| p.sun);
-        let luminance = (diffuse[0] * 0.36 + diffuse[1] * 0.53 + diffuse[2] * 0.11) * mult;
         let sun_vis = self.environment.map_or(0.0, |e| e.sun_vis);
-        Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [luminance * (0.25 + 0.75 * sun_vis) * self.shadow_day, 0.0, 0.0, 0.0]))
+        let light = shadow::sun_light([diffuse[0], diffuse[1], diffuse[2]], sun_vis, self.shadow_day) * mult;
+        Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [light, 0.0, 0.0, 0.0]))
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {
@@ -3168,6 +3474,32 @@ impl DistantLand {
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade, original })
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    use super::*;
+
+    /// The shaders of the land compile as the device checks them: the terrain of the main
+    /// view and the mirror, and the caster of the shadow map.
+    #[test]
+    fn the_land_shaders_are_valid() {
+        shader_check::check("distant land", &format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl())).unwrap();
+        shader_check::check("distant land shadow", &format!("{}{LAND_SHADOW_SHADER}", view::wgsl())).unwrap();
+    }
+
+    /// The world shader of the host with the text of this extension compiles as the device
+    /// checks it. The join is the one of `nirender_wgpu` (`extension_shaders` of its
+    /// extension.rs, then the shader module of its renderer.rs): the sky part, the draw part,
+    /// the record of the draw read as `draws[record]`, the depth functions after the text.
+    #[test]
+    fn the_world_shader_with_the_extension_is_valid() {
+        let text = include_str!("../../../nirender-plugin/host/src/shader.wgsl");
+        let extension = format!("{SKY_SHADER}\n{DRAW_SHADER}\n").replace("draw.", "draws[record].");
+        let extension = nirender_wgpu::rewrite_extension_text(&extension);
+        let source = format!("{text}\n{}\n{extension}", nirender_wgpu::depth::wgsl());
+        shader_check::check("shader.wgsl with the extension", &source).unwrap();
     }
 }
 
@@ -3268,5 +3600,168 @@ mod settings_tests {
         assert_eq!(Settings::changed_flags(None, a).len(), 12);
         let c = Settings { flags: a.flags | REFLECT_SKY, ..a };
         assert_eq!(Settings::changed_flags(Some(a), c), vec!["sky in the reflections on".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    /// A failed startup generation with no valid output loads nothing, whatever the folder
+    /// holds: the distant land goes off, as in the IPC host mode.
+    #[test]
+    fn a_failed_generation_loads_no_distant_land() {
+        let folder = std::env::temp_dir().join("mge-xe-generation-test-no-files");
+        let problem = load_after_generation(false, &folder).err().expect("no load after a failed generation");
+        assert!(problem.contains("startup generation failed"), "{problem}");
+        // With a usable generation the folder decides: this one has no files.
+        assert!(load_after_generation(true, &folder).is_err());
+    }
+}
+
+#[cfg(test)]
+mod extension_record_tests {
+    use super::*;
+
+    /// Every id with a layout.
+    const IDS: [u32; 9] = [ENVIRONMENT_ID, SHADER_STATE_ID, PICTURE_ID, SETTINGS_ID, WATER_LOOKS_ID, WATER_MASKS_ID, VIS_GROUPS_ID, STATUS_ID, PREFETCH_ID];
+
+    fn words(values: &[u32]) -> Vec<u8> {
+        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+    }
+
+    /// A record of the id with every part its reader takes: the fixed part, and variable
+    /// parts with 1 or 2 elements, so that a cut inside any part is a short record.
+    fn full_record(id: u32) -> Vec<u8> {
+        match id {
+            ENVIRONMENT_ID => {
+                let mut record = vec![0u8; size_of::<Environment>()];
+                record[..4].copy_from_slice(&8u32.to_le_bytes());
+                record
+            }
+            SHADER_STATE_ID => {
+                // The version, the flags, the priority, one variable; the name; the variable:
+                // its name, kind 0, two floats.
+                let mut record = words(&[1, 1, 0, 1]);
+                record.extend_from_slice(&[b'a'; 64]);
+                record.extend_from_slice(&[b'v'; 64]);
+                record.extend_from_slice(&words(&[0, 2]));
+                record.extend_from_slice(&words(&[0, 0]));
+                record
+            }
+            PICTURE_ID => {
+                let mut record = words(&[1, 0]);
+                record.extend_from_slice(b"shot.png\0");
+                record
+            }
+            SETTINGS_ID => {
+                let mut record = vec![0u8; size_of::<Settings>()];
+                record[..4].copy_from_slice(&2u32.to_le_bytes());
+                record
+            }
+            WATER_LOOKS_ID => {
+                // Two slots, each its number, then `size` bytes of its look that start with the
+                // size word itself (`Look::read_table`): one of 8 bytes, one of 144.
+                let mut record = words(&[1, 2]);
+                record.extend_from_slice(&words(&[3, 8, 0]));
+                record.extend_from_slice(&words(&[4, 144]));
+                record.extend_from_slice(&[0u8; 140]);
+                record
+            }
+            WATER_MASKS_ID => {
+                let mut record = words(&[1, 1]);
+                record.extend_from_slice(&[0u8; 36]);
+                record
+            }
+            VIS_GROUPS_ID => {
+                let mut record = words(&[1, 2]);
+                record.extend_from_slice(&[1, 0]);
+                record
+            }
+            STATUS_ID => {
+                let mut record = words(&[1, 0, 1000]);
+                record.extend_from_slice(b"hello\0");
+                record
+            }
+            PREFETCH_ID => {
+                let mut record = words(&[1, 7, 0, 0, 0]);
+                record.extend_from_slice(b"cell\0\0");
+                record
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn every_cut_of_every_record_is_refused_and_the_whole_is_taken() {
+        for id in IDS {
+            let record = full_record(id);
+            assert!(!record.is_empty(), "id {id}");
+            let fixed = match id {
+                PICTURE_ID => 8,
+                STATUS_ID => 12,
+                PREFETCH_ID => 20,
+                _ => record.len(),
+            };
+            for cut in 0..fixed {
+                let needed = extension_needed(id, &record[..cut]).expect("a layout");
+                assert!(needed > cut, "id {id} ({}): a record of {cut} bytes passes with {needed} needed", extension_name(id));
+                assert!(needed <= record.len(), "id {id} ({}): {needed} needed from a cut of {cut} bytes, more than the whole record of {}", extension_name(id), record.len());
+            }
+            assert!(extension_needed(id, &record).expect("a layout") <= record.len(), "id {id} ({}): the whole record is refused", extension_name(id));
+        }
+        // A version that the reader does not take needs its version word only: no refusal of
+        // a layout this build does not read.
+        for id in [SHADER_STATE_ID, PICTURE_ID, WATER_LOOKS_ID, WATER_MASKS_ID, VIS_GROUPS_ID, STATUS_ID, PREFETCH_ID] {
+            assert_eq!(extension_needed(id, &words(&[2])), Some(4), "id {id} ({})", extension_name(id));
+        }
+        assert_eq!(extension_needed(ENVIRONMENT_ID, &words(&[3])), Some(4));
+        assert_eq!(extension_needed(SETTINGS_ID, &words(&[0])), Some(4));
+        // The newest versions need the whole structs, which the C++ senders fill: the
+        // settings of version 2 are 14 words (`Deviceless::Settings`).
+        assert_eq!(size_of::<Settings>(), 14 * 4);
+        assert_eq!(extension_needed(TUNE_ID, b"set x 1"), None);
+        assert_eq!(extension_needed(HELLO_ID, &[1, 0, 0, 0]), None);
+        assert_eq!(extension_needed(99, &[]), None);
+    }
+
+    #[test]
+    fn a_count_that_does_not_fit_is_refused_without_an_overflow() {
+        assert!(extension_needed(WATER_MASKS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
+        assert!(extension_needed(VIS_GROUPS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
+        let mut looks = words(&[1, 1, 5, u32::MAX]);
+        looks.extend_from_slice(&[0u8; 8]);
+        assert!(extension_needed(WATER_LOOKS_ID, &looks).unwrap() > looks.len());
+    }
+
+    #[test]
+    fn the_reader_takes_every_cut_of_every_record_without_a_panic() {
+        // A distant land with the land off: no thread, no device.
+        let root = std::env::temp_dir().join(format!("mge-ext-reader-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        let mut refused = 0;
+        for id in IDS {
+            let record = full_record(id);
+            for cut in 0..=record.len() {
+                land.data(id, &record[..cut]);
+                if extension_needed(id, &record[..cut]).is_some_and(|needed| cut < needed) {
+                    refused += 1;
+                }
+            }
+        }
+        assert_eq!(land.extension_refused, refused);
+        assert!(refused > 0);
+        // The whole records were taken.
+        assert_eq!(land.environment.map(|e| e.version), Some(8));
+        assert_eq!(land.settings.map(|s| s.version), Some(2));
+        assert_eq!(land.vis_groups, vec![1, 0]);
+        assert_eq!(land.water_masks.as_ref().map(Vec::len), Some(3));
+        assert_eq!(land.water_looks.len(), 2);
+        assert_eq!(land.shader_states.len(), 1);
+        assert!(land.status.is_some());
+        assert_eq!(land.arrival_serial, 7);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

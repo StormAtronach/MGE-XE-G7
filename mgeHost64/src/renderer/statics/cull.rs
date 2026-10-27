@@ -218,14 +218,20 @@ impl Pools {
         self.pending.push(slot);
     }
 
-    /// The start of a frame: the slots that went in the frame before are free.
-    pub fn next_frame(&mut self) {
+    /// The start of a frame: the slots that went in the frame before are free. Returns the
+    /// textures whose pools got room.
+    pub fn next_frame(&mut self) -> Vec<u32> {
+        let mut freed = Vec::new();
         for slot in self.pending.drain(..) {
             if let Some(Some(pool)) = self.pools.get_mut(slot.texture as usize) {
                 pool.vertex_ranges.free(slot.base_vertex, slot.vertex_count);
                 pool.index_ranges.free(slot.first_index, slot.index_count);
+                if !freed.contains(&slot.texture) {
+                    freed.push(slot.texture);
+                }
             }
         }
+        freed
     }
 }
 
@@ -718,6 +724,16 @@ impl Culling {
 #[cfg(test)]
 mod tests {
     use super::Ranges;
+
+    /// The compute shader of the cull compiles as the device checks it, with the 8 storage
+    /// buffers of a stage that the limits allow.
+    #[test]
+    fn the_cull_shader_is_valid() {
+        let module = crate::renderer::shader_check::check("distant statics, cull", super::SHADER).unwrap();
+        for entry in ["cull", "compact"] {
+            assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
+        }
+    }
 
     #[test]
     fn ranges_give_the_first_fit_and_join_the_free_ones() {

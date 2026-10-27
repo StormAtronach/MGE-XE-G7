@@ -9,6 +9,11 @@ use std::rc::Rc;
 
 use nirender_wgpu::{SceneView, wgpu};
 
+/// `MGE_XE_SHADOW_DEBUG` and `MGE_XE_SHADOW_LAYERS`, read once: the shadows are made again
+/// at a change of the resolution.
+static SHADOW_DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static SHADOW_LAYERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 use super::multiply;
 
 /// The constants of `XE Mod Shadow Data.fx`.
@@ -17,6 +22,16 @@ pub const ESM_BIAS: f32 = 2e-3 * ESM_C;
 pub const ESM_SCALE: f32 = 32768.0;
 pub const SHADE: f32 = 0.4;
 pub const SHADE_COLOR: [f32; 3] = [1.0, 0.97, 0.81];
+
+/// The light of the sun for `shadowSunEstimate`: the luminance of its colour, times 0.25 plus
+/// 0.75 of its visibility, times the day of the hour (1 less the night). The ground, the
+/// statics and the grass get the same value, so their shadows fade together through dusk
+/// and dawn, and there is none when the night is whole.
+pub fn sun_light(color: [f32; 3], sun_vis: f32, day: f32) -> f32 {
+    let luminance = color[0] * 0.36 + color[1] * 0.53 + color[2] * 0.11;
+    luminance * (0.25 + 0.75 * sun_vis) * day
+}
+
 /// The radii of the two layers, and the depth range of a layer in units.
 pub const RADII: [f32; 2] = [1000.0, 4000.0];
 const ZRANGE: f32 = 8192.0;
@@ -300,8 +315,8 @@ impl Shadow {
             _blur_uniforms: blur_uniforms,
             debug_pipeline,
             debug_group,
-            debug: std::env::var("MGE_XE_SHADOW_DEBUG").is_ok_and(|v| v != "0"),
-            layers_debug: std::env::var("MGE_XE_SHADOW_LAYERS").is_ok_and(|v| v != "0"),
+            debug: *SHADOW_DEBUG.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_SHADOW_DEBUG") == Some(true)),
+            layers_debug: *SHADOW_LAYERS.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_SHADOW_LAYERS") == Some(true)),
             viewproj: [[0.0; 16]; 2],
             frames: 0,
         }
@@ -394,5 +409,21 @@ impl Shadow {
         values[9] = [SHADE_COLOR[0], SHADE_COLOR[1], SHADE_COLOR[2], SHADE];
         values[10] = [sun_vis, if above_sea { 1.0 } else { 0.0 }, if self.layers_debug { 1.0 } else { 0.0 }, 0.0];
         values
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sun_light;
+
+    /// The grass and the ground take the same light of the sun for their shadow: none when
+    /// the night is whole, the full strength by day, and the fade of the hour between.
+    #[test]
+    fn the_shadow_light_fades_with_the_day() {
+        let white = [1.0, 1.0, 1.0];
+        assert_eq!(sun_light(white, 1.0, 0.0), 0.0);
+        assert!((sun_light(white, 1.0, 1.0) - 1.0).abs() < 1e-6);
+        assert!((sun_light(white, 1.0, 0.5) - 0.5).abs() < 1e-6);
+        assert!((sun_light(white, 0.0, 1.0) - 0.25).abs() < 1e-6);
     }
 }

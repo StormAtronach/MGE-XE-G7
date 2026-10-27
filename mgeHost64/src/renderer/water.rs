@@ -9,6 +9,9 @@
 
 use nirender_wgpu::{Replay, ReplayView, SceneView, wgpu};
 
+/// `MGE_XE_WATER_DEBUG`, read once: the water is made again at each change of the size.
+static WATER_DEBUG: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
 use super::{multiply, planes};
 
 /// The size of the reflection, as the Direct3D 9 path has it.
@@ -538,7 +541,7 @@ impl Water {
             reflection_depth_read,
             no_land,
             reflected: false,
-            debug: std::env::var("MGE_XE_WATER_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            debug: *WATER_DEBUG.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_WATER_DEBUG", 0.0)),
             frames: 0,
             reflections: 0,
         })
@@ -937,6 +940,18 @@ pub(super) fn flat_wave_texture(scene: &SceneView) -> wgpu::TextureView {
 mod tests {
     use super::*;
 
+    /// The shaders of the water compile as the device checks them: the plane of the sea,
+    /// and the level of the reflection.
+    #[test]
+    fn the_shaders_of_the_water_are_valid() {
+        let check = crate::renderer::shader_check::check;
+        let module = check("water", &shader()).unwrap();
+        for entry in ["vs", "fs"] {
+            assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
+        }
+        check("water reflection level", LEVEL_SHADER).unwrap();
+    }
+
     #[test]
     fn the_discs_have_the_sizes_of_the_direct3d_9_path() {
         // numWaterVerts = resS * resT + 1; numWaterTris = 2 * resS * resT - resS.
@@ -955,17 +970,4 @@ mod tests {
         assert!(before > 8192.0 && before < 9600.0, "{before}");
     }
 
-    /// The shader compiles: the WGSL is read and checked as the device does it.
-    #[test]
-    fn the_shader_is_valid() {
-        use wgpu::naga;
-        let source = shader();
-        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|error| panic!("{error:?}"));
-        for entry in ["vs", "fs"] {
-            assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
-        }
-        let level = naga::front::wgsl::parse_str(LEVEL_SHADER).unwrap_or_else(|error| panic!("{}", error.emit_to_string(LEVEL_SHADER)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&level).unwrap_or_else(|error| panic!("{error:?}"));
-    }
 }

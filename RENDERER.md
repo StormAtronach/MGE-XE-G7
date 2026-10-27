@@ -32,9 +32,10 @@ a warning about an unknown key.
 
 To go back to MGE XE on Direct3D 9, set the line to `false`. The plugin is then idle.
 
-This archive does not have the `d3d9.dll` (DXVK) of MGE XE G7. The new renderer does not
-use it. MGE XE on Direct3D 9 runs with the `d3d9.dll` that you have, or with the one of
-Windows.
+This archive does not have the `d3d9.dll` (DXVK) of MGE XE G7, and the new renderer does
+not use it. MGE XE on Direct3D 9 (`renderer_wgpu = false`) runs with the `d3d9.dll` of
+Windows; for MGE XE G7's own DXVK build, take `d3d9.dll` from the MGE XE G7 archive. Do
+not use an official DXVK release: it runs out of memory.
 
 How to know that the new renderer is in use:
 
@@ -62,6 +63,116 @@ renderer_texture_slots = 32768
 ```
 
 The F10 panel shows the slots in use in the line `textures`.
+
+## Install, upgrade and uninstall
+
+Written for a player who installs mods with Mod Organizer 2 and has not seen this project
+before. The archive is a whole MGE XE G7 with the renderer; `MGE XE Readme.md` has the
+requirements of MGE XE G7 itself.
+
+### What is in the archive
+
+The files go into two places:
+
+- The Morrowind folder, the one with `Morrowind.exe`: `d3d8.dll`, `dinput8.dll`,
+  `MGEXEgui.exe`, `numidium.exe`, `MWSE.dll`, the folder `mge3`, and the readme and
+  license files.
+- `Data Files`: the shaders of MGE XE (`shaders\core`, `shaders\XEshaders`,
+  `shaders\core-mods`), its textures (`textures\MGE`) and meshes (the `_dist.nif` files
+  in `meshes\x`, `meshes\f` and `meshes\i`), `XE Sky Variations.esp`, the plugin
+  (`MWSE\lib\akulakhan.dll` and `MWSE\mods\nirender`), the options mod of MGE XE
+  (`MWSE\mods\MGE XE Options`), and True Water (`MWSE\lib\watervolumes.dll`,
+  `MWSE\mods\waterVolumes`, `meshes\wv`, `meshes\wvs`, `meshes\wvm`, `meshes\wvb` and
+  `Water Volumes Kit.esm`; its own readme is in the archive).
+
+Install the whole archive: the plugin and `numidium.exe` must come from the same one.
+
+### Before you install
+
+- You need MWSE 2.1 and the Morrowind Code Patch (see "Requirements" below).
+- Make a copy of your `MWSE.dll`. The archive has its own `MWSE.dll`, which replaces yours:
+  the renderer needs a part of MWSE that the public MWSE does not have yet. Do not run
+  `MWSE-Update.exe` while you use this build: it puts the public `MWSE.dll` back, and the
+  renderer turns off.
+- MSOC (the occlusion culling mod for MWSE): switch it off.
+
+### Install into the Morrowind folder (no mod manager)
+
+1. Extract the whole archive into the Morrowind folder, overwriting when asked.
+2. Run `MGEXEgui.exe` from the Morrowind folder: set the resolution and the graphics
+   options on the Graphics tab, and generate the distant land on the Distant Land tab
+   (once; see "A new settings file" for the automatic generation after that).
+3. Start the game. "The switch" above says how to see that the renderer is in use.
+
+### Install with Mod Organizer 2
+
+Mod Organizer 2 gives the game only `Data Files` through its virtual folder. The files of
+the Morrowind folder must be in the Morrowind folder itself, in one of two ways:
+
+- With the Root Builder plugin of Mod Organizer 2 (its copy mode, which is the default):
+  make one mod from the archive. In the mod, put the files of the Morrowind folder into a
+  folder named `Root` (`Root\d3d8.dll`, `Root\dinput8.dll`, `Root\MGEXEgui.exe`,
+  `Root\numidium.exe`, `Root\MWSE.dll`, `Root\mge3`), and the content of `Data Files` at
+  the top of the mod (`shaders`, `textures`, `meshes`, `MWSE`, the esm and the esp). Root
+  Builder copies `Root` into the Morrowind folder each time you start the game, and takes
+  it out again after. Files that the game or the GUI write into the Morrowind folder
+  (`mgeXE.toml`, the logs, a capture, a crash dump) are then in `overwrite\Root` of the
+  instance after the game has ended.
+- Without Root Builder: extract the files of the Morrowind folder into the Morrowind
+  folder by hand (your copy of `MWSE.dll` first), and make a mod of `Data Files` only.
+
+In both ways, add `MGEXEgui.exe` as an executable of Mod Organizer 2 and run it from
+there, so that the distant land generator sees your mods. Check that the mod has the
+`.dll` files (`MWSE\lib\akulakhan.dll`, `MWSE\lib\watervolumes.dll`): a mod manager that
+leaves them out gives you MGE XE on Direct3D 9 without the distant land, and `MWSE.log`
+has the line `[nirender] akulakhan.dll not loaded. If you use a mod manager, check that it
+did not leave .dll files out.`
+
+### The settings you may need
+
+`mgeXE.toml` in the Morrowind folder. A new file has the right values; a file you have keeps
+yours. Each key goes below its section line.
+
+| Key | Section | Set it to | When |
+| --- | --- | --- | --- |
+| `renderer_wgpu` | `[runtime]` | `true` | a file from an earlier test build has `false`; `false` goes back to Direct3D 9 |
+| `renderer_backend` | `[runtime]` | `"auto"`, `"vulkan"` or `"dx12"` | to name the backend; a window capture of the game (OBS) needs `"dx12"` |
+| `renderer_texture_slots` | `[runtime]` | `0` (automatic); a larger number only if `nirender-host.log` says the room is full | some textures draw white; see "The switch" above |
+| `automatic_rebuild` | `[distant_land]` | `true` | the distant land is made again at the start when your mods or the data version change; a new file has it |
+
+### Upgrade from an earlier test build
+
+- From v0.2.11 or later: extract the whole archive over the old files, overwriting. Every
+  file name of an archive since v0.2.11 is in the later archives too (True Water came in
+  with v0.2.15), so there is nothing to delete. With Mod
+  Organizer 2, replace the content of the mod. Read the release notes of the new build:
+  they say when the distant land must be generated again, when a setting changed, and
+  whether `MWSE.dll` changed.
+- From a build before v0.2.11: the plugin and the renderer had other names. Delete
+  `Data Files\MWSE\lib\nirender.dll` and `mgeHost64.exe` from the Morrowind folder (or
+  from the mod), then install as above.
+- Your `mgeXE.toml` keeps its values. "The switch" above says what an older file needs.
+
+### Uninstall
+
+To use MGE XE on Direct3D 9 and keep the files: set `renderer_wgpu = false`.
+
+To remove the archive:
+
+1. From the Morrowind folder: `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`, `numidium.exe`,
+   `mgeXE.toml`, `mge3\MGE XE Default Statics Classifiers.toml`, the readme and license
+   files of the archive, and the files the renderer wrote: `nirender.log`,
+   `nirender-host.log`, `mgeXE.log`, `mgeXE-shaders.txt` and any `nirender-<date>.nircap`.
+2. `MWSE.dll`: put your copy back, or run `MWSE-Update.exe` to get the public MWSE back.
+3. From `Data Files`: `MWSE\lib\akulakhan.dll`, `MWSE\mods\nirender`,
+   `MWSE\config\nirender.json` (if it exists), `MWSE\mods\MGE XE Options`,
+   `shaders\core`, `shaders\XEshaders` and `shaders\core-mods` (the files of the archive;
+   keep shader mods of your own), `textures\MGE`, the `_dist.nif` meshes of `meshes\x`,
+   `meshes\f` and `meshes\i`, `XE Sky Variations.esp`, the generated `distantland` folder,
+   and True Water: `MWSE\lib\watervolumes.dll`, `MWSE\mods\waterVolumes`, `meshes\wv`,
+   `meshes\wvs`, `meshes\wvm`, `meshes\wvb` and `Water Volumes Kit.esm`.
+4. With Mod Organizer 2: remove the mod; the `Root` files go with it. `overwrite\Root` may
+   still hold `mgeXE.toml`, the logs and captures.
 
 ## A new settings file
 
@@ -213,16 +324,36 @@ change. That start can take some minutes. With an older file, set it below
   so. The game cannot show a new picture after that: quit and start again, and send
   `nirender-host.log` and `nirender.log`.
 
+## Licenses
+
+Each part of the archive, with its license. The texts are in the archive:
+`COPYING-GPL-2.0.txt` (the GNU General Public License, version 2), `LICENSE-nirender.txt`
+(MIT), `THIRD-PARTY-NOTICES.txt` (the crates inside the programs), and True Water's own two
+files. `SOURCES.txt` names the source repository and the commit of each part: the complete
+source of every program here is public at those commits.
+
+| Part | License |
+| --- | --- |
+| MGE XE G7: `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`, the MGE XE part of `numidium.exe`, the shaders, the textures, the meshes, `XE Sky Variations.esp`, the MGE XE Options mod | GNU General Public License, version 2 |
+| `MWSE.dll` (a build of our fork of MWSE, with the part the renderer needs) | GNU General Public License, version 2 |
+| nirender: `Data Files\MWSE\lib\akulakhan.dll`, `Data Files\MWSE\mods\nirender`, and the host crate inside `numidium.exe` | MIT. `numidium.exe` as a whole is distributed under the GNU General Public License, version 2, since it contains the code of MGE XE G7 |
+| True Water: `Data Files\MWSE\lib\watervolumes.dll`, `Data Files\MWSE\mods\waterVolumes`, the `meshes\wv*` folders, `Water Volumes Kit.esm` | MIT for the mod's files; `watervolumes.dll` under the GNU General Public License, version 2, since it is built with the code of MWSE (its readme and license files say so) |
+| The Rust crates inside `numidium.exe`, `MGEXEgui.exe`, `d3d8.dll` and `dinput8.dll` | each under its own license, named in `THIRD-PARTY-NOTICES.txt` with its text |
+
 ## Known issues
 
+The open issues of each build are in its release notes on GitHub:
+<https://github.com/StormAtronach/nirender-plugin/releases>. Read the notes of your build
+before you report one. This file does not repeat them, so that the two cannot disagree.
+
+Differences from MGE XE on Direct3D 9 that are by design, not issues:
+
 - The shadow on an object that has a scale (a tree at two times its size) is lighter than
-  on Direct3D 9. This is intended: the Direct3D 9 path makes that shadow deeper with the
-  scale of the object, and the wgpu renderer does not.
+  on Direct3D 9. The Direct3D 9 path makes that shadow deeper with the scale of the
+  object, and the wgpu renderer does not.
 - An interior that behaves as an exterior (the Mournhold plazas and some mod cells) is
   drawn with its distant statics, shadows and sky. A plain interior cell that has distant
   statics in the generated data gets its statics and grass, with the fog of the game.
-- The dry spaces among the distant statics are not cut: far away, a boat's hold can show
-  water. Near the camera they are cut.
 - The grass receives the shadows of the distant land and the distant statics, as on
   Direct3D 9. Where the shadow map ends (about 4000 units ahead) and in the fog, its shadow
   fades as the shadow on the ground under it does; Direct3D 9 ends it at once. The
@@ -230,15 +361,6 @@ change. That start can take some minutes. With an older file, set it below
   1 (as Direct3D 9), 0 (no shadow on the grass).
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
   `Morrowind.ini` names under `[Inventory]`; Direct3D 9 draws it wrong.
-- The three new shaders have first settings and no keys in `mgeXE.toml` yet.
-- After a capture with F11, the picture of the character in the inventory is empty until
-  the inventory changes (put an item on or off).
-- MSOC (the occlusion culling mod for MWSE) is not supported with this renderer: switch it
-  off. It hides objects from the game itself, and this renderer draws what the game shows.
-  A cull on the GPU will take its place.
-- With `renderer_backend = "dx12"` the mouse pointer of the menus can follow the hand late.
-- Only tested at 1920 x 1080 on one machine (NVIDIA, Vulkan). Other GPU vendors, other
-  resolutions, windowed modes and long sessions are not tested.
 
 ## The debug overlay
 
@@ -257,20 +379,32 @@ mouse pointer of the menus follows your hand late, send us this line.
 
 ## When something is wrong
 
+Report it at <https://github.com/StormAtronach/nirender-plugin/issues>. The form there
+asks for the files below. There is no other address.
+
 1. Press F11 in the game (the key is `captureKey` in `Data Files/MWSE/config/nirender.json`;
    `"none"` turns it off). The plugin writes the next 3 frames into
    `nirender-<date>.nircap` in the Morrowind folder. We can draw that file without your
-   game and your mods, and see what you saw. Some pictures of the menus are not in the
-   file (the game cannot give them a second time), so a menu can have blank parts in it.
-2. Send that file with `mgeXE.log`, `MWSE.log`, `nirender.log` and `nirender-host.log`
-   from the Morrowind folder, and a screenshot. The first lines of `nirender.log` and
-   `nirender-host.log` name the versions.
-3. If the game does not start or shows nothing: set `renderer_wgpu = false`, start again,
+   game and your mods, and see what you saw. The file holds the pictures and the textures
+   of that place, so it can be large (a few MB to some hundred MB). Zip it; if it is still
+   too large to attach, put it on a file host and paste the link. Some pictures of the
+   menus are not in the file (the game cannot give them a second time), so a menu can
+   have blank parts in it.
+2. Attach that file with `mgeXE.log`, `MWSE.log`, `nirender.log` and `nirender-host.log`
+   from the Morrowind folder, your `mgeXE.toml`, and a screenshot. Name the archive you
+   installed. The logs and the dump attach as they are; zip `mgeXE.toml` and a save
+   (`.ess`) before you attach them, since GitHub does not take those file types. The first lines of `nirender.log` and `nirender-host.log` name the versions,
+   and the line `adapter:` of `nirender-host.log` names the graphics card, the backend and
+   the driver. With Mod Organizer 2 and Root Builder, these files are in `overwrite\Root`
+   of the instance after the game has ended.
+3. After a crash, attach `MWSE_MiniDump.dmp` from the Morrowind folder too. MWSE writes it
+   when the game crashes, and the next start of the game deletes it: copy it first.
+4. If the game does not start or shows nothing: set `renderer_wgpu = false`, start again,
    and send the same logs.
-4. If an object is missing, comes late, or stays in an old pose: press F11 there, tell
+5. If an object is missing, comes late, or stays in an old pose: press F11 there, tell
    us the place, and send the capture with the logs. The console function `engineWalk`
    of the build v0.2.11 is gone: the game finds the objects itself in every build now.
-5. If a message box says that the graphics device was lost (the driver was reset, or it
+6. If a message box says that the graphics device was lost (the driver was reset, or it
    stopped), the renderer cannot draw any more. Quit the game and start it again, and send
    `nirender-host.log`. A fault of the GPU that is not a loss does not stop the game: a
    part of the picture can be missing, and `nirender-host.log` has lines `gpu error`.
@@ -292,7 +426,15 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_SHADOW_LAYERS=1`: each pixel coloured by the layer of the shadow map that serves
   it: red the first, green the second, blue outside both, grey a draw without the shadow
   test; darker where the map shadows it.
-- `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
+- `MGE_XE_BOX_SECONDS=<n>`: a message box of d3d8.dll, of the helper or of the plugin
+  closes itself after n seconds, and its text is in that part's log as `box:` lines
+  (always); unset or 0, the box waits for the click. The test runner sets 5.
+- `MGE_XE_STALL_LOG=1` (d3d8.dll): a line in mgeXE.log for each scan of the vis groups with
+  the time the cell worker stalled for it; without it, a line only when a scan or its waits
+  take 2 ms or more.
+- `NIRENDER_HOST_EXE`: not a switch of a player. d3d8.dll sets it to `numidium.exe` of the
+  game folder before it loads the plugin, which starts the program it names as the helper
+  (the plugin's README has the other `NIRENDER_*` variables).
 - `MGE_XE_STATICS_CULL=cpu`: the distant statics are culled on the CPU, not on the GPU.
 - `MGE_XE_STATICS_CAP_MB=<n>`: a fixed cap of the merged subsets of the distant statics, in
   place of `distant_land.statics_fallback_cap_mb`.

@@ -13,6 +13,9 @@
 
 use nirender_wgpu::{SceneView, wgpu};
 
+/// `MGE_XE_POST_DEBUG`, read once: the chain is made again at a change of the shaders.
+static POST_DEBUG: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
 /// The variables that MGE XE gives a shader (section 2 of the specification), as one
 /// uniform. The matrices are the rows of Direct3D, so that `mview[row][col]` of HLSL is
 /// `u.mview[row][col]` here.
@@ -4700,7 +4703,7 @@ impl Post {
             entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
-        let debug = std::env::var("MGE_XE_POST_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let debug = *POST_DEBUG.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_POST_DEBUG", 0.0));
         let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post debug"),
             entries: &[
@@ -5211,6 +5214,21 @@ pub(super) fn full_screen_pass<'a>(encoder: &'a mut wgpu::CommandEncoder, target
 }
 
 #[cfg(test)]
+mod shader_tests {
+    use super::*;
+
+    /// The shaders of the chain itself compile as the device checks them: the depth frame,
+    /// the blit of a picture, and the debug tint.
+    #[test]
+    fn the_shaders_of_the_chain_are_valid() {
+        let check = crate::renderer::shader_check::check;
+        check("post depth", &format!("{}{DEPTH_SHADER}", nirender_wgpu::depth::wgsl())).unwrap();
+        check("post blit", BLIT_SHADER).unwrap();
+        check("post debug", DEBUG_BLIT_SHADER).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -5372,16 +5390,13 @@ mod tests {
         for shader in ports() {
             let definition = Definition::of_port(shader);
             let source = format!("{COMMON}\n{}\n{}", variables_wgsl(&definition.variables), shader.source);
-            let module = match naga::front::wgsl::parse_str(&source) {
+            let module = match crate::renderer::shader_check::check(shader.name, &source) {
                 Ok(module) => module,
-                Err(error) => {
-                    problems.push(format!("{}: {}", shader.name, error.emit_to_string(&source)));
+                Err(problem) => {
+                    problems.push(problem);
                     continue;
                 }
             };
-            if let Err(error) = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module) {
-                problems.push(format!("{}: {}", shader.name, error.emit_to_string(&source)));
-            }
             for pass in shader.passes {
                 if !module.entry_points.iter().any(|entry| entry.name == pass.entry && entry.stage == naga::ShaderStage::Fragment) {
                     problems.push(format!("{}: the pass {} is not a fragment function", shader.name, pass.entry));
