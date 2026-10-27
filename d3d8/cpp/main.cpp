@@ -115,28 +115,6 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
         }
 
         if (Configuration.RendererWgpu) {
-            // The GPU: `numidium.exe --probe` asks the backends for what the renderer needs,
-            // without a window, and answers with its last line and its exit code
-            // (MGE_PROBE_EXIT_OK or MGE_PROBE_EXIT_GPU). It takes about 0.3 s. Any other end
-            // of the probe counts as none, so that a crash of it leaves the game on
-            // Direct3D 9 with the code in the log.
-            char answer[1024] = {};
-            const DWORD probeStarted = GetTickCount();
-            const unsigned usable = mge_probe_wgpu("numidium.exe", MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer));
-            const DWORD probeMs = GetTickCount() - probeStarted;
-            if (usable) {
-                LOG::logline("-- wgpu renderer: the probe says %s (%lu ms)", answer, probeMs);
-            } else {
-                LOG::logline("-- wgpu renderer: the probe took %lu ms", probeMs);
-                wgpuPathOff((std::string("the probe says none: ") + answer).c_str(),
-                    std::string("The wgpu renderer of MGE XE is not in use on this machine.\n")
-                        + "The graphics card or its driver lacks what it needs: " + answer + ".\n"
-                        + "The game goes on with MGE XE on Direct3D 9.\n"
-                        + "mgeXE.log in the folder of the game has the details.");
-            }
-        }
-
-        if (Configuration.RendererWgpu) {
             // The wgpu renderer of the helper draws the picture, and no Direct3D device
             // exists. The parts of MGE XE that need its device stay off, as in proxy-only mode.
             LOG::logline(">> Using the wgpu renderer: no Direct3D device");
@@ -317,9 +295,33 @@ extern "C" void __cdecl MGE_StreamMessage(UINT id, const void* data, UINT length
     }
 }
 
+// The GPU: `numidium.exe --probe` asks the backends for what the renderer needs, without a
+// window, and answers with its last line and its exit code (MGE_PROBE_EXIT_OK or
+// MGE_PROBE_EXIT_GPU); about 0.3 s. Any other end of the probe counts as none, so that a
+// crash of it leaves the game on Direct3D 9 with the code in the log. It runs here, when the
+// game asks for its Direct3D 8, and never in DllMain: a child process and a wait under the
+// loader lock hung the game (the first live run, 2026-10-27).
+static bool probeSaysUsable() {
+    char answer[1024] = {};
+    const DWORD started = GetTickCount();
+    const unsigned usable = mge_probe_wgpu("numidium.exe", MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer));
+    const DWORD ms = GetTickCount() - started;
+    if (usable) {
+        LOG::logline("-- wgpu renderer: the probe says %s (%lu ms)", answer, ms);
+        return true;
+    }
+    LOG::logline("-- wgpu renderer: the probe took %lu ms", ms);
+    wgpuPathOff((std::string("the probe says none: ") + answer).c_str(),
+        std::string("The wgpu renderer of MGE XE is not in use on this machine.\n")
+            + "The graphics card or its driver lacks what it needs: " + answer + ".\n"
+            + "The game goes on without the distant land.\n"
+            + "mgeXE.log in the folder of the game has the details.");
+    return false;
+}
+
 extern "C" void* _stdcall FakeDirect3DCreate(UINT version) {
     // Wrap Morrowind only, not TESCS
-    if (isMW && Configuration.RendererWgpu) {
+    if (isMW && Configuration.RendererWgpu && probeSaysUsable()) {
         Configuration.EnsureSettingsFile();
         if (void* d3d = createStreamedD3D(version)) {
             return d3d;

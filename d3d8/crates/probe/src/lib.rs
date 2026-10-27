@@ -8,6 +8,13 @@
 //! answer within the limit, so that the game plays on Direct3D 9 and the log says why
 //! (the failure-path page of the project, section 4). A crate of its own, so that the
 //! tests run: the `d3d8` crate is the library the game loads and builds no test program.
+//!
+//! d3d8.dll calls [`run`] from its `DllMain`, under the loader lock of Windows. A thread
+//! made there cannot start until the lock is free, so nothing here may make or wait for a
+//! thread: the probe's output is read after the probe ends, on the calling thread. The
+//! output is about 1 KB, inside the 4 KB of the pipe; a probe that filled the pipe would
+//! block, reach the time limit and count as none (the first live run, 2026-10-27, hung in a
+//! join of a reader thread here).
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -37,8 +44,9 @@ pub fn answer(output: &str, code: Option<i32>, exit_gpu: i32, seconds: u64) -> A
     }
 }
 
-/// Runs the probe and reads its answer. The output is read to its end; a probe that runs
-/// past the limit is ended.
+/// Runs the probe and reads its answer, on the calling thread only (see the module's head):
+/// it waits for the probe to end, up to the limit, then reads the pipe to its end. A probe
+/// that runs past the limit is ended, and what it wrote is read.
 pub fn run(exe: &str, exit_gpu: i32, seconds: u64) -> Answer {
     let started = Instant::now();
     let mut child = match Command::new(exe).arg("--probe").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
@@ -46,12 +54,6 @@ pub fn run(exe: &str, exit_gpu: i32, seconds: u64) -> Answer {
         Err(error) => return Answer { usable: false, reason: format!("the probe did not start: {error}") },
     };
     let mut stdout = child.stdout.take().expect("the probe's output is piped");
-    // The output is read on a thread of its own: a pipe that fills up would hold the probe.
-    let reader = std::thread::spawn(move || {
-        let mut output = String::new();
-        let _ = stdout.read_to_string(&mut output);
-        output
-    });
     let limit = Duration::from_secs(seconds);
     // The exit code, or `None` for a probe ended at the limit.
     let code = loop {
@@ -66,7 +68,9 @@ pub fn run(exe: &str, exit_gpu: i32, seconds: u64) -> Answer {
             Err(_) => break Some(-1),
         }
     };
-    let output = reader.join().unwrap_or_default();
+    // The probe has ended, so its end of the pipe is closed and the read ends.
+    let mut output = String::new();
+    let _ = stdout.read_to_string(&mut output);
     answer(&output, code, exit_gpu, seconds)
 }
 
