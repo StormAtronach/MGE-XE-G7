@@ -45,6 +45,9 @@ void MWInitPatch::patch() {
     if (!Configuration.RendererWgpu) {
         MWTextureLoader::patchLoadTexture2D();
     }
+    // The reader of BC7 DDS textures, for both renderers (the owner's D17: listed in the hook
+    // plan for a later move into an MWSE request).
+    MWTextureLoader::patchDDSReader();
 
     HighResolutionTimer::init();
 

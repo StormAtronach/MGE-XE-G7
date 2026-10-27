@@ -1,6 +1,7 @@
 #include "mge/mwtextureloader.h"
 #include "mge/mwpatches.h"
 #include "mge/bc7format.h"
+#include "mge/configuration.h"
 #include "support/log.h"
 #include "tes3/nitypes.h"
 
@@ -15,6 +16,8 @@ using MWPatches::write_byte;
 using MWPatches::write_ptr;
 
 static bool bc7TextureSupported = false;
+// True when patchLoadTexture2D is installed: it makes the Direct3D 9 texture of a BC7 texture.
+static bool loadTexturePatched = false;
 
 void setBC7TextureSupport(bool supported) {
     bc7TextureSupported = supported;
@@ -108,7 +111,10 @@ static bool __fastcall patchDDSReaderDecodeHeader(
         return false;
     }
 
-    if (!bc7TextureSupported) {
+    // The wgpu renderer takes BC7 while it is in use. On Direct3D 9 the texture-create patch
+    // must be installed and the runtime must support the format: else the engine would make
+    // a DXT5 texture of BC7 blocks.
+    if (!Configuration.RendererWgpu && !(loadTexturePatched && bc7TextureSupported)) {
         LOG::logline("BC7 DDS texture rejected: the active D3D9 runtime does not support MGE XE's BC7 format.");
         return false;
     }
@@ -270,6 +276,10 @@ void patchLoadTexture2D() {
     write_byte(0x6BFCD7, 0x18);
     write_byte(0x6BFCE3, 0x24);
 
+    loadTexturePatched = true;
+}
+
+void patchDDSReader() {
     // NI::DDSReader is reached only through these two adjacent .rdata vtable slots.
     constexpr DWORD readFileSlot = 0x751328;
     constexpr DWORD decodeHeaderSlot = 0x75132C;
