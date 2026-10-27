@@ -249,7 +249,7 @@ fn stop_mismatch(message: &str) -> ! {
     for line in message.lines() {
         println!("{line}");
     }
-    nirender_wgpu::gpu::message_box(&format!("{message}\n\nThe game shows no new picture; quit it. nirender-host.log has the details."));
+    nirender_wgpu::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
     std::process::exit(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT as i32)
 }
 

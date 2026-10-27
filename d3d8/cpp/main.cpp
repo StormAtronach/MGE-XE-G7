@@ -213,9 +213,9 @@ static void showMessageBox(const char* text) {
     GetEnvironmentVariableA("MGE_XE_BOX_SECONDS", value, sizeof(value));
     const unsigned seconds = unsigned(std::atoi(value));
     const UINT flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
-    int answer;
+    const DWORD started = GetTickCount();
     if (seconds == 0) {
-        answer = MessageBoxA(NULL, text, "MGE XE", flags);
+        MessageBoxA(NULL, text, "MGE XE", flags);
     } else {
         typedef int (WINAPI * MessageBoxTimeoutProc)(HWND, LPCSTR, LPCSTR, UINT, WORD, DWORD);
         MessageBoxTimeoutProc timed = (MessageBoxTimeoutProc)GetProcAddress(GetModuleHandleA("user32.dll"), "MessageBoxTimeoutA");
@@ -223,9 +223,11 @@ static void showMessageBox(const char* text) {
             LOG::logline("box: not shown: this Windows has no MessageBoxTimeoutA");
             return;
         }
-        answer = timed(NULL, text, "MGE XE", flags, 0, seconds * 1000);
+        timed(NULL, text, "MGE XE", flags, 0, seconds * 1000);
     }
-    if (answer == 32000) {
+    // The elapsed time tells a timeout from a click: MessageBoxTimeout answers IDOK on the
+    // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
+    if (seconds != 0 && GetTickCount() - started >= seconds * 1000) {
         LOG::logline("box: closed after %u s, no click", seconds);
     } else {
         LOG::logline("box: closed by a click");
