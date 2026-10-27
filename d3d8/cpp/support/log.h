@@ -18,5 +18,7 @@ namespace LOG {
 
 extern "C" void __cdecl mge_log_panic(const char* message) noexcept;
 // The plugin's lines in mgeXE.log, prefixed "nirender: "; an export of d3d8.dll (exports.def),
-// declared in the contract mge_render_link.h of the nirender plugin too.
-extern "C" void __cdecl MGE_LogLine(const char* text) noexcept;
+// declared in the contract mge_render_link.h of the nirender plugin too. The two declarations
+// must be equal (a file that sees both stops at a difference), and the contract is a C
+// header: no noexcept here.
+extern "C" void __cdecl MGE_LogLine(const char* text);

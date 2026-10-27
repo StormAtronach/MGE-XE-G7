@@ -201,7 +201,7 @@ extern "C" void __cdecl mge_log_panic(const char* message) noexcept {
 // the Numidium notes): each line of `text` (a text can have more than one, at its '\n') is
 // written as "nirender: <line>\r\n", with no limit of length, all under the lock, so that the
 // lines of another thread do not come between them. Any thread may call it.
-extern "C" void __cdecl MGE_LogLine(const char* text) noexcept {
+extern "C" void __cdecl MGE_LogLine(const char* text) {
     static const char prefix[] = "nirender: ";
     if (!text) {
         return;
