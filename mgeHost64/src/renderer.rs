@@ -1314,13 +1314,32 @@ fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
-/// Makes a texture from the bytes of a DDS file. The files of the terrain have DXT1 pixels,
-/// or 4 bytes for each pixel with red first.
+/// The part of a DDS file that a texture is made from ([`dds_layout`]).
+#[derive(Debug, PartialEq)]
+struct DdsLayout {
+    format: wgpu::TextureFormat,
+    /// The size and the levels of the texture: the file's, or from its first level that fits
+    /// the GPU.
+    width: u32,
+    height: u32,
+    levels: u32,
+    /// The top levels of the file left out, and the offset in the file of the first level
+    /// taken.
+    skipped: u32,
+    offset: usize,
+}
+
+/// Reads the head of a DDS file. The files of the terrain have DXT1 pixels, or 4 bytes for
+/// each pixel with red first.
 ///
 /// A DDS file: `DDS `, a header of 124 bytes with the height at 12, the width at 16 and the
 /// number of levels at 28; the four letters of a block format at 84, or the bits of a pixel
-/// at 88 and the mask of red at 92.
-fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::TextureView, String> {
+/// at 88 and the mask of red at 92. The levels follow the header, the largest first.
+///
+/// A file larger than the GPU's `limit` with mip levels starts at its first level that fits:
+/// the top levels are left out (the atlas of the distant statics is 16384 wide, and a GPU can
+/// take less). A file without such a level is refused.
+fn dds_layout(name: &str, dds: &[u8], limit: u32) -> Result<DdsLayout, String> {
     if dds.len() < 128 || &dds[0..4] != b"DDS " {
         return Err(format!("{name} is not a DDS file"));
     }
@@ -1331,14 +1350,7 @@ fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::Textur
         b"DXT5" => Some(wgpu::TextureFormat::Bc3RgbaUnorm),
         _ => None,
     };
-    let limit = scene.device.limits().max_texture_dimension_2d;
-    if width > limit || height > limit {
-        return Err(format!("{name} has the size {width} x {height}, and the GPU takes {limit} at most"));
-    }
     let format = if let Some(format) = block {
-        if width % 4 != 0 || height % 4 != 0 {
-            return Err(format!("{name} has the size {width} x {height}, not a multiple of 4"));
-        }
         format
     } else if word(dds, 88) == 32 && word(dds, 92) == 0xFF {
         wgpu::TextureFormat::Rgba8Unorm
@@ -1347,20 +1359,52 @@ fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::Textur
     } else {
         return Err(format!("{name} has a pixel format that this program does not read"));
     };
+    let size_of = |level: u32| ((width >> level).max(1), (height >> level).max(1));
+    let Some(skipped) = (0..levels).find(|&level| {
+        let (w, h) = size_of(level);
+        w <= limit && h <= limit
+    }) else {
+        return Err(format!("{name} has the size {width} x {height} and {levels} levels, and the GPU takes {limit} at most"));
+    };
+    let (block_width, block_height) = format.block_dimensions();
+    let block_bytes = format.block_copy_size(None).unwrap_or(4) as usize;
+    let level_bytes = |level: u32| {
+        let (w, h) = size_of(level);
+        w.div_ceil(block_width) as usize * h.div_ceil(block_height) as usize * block_bytes
+    };
+    let (taken_width, taken_height) = size_of(skipped);
+    if block.is_some() && (taken_width % 4 != 0 || taken_height % 4 != 0) {
+        return Err(format!("{name} has the size {taken_width} x {taken_height}, not a multiple of 4"));
+    }
+    let offset = 128 + (0..skipped).map(level_bytes).sum::<usize>();
+    let taken = (skipped..levels).map(level_bytes).sum::<usize>();
+    if dds.len() < offset + taken {
+        return Err(format!("{name} ends before its {levels} levels"));
+    }
+    Ok(DdsLayout { format, width: taken_width, height: taken_height, levels: levels - skipped, skipped, offset })
+}
+
+/// Makes a texture from the bytes of a DDS file ([`dds_layout`]).
+fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::TextureView, String> {
+    let limit = scene.device.limits().max_texture_dimension_2d;
+    let layout = dds_layout(name, dds, limit)?;
+    if layout.skipped != 0 {
+        println!("{name} loaded at {} x {}, {} levels skipped: the GPU takes {limit} at most", layout.width, layout.height, layout.skipped);
+    }
     let texture = scene.device.create_texture_with_data(
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some(name),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: levels,
+            size: wgpu::Extent3d { width: layout.width, height: layout.height, depth_or_array_layers: 1 },
+            mip_level_count: layout.levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: layout.format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::MipMajor,
-        &dds[128..],
+        &dds[layout.offset..],
     );
     Ok(texture.create_view(&Default::default()))
 }
@@ -3560,6 +3604,55 @@ mod version_tests {
         assert!(version_byte_problem(None).unwrap().contains("missing"));
         assert!(version_byte_problem(Some(&[])).is_some());
         assert!(version_byte_problem(Some(&[MGE_DL_VERSION, 0])).is_some());
+    }
+}
+
+#[cfg(test)]
+mod dds_tests {
+    use super::*;
+
+    /// A DXT1 file of 16 x 8 pixels with 3 levels (64, 16 and 8 bytes), each level's bytes
+    /// the number of the level plus 1.
+    fn dds() -> Vec<u8> {
+        let mut bytes = vec![0u8; 128];
+        bytes[0..4].copy_from_slice(b"DDS ");
+        bytes[12..16].copy_from_slice(&8u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&16u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&3u32.to_le_bytes());
+        bytes[84..88].copy_from_slice(b"DXT1");
+        for (level, size) in [64usize, 16, 8].into_iter().enumerate() {
+            bytes.extend(std::iter::repeat_n(level as u8 + 1, size));
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_file_that_fits_is_taken_whole() {
+        let layout = dds_layout("test.dds", &dds(), 16).unwrap();
+        assert_eq!(layout, DdsLayout { format: wgpu::TextureFormat::Bc1RgbaUnorm, width: 16, height: 8, levels: 3, skipped: 0, offset: 128 });
+    }
+
+    #[test]
+    fn a_file_above_the_limit_starts_at_its_first_level_that_fits() {
+        let file = dds();
+        let layout = dds_layout("test.dds", &file, 8).unwrap();
+        assert_eq!((layout.width, layout.height, layout.levels, layout.skipped, layout.offset), (8, 4, 2, 1, 128 + 64));
+        // The bytes from the offset are level 1, then level 2.
+        assert!(file[layout.offset..layout.offset + 16].iter().all(|&byte| byte == 2));
+        assert!(file[layout.offset + 16..].iter().all(|&byte| byte == 3));
+    }
+
+    #[test]
+    fn a_file_without_a_level_that_fits_is_refused() {
+        // Level 2 (4 x 2) fits a limit of 4, but a block texture needs a multiple of 4.
+        let problem = dds_layout("test.dds", &dds(), 4).unwrap_err();
+        assert!(problem.contains("not a multiple of 4"), "{problem}");
+        let problem = dds_layout("test.dds", &dds(), 2).unwrap_err();
+        assert!(problem.contains("3 levels, and the GPU takes 2 at most"), "{problem}");
+        // A file shorter than its levels.
+        let mut short = dds();
+        short.truncate(128 + 70);
+        assert!(dds_layout("test.dds", &short, 16).unwrap_err().contains("ends before"));
     }
 }
 
