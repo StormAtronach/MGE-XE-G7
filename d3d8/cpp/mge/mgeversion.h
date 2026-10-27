@@ -1,6 +1,13 @@
 #pragma once
 
 #define XE_VERSION_STRING "MGE-XE G7 Fork v0.21.0"
+// The commit of the build, from d3d8/build.rs (build_support/build_id.rs). The MSBuild
+// project does not set it.
+#ifndef MGE_COMMIT
+#define MGE_COMMIT "unknown"
+#endif
+// The build id of d3d8.dll: the first line of mgeXE.log, the hello record for the helper.
+#define MGE_BUILD_ID XE_VERSION_STRING " " MGE_COMMIT
 #define MGE_MAJOR_VERSION 4
 #define MGE_MINOR_VERSION 21
 #define MGE_BUILD_VERSION 0

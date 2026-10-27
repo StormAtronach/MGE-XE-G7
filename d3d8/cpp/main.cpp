@@ -20,7 +20,7 @@ extern void* CreateInputWrapper(void*);
 static FARPROC getProc1(const char* lib, const char* funcname);
 static void setDPIScalingAware();
 
-static const char* welcomeMessage = XE_VERSION_STRING;
+static const char* welcomeMessage = MGE_BUILD_ID;
 static bool isMW;
 
 
@@ -176,7 +176,23 @@ static void* createStreamedD3D(UINT version) {
         return nullptr;
     }
     streamExtension = (void (__cdecl *)(UINT, const void*, UINT))GetProcAddress(plugin, "nirender_stream_extension");
-    LOG::logline("-- wgpu renderer: the nirender plugin gives the game its Direct3D 8");
+    // The build id of the plugin, for the log. A plugin without the export is from before the
+    // handshake: the helper would refuse its stream. The player sees why once, and the game
+    // runs on Direct3D 9 (the owner's choice, 2026-10-27).
+    typedef const char* (__cdecl * BuildIdProc) ();
+    BuildIdProc buildId = (BuildIdProc)GetProcAddress(plugin, "nirender_build_id");
+    if (!buildId) {
+        LOG::logline("!! wgpu renderer: akulakhan.dll is from before the version handshake (no nirender_build_id); this d3d8.dll is " MGE_BUILD_ID);
+        MessageBoxA(NULL,
+            "The parts of the wgpu renderer of MGE XE do not match.\n"
+            "akulakhan.dll is from before the version handshake.\n"
+            "d3d8.dll is " MGE_BUILD_ID ".\n\n"
+            "Install akulakhan.dll, numidium.exe and d3d8.dll from one archive.\n"
+            "The game goes on with Direct3D 9.",
+            "MGE XE", MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+        return nullptr;
+    }
+    LOG::logline("-- wgpu renderer: the nirender plugin (%s) gives the game its Direct3D 8", buildId());
     return create(version);
 }
 
