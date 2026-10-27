@@ -1,6 +1,10 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+// The commit of this build, for MGE_COMMIT in the C++ (mgeversion.h).
+#[path = "../build_support/build_id.rs"]
+mod build_id;
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let cpp_dir = manifest_dir.join("cpp");
@@ -15,6 +19,8 @@ fn main() {
     println!("cargo:rerun-if-changed={}", cpp_dir.display());
     println!("cargo:rerun-if-changed={}", def_file.display());
     println!("cargo:rerun-if-changed={}", contract_dir.join("mge_render_link.h").display());
+    build_id::watch_commit();
+    let commit = format!("\"{}\"", build_id::commit());
 
     let is_release = env::var("OPT_LEVEL").is_ok_and(|l| l != "0");
 
@@ -45,12 +51,14 @@ fn main() {
     }
 
     let mut build = base_build(&cpp_dir, &contract_dir, &dxsdk, is_release, whole_program);
+    build.define("MGE_COMMIT", commit.as_str());
     for source in &sources {
         build.file(source);
     }
     build.compile("mge_d3d8");
 
     let mut entry_build = base_build(&cpp_dir, &contract_dir, &dxsdk, is_release, whole_program);
+    entry_build.define("MGE_COMMIT", commit.as_str());
     for source in &entry_sources {
         entry_build.file(source);
     }
