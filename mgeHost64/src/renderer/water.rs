@@ -47,7 +47,7 @@ pub(super) use shading::{CAUSTICS, caustic_strength};
 
 /// The shader of the plane: the shared shading and the entry points of the plane.
 fn shader() -> String {
-    format!("{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::WGSL, shading::COMMON, PLANE)
+    format!("{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, PLANE)
 }
 
 /// The entry points of the plane, after the shared shading.
@@ -390,7 +390,7 @@ impl Water {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: scene.depth_format,
                 depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
                 stencil,
                 bias: Default::default(),
             }),
@@ -469,7 +469,7 @@ impl Water {
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &no_land,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)), store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
             timestamp_writes: None,
@@ -582,7 +582,7 @@ impl Water {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.reflection_depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)), store: wgpu::StoreOp::Store }),
                     stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: None,
@@ -638,7 +638,7 @@ impl Water {
                 })],
                 depth_stencil_attachment: (index == 0 && levels > 1).then(|| wgpu::RenderPassDepthStencilAttachment {
                     view: &self.reflection_depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)), store: wgpu::StoreOp::Store }),
                     stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: None,
@@ -728,9 +728,12 @@ impl Water {
                 // The depth of the distant land, and the clip depth of the plane: the near plane
                 // of the game and the far plane of the distant land.
                 let [land_a, land_b] = nirender_wgpu::depth::terms(&frame.land_projection);
+                // The planes from the projections as the game and the land have them (the depth
+                // terms are those of the GPU's convention).
                 let near = -scene.projection[14] / scene.projection[10];
-                let far = land_b / (1.0 - land_a);
-                [land_a, land_b, far / (far - near), -near * far / (far - near)]
+                let far = frame.land_projection[14] / (1.0 - frame.land_projection[10]);
+                let [plane_a, plane_b] = nirender_wgpu::depth::plane_terms(far / (far - near), -near * far / (far - near));
+                [land_a, land_b, plane_a, plane_b]
             },
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));

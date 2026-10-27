@@ -586,7 +586,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(false),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
             stencil: Default::default(),
             bias: Default::default(),
         }),

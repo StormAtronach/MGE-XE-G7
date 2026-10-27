@@ -66,7 +66,7 @@ struct Mask {
 ";
 
 fn shader() -> String {
-    format!("{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::WGSL, shading::COMMON, DRY)
+    format!("{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, DRY)
 }
 
 pub(super) struct Dry {
@@ -96,9 +96,9 @@ impl Dry {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: scene.depth_format,
                     depth_write_enabled: Some(false),
-                    depth_compare: Some(depth),
+                    depth_compare: Some(nirender_wgpu::depth::compare(depth)),
                     stencil: wgpu::StencilState { front: face, back: face, read_mask: 0xFF, write_mask: DRY_BIT },
-                    bias,
+                    bias: nirender_wgpu::depth::bias(bias),
                 }),
                 // The game pass, with its samples: the count marks its stencil.
                 multisample: scene.multisample(false),

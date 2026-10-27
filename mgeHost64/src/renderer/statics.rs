@@ -2836,7 +2836,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
             stencil: Default::default(),
             bias: Default::default(),
         }),
@@ -3010,7 +3010,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
             stencil: Default::default(),
             bias: Default::default(),
         }),

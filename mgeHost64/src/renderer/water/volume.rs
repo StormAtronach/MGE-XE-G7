@@ -729,7 +729,7 @@ fn water_shader(surface: WaterSurface) -> vec4f {
 /// The shader of the surfaces with the water shader of the look: the shared shading, the
 /// entry points of a surface, and the function `water_shader`.
 fn shader_with(water: &str) -> String {
-    format!("{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::WGSL, shading::COMMON, shading::CAUSTICS, VOLUME, water).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
+    format!("{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, shading::CAUSTICS, VOLUME, water).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
 }
 
 /// The shader of the surfaces with the standard look.
@@ -1162,7 +1162,7 @@ impl Volumes {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth_format,
                     depth_write_enabled: Some(key.depth_test),
-                    depth_compare: Some(if key.depth_test { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always }),
+                    depth_compare: Some(if key.depth_test { nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual) } else { wgpu::CompareFunction::Always }),
                     stencil: match key.stencil {
                         // The test of the mesh, without the bit of the dry spaces.
                         Some([function, mask, fail, depth_fail, pass]) => {
@@ -1219,7 +1219,7 @@ impl Volumes {
         let base = self.used;
         self.used += count;
         let mut bytes = vec![0u8; (count * SLOT) as usize];
-        let game_view_projection = crate::renderer::multiply(&scene.view, &scene.projection);
+        let game_view_projection = crate::renderer::multiply(&scene.view, &nirender_wgpu::depth::gpu_projection(&scene.projection));
         for (index, water) in far.iter().enumerate() {
             let look = &water.look;
             let world = water.world;

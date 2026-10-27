@@ -65,7 +65,7 @@ use shadow::Shadow;
 const CELL: f32 = 8192.0;
 /// The near plane of the projection of the distant land.
 const NEAR: f32 = 64.0;
-/// A test mask (`MGE_XE_SKIP=water,terrain,statics,blend`): the parts named are not drawn, for a
+/// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend`): the parts named are not drawn, for a
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
     static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -1230,7 +1230,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
             stencil: Default::default(),
             bias: Default::default(),
         }),
@@ -1267,6 +1267,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 20, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
         },
         primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        // The shadow map is a target of its own with the plain convention (cleared to 1).
         depth_stencil: Some(wgpu::DepthStencilState {
             format: scene.depth_format,
             depth_write_enabled: Some(true),
@@ -2395,7 +2396,8 @@ impl Extension for DistantLand {
                 timer.start(&mut encoder);
             }
             let (mut mirror_pass, mirrored_view, far_projection) = water.begin_reflection(scene, &mut encoder, frame);
-            let mut mirror_view = view::View { view_projection: multiply(&mirrored_view, &far_projection), relative: view::relative(&mirrored_view, &far_projection, eye), ..main_view };
+            let mirror_projection = nirender_wgpu::depth::gpu_projection(&far_projection);
+            let mut mirror_view = view::View { view_projection: multiply(&mirrored_view, &mirror_projection), relative: view::relative(&mirrored_view, &mirror_projection, eye), ..main_view };
             // Only the side of the water plane that the mirror shows.
             mirror_view.flags[1] = if frame.underwater { -1.0 } else { 1.0 };
             // With the dynamic waves the plane can be lower by half of the wave height:
@@ -2520,7 +2522,9 @@ impl Extension for DistantLand {
             look: self.grass_look,
         };
         let Some(statics) = self.statics.as_mut() else { return };
-        statics.draw_grass(scene, pass, &frame);
+        if !skipped("grass") {
+            statics.draw_grass(scene, pass, &frame);
+        }
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
             shadow.draw_debug(pass);
         }
@@ -2771,7 +2775,7 @@ impl DistantLand {
         let look = water::VolumeLook {
             reflect_range: self.volume_reflect_cells * CELL,
             sky,
-            land_view_projection: multiply(&scene.view, &self.land_projection(scene)),
+            land_view_projection: multiply(&scene.view, &nirender_wgpu::depth::gpu_projection(&self.land_projection(scene))),
             view_range: self.environment.map_or(0.0, |e| e.near_view_range),
         };
         // The light of the frame on the surfaces, each part as its setting says.
@@ -2828,6 +2832,9 @@ impl DistantLand {
     /// main view of the land, or the game view with the projection of the game.
     fn frame_view(&self, scene: &SceneView, projection: &[f32; 16]) -> view::View {
         let eye = scene.eye.map(|v| v as f32);
+        // The depth convention of the world view (`nirender_wgpu::depth`): the matrices that
+        // go to the GPU.
+        let projection = &nirender_wgpu::depth::gpu_projection(projection);
         let view_projection = multiply(&scene.view, projection);
         let relative = view::relative(&scene.view, projection, eye);
         // The fog: from the game with this frame, or the linear fog of the settings.

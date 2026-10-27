@@ -4693,7 +4693,7 @@ impl Post {
                 texture(2, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
             ],
         });
-        let depth_pipeline = full_screen_pipeline(device, "post depth", &format!("{}{}", nirender_wgpu::depth::WGSL, DEPTH_SHADER), &depth_layout, wgpu::TextureFormat::R32Float);
+        let depth_pipeline = full_screen_pipeline(device, "post depth", &format!("{}{}", nirender_wgpu::depth::wgsl(), DEPTH_SHADER), &depth_layout, wgpu::TextureFormat::R32Float);
         let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post depth"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post blit"),

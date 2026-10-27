@@ -93,7 +93,7 @@ fn draws(strength: f32) -> u32 {
 }
 
 fn shader() -> String {
-    format!("{}{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::WGSL, SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
+    format!("{}{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::wgsl(), SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
 }
 
 /// What the caustics need from the frame.

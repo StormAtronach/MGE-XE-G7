@@ -74,7 +74,7 @@ fn blend_distance(depth_texture: texture_depth_2d, at: vec2i, depth_of: vec2f, s
 ";
 
 fn shader() -> String {
-    format!("{}{}{}", nirender_wgpu::depth::WGSL, SHADER, DISTANCE)
+    format!("{}{}{}", nirender_wgpu::depth::wgsl(), SHADER, DISTANCE)
 }
 
 /// The length of the blend, in the units of the game: `zone` of `MGEBlendPS`.
