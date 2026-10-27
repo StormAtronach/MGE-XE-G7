@@ -211,9 +211,11 @@ change. That start can take some minutes. With an older file, set it below
   `renderer_wgpu = false` to get MGE XE with its distant land back until the cause is
   known.
 - Another mod that changes the renderer code of the game (not its Lua) has the same effect.
-- A graphics card or a driver that lacks what the renderer needs (the binding arrays of
-  textures with room for 256, the BC texture compression, 32 sampled textures in a shader
-  stage, or an adapter at all on Vulkan and Direct3D 12): before the game starts, MGE XE
+- A graphics card without the binding arrays of textures draws with texture tier C: each
+  draw binds its own textures. The log names the tier (`texture tier: a` or `c`).
+- A graphics card or a driver that lacks what the renderer needs (the BC texture
+  compression, 32 sampled textures in a shader stage, or an adapter at all on Vulkan and
+  Direct3D 12): before the game starts, MGE XE
   runs `numidium.exe --probe`, which asks the backends and answers in about a third of a
   second. When the answer is none, a box says what is lacking once, the game runs on
   Direct3D 9 without the distant land for that start, and `mgeXE.log` has the probe's
