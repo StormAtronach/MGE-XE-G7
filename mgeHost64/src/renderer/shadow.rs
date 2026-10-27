@@ -409,7 +409,16 @@ impl Shadow {
 
 #[cfg(test)]
 mod tests {
-    use super::sun_light;
+    use super::{sun_light, BLUR_SHADER, DEBUG_SHADER};
+
+    /// The shaders of the shadow map compile as the device checks them: the blur of the map,
+    /// and the debug view of its atlas.
+    #[test]
+    fn the_shaders_of_the_shadow_map_are_valid() {
+        let check = crate::renderer::shader_check::check;
+        check("shadow blur", BLUR_SHADER).unwrap();
+        check("shadow debug", DEBUG_SHADER).unwrap();
+    }
 
     /// The grass and the ground take the same light of the sun for their shadow: none when
     /// the night is whole, the full strength by day, and the fade of the hour between.
