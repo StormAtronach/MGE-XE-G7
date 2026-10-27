@@ -9,12 +9,12 @@
 //! (the failure-path page of the project, section 4). A crate of its own, so that the
 //! tests run: the `d3d8` crate is the library the game loads and builds no test program.
 //!
-//! d3d8.dll calls [`run`] from its `DllMain`, under the loader lock of Windows. A thread
-//! made there cannot start until the lock is free, so nothing here may make or wait for a
-//! thread: the probe's output is read after the probe ends, on the calling thread. The
-//! output is about 1 KB, inside the 4 KB of the pipe; a probe that filled the pipe would
-//! block, reach the time limit and count as none (the first live run, 2026-10-27, hung in a
-//! join of a reader thread here).
+//! Never call [`run`] or [`check`] from `DllMain`: a child process and a wait do not belong
+//! under the loader lock, and a thread made there cannot start until the lock is free (the
+//! first live run, 2026-10-27, hung in a join of the reader thread). d3d8.dll calls them when
+//! the plugin or the game first asks for the wgpu path; `DllMain` reads only the cache
+//! ([`read_cache`]). The probe's output is read on a thread of its own while the probe runs,
+//! since a probe that writes more than the pipe holds (about 4 KB) blocks until it is read.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -44,16 +44,33 @@ pub fn answer(output: &str, code: Option<i32>, exit_gpu: i32, seconds: u64) -> A
     }
 }
 
-/// Runs the probe and reads its answer, on the calling thread only (see the module's head):
-/// it waits for the probe to end, up to the limit, then reads the pipe to its end. A probe
-/// that runs past the limit is ended, and what it wrote is read.
+/// Runs `exe --probe` and reads its answer. A probe that runs past the limit is ended, and
+/// what it wrote is read.
 pub fn run(exe: &str, exit_gpu: i32, seconds: u64) -> Answer {
+    run_ended(exe, exit_gpu, seconds).0
+}
+
+/// [`run`] with the probe's end: its exit code, or `None` when it was ended at the limit.
+fn run_ended(exe: &str, exit_gpu: i32, seconds: u64) -> (Answer, Option<i32>) {
+    let mut command = Command::new(exe);
+    command.arg("--probe");
+    run_command(command, exit_gpu, seconds)
+}
+
+/// Runs a probe's command: its output is read on a thread of its own while the probe runs
+/// (see the module's head), the wait is up to `seconds`, then the answer of its lines.
+fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> (Answer, Option<i32>) {
     let started = Instant::now();
-    let mut child = match Command::new(exe).arg("--probe").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+    let mut child = match command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         Ok(child) => child,
-        Err(error) => return Answer { usable: false, reason: format!("the probe did not start: {error}") },
+        Err(error) => return (Answer { usable: false, reason: format!("the probe did not start: {error}") }, Some(-1)),
     };
     let mut stdout = child.stdout.take().expect("the probe's output is piped");
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = stdout.read_to_end(&mut output);
+        String::from_utf8_lossy(&output).into_owned()
+    });
     let limit = Duration::from_secs(seconds);
     // The exit code, or `None` for a probe ended at the limit.
     let code = loop {
@@ -68,10 +85,9 @@ pub fn run(exe: &str, exit_gpu: i32, seconds: u64) -> Answer {
             Err(_) => break Some(-1),
         }
     };
-    // The probe has ended, so its end of the pipe is closed and the read ends.
-    let mut output = String::new();
-    let _ = stdout.read_to_string(&mut output);
-    answer(&output, code, exit_gpu, seconds)
+    // The probe has ended, so its end of the pipe is closed and the reader ends.
+    let output = reader.join().unwrap_or_default();
+    (answer(&output, code, exit_gpu, seconds), code)
 }
 
 /// The answer that the cache file of the probe holds (`mgeXE-renderer-probe.txt` beside
@@ -123,17 +139,61 @@ pub enum Source {
 /// then goes into the cache. A cache that cannot be written leaves the answer as it is; the
 /// probe then runs again at the next start.
 pub fn check(exe: &str, path: &str, key: &str, exit_gpu: i32, seconds: u64) -> (Answer, Source) {
+    check_with(path, key, || run_ended(exe, exit_gpu, seconds))
+}
+
+/// [`check`] with the probe as a function that gives the answer and the probe's end. A probe
+/// ended at the limit gave no answer of its own: its none is used for this start and not
+/// written into the cache, so that a slow start never stores a none for the machine.
+fn check_with(path: &str, key: &str, probe: impl FnOnce() -> (Answer, Option<i32>)) -> (Answer, Source) {
     if let Some(cached) = read_cache(path).filter(|cached| cached.key == key) {
         return (cached.answer, Source::Cache);
     }
-    let answer = run(exe, exit_gpu, seconds);
-    let _ = std::fs::write(path, format_cache(key, &answer));
+    let (answer, end) = probe();
+    if end.is_some() {
+        let _ = std::fs::write(path, format_cache(key, &answer));
+    }
     (answer, Source::Probe)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A probe that writes far more than the pipe holds still answers: the reader drains the
+    /// pipe while the probe runs (the Reviewer's case: a full pipe blocked the probe until the
+    /// limit, and a usable GPU became a none).
+    #[test]
+    fn a_probe_with_more_than_64_kb_of_output_answers() {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new("cmd");
+        // 4000 lines of 40 bytes: 160 KB, then the answer line.
+        command.raw_arg("/C \"(for /L %i in (1,1,4000) do @echo line %i of a long output of the probe) & echo probe: use vulkan\"");
+        let started = Instant::now();
+        let (answer, end) = run_command(command, 20, 30);
+        assert_eq!(end, Some(0), "{answer:?}");
+        assert_eq!(answer, Answer { usable: true, reason: "use vulkan".to_string() });
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    /// A probe ended at the limit is not written into the cache; a probe that answered is.
+    #[test]
+    fn a_probe_ended_at_the_limit_is_not_cached() {
+        let folder = std::env::temp_dir().join(format!("mge-probe-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("cache.txt");
+        let path = path.to_str().unwrap();
+        let _ = std::fs::remove_file(path);
+        let (answer, source) = check_with(path, "key", || (answer("", None, 20, 5), None));
+        assert_eq!(source, Source::Probe);
+        assert_eq!(answer.reason, "the probe gave no answer in 5 s");
+        assert!(read_cache(path).is_none(), "a probe ended at the limit was cached");
+        let (_, source) = check_with(path, "key", || (Answer { usable: true, reason: "use dx12".to_string() }, Some(0)));
+        assert_eq!(source, Source::Probe);
+        assert_eq!(read_cache(path).unwrap().answer.reason, "use dx12");
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(&folder);
+    }
 
     #[test]
     fn a_cache_line_reads_back_as_written() {
