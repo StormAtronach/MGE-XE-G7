@@ -76,7 +76,10 @@ namespace LOG {
 
         if (fmt) {
             result = std::vsnprintf(buf, sizeof(buf) - 4, fmt, args);
-            std::strcat(buf + result, "\r\n");
+            // vsnprintf returns the length the whole text would have (or -1): a longer text is
+            // cut at sizeof(buf) - 5 characters, so the end of the line goes after what is in
+            // the buffer, not after `result`.
+            std::strcat(buf, "\r\n");
         } else {
             result = 4;
             std::strcpy(buf, "LOG::log(null)\r\n");
@@ -124,13 +127,13 @@ namespace LOG {
 
             s += std::sprintf(s, "  ");
             for (std::size_t x = 0; x < n; ++x) {
-                s += std::sprintf(s, "%02X ", (unsigned int)ptr[n]);
+                s += std::sprintf(s, "%02X ", (unsigned int)ptr[x]);
             }
 
             s += std::sprintf(s, "    ");
             for (std::size_t x = 0; x < n; ++x) {
-                if (std::isprint(ptr[n])) {
-                    *s++ = (char)ptr[n];
+                if (std::isprint(ptr[x])) {
+                    *s++ = (char)ptr[x];
                 } else {
                     *s++ = '.';
                 }
