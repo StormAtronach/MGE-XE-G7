@@ -259,10 +259,25 @@ static void* createStreamedD3D(UINT version) {
     return create(version);
 }
 
+static bool probeSaysUsable();
+
+// The wgpu path for this session: the setting, and the probe's answer, asked once. The first
+// of the two that need it asks the probe: the plugin when it loads (MgeRendererWgpuActive),
+// or the game when it asks for its Direct3D 8. The plugin asks first in a game with MWSE: it
+// must hear the answer before it puts its renderer code on, since its code stays on and a
+// Direct3D 9 frame under it is black.
+static bool wgpuPathOn() {
+    if (!isMW || !Configuration.RendererWgpu) {
+        return false;
+    }
+    static const bool usable = probeSaysUsable();
+    return usable && Configuration.RendererWgpu;
+}
+
 // The nirender plugin asks this when it loads: nonzero when the game gets its Direct3D 8
 // from the plugin. The plugin then puts its renderer code on before the game makes its renderer.
 extern "C" UINT _stdcall MgeRendererWgpuActive() {
-    return (isMW && Configuration.RendererWgpu) ? 1 : 0;
+    return wgpuPathOn() ? 1 : 0;
 }
 
 // The nirender plugin calls these two at the points of a frame where the proxy device ran
@@ -298,9 +313,9 @@ extern "C" void __cdecl MGE_StreamMessage(UINT id, const void* data, UINT length
 // The GPU: `numidium.exe --probe` asks the backends for what the renderer needs, without a
 // window, and answers with its last line and its exit code (MGE_PROBE_EXIT_OK or
 // MGE_PROBE_EXIT_GPU); about 0.3 s. Any other end of the probe counts as none, so that a
-// crash of it leaves the game on Direct3D 9 with the code in the log. It runs here, when the
-// game asks for its Direct3D 8, and never in DllMain: a child process and a wait under the
-// loader lock hung the game (the first live run, 2026-10-27).
+// crash of it leaves the game on Direct3D 9 with the code in the log. It runs once, through
+// wgpuPathOn, and never in DllMain: a child process and a wait under the loader lock hung
+// the game (the first live run, 2026-10-27).
 static bool probeSaysUsable() {
     char answer[1024] = {};
     const DWORD started = GetTickCount();
@@ -321,7 +336,7 @@ static bool probeSaysUsable() {
 
 extern "C" void* _stdcall FakeDirect3DCreate(UINT version) {
     // Wrap Morrowind only, not TESCS
-    if (isMW && Configuration.RendererWgpu && probeSaysUsable()) {
+    if (wgpuPathOn()) {
         Configuration.EnsureSettingsFile();
         if (void* d3d = createStreamedD3D(version)) {
             return d3d;
