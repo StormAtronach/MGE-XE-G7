@@ -211,7 +211,8 @@ pub fn layer_matrix(eye: [f32; 3], eye_vec: [f32; 3], light_vec: [f32; 3], radiu
 impl Shadow {
     pub fn new(scene: &SceneView, resolution: u32) -> Shadow {
         let device = scene.device;
-        let resolution = resolution.clamp(256, 4096);
+        // The map is two layers wide: each at most half of the largest texture of the GPU.
+        let resolution = resolution.clamp(256, 4096).min(device.limits().max_texture_dimension_2d / 2);
         let target = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
