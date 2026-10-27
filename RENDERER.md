@@ -426,7 +426,6 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_SHADOW_LAYERS=1`: each pixel coloured by the layer of the shadow map that serves
   it: red the first, green the second, blue outside both, grey a draw without the shadow
   test; darker where the map shadows it.
-- `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
 - `MGE_XE_STATICS_CULL=cpu`: the distant statics are culled on the CPU, not on the GPU.
 - `MGE_XE_STATICS_CAP_MB=<n>`: a fixed cap of the merged subsets of the distant statics, in
   place of `distant_land.statics_fallback_cap_mb`.
