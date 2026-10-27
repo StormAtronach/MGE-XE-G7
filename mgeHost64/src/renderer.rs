@@ -445,7 +445,8 @@ fn game_time(environment: Option<Environment>, started: Instant) -> f32 {
 
 /// The startup generation of distant land, as the IPC host mode does it in `main.rs`: when
 /// the output does not match the generation job of mgeXE.toml, the generator makes it again.
-/// Its log goes to mgeHost64.log, as in that mode. Runs on the loader thread. False when the
+/// Its lines go into this program's own log (`logging::init_stdout_logger`); mgeHost64.log
+/// is the IPC host mode's only. Runs on the loader thread. False when the
 /// generation failed and left no valid output: the distant land stays off then, as in that
 /// mode (`handle_generation_failure` turns it off in the configuration).
 fn generate_at_start() -> bool {
@@ -453,7 +454,7 @@ fn generate_at_start() -> bool {
         println!("distant land: no folder of the game; no startup generation");
         return true;
     };
-    let _log = crate::logging::init_file_logger(root.join("mgeHost64.log")).ok();
+    let _ = crate::logging::init_stdout_logger();
     let mut configuration = crate::config::Configuration::load_at(&root);
     let started = Instant::now();
     let status = crate::startup_generation::ensure_distant_land_ready(&mut configuration, &root);
@@ -1256,7 +1257,7 @@ impl Drop for DistantLand {
 /// generation failed and left no valid output (the files there are stale or mixed).
 fn load_after_generation(usable: bool, folder: &Path) -> Result<Loaded, String> {
     if !usable {
-        return Err("the startup generation failed and left no valid distant land (mgeHost64.log)".to_string());
+        return Err("the startup generation failed and left no valid distant land (its lines are above)".to_string());
     }
     load(folder)
 }
