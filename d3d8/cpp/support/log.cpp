@@ -13,8 +13,25 @@ namespace LOG {
     static HANDLE handle = INVALID_HANDLE_VALUE;
 
 
+    // Keeps the log of the run before as `<filename>.1`, in place of the one of the run before
+    // that, as the logs of the plugin and of the helper do: a player who starts the game again
+    // after a crash still has the log of the run that crashed. No file yet: nothing to keep.
+    // Kernel32 only, with no allocation: the caller is DllMain.
+    static void keepRunBefore(const char* filename) {
+        char before[MAX_PATH + 3];
+        if (std::snprintf(before, sizeof(before), "%s.1", filename) >= static_cast<int>(sizeof(before))) {
+            return;
+        }
+        // A move replaces the file of the run before that. When it fails (the file is open in
+        // another program), a copy keeps the log at least.
+        if (!MoveFileExA(filename, before, MOVEFILE_REPLACE_EXISTING) && GetLastError() != ERROR_FILE_NOT_FOUND) {
+            CopyFileA(filename, before, FALSE);
+        }
+    }
+
     bool open(const char* filename) {
         close();
+        keepRunBefore(filename);
         handle = CreateFile(filename, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
         if (handle == INVALID_HANDLE_VALUE) {

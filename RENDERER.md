@@ -163,7 +163,8 @@ To remove the archive:
 1. From the Morrowind folder: `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`, `numidium.exe`,
    `mgeXE.toml`, `mge3\MGE XE Default Statics Classifiers.toml`, the readme and license
    files of the archive, and the files the renderer wrote: `nirender.log`,
-   `nirender-host.log`, `mgeXE.log`, `mgeXE-shaders.txt` and any `nirender-<date>.nircap`.
+   `nirender-host.log` and `mgeXE.log` (each with its `.1`, the log of the run before),
+   `mgeXE-shaders.txt` and the folder `nirender-captures` (the captures of the F11 key).
 2. `MWSE.dll`: put your copy back, or run `MWSE-Update.exe` to get the public MWSE back.
 3. From `Data Files`: `MWSE\lib\akulakhan.dll`, `MWSE\mods\nirender`,
    `MWSE\config\nirender.json` (if it exists), `MWSE\mods\MGE XE Options`,
@@ -398,7 +399,7 @@ asks for the files below. There is no other address.
 
 1. Press F11 in the game (the key is `captureKey` in `Data Files/MWSE/config/nirender.json`;
    `"none"` turns it off). The plugin writes the next 3 frames into
-   `nirender-<date>.nircap` in the Morrowind folder. We can draw that file without your
+   `nirender-captures\nirender-<date>.nircap` in the Morrowind folder. We can draw that file without your
    game and your mods, and see what you saw. The file holds the pictures and the textures
    of that place, so it can be large (a few MB to some hundred MB). Zip it; if it is still
    too large to attach, put it on a file host and paste the link. Some pictures of the

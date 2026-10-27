@@ -22,3 +22,14 @@ extern "C" int mge_log_test_write(const char* path) {
     LOG::close();
     return 0;
 }
+
+// One run of the log at `path`: it opens (the run before goes to `<path>.1`), writes `line`
+// and closes. Returns 0, or 1 when the file does not open.
+extern "C" int mge_log_test_run(const char* path, const char* line) {
+    if (!LOG::open(path)) {
+        return 1;
+    }
+    LOG::logline("%s", line);
+    LOG::close();
+    return 0;
+}
