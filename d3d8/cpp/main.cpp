@@ -30,7 +30,7 @@ static bool wgpuWanted = false;
 // The cache of the probe's last answer, beside mgeXE.log (the failure-path design, section 6).
 static const char* const kProbeCache = "mgeXE-renderer-probe.txt";
 
-static void showMessageBox(const char* text);
+static void showMessageBox(const char* text, bool endGame);
 
 // The wgpu path is off for this session: the log line with the reason, the box once when
 // `box` has a text for the player (the four parts of the pattern: what, why, what the game
@@ -49,7 +49,8 @@ static void wgpuPathOff(const char* reason, const std::string& box) {
         return;
     }
     shown = true;
-    showMessageBox(box.c_str());
+    // Not a stop box: the game goes on, on Direct3D 9.
+    showMessageBox(box.c_str(), false);
 }
 
 
@@ -208,9 +209,19 @@ void sendToRenderer(UINT id, const void* data, UINT length) {
 // restarts a renderer that does not exist yet, and the game crashed (run 1c of the probe,
 // 2026-10-27: Tes3Game::restartRenderer, NiAVObject::UpdateEffects). The "box:" lines are
 // written on the calling thread first; the box's thread writes how it closed.
+//
+// `endGame` is the close rule of a stop box (the design, section 5): when the box closes, its
+// thread posts WM_CLOSE to the game's window, since with the box on its own thread a first
+// Alt+F4 closes the box and not the game. A box after which the game goes on passes false.
 static DWORD WINAPI messageBoxThread(LPVOID parameter);
 
-static void showMessageBox(const char* text) {
+// What the thread of a box takes: its text and whether the game ends after it.
+struct MessageBoxJob {
+    std::string text;
+    bool endGame;
+};
+
+static void showMessageBox(const char* text, bool endGame) {
     std::string lines(text);
     for (size_t start = 0; start <= lines.size();) {
         size_t end = lines.find('\n', start);
@@ -220,20 +231,43 @@ static void showMessageBox(const char* text) {
         LOG::logline("box: %s", lines.substr(start, end - start).c_str());
         start = end + 1;
     }
-    // The thread owns its copy of the text and frees it.
-    std::string* copy = new std::string(text);
-    HANDLE thread = CreateThread(nullptr, 0, messageBoxThread, copy, 0, nullptr);
+    // The thread owns the job and frees it.
+    MessageBoxJob* job = new MessageBoxJob{ text, endGame };
+    HANDLE thread = CreateThread(nullptr, 0, messageBoxThread, job, 0, nullptr);
     if (thread) {
         CloseHandle(thread);
     } else {
         LOG::logline("box: not shown, no thread for it (error %lu)", GetLastError());
-        delete copy;
+        delete job;
+    }
+}
+
+// The top-level window of this process that has no owner and is visible: the game's window.
+static BOOL CALLBACK findGameWindow(HWND window, LPARAM found) {
+    DWORD process = 0;
+    GetWindowThreadProcessId(window, &process);
+    if (process == GetCurrentProcessId() && IsWindowVisible(window) && !GetWindow(window, GW_OWNER)) {
+        *reinterpret_cast<HWND*>(found) = window;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// Ends the game after a stop box: WM_CLOSE to the game's window, as Alt+F4 does.
+static void closeGame() {
+    HWND game = NULL;
+    EnumWindows(findGameWindow, reinterpret_cast<LPARAM>(&game));
+    if (game) {
+        LOG::logline("box: the game closes");
+        PostMessageA(game, WM_CLOSE, 0, 0);
+    } else {
+        LOG::logline("box: no window of the game to close");
     }
 }
 
 static DWORD WINAPI messageBoxThread(LPVOID parameter) {
-    std::string* copy = static_cast<std::string*>(parameter);
-    const char* text = copy->c_str();
+    MessageBoxJob* job = static_cast<MessageBoxJob*>(parameter);
+    const char* text = job->text.c_str();
     char value[16] = {};
     GetEnvironmentVariableA("MGE_XE_BOX_SECONDS", value, sizeof(value));
     // 0 to 3600: a negative value is 0, and the timeout in ms must not overflow.
@@ -248,10 +282,9 @@ static DWORD WINAPI messageBoxThread(LPVOID parameter) {
         MessageBoxTimeoutProc timed = (MessageBoxTimeoutProc)GetProcAddress(GetModuleHandleA("user32.dll"), "MessageBoxTimeoutA");
         if (!timed) {
             LOG::logline("box: not shown: this Windows has no MessageBoxTimeoutA");
-            delete copy;
-            return 0;
+        } else {
+            timed(NULL, text, "MGE XE", flags, 0, seconds * 1000);
         }
-        timed(NULL, text, "MGE XE", flags, 0, seconds * 1000);
     }
     // The elapsed time tells a timeout from a click: MessageBoxTimeout answers IDOK on the
     // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
@@ -260,7 +293,10 @@ static DWORD WINAPI messageBoxThread(LPVOID parameter) {
     } else {
         LOG::logline("box: closed by a click");
     }
-    delete copy;
+    if (job->endGame) {
+        closeGame();
+    }
+    delete job;
     return 0;
 }
 
