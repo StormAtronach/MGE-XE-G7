@@ -32,9 +32,10 @@ a warning about an unknown key.
 
 To go back to MGE XE on Direct3D 9, set the line to `false`. The plugin is then idle.
 
-This archive does not have the `d3d9.dll` (DXVK) of MGE XE G7. The new renderer does not
-use it. To use MGE XE on Direct3D 9 (`renderer_wgpu = false`), take `d3d9.dll` from the
-MGE XE G7 archive: its distant land on Direct3D 9 needs that build of DXVK.
+This archive does not have the `d3d9.dll` (DXVK) of MGE XE G7, and the new renderer does
+not use it. MGE XE on Direct3D 9 (`renderer_wgpu = false`) runs with the `d3d9.dll` of
+Windows; for MGE XE G7's own DXVK build, take `d3d9.dll` from the MGE XE G7 archive. Do
+not use an official DXVK release: it runs out of memory.
 
 How to know that the new renderer is in use:
 
@@ -391,7 +392,8 @@ asks for the files below. There is no other address.
    have blank parts in it.
 2. Attach that file with `mgeXE.log`, `MWSE.log`, `nirender.log` and `nirender-host.log`
    from the Morrowind folder, your `mgeXE.toml`, and a screenshot. Name the archive you
-   installed. The first lines of `nirender.log` and `nirender-host.log` name the versions,
+   installed. The logs and the dump attach as they are; zip `mgeXE.toml` and a save
+   (`.ess`) before you attach them, since GitHub does not take those file types. The first lines of `nirender.log` and `nirender-host.log` name the versions,
    and the line `adapter:` of `nirender-host.log` names the graphics card, the backend and
    the driver. With Mod Organizer 2 and Root Builder, these files are in `overwrite\Root`
    of the instance after the game has ended.
