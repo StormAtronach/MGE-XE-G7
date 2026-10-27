@@ -257,20 +257,29 @@ mouse pointer of the menus follows your hand late, send us this line.
 
 ## When something is wrong
 
+Report it at <https://github.com/StormAtronach/nirender-plugin/issues>. The form there
+asks for the files below. There is no other address.
+
 1. Press F11 in the game (the key is `captureKey` in `Data Files/MWSE/config/nirender.json`;
    `"none"` turns it off). The plugin writes the next 3 frames into
    `nirender-<date>.nircap` in the Morrowind folder. We can draw that file without your
-   game and your mods, and see what you saw. Some pictures of the menus are not in the
-   file (the game cannot give them a second time), so a menu can have blank parts in it.
-2. Send that file with `mgeXE.log`, `MWSE.log`, `nirender.log` and `nirender-host.log`
-   from the Morrowind folder, and a screenshot. The first lines of `nirender.log` and
-   `nirender-host.log` name the versions.
-3. If the game does not start or shows nothing: set `renderer_wgpu = false`, start again,
+   game and your mods, and see what you saw. The file holds the pictures and the textures
+   of that place. Some pictures of the menus are not in the file (the game cannot give
+   them a second time), so a menu can have blank parts in it.
+2. Attach that file with `mgeXE.log`, `MWSE.log`, `nirender.log` and `nirender-host.log`
+   from the Morrowind folder, your `mgeXE.toml`, and a screenshot. Name the archive you
+   installed. The first lines of `nirender.log` and `nirender-host.log` name the versions,
+   and the line `adapter:` of `nirender-host.log` names the graphics card, the backend and
+   the driver. With Mod Organizer 2 and Root Builder, these files are in `overwrite\Root`
+   of the instance after the game has ended.
+3. After a crash, attach `MWSE_MiniDump.dmp` from the Morrowind folder too. MWSE writes it
+   when the game crashes, and the next start of the game deletes it: copy it first.
+4. If the game does not start or shows nothing: set `renderer_wgpu = false`, start again,
    and send the same logs.
-4. If an object is missing, comes late, or stays in an old pose: press F11 there, tell
+5. If an object is missing, comes late, or stays in an old pose: press F11 there, tell
    us the place, and send the capture with the logs. The console function `engineWalk`
    of the build v0.2.11 is gone: the game finds the objects itself in every build now.
-5. If a message box says that the graphics device was lost (the driver was reset, or it
+6. If a message box says that the graphics device was lost (the driver was reset, or it
    stopped), the renderer cannot draw any more. Quit the game and start it again, and send
    `nirender-host.log`. A fault of the GPU that is not a loss does not stop the game: a
    part of the picture can be missing, and `nirender-host.log` has lines `gpu error`.
