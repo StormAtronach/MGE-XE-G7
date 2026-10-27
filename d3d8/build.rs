@@ -15,9 +15,11 @@ fn main() {
     // this one, as for mgeHost64's path dependency on its crate, or the one that
     // NIRENDER_PLUGIN_DIR names, as for xtask's `plugin_dir`: a worktree of this repository
     // builds against the contract of its paired plugin worktree, not of the main checkout
-    // (the C2382 of 2026-10-27 hid that way).
+    // (the C2382 of 2026-10-27 hid that way). A relative value is from the workspace root, as
+    // in xtask, so that the two read one folder.
     println!("cargo:rerun-if-env-changed=NIRENDER_PLUGIN_DIR");
-    let plugin_dir = env::var_os("NIRENDER_PLUGIN_DIR").map(PathBuf::from).unwrap_or_else(|| manifest_dir.join("..").join("..").join("nirender-plugin"));
+    let workspace_root = manifest_dir.join("..");
+    let plugin_dir = env::var_os("NIRENDER_PLUGIN_DIR").map(|value| workspace_root.join(value)).unwrap_or_else(|| workspace_root.join("..").join("nirender-plugin"));
     let contract_dir = plugin_dir.join("contract");
     assert!(contract_dir.join("mge_render_link.h").exists(), "the nirender plugin's contract is not at {} (NIRENDER_PLUGIN_DIR names the plugin's repository)", contract_dir.display());
 
