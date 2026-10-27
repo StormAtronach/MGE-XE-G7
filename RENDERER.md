@@ -367,8 +367,10 @@ asks for the files below. There is no other address.
    `"none"` turns it off). The plugin writes the next 3 frames into
    `nirender-<date>.nircap` in the Morrowind folder. We can draw that file without your
    game and your mods, and see what you saw. The file holds the pictures and the textures
-   of that place. Some pictures of the menus are not in the file (the game cannot give
-   them a second time), so a menu can have blank parts in it.
+   of that place, so it can be large (a few MB to some hundred MB). Zip it; if it is still
+   too large to attach, put it on a file host and paste the link. Some pictures of the
+   menus are not in the file (the game cannot give them a second time), so a menu can
+   have blank parts in it.
 2. Attach that file with `mgeXE.log`, `MWSE.log`, `nirender.log` and `nirender-host.log`
    from the Morrowind folder, your `mgeXE.toml`, and a screenshot. Name the archive you
    installed. The first lines of `nirender.log` and `nirender-host.log` name the versions,
