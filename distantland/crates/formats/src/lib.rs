@@ -12,6 +12,8 @@ pub mod prelude {
 pub mod distant_statics;
 /// Binary structures for `distantland\terrain.bin`.
 pub mod distant_terrain;
+/// Binary structures for `distantland\lights.data`.
+pub mod lights;
 /// Binary structures for `distantland\terrain_occlusion.bin`.
 pub mod terrain_occlusion;
 /// Binary structures for `distantland\statics\usage.data`.

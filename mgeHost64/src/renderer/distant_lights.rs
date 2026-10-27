@@ -16,19 +16,17 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 
+use distantland::mge_xe::lights::{parse_lights, LIGHT_TEXEL_SIZE, LIGHT_TILE};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 
-const MAGIC: &[u8; 8] = b"XELIGHT1";
-const HEADER: usize = 40;
-const SOURCE: usize = 32;
-/// The values on a side of a tile.
-const TILE: u32 = 65;
+/// The values on a side of a tile (the file's layout: `distantland_formats::lights`).
+const TILE: u32 = LIGHT_TILE as u32;
 /// The tiles in a row of the texture of the tiles.
 const TILES_IN_ROW: u32 = 64;
 /// The bytes of a value of a tile: red, green, blue, 255, each half of the light.
-const TEXEL: u32 = 4;
+const TEXEL: u32 = LIGHT_TEXEL_SIZE as u32;
 /// The values of a source in the list of the glows: two rows of four numbers.
 const GLOW_WORDS: u64 = 8;
 
@@ -220,34 +218,12 @@ struct LightsFile {
     texels: Vec<u8>,
 }
 
-fn word(bytes: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-}
-
+/// Reads `lights.data` through the formats crate, which checks its header and its length
+/// against its counts and gives the reason of a refusal.
 fn read(path: &Path) -> Result<LightsFile, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    if bytes.len() < HEADER || &bytes[..8] != MAGIC || word(&bytes, 8) != 2 || word(&bytes, 20) != TILE {
-        return Err(format!("{} is not a lights file of version 2", path.display()));
-    }
-    let (source_count, tile_count) = (word(&bytes, 12) as usize, word(&bytes, 16) as usize);
-    let sources_end = HEADER + source_count * SOURCE;
-    let cells_end = sources_end + tile_count * 8;
-    let texels_end = cells_end + tile_count * (TILE * TILE * TEXEL) as usize;
-    if bytes.len() != texels_end {
-        return Err(format!("{} has {} bytes, not {texels_end}", path.display(), bytes.len()));
-    }
-    let tiles = (0..tile_count)
-        .map(|tile| {
-            let at = sources_end + tile * 8;
-            (word(&bytes, at) as i32, word(&bytes, at + 4) as i32)
-        })
-        .collect();
-    Ok(LightsFile {
-        sources: bytes[HEADER..sources_end].to_vec(),
-        source_count: source_count as u32,
-        tiles,
-        texels: bytes[cells_end..texels_end].to_vec(),
-    })
+    let lights = parse_lights(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(LightsFile { sources: lights.sources, source_count: lights.source_count, tiles: lights.tiles, texels: lights.texels })
 }
 
 const CULL_SHADER: &str = "
