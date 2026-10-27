@@ -1,0 +1,12 @@
+[package]
+name = "mge-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The probe of the wgpu renderer before d3d8.dll chooses its path: numidium.exe --probe run with a pipe and a time limit, and its answer read from its lines"
+
+[lib]
+name = "mge_probe"
+
+[lints]
+workspace = true

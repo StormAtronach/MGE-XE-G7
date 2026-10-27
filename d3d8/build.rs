@@ -71,6 +71,8 @@ fn main() {
     println!("cargo:rustc-link-lib=kernel32");
     println!("cargo:rustc-link-lib=user32");
     println!("cargo:rustc-link-lib=gdi32");
+    // The registry: the display adapters and their drivers in the key of the probe's cache.
+    println!("cargo:rustc-link-lib=advapi32");
     println!("cargo:rustc-link-lib=d3d9");
     println!("cargo:rustc-link-lib=d3dx9");
 }

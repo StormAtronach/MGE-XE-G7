@@ -208,6 +208,13 @@ change. That start can take some minutes. With an older file, set it below
   `renderer_wgpu = false` to get MGE XE with its distant land back until the cause is
   known.
 - Another mod that changes the renderer code of the game (not its Lua) has the same effect.
+- A graphics card or a driver that lacks what the renderer needs (the binding arrays of
+  textures with room for 256, the BC texture compression, 32 sampled textures in a shader
+  stage, or an adapter at all on Vulkan and Direct3D 12): before the game starts, MGE XE
+  runs `numidium.exe --probe`, which asks the backends and answers in about a third of a
+  second. When the answer is none, all of MGE XE runs on Direct3D 9 for the session, a box
+  says what is lacking once, and `mgeXE.log` has the probe's lines. A probe that crashes or
+  gives no answer in 5 s counts as none, with its exit code in the log.
 - When `numidium.exe` or `MWSE.dll` is not in the Morrowind folder, MGE XE runs on
   Direct3D 9 as without the switch, and `mgeXE.log` names the file. A virus scanner can
   take a program away, and an archive can be extracted in part.

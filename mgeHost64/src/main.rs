@@ -26,14 +26,16 @@ use ipc::server::{OutputState, Server};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Three modes. The IPC host mode, launched by `d3d8.dll`, is the default. With `--live <name>`
+/// Four modes. The IPC host mode, launched by `d3d8.dll`, is the default. With `--live <name>`
 /// the process is the wgpu renderer: the nirender plugin launches it, and it draws the stream
 /// of the shared memory with that name in the window of the game until the stream ends. With
 /// `--replay <capture file> <picture.png> [--frame N]` it draws a capture file into a picture,
-/// with the distant land of the current folder: the same picture each time, for a test.
+/// with the distant land of the current folder: the same picture each time, for a test. With
+/// `--probe` it asks the backends for what the wgpu renderer needs and prints the answer with
+/// the exit code 0 or 20: d3d8.dll runs it before it chooses the wgpu path.
 fn main() {
     let mut arguments: Vec<String> = std::env::args().collect();
-    if arguments.iter().any(|argument| argument == "--live") {
+    if arguments.iter().any(|argument| argument == "--live" || argument == "--probe") {
         renderer::run(arguments);
         return;
     }
