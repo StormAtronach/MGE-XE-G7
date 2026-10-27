@@ -14,16 +14,8 @@
 //! The file is written apart from the committed inventory of the generation, when its bytes
 //! change: it is rebuilt at every generation run, which costs little.
 //!
-//! The layout, little endian:
-//! - The header, 40 bytes: `XELIGHT1`; the version (2); the number of sources; the number of
-//!   tiles; the side of a tile (65); the side of a cell (8192.0); the step of the grid (128.0);
-//!   two zero words.
-//! - The sources, 32 bytes each: x, y, z and the radius as f32; the colour as four bytes (red,
-//!   green, blue, then 255 when the light has a mesh, else 0); the flags of the record (u32);
-//!   two zero words.
-//! - The cells of the tiles: x and y as i32 for each tile.
-//! - The tiles: for each, 65 x 65 values, row after row from the south-west corner, each four
-//!   bytes (red, green, blue, 255): half of the light, so that a byte holds a light up to 2.
+//! The layout is in `distantland_formats::lights` (`crate::mge_xe::lights`), with its
+//! constants, which this writer takes, and the reader of the renderer, `parse_lights`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -31,14 +23,12 @@ use std::fs;
 use anyhow::{Context, Result};
 
 use super::{GenerationSettings, OutputPaths};
+use crate::mge_xe::lights::{
+    LIGHTS_HEADER_SIZE, LIGHTS_MAGIC, LIGHTS_VERSION, LIGHT_CELL as CELL, LIGHT_SOURCE_SIZE, LIGHT_STEP as STEP,
+    LIGHT_TEXEL_SIZE, LIGHT_TILE as TILE,
+};
 use crate::UsageInfo;
 
-pub(crate) const LIGHTS_MAGIC: &[u8; 8] = b"XELIGHT1";
-pub(crate) const LIGHTS_VERSION: u32 = 2;
-/// The values on a side of a tile: the vertices on a side of the land of a cell.
-pub(crate) const TILE: usize = 65;
-const CELL: f32 = 8192.0;
-const STEP: f32 = 128.0;
 /// `tes3::esp::LightFlags`.
 const NEGATIVE: u32 = 0x4;
 const OFF_BY_DEFAULT: u32 = 0x20;
@@ -156,7 +146,9 @@ pub(crate) fn build(sources: &[LightSource], usage: &UsageInfo, settings: &Gener
     }
     let tiles = if settings.bake_lights { bake(usage, sources) } else { BTreeMap::new() };
 
-    let mut bytes = Vec::with_capacity(40 + sources.len() * 32 + tiles.len() * (8 + TILE * TILE * 4));
+    let mut bytes = Vec::with_capacity(
+        LIGHTS_HEADER_SIZE + sources.len() * LIGHT_SOURCE_SIZE + tiles.len() * (8 + TILE * TILE * LIGHT_TEXEL_SIZE),
+    );
     bytes.extend_from_slice(LIGHTS_MAGIC);
     for word in [LIGHTS_VERSION, sources.len() as u32, tiles.len() as u32, TILE as u32] {
         bytes.extend_from_slice(&word.to_le_bytes());
@@ -242,6 +234,19 @@ mod tests {
         let below = light_at([0.0, 0.0, 0.0], &[&lamp]);
         let across = light_at([10.0, 0.0, 100.0], &[&lamp]);
         assert!((below[0] - across[0]).abs() < 1e-6);
+    }
+
+    /// What this writer writes, the reader of the renderer reads (`parse_lights`).
+    #[test]
+    fn the_renderers_reader_reads_what_this_writes() {
+        let sources = [source([1.0, 2.0, 3.0], 100.0, [255, 0, 0]), source([-5.0, 0.0, 9.0], 50.0, [0, 0, 255])];
+        let settings = GenerationSettings { distant_lights: true, bake_lights: false, ..Default::default() };
+        let output = build(&sources, &UsageInfo::default(), &settings).unwrap();
+        let lights = crate::mge_xe::lights::parse_lights(&output.bytes).unwrap();
+        assert_eq!(lights.source_count as usize, output.source_count);
+        assert_eq!(lights.tiles.len(), output.tile_count);
+        assert_eq!(lights.sources.len(), sources.len() * LIGHT_SOURCE_SIZE);
+        assert_eq!(lights.sources[..12], [1.0f32, 2.0, 3.0].map(f32::to_le_bytes).concat());
     }
 
     #[test]
