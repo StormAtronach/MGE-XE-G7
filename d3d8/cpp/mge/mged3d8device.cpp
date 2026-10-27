@@ -1695,15 +1695,14 @@ namespace Deviceless {
         }
     }
 
-    // The game resolved the objects of a save or of a new game.
+    // The game resolved the objects of a save or of a new game. The player is still at the
+    // place from before the load: the wait for the distant land comes at the move to the
+    // loaded place (onPlayerCellChanged).
     static void onResolveDuringInit() {
         loadVisGroups();
         DistantLand::resolveDynamicVisGroups();
         visGroupsUnsent = true;
         gameLoaded = true;
-        if (Configuration.DistantLandWaitOnLoad) {
-            prefetchDistantLand(MWBridge::get(), true);
-        }
     }
 
     // A move to a place whose distant statics the helper may not have: from or to an
@@ -1722,11 +1721,14 @@ namespace Deviceless {
     }
 
     // The player changed cell through the engine's cell change (MWSE's native event 5): a
-    // teleport (a door, a travel, coc, Recall). The engine has drawn no frame of the new place
-    // yet. The load of a saved game has its own wait (onResolveDuringInit).
+    // teleport (a door, a travel, coc, Recall), or the move to the place of a loaded save,
+    // with its loading bar still up. The engine has drawn no frame of the new place yet.
     static void __cdecl onPlayerCellChanged(const void* previousCell, const void* cell, bool gameLoad) {
         auto mwBridge = MWBridge::get();
-        if (gameLoad || !mwBridge->IsLoaded() || !isFarMove(static_cast<const TES3::Cell*>(previousCell), static_cast<const TES3::Cell*>(cell))) {
+        if (!mwBridge->IsLoaded()) {
+            return;
+        }
+        if (!gameLoad && !isFarMove(static_cast<const TES3::Cell*>(previousCell), static_cast<const TES3::Cell*>(cell))) {
             return;
         }
         prefetchDistantLand(mwBridge, Configuration.DistantLandWaitOnLoad);
@@ -1812,7 +1814,7 @@ namespace Deviceless {
             }
             MWPatches::patchResolveDuringInit(&onResolveDuringInit);
             if (!MwseNative::listenPlayerCellChanged(&onPlayerCellChanged)) {
-                LOG::logline("-- wgpu renderer: MWSE has no event of the player's change of cell; a teleport neither waits for the distant land nor says when it is there");
+                LOG::logline("-- wgpu renderer: MWSE has no event of the player's change of cell; neither a game load nor a teleport waits for the distant land or says when it is there");
             }
             // As the proxy device at its first scene of the loaded game.
             StatusOverlay::setStatus(XE_VERSION_STRING);
