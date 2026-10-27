@@ -1655,7 +1655,7 @@ impl Statics {
     /// `distant_land.statics_fallback_cap_mb`. `MGE_XE_STATICS_CAP_MB` gives a fixed cap,
     /// for a test.
     fn select_cap(&mut self, device: &wgpu::Device) {
-        if let Some(mb) = std::env::var("MGE_XE_STATICS_CAP_MB").ok().and_then(|mb| mb.parse::<u64>().ok()) {
+        if let Some(mb) = nirender_wgpu::switches::parsed("MGE_XE_STATICS_CAP_MB", "a number of MB", |mb| mb.parse::<u64>().ok()) {
             self.merged_cap = mb << 20;
             println!("distant statics: the cap of the merged subsets is {mb} MB, from MGE_XE_STATICS_CAP_MB");
         } else if let Some((budget, used)) = memory_budget(device) {
@@ -1866,7 +1866,7 @@ impl Statics {
         let mut interiors: Vec<&[u8]> = catalog.worlds.keys().map(|name| name.as_slice()).filter(|name| !name.is_empty()).collect();
         interiors.sort();
         if !interiors.is_empty() {
-            let shown = if std::env::var_os("MGE_XE_LIST_WORLDS").is_some() { interiors.len() } else { 12 };
+            let shown = if nirender_wgpu::switches::on("MGE_XE_LIST_WORLDS") == Some(true) { interiors.len() } else { 12 };
             let names: Vec<String> = interiors.iter().take(shown).map(|name| String::from_utf8_lossy(name).into_owned()).collect();
             println!("distant statics: interior cells with statics: {}{}", names.join("; "), if interiors.len() > shown { "; ..." } else { "" });
         }
@@ -2726,8 +2726,8 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
     }
     // The folder of the game: two above the distant land, or MGE_XE_GAME_DIR for a replay
     // where the distant land is elsewhere.
-    let game = match std::env::var_os("MGE_XE_GAME_DIR") {
-        Some(dir) => PathBuf::from(dir),
+    let game = match nirender_wgpu::switches::path("MGE_XE_GAME_DIR") {
+        Some(dir) => dir,
         None => match folder.parent().and_then(Path::parent) {
             Some(game) => game.to_path_buf(),
             None => return,
@@ -2992,7 +2992,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         usage: wgpu::BufferUsages::VERTEX,
     });
     let pools = cull::Pools::new(catalog.textures.len(), device);
-    let forced_cpu = std::env::var("MGE_XE_STATICS_CULL").is_ok_and(|value| value == "cpu");
+    let forced_cpu = nirender_wgpu::switches::choice("MGE_XE_STATICS_CULL", &["cpu", "gpu"]) == Some("cpu");
     let culling = if cull::supported(device) && !forced_cpu {
         let places: Vec<cull::Place> = catalog
             .instances

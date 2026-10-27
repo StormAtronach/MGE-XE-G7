@@ -426,7 +426,6 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_SHADOW_LAYERS=1`: each pixel coloured by the layer of the shadow map that serves
   it: red the first, green the second, blue outside both, grey a draw without the shadow
   test; darker where the map shadows it.
-- `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
 - `MGE_XE_BOX_SECONDS=<n>`: a message box of d3d8.dll, of the helper or of the plugin
   closes itself after n seconds, and its text is in that part's log as `box:` lines
   (always); unset or 0, the box waits for the click. The test runner sets 5.

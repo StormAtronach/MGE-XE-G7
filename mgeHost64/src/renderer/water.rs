@@ -9,6 +9,9 @@
 
 use nirender_wgpu::{Replay, ReplayView, SceneView, wgpu};
 
+/// `MGE_XE_WATER_DEBUG`, read once: the water is made again at each change of the size.
+static WATER_DEBUG: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
 use super::{multiply, planes};
 
 /// The size of the reflection, as the Direct3D 9 path has it.
@@ -538,7 +541,7 @@ impl Water {
             reflection_depth_read,
             no_land,
             reflected: false,
-            debug: std::env::var("MGE_XE_WATER_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            debug: *WATER_DEBUG.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_WATER_DEBUG", 0.0)),
             frames: 0,
             reflections: 0,
         })
