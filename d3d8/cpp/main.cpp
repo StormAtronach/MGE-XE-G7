@@ -158,7 +158,8 @@ void sendToRenderer(UINT id, const void* data, UINT length) {
 // helper's boxes follow it too): each line goes to mgeXE.log first as "box: "; with
 // MGE_XE_BOX_SECONDS=<n> in the environment the box closes itself after n seconds, through
 // MessageBoxTimeoutA of user32 (not in the documented API, so taken by GetProcAddress; without
-// it the box is only logged); without the switch it waits for the click.
+// it the box is only logged); without the switch it waits for the click. The old-plugin case
+// only logs since D10 (a); the box of the hardware fallback (C3) is the caller.
 static void showMessageBox(const char* text) {
     std::string lines(text);
     for (size_t start = 0; start <= lines.size();) {
@@ -218,22 +219,16 @@ static void* createStreamedD3D(UINT version) {
     }
     streamExtension = (void (__cdecl *)(UINT, const void*, UINT))GetProcAddress(plugin, "nirender_stream_extension");
     // The build id of the plugin, for the log. A plugin without the export is from before the
-    // handshake: the helper would refuse its stream. The player sees why once, and the game
-    // runs on Direct3D 9 (the owner's choice, 2026-10-27).
+    // handshake: the game goes on with its device, and the helper refuses its stream (no
+    // stream format in the HEADER) with one box and the exit code 10. No Direct3D 9 fallback:
+    // the plugin's live ports, installed early, leave that frame black (the owner's D10 (a),
+    // 2026-10-27, after run 4c of records entry 192).
     typedef const char* (__cdecl * BuildIdProc) ();
     BuildIdProc buildId = (BuildIdProc)GetProcAddress(plugin, "nirender_build_id");
     if (!buildId) {
-        LOG::logline("!! wgpu renderer: akulakhan.dll is from before the version handshake (no nirender_build_id); this d3d8.dll is " MGE_BUILD_ID);
-        showMessageBox(
-            "The parts of the wgpu renderer of MGE XE do not match.\n"
-            "akulakhan.dll is from before the version handshake.\n"
-            "d3d8.dll is " MGE_BUILD_ID ".\n\n"
-            "Install akulakhan.dll, numidium.exe and d3d8.dll from one archive.\n"
-            "The game goes on with Direct3D 9.\n"
-            "mgeXE.log in the folder of the game has the details.");
-        return nullptr;
+        LOG::logline("!! wgpu renderer: akulakhan.dll is from before the version handshake (no nirender_build_id); this d3d8.dll is " MGE_BUILD_ID "; the helper refuses its stream");
     }
-    LOG::logline("-- wgpu renderer: the nirender plugin (%s) gives the game its Direct3D 8", buildId());
+    LOG::logline("-- wgpu renderer: the nirender plugin (%s) gives the game its Direct3D 8", buildId ? buildId() : "a build from before the handshake");
     // Before the stream starts: the plugin keeps the record and writes it after the header.
     Deviceless::sendHello();
     return create(version);
