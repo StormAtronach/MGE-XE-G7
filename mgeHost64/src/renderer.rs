@@ -465,6 +465,9 @@ pub struct DistantLand {
     texture_slots: u32,
     /// The frames that may wait for the GPU (`runtime.renderer_frame_latency`).
     frame_latency: u32,
+    /// Whether the window waits for the refresh of the screen (`graphics.vsync`, any
+    /// interval but `immediate`).
+    vsync: bool,
     /// The post-processing chain, when the settings have shaders; [`None`] before the first
     /// frame with the water (it needs the wave texture).
     post: Option<Post>,
@@ -802,6 +805,7 @@ impl DistantLand {
             samples: (document.settings().graphics.anti_aliasing.runtime_value() as u32).max(1),
             texture_slots: document.settings().runtime.renderer_texture_slots,
             frame_latency: document.settings().runtime.renderer_frame_latency,
+            vsync: document.settings().graphics.vsync.waits_for_screen(),
             post: None,
             menu_keep: None,
             menu_kept: false,
@@ -1810,6 +1814,10 @@ impl Extension for DistantLand {
         self.frame_latency
     }
 
+    fn vsync(&self) -> bool {
+        self.vsync
+    }
+
     fn offline(&mut self) {
         self.synchronous = true;
         if let Some(statics) = self.statics.as_mut() {
@@ -2122,6 +2130,19 @@ impl Extension for DistantLand {
         if id == TUNE_ID {
             if core::str::from_utf8(bytes).is_ok_and(|text| text.trim() == "gpu lose device") {
                 self.lose_device = true;
+                return;
+            }
+            // `crash panic` and `crash fault`: a panic, or an access violation, of this program
+            // on purpose, for a test of its crash data (the backtrace, the minidump, the logs
+            // kept). The plugin takes `crash panic plugin` the same way.
+            if let Some(kind) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("crash ")) {
+                match kind.trim() {
+                    "panic" => panic!("a panic asked by nirender.tune"),
+                    // SAFETY: the write goes to an address that no page holds: the access
+                    // violation that the command asks for, and nothing else.
+                    "fault" => unsafe { core::ptr::write_volatile(0x10 as *mut u32, 0) },
+                    other => println!("tune: crash {other}: not panic or fault"),
+                }
                 return;
             }
             // `lights world` or `lights engine`: the lights of a lit draw of the world, for an
