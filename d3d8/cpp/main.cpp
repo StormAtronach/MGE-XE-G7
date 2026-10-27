@@ -193,6 +193,8 @@ static void* createStreamedD3D(UINT version) {
         return nullptr;
     }
     LOG::logline("-- wgpu renderer: the nirender plugin (%s) gives the game its Direct3D 8", buildId());
+    // Before the stream starts: the plugin keeps the record and writes it after the header.
+    Deviceless::sendHello();
     return create(version);
 }
 
