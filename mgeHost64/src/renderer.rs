@@ -265,6 +265,98 @@ fn first_time(seen: &mut Vec<u32>, id: u32) -> bool {
     true
 }
 
+/// The length that a record of an extension id needs before its reader takes it: the fixed
+/// part, and the variable parts that its counts name, as `tag::needed` of the host crate has
+/// it for the records of the stream. A record shorter than its fixed part needs the fixed
+/// part (the counts cannot be read yet). [`None`] for an id without a layout: the tune text,
+/// the hello (its own check names both builds), and an id this build does not know.
+fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
+    let word = |at: usize| bytes.get(at..at + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    let sum = |parts: &[usize]| parts.iter().fold(0usize, |total, part| total.saturating_add(*part));
+    // The ids below, except the environment and the settings, are read at version 1 only: a
+    // record of another version needs its version word, and its reader drops it.
+    let version_1_only = matches!(id, SHADER_STATE_ID | PICTURE_ID | WATER_LOOKS_ID | WATER_MASKS_ID | VIS_GROUPS_ID | STATUS_ID | PREFETCH_ID);
+    if version_1_only && word(0) != 1 {
+        return Some(4);
+    }
+    Some(match id {
+        // The end of the fields of the record's version: each version ends where the first
+        // member of the next one starts, and the newest needs the whole struct (a version
+        // that adds a member gives the version before it the offset of that member). A
+        // version the reader does not take needs its version word only.
+        ENVIRONMENT_ID => match word(0) {
+            4 => core::mem::offset_of!(Environment, interior_name),
+            5 => core::mem::offset_of!(Environment, precipitation),
+            6 => core::mem::offset_of!(Environment, night),
+            7 => core::mem::offset_of!(Environment, water_plane),
+            8.. => size_of::<Environment>(),
+            _ => 4,
+        },
+        // The version, the flags, the priority, the number of variables, the name (64), then
+        // for each variable its name (64), its kind, its count and its floats.
+        SHADER_STATE_ID => {
+            if bytes.len() < 80 {
+                return Some(80);
+            }
+            let mut at = 80usize;
+            for _ in 0..word(12) {
+                if bytes.len() < at.saturating_add(72) {
+                    return Some(at.saturating_add(72));
+                }
+                at = sum(&[at, 72, word(at + 68).saturating_mul(4)]);
+            }
+            at
+        }
+        // The version, the ui flag; the path to the end.
+        PICTURE_ID => 8,
+        // Version 1: the 13 words; a later version adds members at the end.
+        SETTINGS_ID => match word(0) {
+            0 => 4,
+            1 => Settings::V1_SIZE,
+            _ => size_of::<Settings>(),
+        },
+        // The version, the number of slots, then for each its number, its size and its look
+        // (at least 8 bytes).
+        WATER_LOOKS_ID => {
+            let mut at = 8usize;
+            for _ in 0..word(4) {
+                if bytes.len() < at.saturating_add(8) {
+                    return Some(at.saturating_add(8));
+                }
+                at = sum(&[at, 4, word(at + 4).max(8)]);
+            }
+            at
+        }
+        // The version, the number of triangles, then 36 bytes for each.
+        WATER_MASKS_ID => sum(&[8, word(4).saturating_mul(36)]),
+        // The version, the number of groups, then a byte for each.
+        VIS_GROUPS_ID => sum(&[8, word(4)]),
+        // The version, the warning flag, the milliseconds; the text to the end.
+        STATUS_ID => 12,
+        // The version, the serial, the place (3 floats); the name of the cell to the end.
+        PREFETCH_ID => 20,
+        _ => return None,
+    })
+}
+
+/// The name of an extension id, for the line of a refused record.
+fn extension_name(id: u32) -> &'static str {
+    match id {
+        ENVIRONMENT_ID => "environment",
+        SHADER_STATE_ID => "shader state",
+        PICTURE_ID => "picture request",
+        SETTINGS_ID => "settings",
+        TUNE_ID => "tune",
+        WATER_LOOKS_ID => "water looks",
+        WATER_MASKS_ID => "water masks",
+        VIS_GROUPS_ID => "vis groups",
+        STATUS_ID => "status text",
+        PREFETCH_ID => "prefetch",
+        HELLO_ID => "hello",
+        _ => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod handshake_tests {
     use super::*;
@@ -566,6 +658,9 @@ pub struct DistantLand {
     hello: Option<String>,
     /// The extension ids without a reader in this build that came: each is in the log once.
     unknown_ids: Vec<u32>,
+    /// The ids whose first refused record is in the log, and the refused records counted.
+    refused_ids: Vec<u32>,
+    extension_refused: u32,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -924,6 +1019,8 @@ impl DistantLand {
             arrival_serial: 0,
             hello: None,
             unknown_ids: Vec::new(),
+            refused_ids: Vec::new(),
+            extension_refused: 0,
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -1138,6 +1235,7 @@ impl Drop for DistantLand {
         if let Some(timer) = self.gpu_time.as_ref() {
             println!("{}", timer.report());
         }
+        println!("extension: {} records of any id shorter than their id needs, refused (the first of each id is in the log)", self.extension_refused);
     }
 }
 
@@ -2258,6 +2356,17 @@ impl Extension for DistantLand {
                     }
                 }
                 Err(message) => stop_mismatch(&message),
+            }
+            return;
+        }
+        // A record shorter than its id needs is refused: not read, counted, the first of
+        // each id in the log. The readers below keep their own checks as a second line.
+        if let Some(needed) = extension_needed(id, bytes)
+            && bytes.len() < needed
+        {
+            self.extension_refused += 1;
+            if first_time(&mut self.refused_ids, id) {
+                println!("extension record {id} ({}): {} bytes, {needed} needed: refused (the first such record of this id; the count is in the end report)", extension_name(id), bytes.len());
             }
             return;
         }
@@ -3500,5 +3609,152 @@ mod generation_tests {
         assert!(problem.contains("startup generation failed"), "{problem}");
         // With a usable generation the folder decides: this one has no files.
         assert!(load_after_generation(true, &folder).is_err());
+    }
+}
+
+#[cfg(test)]
+mod extension_record_tests {
+    use super::*;
+
+    /// Every id with a layout.
+    const IDS: [u32; 9] = [ENVIRONMENT_ID, SHADER_STATE_ID, PICTURE_ID, SETTINGS_ID, WATER_LOOKS_ID, WATER_MASKS_ID, VIS_GROUPS_ID, STATUS_ID, PREFETCH_ID];
+
+    fn words(values: &[u32]) -> Vec<u8> {
+        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+    }
+
+    /// A record of the id with every part its reader takes: the fixed part, and variable
+    /// parts with 1 or 2 elements, so that a cut inside any part is a short record.
+    fn full_record(id: u32) -> Vec<u8> {
+        match id {
+            ENVIRONMENT_ID => {
+                let mut record = vec![0u8; size_of::<Environment>()];
+                record[..4].copy_from_slice(&8u32.to_le_bytes());
+                record
+            }
+            SHADER_STATE_ID => {
+                // The version, the flags, the priority, one variable; the name; the variable:
+                // its name, kind 0, two floats.
+                let mut record = words(&[1, 1, 0, 1]);
+                record.extend_from_slice(&[b'a'; 64]);
+                record.extend_from_slice(&[b'v'; 64]);
+                record.extend_from_slice(&words(&[0, 2]));
+                record.extend_from_slice(&words(&[0, 0]));
+                record
+            }
+            PICTURE_ID => {
+                let mut record = words(&[1, 0]);
+                record.extend_from_slice(b"shot.png\0");
+                record
+            }
+            SETTINGS_ID => {
+                let mut record = vec![0u8; size_of::<Settings>()];
+                record[..4].copy_from_slice(&2u32.to_le_bytes());
+                record
+            }
+            WATER_LOOKS_ID => {
+                // Two slots, each its number, then `size` bytes of its look that start with the
+                // size word itself (`Look::read_table`): one of 8 bytes, one of 144.
+                let mut record = words(&[1, 2]);
+                record.extend_from_slice(&words(&[3, 8, 0]));
+                record.extend_from_slice(&words(&[4, 144]));
+                record.extend_from_slice(&[0u8; 140]);
+                record
+            }
+            WATER_MASKS_ID => {
+                let mut record = words(&[1, 1]);
+                record.extend_from_slice(&[0u8; 36]);
+                record
+            }
+            VIS_GROUPS_ID => {
+                let mut record = words(&[1, 2]);
+                record.extend_from_slice(&[1, 0]);
+                record
+            }
+            STATUS_ID => {
+                let mut record = words(&[1, 0, 1000]);
+                record.extend_from_slice(b"hello\0");
+                record
+            }
+            PREFETCH_ID => {
+                let mut record = words(&[1, 7, 0, 0, 0]);
+                record.extend_from_slice(b"cell\0\0");
+                record
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn every_cut_of_every_record_is_refused_and_the_whole_is_taken() {
+        for id in IDS {
+            let record = full_record(id);
+            assert!(!record.is_empty(), "id {id}");
+            let fixed = match id {
+                PICTURE_ID => 8,
+                STATUS_ID => 12,
+                PREFETCH_ID => 20,
+                _ => record.len(),
+            };
+            for cut in 0..fixed {
+                let needed = extension_needed(id, &record[..cut]).expect("a layout");
+                assert!(needed > cut, "id {id} ({}): a record of {cut} bytes passes with {needed} needed", extension_name(id));
+                assert!(needed <= record.len(), "id {id} ({}): {needed} needed from a cut of {cut} bytes, more than the whole record of {}", extension_name(id), record.len());
+            }
+            assert!(extension_needed(id, &record).expect("a layout") <= record.len(), "id {id} ({}): the whole record is refused", extension_name(id));
+        }
+        // A version that the reader does not take needs its version word only: no refusal of
+        // a layout this build does not read.
+        for id in [SHADER_STATE_ID, PICTURE_ID, WATER_LOOKS_ID, WATER_MASKS_ID, VIS_GROUPS_ID, STATUS_ID, PREFETCH_ID] {
+            assert_eq!(extension_needed(id, &words(&[2])), Some(4), "id {id} ({})", extension_name(id));
+        }
+        assert_eq!(extension_needed(ENVIRONMENT_ID, &words(&[3])), Some(4));
+        assert_eq!(extension_needed(SETTINGS_ID, &words(&[0])), Some(4));
+        // The newest versions need the whole structs, which the C++ senders fill: the
+        // settings of version 2 are 14 words (`Deviceless::Settings`).
+        assert_eq!(size_of::<Settings>(), 14 * 4);
+        assert_eq!(extension_needed(TUNE_ID, b"set x 1"), None);
+        assert_eq!(extension_needed(HELLO_ID, &[1, 0, 0, 0]), None);
+        assert_eq!(extension_needed(99, &[]), None);
+    }
+
+    #[test]
+    fn a_count_that_does_not_fit_is_refused_without_an_overflow() {
+        assert!(extension_needed(WATER_MASKS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
+        assert!(extension_needed(VIS_GROUPS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
+        let mut looks = words(&[1, 1, 5, u32::MAX]);
+        looks.extend_from_slice(&[0u8; 8]);
+        assert!(extension_needed(WATER_LOOKS_ID, &looks).unwrap() > looks.len());
+    }
+
+    #[test]
+    fn the_reader_takes_every_cut_of_every_record_without_a_panic() {
+        // A distant land with the land off: no thread, no device.
+        let root = std::env::temp_dir().join(format!("mge-ext-reader-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        let mut refused = 0;
+        for id in IDS {
+            let record = full_record(id);
+            for cut in 0..=record.len() {
+                land.data(id, &record[..cut]);
+                if extension_needed(id, &record[..cut]).is_some_and(|needed| cut < needed) {
+                    refused += 1;
+                }
+            }
+        }
+        assert_eq!(land.extension_refused, refused);
+        assert!(refused > 0);
+        // The whole records were taken.
+        assert_eq!(land.environment.map(|e| e.version), Some(8));
+        assert_eq!(land.settings.map(|s| s.version), Some(2));
+        assert_eq!(land.vis_groups, vec![1, 0]);
+        assert_eq!(land.water_masks.as_ref().map(Vec::len), Some(3));
+        assert_eq!(land.water_looks.len(), 2);
+        assert_eq!(land.shader_states.len(), 1);
+        assert!(land.status.is_some());
+        assert_eq!(land.arrival_serial, 7);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
