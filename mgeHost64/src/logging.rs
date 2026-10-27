@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, BufWriter, IsTerminal};
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::sync::Once;
 
@@ -27,9 +27,14 @@ pub fn init_file_logger(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError
 }
 
 fn init_subscriber(path: impl AsRef<Path>) -> Result<WorkerGuard, HostError> {
+    // The log of the run before stays as `<path>.1`: a player who starts the game again after
+    // a crash still has it.
+    nirender_wgpu::rotate_log(path.as_ref());
     let file = File::create(path).map_err(HostError::io)?;
 
-    let (writer, guard) = tracing_appender::non_blocking(BufWriter::new(file));
+    // No buffer between the worker and the file: the last lines before an abort are written
+    // as they come (the abort of a panic skips the guard, which would flush a buffer).
+    let (writer, guard) = tracing_appender::non_blocking(file);
 
     let filter = EnvFilter::builder()
         .with_default_directive(Level::INFO.into())

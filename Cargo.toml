@@ -58,8 +58,12 @@ type_complexity = "allow"
 [profile.release]
 lto = "thin"
 panic = "abort"
-strip = true
-debug = false
+# The build keeps `numidium.pdb` with the line tables beside the exe. A crash writes the
+# frames into the log as module+offset lines and a minidump; the pdb of the same build
+# resolves them. The dist archive gets the exe only; `cargo xtask deploy` copies the pdbs
+# into a developer's install.
+strip = false
+debug = "line-tables-only"
 
 # Release speed, but keeps symbols so a profiler can attribute samples.
 [profile.profiling]
