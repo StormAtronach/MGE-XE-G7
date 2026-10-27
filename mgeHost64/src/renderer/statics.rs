@@ -94,6 +94,9 @@ const TRIANGLE: usize = 6;
 const HANDOFF: f32 = 1800.0;
 const HANDOFF_BAND: f32 = 512.0;
 const HANDOFF_CULL: f32 = 1024.0;
+/// The bands of the near distance of the arrivals in the view, one cell each; the last band
+/// holds that distance and farther.
+const VIEW_BANDS: usize = 10;
 /// `MaxGrassElements` of the Direct3D 9 path: the grass records of a frame.
 const GRASS_RECORDS: usize = 16384;
 /// The bytes of a grass record: three rows of four numbers.
@@ -1263,13 +1266,21 @@ pub struct Statics {
     grass_stats: SetStats,
     /// The view range of the game in the last main view ([`CullSet::eye`] w).
     game_range: f32,
-    /// The merged subsets that arrived in play since the last `report`: all of them, those
-    /// with their place inside the draw distance, those of them past the handoff (a late
-    /// arrival that the view shows), and the nearest distance of a late one.
+    /// The merged subsets that arrived in play (no wait open) since the last `report`: all
+    /// of them, those with their place inside the draw distance, those of them past the
+    /// handoff (a late arrival that the view shows), and the nearest distance of a late one.
     play_arrivals: u64,
     late_arrivals: u64,
     late_shown: u64,
     late_nearest: f32,
+    /// The merged subsets that arrived while a wait for the statics was open, and those in
+    /// play whose place was in the main view, by the near distance of the place in cells.
+    wait_arrivals: u64,
+    view_arrivals: [u64; VIEW_BANDS],
+    /// A wait for the statics is open (`set_waiting`).
+    waiting: bool,
+    /// The planes of the last main view.
+    view_planes: Option<[[f32; 4]; 6]>,
     /// The merged subsets that arrived in play and were on the GPU before in the session.
     play_again: u64,
     /// The subsets that were on the GPU at some time in the session.
@@ -1371,6 +1382,10 @@ impl Statics {
             late_arrivals: 0,
             late_shown: 0,
             late_nearest: f32::MAX,
+            wait_arrivals: 0,
+            view_arrivals: [0; VIEW_BANDS],
+            waiting: false,
+            view_planes: None,
             play_again: 0,
             ever_arrived: HashSet::new(),
             wait: None,
@@ -1479,17 +1494,22 @@ impl Statics {
                 }
             }
         }
-        if self.play_arrivals > 0 {
+        if self.play_arrivals > 0 || self.wait_arrivals > 0 {
             println!(
-                "statics report {label}: arrivals: {} merged subsets in play ({} of them on the GPU before), {} inside the draw distance of {:.0}, {} of them past the handoff (shown late), the nearest at {:.0}",
+                "statics report {label}: arrivals: {} merged subsets in play ({} of them on the GPU before), {} inside the draw distance of {:.0}, {} of them past the handoff (shown late), the nearest at {:.0}; {} more during a wait; in play and in the main view, by the near distance in cells (the last: {} and farther): {:?}",
                 self.play_arrivals,
                 self.play_again,
                 self.late_arrivals,
                 self.settings.draw_distance,
                 self.late_shown,
-                if self.late_arrivals > 0 { self.late_nearest } else { 0.0 }
+                if self.late_arrivals > 0 { self.late_nearest } else { 0.0 },
+                self.wait_arrivals,
+                VIEW_BANDS - 1,
+                self.view_arrivals
             );
         }
+        self.wait_arrivals = 0;
+        self.view_arrivals = [0; VIEW_BANDS];
         self.play_arrivals = 0;
         self.play_again = 0;
         self.late_arrivals = 0;
@@ -1934,8 +1954,17 @@ impl Statics {
     fn count_arrival(&mut self, index: u32, eye: [f32; 3]) {
         let Some(catalog) = self.catalog.as_ref() else { return };
         let instance = &catalog.instances[index as usize];
+        if self.waiting {
+            self.wait_arrivals += 1;
+            return;
+        }
         let near = flat_distance(instance, eye) - instance.radius;
         self.play_arrivals += 1;
+        let c = instance.center;
+        let in_view = self.view_planes.is_some_and(|planes| planes.iter().all(|p| p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3] >= -instance.radius));
+        if in_view {
+            self.view_arrivals[((near.max(0.0) / CELL) as usize).min(VIEW_BANDS - 1)] += 1;
+        }
         if near >= self.settings.draw_distance {
             return;
         }
@@ -2058,6 +2087,12 @@ impl Statics {
         self.grass_drawn += self.grass_draws.len() as u64;
     }
 
+    /// A wait for the statics is open: the merged subsets that arrive in it are counted apart
+    /// from the arrivals in play.
+    pub fn set_waiting(&mut self, waiting: bool) {
+        self.waiting = waiting;
+    }
+
     /// The time that a subset takes to come in after its arrival, in seconds (the tunable
     /// `statics.fade`); 0 for none.
     pub fn set_fade(&mut self, seconds: f32) {
@@ -2173,6 +2208,9 @@ impl Statics {
         let Some(first) = sets.first() else { return };
         if self.failed || !self.settings.statics {
             return;
+        }
+        if first.set == 0 {
+            self.view_planes = Some(first.planes);
         }
         let started = Instant::now();
         self.game_range = first.eye[3];
@@ -2461,6 +2499,9 @@ impl Statics {
             return Self::draw_chosen(gpu, self.view_groups.get(set), scene, pass, frame, set, fade);
         }
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
+        if set == 0 {
+            self.view_planes = Some(frame.planes);
+        }
         if !self.frame_work(scene, eye, set == 0) {
             return 0;
         }
