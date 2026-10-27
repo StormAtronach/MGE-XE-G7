@@ -429,6 +429,19 @@ mod tests {
         cpp.sort();
         rust.sort();
         assert_eq!(cpp, rust);
+
+        // ALL is a list by hand: each verdict in it once, in the order of its number. The
+        // match has no wildcard, so a new verdict does not compile here until it is named,
+        // and then the count and the order below ask for it in ALL.
+        let last = |verdict: Verdict| match verdict {
+            Verdict::ProbeNone | Verdict::ProbeUsable | Verdict::CachedNone | Verdict::CachedUsable | Verdict::NoAnswer | Verdict::NoAnswerTwice => false,
+            Verdict::NotStarted => true,
+        };
+        assert!(last(Verdict::ALL[Verdict::ALL.len() - 1]));
+        assert_eq!(Verdict::ALL.len(), Verdict::NotStarted as usize + 1);
+        for (number, verdict) in Verdict::ALL.iter().enumerate() {
+            assert_eq!(*verdict as usize, number, "{verdict:?}");
+        }
     }
 
     #[test]
