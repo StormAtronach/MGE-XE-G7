@@ -180,6 +180,15 @@ void sendToRenderer(UINT id, const void* data, UINT length) {
 // MGE_XE_BOX_SECONDS=<n> in the environment the box closes itself after n seconds, through
 // MessageBoxTimeoutA of user32 (not in the documented API, so taken by GetProcAddress; without
 // it the box is only logged); without the switch it waits for the click.
+//
+// The box runs on a thread of its own, with no owner window, and nothing waits for it (the
+// thread rule of the design, section 5). A box on the game's main thread pumps the game's
+// window messages while it is up; during the start of the game the window procedure then
+// restarts a renderer that does not exist yet, and the game crashed (run 1c of the probe,
+// 2026-10-27: Tes3Game::restartRenderer, NiAVObject::UpdateEffects). The "box:" lines are
+// written on the calling thread first; the box's thread writes how it closed.
+static DWORD WINAPI messageBoxThread(LPVOID parameter);
+
 static void showMessageBox(const char* text) {
     std::string lines(text);
     for (size_t start = 0; start <= lines.size();) {
@@ -190,6 +199,20 @@ static void showMessageBox(const char* text) {
         LOG::logline("box: %s", lines.substr(start, end - start).c_str());
         start = end + 1;
     }
+    // The thread owns its copy of the text and frees it.
+    std::string* copy = new std::string(text);
+    HANDLE thread = CreateThread(nullptr, 0, messageBoxThread, copy, 0, nullptr);
+    if (thread) {
+        CloseHandle(thread);
+    } else {
+        LOG::logline("box: not shown, no thread for it (error %lu)", GetLastError());
+        delete copy;
+    }
+}
+
+static DWORD WINAPI messageBoxThread(LPVOID parameter) {
+    std::string* copy = static_cast<std::string*>(parameter);
+    const char* text = copy->c_str();
     char value[16] = {};
     GetEnvironmentVariableA("MGE_XE_BOX_SECONDS", value, sizeof(value));
     const unsigned seconds = unsigned(std::atoi(value));
@@ -202,7 +225,8 @@ static void showMessageBox(const char* text) {
         MessageBoxTimeoutProc timed = (MessageBoxTimeoutProc)GetProcAddress(GetModuleHandleA("user32.dll"), "MessageBoxTimeoutA");
         if (!timed) {
             LOG::logline("box: not shown: this Windows has no MessageBoxTimeoutA");
-            return;
+            delete copy;
+            return 0;
         }
         timed(NULL, text, "MGE XE", flags, 0, seconds * 1000);
     }
@@ -213,6 +237,8 @@ static void showMessageBox(const char* text) {
     } else {
         LOG::logline("box: closed by a click");
     }
+    delete copy;
+    return 0;
 }
 
 static void* createStreamedD3D(UINT version) {
