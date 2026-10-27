@@ -15,6 +15,8 @@
 //! the plugin or the game first asks for the wgpu path; `DllMain` reads only the cache
 //! ([`read_cache`]). The probe's output is read on a thread of its own while the probe runs,
 //! since a probe that writes more than the pipe holds (about 4 KB) blocks until it is read.
+//! The probe starts no process of its own, so no other process holds the pipe's write end:
+//! the reader ends when the probe ends.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -63,7 +65,9 @@ fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> (Answer, Op
     let started = Instant::now();
     let mut child = match command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         Ok(child) => child,
-        Err(error) => return (Answer { usable: false, reason: format!("the probe did not start: {error}") }, Some(-1)),
+        // No end of its own, as for a probe ended at the limit: a start that failed (a scanner
+        // that holds the new copy of numidium.exe) says nothing about the machine.
+        Err(error) => return (Answer { usable: false, reason: format!("the probe did not start: {error}") }, None),
     };
     let mut stdout = child.stdout.take().expect("the probe's output is piped");
     let reader = std::thread::spawn(move || {
@@ -143,15 +147,18 @@ pub fn check(exe: &str, path: &str, key: &str, exit_gpu: i32, seconds: u64) -> (
 }
 
 /// [`check`] with the probe as a function that gives the answer and the probe's end. A probe
-/// ended at the limit gave no answer of its own: its none is used for this start and not
-/// written into the cache, so that a slow start never stores a none for the machine.
+/// that did not start or was ended at the limit gave no answer of its own: its none is used
+/// for this start and not written into the cache, so that a slow or blocked start never
+/// stores a none for the machine; its reason says so, for the log line.
 fn check_with(path: &str, key: &str, probe: impl FnOnce() -> (Answer, Option<i32>)) -> (Answer, Source) {
     if let Some(cached) = read_cache(path).filter(|cached| cached.key == key) {
         return (cached.answer, Source::Cache);
     }
-    let (answer, end) = probe();
+    let (mut answer, end) = probe();
     if end.is_some() {
         let _ = std::fs::write(path, format_cache(key, &answer));
+    } else {
+        answer.reason.push_str("; not cached, the next start probes again");
     }
     (answer, Source::Probe)
 }
@@ -186,7 +193,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
         let (answer, source) = check_with(path, "key", || (answer("", None, 20, 5), None));
         assert_eq!(source, Source::Probe);
-        assert_eq!(answer.reason, "the probe gave no answer in 5 s");
+        assert_eq!(answer.reason, "the probe gave no answer in 5 s; not cached, the next start probes again");
         assert!(read_cache(path).is_none(), "a probe ended at the limit was cached");
         let (_, source) = check_with(path, "key", || (Answer { usable: true, reason: "use dx12".to_string() }, Some(0)));
         assert_eq!(source, Source::Probe);
@@ -225,12 +232,29 @@ mod tests {
         let (answer, source) = check("a-program-that-is-not-there.exe", path, "key A", 20, 1);
         assert_eq!(source, Source::Cache);
         assert_eq!(answer, Answer { usable: false, reason: "lacks x".to_string() });
-        // Another key: the probe runs (and fails to start: none), and the cache has the new key.
-        let (answer, source) = check("a-program-that-is-not-there.exe", path, "key B", 20, 1);
+        // Another key: the probe runs and answers, and the cache has the new key.
+        let (answer, source) = check_with(path, "key B", || (Answer { usable: true, reason: "use vulkan".to_string() }, Some(0)));
         assert_eq!(source, Source::Probe);
-        assert!(!answer.usable && answer.reason.starts_with("the probe did not start"), "{}", answer.reason);
+        assert!(answer.usable);
         assert_eq!(read_cache(path).unwrap().key, "key B");
         let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(&folder);
+    }
+
+    /// A probe that cannot start is none for this start and is not cached (a scanner can hold
+    /// a new copy of numidium.exe at its first start): the cache keeps what it had.
+    #[test]
+    fn a_probe_that_cannot_start_is_not_cached() {
+        let folder = std::env::temp_dir().join(format!("mge-probe-start-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("cache.txt");
+        let path = path.to_str().unwrap();
+        let _ = std::fs::remove_file(path);
+        let (answer, source) = check("a-program-that-is-not-there.exe", path, "key", 20, 1);
+        assert_eq!(source, Source::Probe);
+        assert!(!answer.usable && answer.reason.starts_with("the probe did not start"), "{}", answer.reason);
+        assert!(answer.reason.ends_with("; not cached, the next start probes again"), "{}", answer.reason);
+        assert!(read_cache(path).is_none(), "a probe that did not start was cached");
         let _ = std::fs::remove_dir(&folder);
     }
 
