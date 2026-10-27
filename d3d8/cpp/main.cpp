@@ -121,10 +121,13 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             // of the probe counts as none, so that a crash of it leaves the game on
             // Direct3D 9 with the code in the log.
             char answer[1024] = {};
+            const DWORD probeStarted = GetTickCount();
             const unsigned usable = mge_probe_wgpu("numidium.exe", MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer));
+            const DWORD probeMs = GetTickCount() - probeStarted;
             if (usable) {
-                LOG::logline("-- wgpu renderer: the probe says %s", answer);
+                LOG::logline("-- wgpu renderer: the probe says %s (%lu ms)", answer, probeMs);
             } else {
+                LOG::logline("-- wgpu renderer: the probe took %lu ms", probeMs);
                 wgpuPathOff((std::string("the probe says none: ") + answer).c_str(),
                     std::string("The wgpu renderer of MGE XE is not in use on this machine.\n")
                         + "The graphics card or its driver lacks what it needs: " + answer + ".\n"
