@@ -466,7 +466,7 @@ static bool probeSaysUsable() {
     wgpuPathOff((std::string("the probe says none: ") + answer).c_str(),
         std::string("The wgpu renderer of MGE XE is not in use on this machine.\n")
             + "The graphics card or its driver lacks what it needs: " + answer + ".\n"
-            + "For this start the game goes on without the distant land; from the next start MGE XE runs on Direct3D 9.\n"
+            + "For this start the game runs on Direct3D 9 without the distant land; from the next start MGE XE runs on Direct3D 9 with it.\n"
             + "mgeXE.log in the folder of the game has the details.");
     return false;
 }
