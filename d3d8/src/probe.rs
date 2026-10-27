@@ -58,21 +58,36 @@ pub unsafe extern "C" fn mge_probe_cached(path: *const c_char, reason: *mut c_ch
 /// The answer for this machine (`mge_probe::check`): the cache's for the same `key`, else
 /// `numidium.exe --probe`'s (`exe`, the refusal code `exit_gpu`, the limit `seconds`), which
 /// then goes into the cache at `path`. Returns 0 a probe's none, 1 a probe's usable, 2 a
-/// cached none, 3 a cached usable; the reason goes into `reason`.
+/// cached none, 3 a cached usable; the reason goes into `reason`, and the probe's own lines
+/// for mgeXE.log into `lines`, one per line end (empty for a cached answer).
 ///
 /// # Safety
 /// - `exe`, `path` and `key` are NUL-terminated strings that live through the call, or null.
 /// - `reason` points at `capacity` writable bytes, or is null.
+/// - `lines` points at `lines_capacity` writable bytes, or is null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mge_probe_check(exe: *const c_char, path: *const c_char, key: *const c_char, exit_gpu: i32, seconds: u32, reason: *mut c_char, capacity: usize) -> u32 {
+pub unsafe extern "C" fn mge_probe_check(
+    exe: *const c_char,
+    path: *const c_char,
+    key: *const c_char,
+    exit_gpu: i32,
+    seconds: u32,
+    reason: *mut c_char,
+    capacity: usize,
+    lines: *mut c_char,
+    lines_capacity: usize,
+) -> u32 {
     // SAFETY: the caller's pointers, as documented.
     let (exe, path, key) = unsafe { (text_of(exe, "numidium.exe"), text_of(path, "mgeXE-renderer-probe.txt"), text_of(key, "")) };
-    let (answer, source) = mge_probe::check(&exe, &path, &key, exit_gpu, u64::from(seconds));
+    let outcome = mge_probe::check(&exe, &path, &key, exit_gpu, u64::from(seconds));
     // SAFETY: as documented.
-    unsafe { copy_out(&answer.reason, reason, capacity) };
-    let cached = match source {
+    unsafe {
+        copy_out(&outcome.answer.reason, reason, capacity);
+        copy_out(&outcome.lines.join("\n"), lines, lines_capacity);
+    }
+    let cached = match outcome.source {
         mge_probe::Source::Cache => 2,
         mge_probe::Source::Probe => 0,
     };
-    cached + u32::from(answer.usable)
+    cached + u32::from(outcome.answer.usable)
 }

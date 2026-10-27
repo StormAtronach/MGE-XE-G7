@@ -87,6 +87,7 @@ the same mapping ten times.
 | `[Misc] Internal MWSE Disabled` | `runtime.mwse_disabled` |
 | `[Misc] Only Proxy D3D8To9` | `runtime.proxy_only` |
 | (new, no INI key) | `runtime.renderer_wgpu` |
+| (new, no INI key) | `runtime.renderer_probe` |
 | (new, no INI key) | `runtime.renderer_backend` |
 | (new, no INI key) | `runtime.renderer_texture_slots` |
 | (new, no INI key) | `runtime.renderer_frame_latency` |
@@ -348,7 +349,7 @@ The following bound values retain the legacy `DONT_SAVE` policy because the GUI,
 registry, or structured Rust model owns them:
 
 - startup gates: `runtime.disabled`, `runtime.mwse_disabled`,
-  `runtime.proxy_only`, and `runtime.renderer_wgpu`;
+  `runtime.proxy_only`, `runtime.renderer_wgpu`, and `runtime.renderer_probe`;
 - graphics/display selection fields;
 - screenshot format/path/name/suffix;
 - `distant_land.water_without_land`;

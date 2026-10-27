@@ -66,7 +66,7 @@ fn main() {
 
     let expected = mge_config::ConfigDocument::open(root.join(mge_config::FILE_NAME));
     let count = unsafe { mge_config_contract_binding_count() };
-    assert_eq!(count, 140,"binding row count changed; update the reviewed inventory");
+    assert_eq!(count, 141,"binding row count changed; update the reviewed inventory");
 
     let mut seen = BTreeSet::new();
     let mut dont_save = BTreeSet::new();
@@ -75,6 +75,7 @@ fn main() {
         "runtime.mwse_disabled",
         "runtime.proxy_only",
         "runtime.renderer_wgpu",
+        "runtime.renderer_probe",
         "distant_land.water_without_land",
         "graphics.anti_aliasing",
         "graphics.z_buffer_format",
