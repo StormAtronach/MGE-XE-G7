@@ -196,6 +196,11 @@ pub fn run(mut arguments: Vec<String>) {
             arguments.extend(["--backend".to_string(), backend.to_string()]);
         }
     }
+    // The probe asks the backends and nothing else: no distant land.
+    if arguments.iter().any(|argument| argument == "--probe") {
+        nirender_wgpu::run_with(arguments, None);
+        return;
+    }
     // A replay draws the files that are there. A game session makes them again first when
     // they do not match the job of mgeXE.toml, as the IPC host mode does.
     let live = arguments.iter().any(|argument| argument == "--live");
@@ -3157,15 +3162,11 @@ mod shader_tests {
     }
 
     /// The world shader of the host with the text of this extension compiles as the device
-    /// checks it. The join is the one of `nirender_wgpu` (`extension_shaders` of its
-    /// extension.rs, then the shader module of its renderer.rs): the sky part, the draw part,
-    /// the record of the draw read as `draws[record]`, the depth functions after the text.
+    /// checks it: the sky part and the draw part joined as `extension_shaders` of
+    /// `nirender_wgpu` joins them, through the host's own `world_shader_source`.
     #[test]
     fn the_world_shader_with_the_extension_is_valid() {
-        let text = include_str!("../../../nirender-plugin/host/src/shader.wgsl");
-        let extension = format!("{SKY_SHADER}\n{DRAW_SHADER}\n").replace("draw.", "draws[record].");
-        let extension = nirender_wgpu::rewrite_extension_text(&extension);
-        let source = format!("{text}\n{}\n{extension}", nirender_wgpu::depth::wgsl());
+        let source = nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{DRAW_SHADER}\n"));
         shader_check::check("shader.wgsl with the extension", &source).unwrap();
     }
 }

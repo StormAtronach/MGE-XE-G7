@@ -11,34 +11,29 @@
 
 use nirender_wgpu::wgpu::{self, naga};
 
-// Copies of the host's FEATURES, limits and the shader join (the world shader test of
-// renderer.rs) until the host exports them: the C3 branch, which builds the one request
-// function of the helper, exports them and the check takes them from there.
-
-/// The features the request requires of every adapter: a copy of `required_features` of the
-/// request (host/src/renderer.rs:388-399). The optional ones of the request (the line mode,
-/// the timestamps, the indirect draws, the float depth) map to no capability of naga, so
-/// they play no part in a shader.
-pub(crate) const FEATURES: wgpu::Features = wgpu::Features::TEXTURE_COMPRESSION_BC
-    .union(wgpu::Features::TEXTURE_BINDING_ARRAY)
-    .union(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING)
-    .union(wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY);
-
-/// The limits that this check compares: the bind groups, and the bindings of each class in
-/// one stage. A copy of `required_limits` of the request (host/src/renderer.rs:400-412): the
-/// sampled textures raised to 32, the default of wgpu for the rest. The elements of a
-/// binding array, the workgroup size and the varyings are not compared here.
-pub(crate) fn limits() -> wgpu::Limits {
-    wgpu::Limits { max_sampled_textures_per_shader_stage: 32, ..wgpu::Limits::default() }
+/// The features the request requires of every adapter (`nirender_wgpu::required_features`).
+/// The optional ones of the request (the line mode, the timestamps, the indirect draws, the
+/// float depth) map to no capability of naga, so they play no part in a shader.
+fn features() -> wgpu::Features {
+    nirender_wgpu::required_features()
 }
 
-/// Reads and checks a shader as the device would: the capabilities of [`FEATURES`], every
+/// The limits that this check compares: the bind groups, and the bindings of each class in
+/// one stage, as the request fixes them (`nirender_wgpu::fixed_limits`: the sampled textures
+/// at 32, the default of wgpu for the rest). The elements of a binding array, the workgroup
+/// size and the varyings are not compared here.
+fn limits() -> wgpu::Limits {
+    nirender_wgpu::fixed_limits()
+}
+
+/// Reads and checks a shader as the device would: the capabilities of [`features`], every
 /// validation of naga, the bind groups within [`limits`], and for each entry point the
 /// bindings it uses within the limits of a stage. The error names the shader by `label`.
 pub(crate) fn check(label: &str, source: &str) -> Result<naga::Module, String> {
     // No downlevel flag: the request asks for none, so a shader gets no capability from one.
     let downlevel = wgpu::DownlevelFlags::empty();
-    let capabilities = wgpu_naga_bridge::features_to_naga_capabilities(FEATURES, downlevel);
+    let features = features();
+    let capabilities = wgpu_naga_bridge::features_to_naga_capabilities(features, downlevel);
     let mut options = naga::front::wgsl::Options::new();
     options.capabilities = capabilities;
     let module = naga::front::wgsl::Frontend::new_with_options(options).parse(source).map_err(|error| format!("{label}: {}", error.emit_to_string(source)))?;
@@ -47,7 +42,7 @@ pub(crate) fn check(label: &str, source: &str) -> Result<naga::Module, String> {
     if let Some(binding) = over_the_groups {
         return Err(format!("{label}: the binding group {} is at or over the limit of {} groups", binding.group, limits.max_bind_groups));
     }
-    let mut validator = wgpu_naga_bridge::create_validator(FEATURES, downlevel, naga::valid::ValidationFlags::all());
+    let mut validator = wgpu_naga_bridge::create_validator(features, downlevel, naga::valid::ValidationFlags::all());
     let info = validator.validate(&module).map_err(|error| format!("{label}: {}", error.emit_to_string(source)))?;
     for (index, entry) in module.entry_points.iter().enumerate() {
         let uses = info.get_entry_point(index);
