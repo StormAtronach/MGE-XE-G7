@@ -136,6 +136,7 @@ yours. Each key goes below its section line.
 | Key | Section | Set it to | When |
 | --- | --- | --- | --- |
 | `renderer_wgpu` | `[runtime]` | `true` | a file from an earlier test build has `false`; `false` goes back to Direct3D 9 |
+| `renderer_probe` | `[runtime]` | `true`; `false` skips the probe | the probe said no but you want to try the wgpu renderer; a card that cannot run it then stops the game with the reason |
 | `renderer_backend` | `[runtime]` | `"auto"`, `"vulkan"` or `"dx12"` | to name the backend; a window capture of the game (OBS) needs `"dx12"` |
 | `renderer_texture_slots` | `[runtime]` | `0` (automatic); a larger number only if `nirender-host.log` says the room is full | some textures draw white; see "The switch" above |
 | `automatic_rebuild` | `[distant_land]` | `true` | the distant land is made again at the start when your mods or the data version change; a new file has it |
@@ -212,9 +213,15 @@ change. That start can take some minutes. With an older file, set it below
   textures with room for 256, the BC texture compression, 32 sampled textures in a shader
   stage, or an adapter at all on Vulkan and Direct3D 12): before the game starts, MGE XE
   runs `numidium.exe --probe`, which asks the backends and answers in about a third of a
-  second. When the answer is none, all of MGE XE runs on Direct3D 9 for the session, a box
-  says what is lacking once, and `mgeXE.log` has the probe's lines. A probe that crashes or
-  gives no answer in 5 s counts as none, with its exit code in the log.
+  second. When the answer is none, a box says what is lacking once, the game runs on
+  Direct3D 9 without the distant land for that start, and `mgeXE.log` has the probe's
+  lines. A probe that crashes counts as none, with its exit code in the log; a probe that
+  gives no answer in 5 s counts as none for that start only. MGE XE keeps the answer in
+  `mgeXE-renderer-probe.txt` beside `mgeXE.log`, so the next starts do not ask again: after
+  a none they run all of MGE XE on Direct3D 9, with no box, until the graphics card, its
+  driver or `numidium.exe` change. To ask again, delete that file. To use the wgpu renderer
+  without the probe, set `renderer_probe = false` under `[runtime]`; a card that cannot run
+  it then stops the game at its start with the reason.
 - When `numidium.exe` or `MWSE.dll` is not in the Morrowind folder, MGE XE runs on
   Direct3D 9 as without the switch, and `mgeXE.log` names the file. A virus scanner can
   take a program away, and an archive can be extracted in part.

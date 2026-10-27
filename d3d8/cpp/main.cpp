@@ -11,6 +11,7 @@
 #include "support/crashlog.h"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 
@@ -122,7 +123,10 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             }
         }
 
-        if (Configuration.RendererWgpu) {
+        if (Configuration.RendererWgpu && !Configuration.RendererProbe) {
+            wgpuWanted = true;
+            LOG::logline("-- wgpu renderer: the probe is off (renderer_probe = false under [runtime] in mgeXE.toml): no probe runs, and %s is not read or written", kProbeCache);
+        } else if (Configuration.RendererWgpu) {
             wgpuWanted = true;
             // The probe's last answer, from its cache file: a file read only, since this is
             // DllMain (no child process and no wait under the loader lock). A cached none
@@ -132,6 +136,7 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
             if (mge_probe_cached(kProbeCache, reason, sizeof(reason)) == 0) {
                 wgpuPathOff((std::string("the last probe said none (") + kProbeCache + "): " + reason
                     + "; the probe runs again when the graphics card, its driver or numidium.exe change").c_str(), "");
+                LOG::logline("-- wgpu renderer: to use it anyway, set renderer_probe = false under [runtime] in mgeXE.toml; to ask the probe again, delete %s", kProbeCache);
             }
         }
 
@@ -351,12 +356,13 @@ static bool probeSaysUsable();
 // of the two that need it asks the probe: the plugin when it loads (MgeRendererWgpuActive),
 // or the game when it asks for its Direct3D 8. The plugin asks first in a game with MWSE: it
 // must hear the answer before it puts its renderer code on, since its code stays on and a
-// Direct3D 9 frame under it is black.
+// Direct3D 9 frame under it is black. With runtime.renderer_probe off no probe runs: a GPU
+// that cannot run the renderer gets the helper's refusal at its start (code 20).
 static bool wgpuPathOn() {
     if (!isMW || !wgpuWanted) {
         return false;
     }
-    static const bool usable = probeSaysUsable();
+    static const bool usable = !Configuration.RendererProbe || probeSaysUsable();
     return usable && Configuration.RendererWgpu;
 }
 
@@ -441,14 +447,23 @@ static std::string probeKey() {
 static bool probeSaysUsable() {
     const std::string key = probeKey();
     char answer[1024] = {};
+    char lines[4096] = {};
     const DWORD started = GetTickCount();
-    const unsigned result = mge_probe_check("numidium.exe", kProbeCache, key.c_str(), MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer));
+    const unsigned result = mge_probe_check("numidium.exe", kProbeCache, key.c_str(), MGE_PROBE_EXIT_GPU, 5, answer, sizeof(answer), lines, sizeof(lines));
     const DWORD ms = GetTickCount() - started;
     const bool usable = (result & 1) != 0;
     if (result >= 2) {
         // The cache had this key: no probe ran. A cached none turned the path off in DllMain.
         LOG::logline("-- wgpu renderer: the cached answer for this machine: %s %s", usable ? "usable," : "none:", answer);
         return usable;
+    }
+    // The probe's own lines (each backend asked, the answer, the time) go into this log; the
+    // cache file has the key and the answer only.
+    for (const char* line = lines; *line;) {
+        const char* end = std::strchr(line, '\n');
+        const size_t length = end ? size_t(end - line) : std::strlen(line);
+        LOG::logline("-- wgpu renderer: %.*s", int(length), line);
+        line += length + (end ? 1 : 0);
     }
     if (usable) {
         LOG::logline("-- wgpu renderer: the probe says %s (%lu ms)", answer, ms);
@@ -467,6 +482,7 @@ static bool probeSaysUsable() {
         std::string("The wgpu renderer of MGE XE is not in use on this machine.\n")
             + "The graphics card or its driver lacks what it needs: " + answer + ".\n"
             + "For this start the game runs on Direct3D 9 without the distant land; from the next start MGE XE runs on Direct3D 9 with it.\n"
+            + "To use the wgpu renderer anyway, set renderer_probe = false under [runtime] in mgeXE.toml; to ask again, delete " + kProbeCache + ".\n"
             + "mgeXE.log in the folder of the game has the details.");
     return false;
 }

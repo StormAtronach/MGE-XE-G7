@@ -77,6 +77,12 @@ proxy_only = false
 # Set this to false to use MGE XE on Direct3D 9. MGE XE also uses Direct3D 9 when
 # numidium.exe or MWSE.dll is not in the folder of the game.
 renderer_wgpu = true
+# Before the wgpu renderer starts, MGE XE asks numidium.exe whether the graphics card can run
+# it, and keeps the answer in mgeXE-renderer-probe.txt until the card, its driver or
+# numidium.exe change. A "no" gives MGE XE on Direct3D 9. Set this to false to skip the
+# question and use the wgpu renderer anyway; a card that cannot run it then stops the game
+# with the reason.
+renderer_probe = true
 # The graphics API of the wgpu renderer: auto (the first choice for the machine), vulkan,
 # or dx12. Read by numidium.exe when it starts; nirender-host.log names the one in use.
 renderer_backend = "auto"

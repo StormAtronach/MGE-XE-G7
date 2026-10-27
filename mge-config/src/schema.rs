@@ -484,6 +484,10 @@ pub struct RuntimeSettings {
     pub mwse_disabled: bool,
     pub proxy_only: bool,
     pub renderer_wgpu: bool,
+    /// Whether d3d8.dll asks the probe (`numidium.exe --probe`, with its cache
+    /// mgeXE-renderer-probe.txt) before it takes the wgpu path. With false, no probe runs and
+    /// the cache is not read or written: the wgpu path whenever `renderer_wgpu` is on.
+    pub renderer_probe: bool,
     pub renderer_backend: RendererBackend,
     /// The room of the texture arrays of the wgpu renderer: 0 automatic (the adapter's room,
     /// at most 16384), or the most slots, 256 to 1048576 (at most the adapter's room). Read
@@ -508,6 +512,7 @@ impl Default for RuntimeSettings {
             mwse_disabled: false,
             proxy_only: false,
             renderer_wgpu: true,
+            renderer_probe: true,
             renderer_backend: RendererBackend::Auto,
             renderer_texture_slots: 0,
             renderer_frame_latency: 2,

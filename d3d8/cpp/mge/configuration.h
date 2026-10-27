@@ -204,6 +204,11 @@ struct ConfigurationStruct {
 
     char ShaderChain[512];
 
+    // runtime.renderer_probe: the probe of the GPU and its cache before the wgpu path (true),
+    // or neither (false: the wgpu path whenever RendererWgpu is on). Last, so that no member
+    // before it moves.
+    bool RendererProbe;
+
     bool LoadSettings();
     bool ReloadSettings();
     bool SaveSettings();

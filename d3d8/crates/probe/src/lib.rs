@@ -16,7 +16,8 @@
 //! ([`read_cache`]). The probe's output is read on a thread of its own while the probe runs,
 //! since a probe that writes more than the pipe holds (about 4 KB) blocks until it is read.
 //! The probe starts no process of its own, so no other process holds the pipe's write end:
-//! the reader ends when the probe ends.
+//! the reader ends when the probe ends. The probe's own lines go back with its answer, for
+//! mgeXE.log; the cache file holds one line only, the key and the answer.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -28,6 +29,39 @@ use std::time::{Duration, Instant};
 pub struct Answer {
     pub usable: bool,
     pub reason: String,
+}
+
+/// One run of the probe: its answer, its end (the exit code, or `None` when it did not start
+/// or was ended at the limit), and its lines for mgeXE.log ([`probe_lines`]).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Run {
+    pub answer: Answer,
+    pub end: Option<i32>,
+    pub lines: Vec<String>,
+}
+
+/// The most lines of a probe that go into mgeXE.log, and the most bytes of one line. The
+/// probe prints one line for each backend, the answer and the time: four lines at most today.
+const MOST_LINES: usize = 16;
+const MOST_LINE_BYTES: usize = 600;
+
+/// The probe's own lines of its output (those that start with `probe: `), for mgeXE.log: at
+/// most [`MOST_LINES`], each cut at [`MOST_LINE_BYTES`]. Other output (a driver's or a
+/// library's) stays out.
+pub fn probe_lines(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| line.starts_with("probe: "))
+        .take(MOST_LINES)
+        .map(|line| {
+            let mut end = line.len().min(MOST_LINE_BYTES);
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            line[..end].to_string()
+        })
+        .collect()
 }
 
 /// The answer from the probe's output and its end. `code` is the exit code, `None` when
@@ -49,11 +83,11 @@ pub fn answer(output: &str, code: Option<i32>, exit_gpu: i32, seconds: u64) -> A
 /// Runs `exe --probe` and reads its answer. A probe that runs past the limit is ended, and
 /// what it wrote is read.
 pub fn run(exe: &str, exit_gpu: i32, seconds: u64) -> Answer {
-    run_ended(exe, exit_gpu, seconds).0
+    run_full(exe, exit_gpu, seconds).answer
 }
 
-/// [`run`] with the probe's end: its exit code, or `None` when it was ended at the limit.
-fn run_ended(exe: &str, exit_gpu: i32, seconds: u64) -> (Answer, Option<i32>) {
+/// [`run`] with the probe's end and its lines.
+fn run_full(exe: &str, exit_gpu: i32, seconds: u64) -> Run {
     let mut command = Command::new(exe);
     command.arg("--probe");
     run_command(command, exit_gpu, seconds)
@@ -61,13 +95,16 @@ fn run_ended(exe: &str, exit_gpu: i32, seconds: u64) -> (Answer, Option<i32>) {
 
 /// Runs a probe's command: its output is read on a thread of its own while the probe runs
 /// (see the module's head), the wait is up to `seconds`, then the answer of its lines.
-fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> (Answer, Option<i32>) {
+fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> Run {
     let started = Instant::now();
     let mut child = match command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         Ok(child) => child,
         // No end of its own, as for a probe ended at the limit: a start that failed (a scanner
         // that holds the new copy of numidium.exe) says nothing about the machine.
-        Err(error) => return (Answer { usable: false, reason: format!("the probe did not start: {error}") }, None),
+        Err(error) => {
+            let answer = Answer { usable: false, reason: format!("the probe did not start: {error}") };
+            return Run { answer, end: None, lines: Vec::new() };
+        }
     };
     let mut stdout = child.stdout.take().expect("the probe's output is piped");
     let reader = std::thread::spawn(move || {
@@ -91,7 +128,7 @@ fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> (Answer, Op
     };
     // The probe has ended, so its end of the pipe is closed and the reader ends.
     let output = reader.join().unwrap_or_default();
-    (answer(&output, code, exit_gpu, seconds), code)
+    Run { answer: answer(&output, code, exit_gpu, seconds), end: code, lines: probe_lines(&output) }
 }
 
 /// The answer that the cache file of the probe holds (`mgeXE-renderer-probe.txt` beside
@@ -139,28 +176,37 @@ pub enum Source {
     Probe,
 }
 
+/// The result of [`check`]: the answer, where it came from, and the probe's lines for
+/// mgeXE.log (none for a cached answer). The cache file holds the key and the answer only.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Outcome {
+    pub answer: Answer,
+    pub source: Source,
+    pub lines: Vec<String>,
+}
+
 /// The answer for this machine: the cache's when its key is `key`, else the probe's, which
 /// then goes into the cache. A cache that cannot be written leaves the answer as it is; the
 /// probe then runs again at the next start.
-pub fn check(exe: &str, path: &str, key: &str, exit_gpu: i32, seconds: u64) -> (Answer, Source) {
-    check_with(path, key, || run_ended(exe, exit_gpu, seconds))
+pub fn check(exe: &str, path: &str, key: &str, exit_gpu: i32, seconds: u64) -> Outcome {
+    check_with(path, key, || run_full(exe, exit_gpu, seconds))
 }
 
-/// [`check`] with the probe as a function that gives the answer and the probe's end. A probe
-/// that did not start or was ended at the limit gave no answer of its own: its none is used
-/// for this start and not written into the cache, so that a slow or blocked start never
-/// stores a none for the machine; its reason says so, for the log line.
-fn check_with(path: &str, key: &str, probe: impl FnOnce() -> (Answer, Option<i32>)) -> (Answer, Source) {
+/// [`check`] with the probe as a function that gives its run. A probe that did not start or
+/// was ended at the limit gave no answer of its own: its none is used for this start and not
+/// written into the cache, so that a slow or blocked start never stores a none for the
+/// machine; its reason says so, for the log line.
+fn check_with(path: &str, key: &str, probe: impl FnOnce() -> Run) -> Outcome {
     if let Some(cached) = read_cache(path).filter(|cached| cached.key == key) {
-        return (cached.answer, Source::Cache);
+        return Outcome { answer: cached.answer, source: Source::Cache, lines: Vec::new() };
     }
-    let (mut answer, end) = probe();
+    let Run { mut answer, end, lines } = probe();
     if end.is_some() {
         let _ = std::fs::write(path, format_cache(key, &answer));
     } else {
         answer.reason.push_str("; not cached, the next start probes again");
     }
-    (answer, Source::Probe)
+    Outcome { answer, source: Source::Probe, lines }
 }
 
 #[cfg(test)]
@@ -177,10 +223,17 @@ mod tests {
         // 4000 lines of 40 bytes: 160 KB, then the answer line.
         command.raw_arg("/C \"(for /L %i in (1,1,4000) do @echo line %i of a long output of the probe) & echo probe: use vulkan\"");
         let started = Instant::now();
-        let (answer, end) = run_command(command, 20, 30);
-        assert_eq!(end, Some(0), "{answer:?}");
-        assert_eq!(answer, Answer { usable: true, reason: "use vulkan".to_string() });
+        let run = run_command(command, 20, 30);
+        assert_eq!(run.end, Some(0), "{:?}", run.answer);
+        assert_eq!(run.answer, Answer { usable: true, reason: "use vulkan".to_string() });
+        // Only the probe's own line goes to the log, not the 4000 others.
+        assert_eq!(run.lines, vec!["probe: use vulkan".to_string()]);
         assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    /// A run with no lines, for the tests of the cache.
+    fn ran(answer: Answer, end: Option<i32>) -> Run {
+        Run { answer, end, lines: Vec::new() }
     }
 
     /// A probe ended at the limit is not written into the cache; a probe that answered is.
@@ -191,12 +244,12 @@ mod tests {
         let path = folder.join("cache.txt");
         let path = path.to_str().unwrap();
         let _ = std::fs::remove_file(path);
-        let (answer, source) = check_with(path, "key", || (answer("", None, 20, 5), None));
-        assert_eq!(source, Source::Probe);
-        assert_eq!(answer.reason, "the probe gave no answer in 5 s; not cached, the next start probes again");
+        let outcome = check_with(path, "key", || ran(answer("", None, 20, 5), None));
+        assert_eq!(outcome.source, Source::Probe);
+        assert_eq!(outcome.answer.reason, "the probe gave no answer in 5 s; not cached, the next start probes again");
         assert!(read_cache(path).is_none(), "a probe ended at the limit was cached");
-        let (_, source) = check_with(path, "key", || (Answer { usable: true, reason: "use dx12".to_string() }, Some(0)));
-        assert_eq!(source, Source::Probe);
+        let outcome = check_with(path, "key", || ran(Answer { usable: true, reason: "use dx12".to_string() }, Some(0)));
+        assert_eq!(outcome.source, Source::Probe);
         assert_eq!(read_cache(path).unwrap().answer.reason, "use dx12");
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir(&folder);
@@ -228,15 +281,21 @@ mod tests {
         let path = folder.join("cache.txt");
         let path = path.to_str().unwrap();
         std::fs::write(path, format_cache("key A", &Answer { usable: false, reason: "lacks x".to_string() })).unwrap();
-        // The same key: the cache answers, no probe runs (the program is not there).
-        let (answer, source) = check("a-program-that-is-not-there.exe", path, "key A", 20, 1);
-        assert_eq!(source, Source::Cache);
-        assert_eq!(answer, Answer { usable: false, reason: "lacks x".to_string() });
-        // Another key: the probe runs and answers, and the cache has the new key.
-        let (answer, source) = check_with(path, "key B", || (Answer { usable: true, reason: "use vulkan".to_string() }, Some(0)));
-        assert_eq!(source, Source::Probe);
-        assert!(answer.usable);
+        // The same key: the cache answers, no probe runs (the program is not there), and there
+        // are no probe lines for the log.
+        let outcome = check("a-program-that-is-not-there.exe", path, "key A", 20, 1);
+        assert_eq!(outcome.source, Source::Cache);
+        assert_eq!(outcome.answer, Answer { usable: false, reason: "lacks x".to_string() });
+        assert!(outcome.lines.is_empty());
+        // Another key: the probe runs and answers with its lines; the cache has the new key
+        // and the answer, one line, and not the probe's lines.
+        let lines = probe_lines(OK);
+        let outcome = check_with(path, "key B", || Run { answer: Answer { usable: true, reason: "use vulkan".to_string() }, end: Some(0), lines: lines.clone() });
+        assert_eq!(outcome.source, Source::Probe);
+        assert!(outcome.answer.usable);
+        assert_eq!(outcome.lines, lines);
         assert_eq!(read_cache(path).unwrap().key, "key B");
+        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 1);
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir(&folder);
     }
@@ -250,7 +309,7 @@ mod tests {
         let path = folder.join("cache.txt");
         let path = path.to_str().unwrap();
         let _ = std::fs::remove_file(path);
-        let (answer, source) = check("a-program-that-is-not-there.exe", path, "key", 20, 1);
+        let Outcome { answer, source, .. } = check("a-program-that-is-not-there.exe", path, "key", 20, 1);
         assert_eq!(source, Source::Probe);
         assert!(!answer.usable && answer.reason.starts_with("the probe did not start"), "{}", answer.reason);
         assert!(answer.reason.ends_with("; not cached, the next start probes again"), "{}", answer.reason);
@@ -280,6 +339,19 @@ mod tests {
         assert!(!answer("", Some(-1073740791), 20, 5).usable);
         assert_eq!(answer("probe: use vulkan\n", Some(3), 20, 5).reason, "the probe said \"use vulkan\" and ended with the code 0x3");
         assert_eq!(answer("probe: vulkan: A card: lacks x\n", None, 20, 5).reason, "the probe gave no answer in 5 s");
+    }
+
+    #[test]
+    fn the_log_gets_the_probes_own_lines() {
+        let lines = probe_lines(NONE);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert!(lines.iter().all(|line| line.starts_with("probe: ")));
+        assert_eq!(lines[3], "probe: 0.34 s");
+        // At most 16 lines of at most 600 bytes, cut at a character's boundary.
+        let long = format!("probe: {}\n", "\u{e9}".repeat(400)).repeat(20);
+        let lines = probe_lines(&long);
+        assert_eq!(lines.len(), 16);
+        assert!(lines.iter().all(|line| line.len() <= 600 && line.len() >= 599), "{}", lines[0].len());
     }
 
     #[test]
