@@ -433,7 +433,7 @@ impl DistantLights {
         println!("distant lights: {} light sources, {} lit cells baked", file.source_count, file.tiles.len());
         binding.set_tiles(scene.device, scene.queue, &file);
         if file.source_count > 0 {
-            self.glows = Some(make_glows(scene, &file, view_layout));
+            self.glows = Some(super::timed("the distant lights' pipeline", || make_glows(scene, &file, view_layout)));
         }
     }
 

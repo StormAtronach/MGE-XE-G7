@@ -1550,6 +1550,14 @@ impl Statics {
         self.grass_stats = SetStats::default();
     }
 
+    /// The catalog and its textures are on their way, and a frame will take them: their GPU
+    /// objects ([`Statics::finish_load`]) are then one long step of the frame thread, which the
+    /// watchdog's allowance must cover (`Extension::loading`). Not with the statics off: then
+    /// only a wait on a load takes them, and the allowance stays as it was.
+    pub fn loading(&self) -> bool {
+        self.loading.is_some() && self.settings.statics
+    }
+
     /// The catalog is loaded.
     pub fn loaded(&self) -> bool {
         self.loading.is_none() && self.catalog.is_some()
@@ -1882,7 +1890,7 @@ impl Statics {
         }
         self.device = Some(scene.device.clone());
         self.queue = Some(scene.queue.clone());
-        self.gpu = Some(make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage));
+        self.gpu = Some(super::timed("the distant statics' GPU objects", || make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage)));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();
         let for_reader = catalog.clone();
@@ -3221,6 +3229,22 @@ mod tests {
     use super::{bytes_limit, cap_from_budget, cap_move, event_stamp, half, memory_event, qpc, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
+
+    /// The statics' load counts for the watchdog's allowance while its catalog is on the way,
+    /// only with the statics on, and no longer once a frame took it.
+    #[test]
+    fn the_statics_load_counts_while_the_catalog_is_on_its_way() {
+        let folder = std::env::temp_dir().join(format!("statics-loading-{}", std::process::id()));
+        let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
+        let mut statics = super::Statics::start(&document, folder);
+        statics.settings.statics = true;
+        assert!(statics.loading());
+        statics.settings.statics = false;
+        assert!(!statics.loading());
+        statics.settings.statics = true;
+        statics.loading = None;
+        assert!(!statics.loading());
+    }
 
     #[test]
     fn a_memory_event_line_names_its_frame_its_time_its_count_and_its_bytes() {
