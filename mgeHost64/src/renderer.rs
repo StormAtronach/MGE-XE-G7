@@ -54,7 +54,7 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
-use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
+use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status, TableShade};
@@ -147,7 +147,7 @@ impl Settings {
 
     /// The names of the flags that differ between two records, each with its new state.
     pub fn changed_flags(before: Option<Settings>, now: Settings) -> Vec<String> {
-        const NAMES: [(u32, &str); 12] = [
+        const NAMES: [(u32, &str); 13] = [
             (USE_DISTANT_LAND, "distant land"),
             (USE_DISTANT_STATICS, "distant statics"),
             (USE_GRASS, "grass"),
@@ -160,6 +160,7 @@ impl Settings {
             (REFLECTIVE_WATER, "land in the reflections"),
             (REFLECT_NEAR, "statics in the reflections"),
             (REFLECT_SKY, "sky in the reflections"),
+            (REFLECT_INTERIOR, "reflections in interiors"),
         ];
         let before = before.map_or(!now.flags, |b| b.flags);
         NAMES.iter().filter(|(flag, _)| (before ^ now.flags) & flag != 0).map(|(flag, name)| format!("{name} {}", if now.flags & flag != 0 { "on" } else { "off" })).collect()
@@ -746,10 +747,13 @@ pub struct DistantLand {
     /// The parts of the reflection in the water of the sea, as `renderWaterReflection` of the
     /// Direct3D 9 path has them: the land of an exterior (`distant_land.water.reflect_land`),
     /// the statics (`reflect_near_statics`) to the end of the near statics
-    /// (`near_static_end`, in units) and of the fog, and the sky (`reflect_sky`).
+    /// (`near_static_end`, in units) and of the fog, and the sky (`reflect_sky`). An interior
+    /// has a reflection only with `reflect_interiors`; without it the reflection is one
+    /// colour (`Water::fill_reflection`).
     reflect_land: bool,
     reflect_statics: bool,
     reflect_sky: bool,
+    reflect_interior: bool,
     near_static_end: f32,
     /// The GPU time of the shadow map and of the reflection, in a replay with
     /// `MGE_XE_GPU_TIME=1` (`gpu_time`); made at the first frame of a replay.
@@ -1079,6 +1083,7 @@ impl DistantLand {
             reflect_land: settings.water.reflect_land,
             reflect_statics: settings.water.reflect_near_statics,
             reflect_sky: settings.water.reflect_sky,
+            reflect_interior: settings.water.reflect_interiors,
             near_static_end: settings.near_static_end * CELL,
             gpu_time: None,
             gpu_time_made: false,
@@ -2640,18 +2645,10 @@ impl Extension for DistantLand {
         }
         if !self.enabled || !self.distant_cell {
             // A cell without the distant land: the reflection of the water is one colour,
-            // as `clearReflection` of the Direct3D 9 path has it. Under the water, the
-            // colour of the horizon (the fog colour); above it, the sun and the ambient
-            // light of the cell (Direct3D 9 adds the cell's sun colour to the ambient of the
-            // device; the lights of the first draw of the world stand for them here).
+            // as `clearReflection` of the Direct3D 9 path has it.
             let frame = self.water_frame(scene);
             if let (Some(frame), Some(water)) = (frame, self.water.as_mut()) {
-                let color = if frame.underwater {
-                    [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2]]
-                } else {
-                    core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0))
-                };
-                water.fill_reflection(scene, color, &frame);
+                water.fill_reflection(scene, &frame);
             }
             return false;
         }
@@ -2796,9 +2793,16 @@ impl Extension for DistantLand {
             }
         }
 
+        // An interior reflects only with `reflect_interiors`; without it the reflection is one
+        // colour, as in a cell without the distant land.
+        let mirrored = !scene.interior || self.reflect_interior;
+        if let (Some(water), Some(frame), false) = (self.water.as_mut(), water_frame.as_ref(), mirrored) {
+            water.fill_reflection(scene, frame);
+        }
+
         // The reflection in the water: the land and the sky, mirrored, in a pass of their
         // own that goes to the GPU before the frame.
-        if let (Some(water), Some(frame)) = (self.water.as_mut(), water_frame.as_ref()) {
+        if let (Some(water), Some(frame)) = (self.water.as_mut(), water_frame.as_ref().filter(|_| mirrored)) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection") });
             if let Some(timer) = self.gpu_time.as_ref() {
                 timer.start(&mut encoder);
@@ -3447,6 +3451,7 @@ impl DistantLand {
         self.reflect_land = on(REFLECTIVE_WATER);
         self.reflect_statics = on(REFLECT_NEAR);
         self.reflect_sky = on(REFLECT_SKY);
+        self.reflect_interior = on(REFLECT_INTERIOR);
         if settings.water_wave_height.is_finite() {
             self.wave_height = settings.water_wave_height.clamp(0.0, 250.0);
         }
@@ -3732,9 +3737,11 @@ mod settings_tests {
         let a = Settings { version: 1, flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
         let b = Settings { flags: USE_DISTANT_LAND | USE_GRASS | USE_HDR, ..a };
         assert_eq!(Settings::changed_flags(Some(a), b), vec!["shadows off".to_string(), "HDR measure on".to_string()]);
-        assert_eq!(Settings::changed_flags(None, a).len(), 12);
+        assert_eq!(Settings::changed_flags(None, a).len(), 13);
         let c = Settings { flags: a.flags | REFLECT_SKY, ..a };
         assert_eq!(Settings::changed_flags(Some(a), c), vec!["sky in the reflections on".to_string()]);
+        let d = Settings { flags: a.flags | REFLECT_INTERIOR, ..a };
+        assert_eq!(Settings::changed_flags(Some(a), d), vec!["reflections in interiors on".to_string()]);
     }
 }
 
