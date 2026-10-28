@@ -1219,7 +1219,7 @@ impl DistantLand {
         };
         self.loading = None;
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
-        match result.and_then(|loaded| make_gpu(scene, &loaded, &views.layout)) {
+        match result.and_then(|loaded| timed("the terrain's GPU objects", || make_gpu(scene, &loaded, &views.layout))) {
             Ok(gpu) => {
                 println!("distant land: {} terrain meshes on the GPU", gpu.meshes.len());
                 self.gpu = Some(gpu);
@@ -1485,6 +1485,16 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
         &pixels,
     );
     Ok(texture.create_view(&Default::default()))
+}
+
+/// Does `work`, the GPU objects of a load or the pipelines of a part, and logs its time: one
+/// line for each such step of the frame thread, the numbers for the watchdog's limits on slow
+/// hardware.
+fn timed<T>(what: &str, work: impl FnOnce() -> T) -> T {
+    let started = Instant::now();
+    let done = work();
+    println!("step time: {what} in {:.3} s", started.elapsed().as_secs_f64());
+    done
 }
 
 fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLayout) -> Result<Gpu, String> {
@@ -2127,7 +2137,7 @@ impl Extension for DistantLand {
     }
 
     fn loading(&self) -> bool {
-        self.loading.is_some() || self.generation.is_some()
+        self.loading.is_some() || self.generation.is_some() || self.statics.as_ref().is_some_and(|statics| statics.loading())
     }
 
     fn offline(&mut self) {
@@ -2182,7 +2192,7 @@ impl Extension for DistantLand {
         let water_cell = self.enabled && self.environment.is_some_and(|e| e.has_water != 0) && (land || scene.interior);
         if (water_cell || (self.enabled && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
             let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
-            match Water::new(scene, &self.waves, &views.layout) {
+            match timed("the water's pipelines", || Water::new(scene, &self.waves, &views.layout)) {
                 Ok(water) => self.water = Some(water),
                 Err(problem) => {
                     println!("water: {problem}; no water");
@@ -2212,7 +2222,7 @@ impl Extension for DistantLand {
         // It runs in a cell without water too, as on the Direct3D 9 path.
         if self.enabled && self.ripples_enabled {
             if let Some(e) = self.environment {
-                let ripples = self.ripples.get_or_insert_with(|| ripples::Ripples::new(scene));
+                let ripples = self.ripples.get_or_insert_with(|| timed("the dynamic waves' pipelines", || ripples::Ripples::new(scene)));
                 ripples.simulate(
                     scene,
                     &ripples::Inputs {
@@ -2239,7 +2249,7 @@ impl Extension for DistantLand {
                 }),
             };
             let root = self.root.clone();
-            self.post = Some(Post::new(scene, &self.post_chain, waves, &|name| data_file(&root, name), self.hdr_reaction));
+            self.post = Some(timed("the post chain's pipelines", || Post::new(scene, &self.post_chain, waves, &|name| data_file(&root, name), self.hdr_reaction)));
         }
         // The shaders that a mod loaded or changed since the last frame.
         if let Some(post) = self.post.as_mut() {
@@ -2266,7 +2276,7 @@ impl Extension for DistantLand {
         self.shadow_in_frame = false;
         if distant && self.like_exterior && self.shadows_enabled && self.shadow_day > 0.0 {
             if self.shadow.is_none() {
-                self.shadow = Some(Shadow::new(scene, self.shadow_resolution));
+                self.shadow = Some(timed("the shadow map's pipelines", || Shadow::new(scene, self.shadow_resolution)));
             }
             if let (Some(shadow), Some(e)) = (self.shadow.as_mut(), self.environment) {
                 let eye = scene.eye.map(|v| v as f32);
@@ -3015,7 +3025,7 @@ impl Extension for DistantLand {
             let views = self.view_binding.as_ref();
             if let (Some(water), Some(caustics_frame), Some(views)) = (self.water.as_mut(), caustics_frame, views) {
                 let intensity = self.caustics_intensity;
-                let caustics = self.caustics.get_or_insert_with(|| caustics::Caustics::new(scene, intensity, Water::dry_cut(), &views.layout));
+                let caustics = self.caustics.get_or_insert_with(|| timed("the caustics' pipeline", || caustics::Caustics::new(scene, intensity, Water::dry_cut(), &views.layout)));
                 caustics.intensity = intensity;
                 if let Some(game_view) = views.groups().get(view::GAME) {
                     water.draw_sea_caustics(scene, pass, game_view, &frame, self.ripples.as_ref(), caustics, &caustics_frame);
@@ -3069,7 +3079,7 @@ impl Extension for DistantLand {
         // Without the view range from the game, 7168: the top of the game's "Render Distance",
         // as for the grass.
         let near_view_range = self.environment.map_or(7168.0, |e| e.near_view_range);
-        self.blend.get_or_insert_with(|| blend::Blend::new(scene)).draw(scene, pass, before, depth, near_view_range);
+        self.blend.get_or_insert_with(|| timed("the blend's pipeline", || blend::Blend::new(scene))).draw(scene, pass, before, depth, near_view_range);
     }
 
     /// The water refracts the picture and reads the depth; the sea caustics read the depth
