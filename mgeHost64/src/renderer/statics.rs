@@ -1783,7 +1783,7 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(&self.stamp(),"taken off for the lower cap", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
+            println!("{}", memory_event(&self.stamp(), "taken off for the lower cap", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
         }
     }
 
@@ -1823,7 +1823,7 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(&self.stamp(),"taken off for nearer ones", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
+            println!("{}", memory_event(&self.stamp(), "taken off for nearer ones", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
         }
         self.cap_waiting = waiting && admit.is_empty();
         for subset in admit {
@@ -2362,14 +2362,14 @@ impl Statics {
         }
     }
 
-    /// The most bytes of merged subsets that stay on the GPU before the trim takes some off:
-    /// `distant_land.statics_resident_mb`, or half of the first cap of the session; never over
-    /// the cap as it is now (another program that takes memory lowers it).
     /// The frame and the time of a memory decision now ([`event_stamp`]).
     fn stamp(&self) -> String {
         event_stamp(self.frame, qpc())
     }
 
+    /// The most bytes of merged subsets that stay on the GPU before the trim takes some off:
+    /// `distant_land.statics_resident_mb`, or half of the first cap of the session; never over
+    /// the cap as it is now (another program that takes memory lowers it).
     fn high_mark(&self) -> u64 {
         let mark = if self.resident_mark > 0 { self.resident_mark } else { self.first_cap / 2 };
         mark.min(self.merged_cap)
@@ -2404,7 +2404,7 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(&self.stamp(),"trimmed (wanted least recently)", count, before, self.merged_bytes, &bytes_limit("the high mark", high)));
+            println!("{}", memory_event(&self.stamp(), "trimmed (wanted least recently)", count, before, self.merged_bytes, &bytes_limit("the high mark", high)));
         }
     }
 
@@ -2510,7 +2510,7 @@ impl Statics {
             }
             if count > 0 {
                 let limit = format!("farther than {retain:.0} units and the subset's radius");
-                println!("{}", memory_event(&self.stamp(),"taken off, too far", count, before, self.merged_bytes, &limit));
+                println!("{}", memory_event(&self.stamp(), "taken off, too far", count, before, self.merged_bytes, &limit));
             }
         }
         self.frames += 1;
