@@ -724,8 +724,23 @@ fn cap_from_budget(budget: u64, used: u64, merged: u64) -> u64 {
 /// The log line of a memory decision of the merged subsets in a frame: what was done, to how
 /// many, their bytes on the GPU before and after, and the limit that decided it. One line for
 /// each decision of a frame, not one for each subset, so the log stays quiet in a walk.
-fn memory_event(frame: u64, what: &str, count: u32, before: u64, after: u64, limit: &str) -> String {
-    format!("distant statics: frame {frame}: {count} merged subsets {what}, {:.0} MB to {:.0} MB on the GPU ({limit})", before as f64 / 1e6, after as f64 / 1e6)
+fn memory_event(stamp: &str, what: &str, count: u32, before: u64, after: u64, limit: &str) -> String {
+    format!("distant statics: {stamp}: {count} merged subsets {what}, {:.0} MB to {:.0} MB on the GPU ({limit})", before as f64 / 1e6, after as f64 / 1e6)
+}
+
+/// When a memory decision happened, for its log line: the renderer's frame and the performance
+/// counter of Windows, the clock of PresentMon's `--qpc_time`, so that a summary finds the
+/// frames that the player saw after it.
+fn event_stamp(frame: u64, qpc: i64) -> String {
+    format!("frame {frame}, qpc {qpc}")
+}
+
+/// The performance counter of Windows now.
+fn qpc() -> i64 {
+    let mut count = 0;
+    // SAFETY: the call writes one number into `count`, a valid i64.
+    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut count) };
+    count
 }
 
 /// The limit of a [`memory_event`] in bytes, with its name: "none" for no limit.
@@ -1691,8 +1706,8 @@ impl Statics {
             self.higher_samples += 1;
             if self.higher_samples >= HIGHER_SAMPLES {
                 println!(
-                    "distant statics: frame {}: the cap of the merged subsets goes up from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
-                    self.frame,
+                    "distant statics: {}: the cap of the merged subsets goes up from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
+                    self.stamp(),
                     self.merged_cap as f64 / 1e6,
                     candidate as f64 / 1e6,
                     budget as f64 / 1e6,
@@ -1714,8 +1729,8 @@ impl Statics {
             return;
         }
         println!(
-            "distant statics: frame {}: the cap of the merged subsets goes down from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
-            self.frame,
+            "distant statics: {}: the cap of the merged subsets goes down from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
+            self.stamp(),
             self.merged_cap as f64 / 1e6,
             candidate as f64 / 1e6,
             budget as f64 / 1e6,
@@ -1768,7 +1783,7 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(self.frame, "taken off for the lower cap", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
+            println!("{}", memory_event(&self.stamp(), "taken off for the lower cap", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
         }
     }
 
@@ -1808,7 +1823,7 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(self.frame, "taken off for nearer ones", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
+            println!("{}", memory_event(&self.stamp(), "taken off for nearer ones", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
         }
         self.cap_waiting = waiting && admit.is_empty();
         for subset in admit {
@@ -1927,7 +1942,7 @@ impl Statics {
                 let Some(slot) = gpu.pools.put(device, queue, s.texture, &arrival.vertices, &arrival.indexes) else {
                     if !self.pool_full {
                         self.pool_full = true;
-                        println!("distant statics: frame {}: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn until a slot of the pool goes free", self.frame);
+                        println!("distant statics: {}: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn until a slot of the pool goes free", self.stamp());
                     }
                     self.refused.insert(arrival.subset);
                     self.refused_count += 1;
@@ -2347,6 +2362,11 @@ impl Statics {
         }
     }
 
+    /// The frame and the time of a memory decision now ([`event_stamp`]).
+    fn stamp(&self) -> String {
+        event_stamp(self.frame, qpc())
+    }
+
     /// The most bytes of merged subsets that stay on the GPU before the trim takes some off:
     /// `distant_land.statics_resident_mb`, or half of the first cap of the session; never over
     /// the cap as it is now (another program that takes memory lowers it).
@@ -2384,7 +2404,7 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(self.frame, "trimmed (wanted least recently)", count, before, self.merged_bytes, &bytes_limit("the high mark", high)));
+            println!("{}", memory_event(&self.stamp(), "trimmed (wanted least recently)", count, before, self.merged_bytes, &bytes_limit("the high mark", high)));
         }
     }
 
@@ -2490,7 +2510,7 @@ impl Statics {
             }
             if count > 0 {
                 let limit = format!("farther than {retain:.0} units and the subset's radius");
-                println!("{}", memory_event(self.frame, "taken off, too far", count, before, self.merged_bytes, &limit));
+                println!("{}", memory_event(&self.stamp(), "taken off, too far", count, before, self.merged_bytes, &limit));
             }
         }
         self.frames += 1;
@@ -3198,18 +3218,27 @@ mod shader_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{bytes_limit, cap_from_budget, cap_move, half, memory_event, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
+    use super::{bytes_limit, cap_from_budget, cap_move, event_stamp, half, memory_event, qpc, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
 
     #[test]
-    fn a_memory_event_line_names_its_frame_its_count_and_its_bytes() {
-        let line = memory_event(1234, "taken off for nearer ones", 3, 3_200_000_000, 3_150_000_000, &bytes_limit("the cap", 3_160_000_000));
-        assert_eq!(line, "distant statics: frame 1234: 3 merged subsets taken off for nearer ones, 3200 MB to 3150 MB on the GPU (the cap 3160 MB)");
-        let none = memory_event(7, "trimmed (wanted least recently)", 1, 2_000_000, 1_000_000, &bytes_limit("the high mark", u64::MAX));
+    fn a_memory_event_line_names_its_frame_its_time_its_count_and_its_bytes() {
+        let line = memory_event(&event_stamp(1234, 56_789), "taken off for nearer ones", 3, 3_200_000_000, 3_150_000_000, &bytes_limit("the cap", 3_160_000_000));
+        assert_eq!(line, "distant statics: frame 1234, qpc 56789: 3 merged subsets taken off for nearer ones, 3200 MB to 3150 MB on the GPU (the cap 3160 MB)");
+        let none = memory_event(&event_stamp(7, 1), "trimmed (wanted least recently)", 1, 2_000_000, 1_000_000, &bytes_limit("the high mark", u64::MAX));
         assert!(none.ends_with("(the high mark none)"), "{none}");
-        let far = memory_event(9, "taken off, too far", 2, 5_000_000, 3_000_000, "farther than 26624 units and the subset's radius");
+        let far = memory_event(&event_stamp(9, 1), "taken off, too far", 2, 5_000_000, 3_000_000, "farther than 26624 units and the subset's radius");
         assert!(far.ends_with("5 MB to 3 MB on the GPU (farther than 26624 units and the subset's radius)"), "{far}");
+    }
+
+    /// The time of an event is the performance counter: it runs, and it does not go back.
+    #[test]
+    fn the_time_of_a_memory_event_is_the_running_performance_counter() {
+        let first = qpc();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = qpc();
+        assert!(first > 0 && second > first, "{first} then {second}");
     }
 
     /// A value that a half float holds exactly (0 or a normal number), as its bits.
