@@ -368,9 +368,14 @@ void DistantLand::renderStage0() {
                 renderSky();
             }
 
-            // Update reflection
+            // Update reflection. An interior reflects only with "Water Reflects Interiors";
+            // without it the reflection is one colour, as in a cell without distant land.
             if (mwBridge->CellHasWater()) {
-                renderWaterReflection(&mwView, &distProj);
+                if (mwBridge->IsExterior() || (Configuration.MGEFlags & REFLECT_INTERIOR)) {
+                    renderWaterReflection(&mwView, &distProj);
+                } else {
+                    clearReflection();
+                }
             }
 
             // Close the render frame for the adaptive horizon gate while horizon culling is enabled.

@@ -623,10 +623,19 @@ impl Water {
         }
     }
 
-    /// Fills the reflection with one colour: a cell without the distant land (`clearReflection`
-    /// of the Direct3D 9 path). With the blur that is sharp at the waterline, each level
-    /// gets the colour, and the depth of the mirror says that all is far.
-    pub fn fill_reflection(&mut self, scene: &SceneView, color: [f32; 3], frame: &WaterFrame) {
+    /// Fills the reflection with one colour (`clearReflection` of the Direct3D 9 path): a cell
+    /// without the distant land, or an interior without `reflect_interiors`. Under the water,
+    /// the colour of the horizon (the fog colour); above it, the sun and the ambient light of
+    /// the cell (Direct3D 9 adds the cell's sun colour to the ambient of the device; the
+    /// lights of the first draw of the world stand for them here). With the blur that is
+    /// sharp at the waterline, each level gets the colour, and the depth of the mirror says
+    /// that all is far.
+    pub fn fill_reflection(&mut self, scene: &SceneView, frame: &WaterFrame) {
+        let color: [f32; 3] = if frame.underwater {
+            [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2]]
+        } else {
+            core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0))
+        };
         let levels = if frame.blur_reflections && frame.blur_contact { self.reflection_levels.len() } else { 1 };
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection fill") });
         for (index, level) in self.reflection_levels[..levels].iter().enumerate() {
