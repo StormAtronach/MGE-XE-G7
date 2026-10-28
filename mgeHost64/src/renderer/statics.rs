@@ -721,6 +721,18 @@ fn cap_from_budget(budget: u64, used: u64, merged: u64) -> u64 {
     merged.saturating_add(budget.saturating_sub(used).saturating_sub(headroom))
 }
 
+/// The log line of a memory decision of the merged subsets in a frame: what was done, to how
+/// many, their bytes on the GPU before and after, and the limit that decided it. One line for
+/// each decision of a frame, not one for each subset, so the log stays quiet in a walk.
+fn memory_event(frame: u64, what: &str, count: u32, before: u64, after: u64, limit: &str) -> String {
+    format!("distant statics: frame {frame}: {count} merged subsets {what}, {:.0} MB to {:.0} MB on the GPU ({limit})", before as f64 / 1e6, after as f64 / 1e6)
+}
+
+/// The limit of a [`memory_event`] in bytes, with its name: "none" for no limit.
+fn bytes_limit(name: &str, bytes: u64) -> String {
+    if bytes >= u64::MAX / 2 { format!("{name} none") } else { format!("{name} {:.0} MB", bytes as f64 / 1e6) }
+}
+
 /// Whether a new value of the cap from the memory budget is lower (-1) or higher (1) than the
 /// cap, or the same (0): a move within a dead band of the larger of 64 MB and 1 % of the
 /// budget is the same. The budget's samples move by a few megabytes from frame to frame; a
@@ -1203,6 +1215,9 @@ pub struct Statics {
     most_merged: u64,
     evicted: u64,
     capped_frames: u64,
+    /// The number of the frame of this call (`SceneView::frame`), for the log lines of the
+    /// memory decisions ([`memory_event`]).
+    frame: u64,
     /// The last admission left wanted subsets waiting for the cap and asked for none.
     cap_waiting: bool,
     /// The draws of the frame: texture, subset, instance, triangles.
@@ -1342,6 +1357,7 @@ impl Statics {
             most_merged: 0,
             evicted: 0,
             capped_frames: 0,
+            frame: 0,
             cap_waiting: false,
             draws: Vec::new(),
             device: None,
@@ -1675,7 +1691,8 @@ impl Statics {
             self.higher_samples += 1;
             if self.higher_samples >= HIGHER_SAMPLES {
                 println!(
-                    "distant statics: the cap of the merged subsets goes up from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
+                    "distant statics: frame {}: the cap of the merged subsets goes up from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
+                    self.frame,
                     self.merged_cap as f64 / 1e6,
                     candidate as f64 / 1e6,
                     budget as f64 / 1e6,
@@ -1697,7 +1714,8 @@ impl Statics {
             return;
         }
         println!(
-            "distant statics: the cap of the merged subsets goes down from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
+            "distant statics: frame {}: the cap of the merged subsets goes down from {:.0} MB to {:.0} MB (budget {:.0} MB, {:.0} MB in use)",
+            self.frame,
             self.merged_cap as f64 / 1e6,
             candidate as f64 / 1e6,
             budget as f64 / 1e6,
@@ -1738,6 +1756,7 @@ impl Statics {
         }
         let mut on_gpu: Vec<(f32, u32)> = self.resident.keys().filter(|subset| catalog.merged_place.contains_key(subset)).map(|subset| (self.distance_here(catalog, *subset, eye), *subset)).collect();
         on_gpu.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        let (before, mut count) = (self.merged_bytes, 0);
         for (_, subset) in on_gpu {
             if self.merged_bytes <= self.merged_cap {
                 break;
@@ -1745,7 +1764,11 @@ impl Statics {
             if let Some(resident) = self.take_off(subset) {
                 self.merged_bytes -= resident.bytes;
                 self.evicted += 1;
+                count += 1;
             }
+        }
+        if count > 0 {
+            println!("{}", memory_event(self.frame, "taken off for the lower cap", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
         }
     }
 
@@ -1776,11 +1799,16 @@ impl Statics {
             let on_gpu = self.resident.iter().filter(|(subset, _)| catalog.merged_place.contains_key(subset)).map(|(subset, resident)| (self.distance_here(catalog, *subset, eye), *subset, resident.bytes)).collect();
             plan_merged(&wanted, on_gpu, used, self.merged_cap)
         };
+        let (before, mut count) = (self.merged_bytes, 0);
         for subset in evict {
             if let Some(resident) = self.take_off(subset) {
                 self.merged_bytes -= resident.bytes;
                 self.evicted += 1;
+                count += 1;
             }
+        }
+        if count > 0 {
+            println!("{}", memory_event(self.frame, "taken off for nearer ones", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
         }
         self.cap_waiting = waiting && admit.is_empty();
         for subset in admit {
@@ -1899,7 +1927,7 @@ impl Statics {
                 let Some(slot) = gpu.pools.put(device, queue, s.texture, &arrival.vertices, &arrival.indexes) else {
                     if !self.pool_full {
                         self.pool_full = true;
-                        println!("distant statics: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn until a slot of the pool goes free");
+                        println!("distant statics: frame {}: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn until a slot of the pool goes free", self.frame);
                     }
                     self.refused.insert(arrival.subset);
                     self.refused_count += 1;
@@ -2204,6 +2232,7 @@ impl Statics {
     /// view first. A set chosen here is only drawn by `draw`; a set that is not here is chosen
     /// in its `draw`, as without this call.
     pub fn prepare(&mut self, scene: &SceneView, sets: &[CullSet]) {
+        self.frame = scene.frame;
         self.prepared = [false; 4];
         let Some(first) = sets.first() else { return };
         if self.failed || !self.settings.statics {
@@ -2346,11 +2375,16 @@ impl Statics {
                 (now - resident.wanted_at > KEEP_SECONDS && distance > admit + instance.radius).then_some((resident.wanted_at, distance, *subset, resident.bytes))
             })
             .collect();
+        let (before, mut count) = (self.merged_bytes, 0);
         for subset in pick_trim(candidates, self.merged_bytes, low) {
             if let Some(resident) = self.take_off(subset) {
                 self.merged_bytes -= resident.bytes;
                 self.trimmed += 1;
+                count += 1;
             }
+        }
+        if count > 0 {
+            println!("{}", memory_event(self.frame, "trimmed (wanted least recently)", count, before, self.merged_bytes, &bytes_limit("the high mark", high)));
         }
     }
 
@@ -2359,6 +2393,7 @@ impl Statics {
     /// subsets near it are asked for and taken as in a frame, so a wait on the loading screen
     /// ends when they are there (`settled`).
     pub fn prefetch(&mut self, scene: &SceneView, world: &[u8], eye: [f32; 3]) {
+        self.frame = scene.frame;
         // At the first load of a session the catalog comes in a frame with no world.
         self.finish_load(scene);
         if !self.loaded() {
@@ -2399,6 +2434,7 @@ impl Statics {
     }
 
     fn frame_work(&mut self, scene: &SceneView, eye: [f32; 3], main: bool) -> bool {
+        self.frame = scene.frame;
         self.finish_load(scene);
         // The slots that went in the frame before are free: the draws that read them are done.
         if self.frame_ended {
@@ -2445,10 +2481,16 @@ impl Statics {
                     })
                 })
                 .collect();
+            let (before, mut count) = (self.merged_bytes, 0);
             for subset in far {
                 if let Some(resident) = self.take_off(subset) {
                     self.merged_bytes -= resident.bytes;
+                    count += 1;
                 }
+            }
+            if count > 0 {
+                let limit = format!("farther than {retain:.0} units and the subset's radius");
+                println!("{}", memory_event(self.frame, "taken off, too far", count, before, self.merged_bytes, &limit));
             }
         }
         self.frames += 1;
@@ -3156,9 +3198,19 @@ mod shader_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_from_budget, cap_move, half, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
+    use super::{bytes_limit, cap_from_budget, cap_move, half, memory_event, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
+
+    #[test]
+    fn a_memory_event_line_names_its_frame_its_count_and_its_bytes() {
+        let line = memory_event(1234, "taken off for nearer ones", 3, 3_200_000_000, 3_150_000_000, &bytes_limit("the cap", 3_160_000_000));
+        assert_eq!(line, "distant statics: frame 1234: 3 merged subsets taken off for nearer ones, 3200 MB to 3150 MB on the GPU (the cap 3160 MB)");
+        let none = memory_event(7, "trimmed (wanted least recently)", 1, 2_000_000, 1_000_000, &bytes_limit("the high mark", u64::MAX));
+        assert!(none.ends_with("(the high mark none)"), "{none}");
+        let far = memory_event(9, "taken off, too far", 2, 5_000_000, 3_000_000, "farther than 26624 units and the subset's radius");
+        assert!(far.ends_with("5 MB to 3 MB on the GPU (farther than 26624 units and the subset's radius)"), "{far}");
+    }
 
     /// A value that a half float holds exactly (0 or a normal number), as its bits.
     fn to_half(value: f32) -> u16 {
