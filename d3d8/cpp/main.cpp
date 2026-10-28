@@ -340,7 +340,13 @@ static void* createStreamedD3D(UINT version) {
     }
     LOG::logline("-- wgpu renderer: the nirender plugin (%s) gives the game its Direct3D 8", buildId ? buildId() : "a build from before the handshake");
     // Before the stream starts: the plugin keeps the record and writes it after the header.
-    Deviceless::sendHello();
+    // Once per process: the game asks for its Direct3D 8 again when it makes its renderer
+    // again (a change of its resolution), and the stream of the first device goes on.
+    static bool helloSent = false;
+    if (!helloSent) {
+        helloSent = true;
+        Deviceless::sendHello();
+    }
     void* d3d = create(version);
     // A plugin that refuses (no ports) gives the game no device: the Direct3D 9 path must not
     // send the plugin its records then.
