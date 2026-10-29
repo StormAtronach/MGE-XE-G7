@@ -348,10 +348,27 @@ fn plugin_dir(root: &Path) -> PathBuf {
     env::var("NIRENDER_PLUGIN_DIR").map(|value| root.join(value)).unwrap_or_else(|_| root.parent().unwrap().join("nirender-plugin"))
 }
 
+/// The Lua files of the nirender mod that a player's install needs: `main.lua` and the files
+/// that it loads with `dofile`. The other Lua files of the mod are its test harness.
+const SHIPPED_LUA: [&str; 3] = ["main.lua", "failure.lua", "notifier.lua"];
+
+/// The names of the mod's files that `main.lua` loads with `dofile`
+/// (`"Data Files\\MWSE\\mods\\nirender\\<name>.lua"` in its source).
+fn loaded_lua(main: &str) -> Vec<String> {
+    let mark = r"mods\\nirender\\";
+    main.match_indices(mark)
+        .filter_map(|(at, _)| {
+            let rest = &main[at + mark.len()..];
+            rest.find(".lua").map(|end| format!("{}.lua", &rest[..end]))
+        })
+        .collect()
+}
+
 /// The nirender plugin into the output, as the MWSE mod that the wgpu renderer needs: the
-/// DLL under `Data Files/MWSE/lib` and `main.lua` under `Data Files/MWSE/mods/nirender`.
-/// The other Lua files of the mod are its test harness and stay out. With `build`, the
-/// release build of the plugin runs first. Returns false when the plugin is not there.
+/// DLL under `Data Files/MWSE/lib` and the files of [`SHIPPED_LUA`] under
+/// `Data Files/MWSE/mods/nirender`. A file that `main.lua` loads and the list does not name
+/// stops the build, so that an archive cannot miss it. With `build`, the release build of
+/// the plugin runs first. Returns false when the plugin is not there.
 fn collect_plugin(root: &Path, out_dir: &Path, build: bool) -> bool {
     let plugin = plugin_dir(root);
     if !plugin.join("Cargo.toml").exists() {
@@ -361,16 +378,22 @@ fn collect_plugin(root: &Path, out_dir: &Path, build: bool) -> bool {
         run(cargo().arg("build").arg("--release").current_dir(&plugin));
     }
     let dll = plugin.join("target/i686-pc-windows-msvc/release/akulakhan.dll");
-    let lua = plugin.join("mod/MWSE/mods/nirender/main.lua");
-    if !dll.exists() || !lua.exists() {
+    let source = plugin.join("mod/MWSE/mods/nirender");
+    if !dll.exists() || !source.join("main.lua").exists() {
         return false;
+    }
+    let main = fs::read_to_string(source.join("main.lua")).unwrap();
+    for name in loaded_lua(&main) {
+        assert!(SHIPPED_LUA.contains(&name.as_str()), "main.lua loads {name}, which SHIPPED_LUA of xtask does not name");
     }
     let lib = out_dir.join("Data Files/MWSE/lib");
     let mods = out_dir.join("Data Files/MWSE/mods/nirender");
     fs::create_dir_all(&lib).unwrap();
     fs::create_dir_all(&mods).unwrap();
     fs::copy(&dll, lib.join("akulakhan.dll")).unwrap();
-    fs::copy(&lua, mods.join("main.lua")).unwrap();
+    for name in SHIPPED_LUA {
+        fs::copy(source.join(name), mods.join(name)).unwrap();
+    }
     true
 }
 
@@ -592,4 +615,27 @@ fn should_copy(src: &Path, dest: &Path) -> bool {
     let src_time = src_meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let dest_time = dest_meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     src_time > dest_time || src_meta.len() != dest_meta.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_files_that_main_lua_loads_are_found_and_shipped() {
+        let main = "dofile(\"Data Files\\\\MWSE\\\\mods\\\\nirender\\\\notifier.lua\")\n\
+                    dofile(\"Data Files\\\\MWSE\\\\mods\\\\nirender\\\\failure.lua\")\n";
+        assert_eq!(loaded_lua(main), vec!["notifier.lua", "failure.lua"]);
+        assert!(loaded_lua("print(1)").is_empty());
+    }
+
+    #[test]
+    fn the_plugins_main_lua_loads_only_shipped_files() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let main = plugin_dir(root).join("mod/MWSE/mods/nirender/main.lua");
+        let Ok(text) = fs::read_to_string(&main) else { return };
+        for name in loaded_lua(&text) {
+            assert!(SHIPPED_LUA.contains(&name.as_str()), "main.lua loads {name}");
+        }
+    }
 }
