@@ -349,24 +349,57 @@ fn plugin_dir(root: &Path) -> PathBuf {
 }
 
 /// The Lua files of the nirender mod that a player's install needs: `main.lua` and the files
-/// that it loads with `dofile`. The other Lua files of the mod are its test harness.
+/// that it reaches ([`reached_lua`]). The other Lua files of the mod are its test harness.
 const SHIPPED_LUA: [&str; 3] = ["main.lua", "failure.lua", "notifier.lua"];
 
-/// The names of the mod's files that `main.lua` loads with `dofile`
-/// (`"Data Files\\MWSE\\mods\\nirender\\<name>.lua"` in its source).
-fn loaded_lua(main: &str) -> Vec<String> {
-    let mark = r"mods\\nirender\\";
-    main.match_indices(mark)
-        .filter_map(|(at, _)| {
-            let rest = &main[at + mark.len()..];
-            rest.find(".lua").map(|end| format!("{}.lua", &rest[..end]))
-        })
-        .collect()
+/// The names of the mod's files that a Lua text loads: a `dofile` of
+/// `mods\\nirender\\<name>.lua` or `mods/nirender/<name>.lua`, and a `require` or `include` of
+/// `nirender.<name>`. A name built at run time (`"nirender." .. spec.scenario`, the run spec of
+/// a harness run) is not a file of an install, and it is not found.
+fn loaded_lua(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for mark in [r"mods\\nirender\\", r"mods\nirender\", "mods/nirender/"] {
+        for (at, _) in text.match_indices(mark) {
+            let rest = &text[at + mark.len()..];
+            if let Some(end) = rest.find(".lua") {
+                names.push(format!("{}.lua", rest[..end].replace(r"\\", "/").replace('\\', "/")));
+            }
+        }
+    }
+    for call in ["require", "include"] {
+        for (at, _) in text.match_indices(call) {
+            let rest = text[at + call.len()..].trim_start();
+            let rest = rest.strip_prefix('(').unwrap_or(rest).trim_start();
+            let Some(quote) = rest.chars().next().filter(|c| matches!(c, '"' | '\'')) else { continue };
+            let Some(name) = rest[1..].strip_prefix("nirender.") else { continue };
+            let Some(end) = name.find(quote) else { continue };
+            if end > 0 {
+                names.push(format!("{}.lua", name[..end].replace('.', "/")));
+            }
+        }
+    }
+    names
+}
+
+/// The mod's files that `main.lua` reaches: what it loads, and what those files load. `read`
+/// gives the text of a file of the mod, or nothing for a file that is not there.
+fn reached_lua(read: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut reached = vec![String::from("main.lua")];
+    let mut next = 0;
+    while next < reached.len() {
+        for name in read(&reached[next]).as_deref().map(loaded_lua).unwrap_or_default() {
+            if !reached.contains(&name) {
+                reached.push(name);
+            }
+        }
+        next += 1;
+    }
+    reached
 }
 
 /// The nirender plugin into the output, as the MWSE mod that the wgpu renderer needs: the
 /// DLL under `Data Files/MWSE/lib` and the files of [`SHIPPED_LUA`] under
-/// `Data Files/MWSE/mods/nirender`. A file that `main.lua` loads and the list does not name
+/// `Data Files/MWSE/mods/nirender`. A file that `main.lua` reaches and the list does not name
 /// stops the build, so that an archive cannot miss it. With `build`, the release build of
 /// the plugin runs first. Returns false when the plugin is not there.
 fn collect_plugin(root: &Path, out_dir: &Path, build: bool) -> bool {
@@ -382,9 +415,8 @@ fn collect_plugin(root: &Path, out_dir: &Path, build: bool) -> bool {
     if !dll.exists() || !source.join("main.lua").exists() {
         return false;
     }
-    let main = fs::read_to_string(source.join("main.lua")).unwrap();
-    for name in loaded_lua(&main) {
-        assert!(SHIPPED_LUA.contains(&name.as_str()), "main.lua loads {name}, which SHIPPED_LUA of xtask does not name");
+    for name in reached_lua(|name| fs::read_to_string(source.join(name)).ok()) {
+        assert!(SHIPPED_LUA.contains(&name.as_str()), "main.lua reaches {name}, which SHIPPED_LUA of xtask does not name");
     }
     let lib = out_dir.join("Data Files/MWSE/lib");
     let mods = out_dir.join("Data Files/MWSE/mods/nirender");
@@ -630,12 +662,43 @@ mod tests {
     }
 
     #[test]
-    fn the_plugins_main_lua_loads_only_shipped_files() {
+    fn every_spelling_of_a_load_is_found() {
+        assert_eq!(loaded_lua(r#"dofile("Data Files/MWSE/mods/nirender/a.lua")"#), vec!["a.lua"]);
+        assert_eq!(loaded_lua(r#"dofile([[Data Files\MWSE\mods\nirender\b.lua]])"#), vec!["b.lua"]);
+        assert_eq!(loaded_lua(r#"require("nirender.c")"#), vec!["c.lua"]);
+        assert_eq!(loaded_lua(r#"require 'nirender.d'"#), vec!["d.lua"]);
+        assert_eq!(loaded_lua(r#"include("nirender.sub.e")"#), vec!["sub/e.lua"]);
+        // The harness's run spec, and the module of the plugin itself: no file of the mod.
+        assert!(loaded_lua(r#"require("nirender." .. spec.scenario)"#).is_empty());
+        assert!(loaded_lua(r#"include("nirender")"#).is_empty());
+        assert!(loaded_lua(r#"include("akulakhan")"#).is_empty());
+    }
+
+    #[test]
+    fn a_file_is_reached_through_another_file() {
+        let read = |name: &str| match name {
+            "main.lua" => Some(String::from(r#"require("nirender.failure")"#)),
+            "failure.lua" => Some(String::from(r#"dofile("Data Files/MWSE/mods/nirender/late.lua")"#)),
+            "late.lua" => Some(String::from(r#"require("nirender.failure")"#)),
+            _ => None,
+        };
+        assert_eq!(reached_lua(read), vec!["main.lua", "failure.lua", "late.lua"]);
+        // A file that is not there is still named: the list must say it.
+        assert_eq!(reached_lua(|name| (name == "main.lua").then(|| String::from(r#"require("nirender.gone")"#))), vec!["main.lua", "gone.lua"]);
+    }
+
+    /// The plugin's own files against the list: main.lua must be there, or the test says so.
+    /// `NIRENDER_PLUGIN_DIR` names a plugin that is not the sibling folder.
+    #[test]
+    fn the_plugins_main_lua_reaches_only_shipped_files() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let main = plugin_dir(root).join("mod/MWSE/mods/nirender/main.lua");
-        let Ok(text) = fs::read_to_string(&main) else { return };
-        for name in loaded_lua(&text) {
-            assert!(SHIPPED_LUA.contains(&name.as_str()), "main.lua loads {name}");
+        let source = plugin_dir(root).join("mod/MWSE/mods/nirender");
+        assert!(source.join("main.lua").exists(), "no main.lua at {}: set NIRENDER_PLUGIN_DIR", source.display());
+        for name in reached_lua(|name| fs::read_to_string(source.join(name)).ok()) {
+            assert!(SHIPPED_LUA.contains(&name.as_str()), "main.lua reaches {name}");
+        }
+        for name in SHIPPED_LUA {
+            assert!(source.join(name).exists(), "SHIPPED_LUA names {name}, which the mod does not have");
         }
     }
 }
