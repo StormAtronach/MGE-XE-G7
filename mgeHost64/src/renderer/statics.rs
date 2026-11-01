@@ -68,7 +68,7 @@ use std::fs::File;
 use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1845,12 +1845,30 @@ impl Statics {
         self.capped_frames += waiting as u64;
     }
 
+    /// The answer of the loader thread, once it is there. A loader thread that ended without
+    /// an answer (a panic) is a failed load, not a load still to come: the statics are off,
+    /// and their load no longer counts for the watchdog ([`Statics::loading`]).
+    fn take_catalog(&mut self) -> Option<Result<Loaded, CatalogError>> {
+        let receiver = self.loading.as_ref()?;
+        let answer = if self.synchronous { receiver.recv().map_err(|_| TryRecvError::Disconnected) } else { receiver.try_recv() };
+        match answer {
+            Ok(result) => {
+                self.loading = None;
+                Some(result)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                println!("distant statics: off: the loader thread ended without an answer");
+                self.loading = None;
+                self.failed = true;
+                None
+            }
+        }
+    }
+
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(view_layout) = self.view_layout.clone() else { return };
-        let Some(receiver) = self.loading.as_ref() else { return };
-        let result = if self.synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
-        let Some(result) = result else { return };
-        self.loading = None;
+        let Some(result) = self.take_catalog() else { return };
         let loaded = match result {
             Ok(loaded) => loaded,
             Err(CatalogError::Missing(problem)) => {
@@ -3244,6 +3262,23 @@ mod tests {
         statics.settings.statics = true;
         statics.loading = None;
         assert!(!statics.loading());
+    }
+
+    /// A loader thread that ends without an answer turns the statics off, and their load no
+    /// longer counts; one that has not answered yet still counts.
+    #[test]
+    fn a_loader_thread_that_ends_without_an_answer_is_a_failed_load() {
+        let folder = std::env::temp_dir().join(format!("statics-disconnected-{}", std::process::id()));
+        let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
+        let mut statics = super::Statics::start(&document, folder);
+        statics.settings.statics = true;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        statics.loading = Some(receiver);
+        assert!(statics.take_catalog().is_none());
+        assert!(statics.loading() && !statics.failed);
+        drop(sender);
+        assert!(statics.take_catalog().is_none());
+        assert!(!statics.loading() && statics.failed);
     }
 
     #[test]
