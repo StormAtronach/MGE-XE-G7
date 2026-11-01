@@ -451,8 +451,9 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   closes itself after n seconds, and its text is in that part's log as `box:` lines
   (always); unset or 0, the box waits for the click. The test runner sets 5.
 - `MGE_XE_SLOW_STEP=<seconds>`: one step of the helper's frame thread sleeps that long inside a
-  long-step guard, 300 frames after the loads ended, for a test of the long limits: 12 goes on,
-  and 40 ends at the watchdog's 30 s with the exit code 30. The log has its `step time:` line.
+  long-step guard, then 600 ms more outside it in the same step, 300 frames after the loads ended,
+  for a test of the long limits: 12 goes on, and 40 ends at the watchdog's 30 s with the exit code
+  30. The log has its `step time:` line.
 - `MGE_XE_STALL_LOG=1` (d3d8.dll): a line in mgeXE.log for each scan of the vis groups with
   the time the cell worker stalled for it; without it, a line only when a scan or its waits
   take 2 ms or more.
