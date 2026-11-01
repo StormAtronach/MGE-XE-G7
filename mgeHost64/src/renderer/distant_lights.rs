@@ -13,7 +13,7 @@
 //!   to their light at night (`baked_light`, in the view group, from [`LightBinding`]).
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
 use distantland::mge_xe::lights::{parse_lights, LIGHT_TEXEL_SIZE, LIGHT_TILE};
@@ -416,13 +416,28 @@ impl DistantLights {
         DistantLights { loading: Some(receiver), glows: None, frames: 0 }
     }
 
+    /// The answer of the thread that reads the file, once it is there. A thread that ended
+    /// without an answer (a panic) is a failed read, not a read still to come.
+    fn take_file(&mut self, synchronous: bool) -> Option<Result<LightsFile, String>> {
+        let receiver = self.loading.as_ref()?;
+        let answer = if synchronous { receiver.recv().map_err(|_| TryRecvError::Disconnected) } else { receiver.try_recv() };
+        match answer {
+            Ok(result) => {
+                self.loading = None;
+                Some(result)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.loading = None;
+                Some(Err("the thread that reads the file ended without an answer".to_string()))
+            }
+        }
+    }
+
     /// Takes the file when it has been read: the baked light into `binding`, and the glows,
     /// whose pipeline takes the view group of `view_layout`.
     pub fn poll(&mut self, scene: &SceneView, binding: &mut LightBinding, view_layout: &wgpu::BindGroupLayout, synchronous: bool) {
-        let Some(receiver) = self.loading.as_ref() else { return };
-        let result = if synchronous { receiver.recv().ok() } else { receiver.try_recv().ok() };
-        let Some(result) = result else { return };
-        self.loading = None;
+        let Some(result) = self.take_file(synchronous) else { return };
         let file = match result {
             Ok(file) => file,
             Err(problem) => {
@@ -595,6 +610,20 @@ pub fn night_of(sun_color: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A thread that ends without an answer is a failed read, once; one that has not answered
+    /// yet is still to come.
+    #[test]
+    fn a_read_thread_that_ends_without_an_answer_is_a_failed_read() {
+        let (sender, receiver) = channel();
+        let mut lights = DistantLights { loading: Some(receiver), glows: None, frames: 0 };
+        assert!(lights.take_file(false).is_none());
+        assert!(lights.loading.is_some());
+        drop(sender);
+        assert!(matches!(lights.take_file(false), Some(Err(_))));
+        assert!(lights.loading.is_none());
+        assert!(lights.take_file(false).is_none());
+    }
 
     /// The shaders of the distant lights compile as the device checks them: the cull of the
     /// glows in view, and the glows.
