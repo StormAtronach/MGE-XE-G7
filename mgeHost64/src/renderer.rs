@@ -762,6 +762,8 @@ pub struct DistantLand {
     /// `gpu lose device` of `nirender.tune`: the next frame destroys the device, the test of a
     /// lost device.
     lose_device: bool,
+    /// `MGE_XE_SLOW_STEP=<seconds>`: one slow step, the test of the long limits.
+    slow_step: Option<SlowStep>,
     /// How far from the camera the surfaces of water volumes reflect what is in the picture,
     /// in cells (`distant_land.water.volume_reflection_cells`); 0 for the sky only.
     volume_reflect_cells: f32,
@@ -1088,6 +1090,7 @@ impl DistantLand {
             gpu_time: None,
             gpu_time_made: false,
             lose_device: false,
+            slow_step: nirender_wgpu::switches::parsed("MGE_XE_SLOW_STEP", "a number of seconds", |seconds| seconds.parse().ok()).map(|seconds| SlowStep { seconds, quiet_frames: 0 }),
             volume_reflect_cells: settings.water.volume_reflection_cells,
             volume_shadows: settings.water.volume_shadows,
             grass_look: [settings.grass.soft_end, settings.grass.vertex_color_sway, settings.grass.wrap_lighting, false].map(|on| on as u32 as f32),
@@ -1485,6 +1488,25 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
         &pixels,
     );
     Ok(texture.create_view(&Default::default()))
+}
+
+/// The frames without a load before the slow step of [`SlowStep`]: the watchdog's flag of the
+/// load, which follows at a frame's end, is off by then, so the test shows the guard alone.
+const SLOW_STEP_QUIET_FRAMES: u32 = 300;
+
+/// `MGE_XE_SLOW_STEP=<seconds>`: one long step of that many seconds, inside the guard of [`timed`],
+/// after the loads ended: the test of the long limits of the watchdog and the plugin.
+struct SlowStep {
+    seconds: u64,
+    quiet_frames: u32,
+}
+
+impl SlowStep {
+    /// One frame's end: the seconds when the step is due. A load starts the count again.
+    fn due(&mut self, loading: bool) -> Option<u64> {
+        self.quiet_frames = if loading { 0 } else { self.quiet_frames + 1 };
+        (self.quiet_frames >= SLOW_STEP_QUIET_FRAMES).then_some(self.seconds)
+    }
 }
 
 /// Does `work`, the GPU objects of a load or the pipelines of a part, as a long step: a slow PC
@@ -2383,6 +2405,11 @@ impl Extension for DistantLand {
     /// game load or a jump when the statics near the camera are there. A wait needs two world
     /// frames: the first one asks for the statics of the new place.
     fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
+        let loading = self.loading();
+        if let Some(seconds) = self.slow_step.as_mut().and_then(|slow| slow.due(loading)) {
+            self.slow_step = None;
+            timed("the slow step of MGE_XE_SLOW_STEP", || thread::sleep(Duration::from_secs(seconds)));
+        }
         let statics_loaded = self.statics.as_ref().is_none_or(|statics| statics.loaded());
         let say = |reason: u32, serial: u32| (MESSAGE_DISTANT_LAND, [1u32, reason, serial].iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
         if !self.loaded_said && self.enabled && self.loading.is_none() && self.gpu.is_some() && statics_loaded {
@@ -3602,6 +3629,28 @@ mod shader_tests {
         let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
         shader_check::check_with("shader.wgsl with the extension, tier a", &source, tier_a).unwrap();
         shader_check::check("shader.wgsl with the extension, tier c", &nirender_wgpu::tier_c_shader_source(&source)).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod slow_step_tests {
+    use super::*;
+
+    /// The slow step waits for frames without a load, and a load starts the count again.
+    #[test]
+    fn the_slow_step_comes_after_quiet_frames_only() {
+        let mut slow = SlowStep { seconds: 12, quiet_frames: 0 };
+        for _ in 0..1000 {
+            assert_eq!(slow.due(true), None);
+        }
+        for _ in 1..SLOW_STEP_QUIET_FRAMES {
+            assert_eq!(slow.due(false), None);
+        }
+        assert_eq!(slow.due(true), None);
+        for _ in 1..SLOW_STEP_QUIET_FRAMES {
+            assert_eq!(slow.due(false), None);
+        }
+        assert_eq!(slow.due(false), Some(12));
     }
 }
 
