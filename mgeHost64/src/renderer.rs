@@ -2410,7 +2410,7 @@ impl Extension for DistantLand {
             self.slow_step = None;
             timed("the slow step of MGE_XE_SLOW_STEP", || thread::sleep(Duration::from_secs(seconds)));
         }
-        let statics_loaded = self.statics.as_ref().is_none_or(|statics| statics.loaded());
+        let statics_loaded = self.statics.as_ref().is_none_or(|statics| statics.load_ended());
         let say = |reason: u32, serial: u32| (MESSAGE_DISTANT_LAND, [1u32, reason, serial].iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
         if !self.loaded_said && self.enabled && self.loading.is_none() && self.gpu.is_some() && statics_loaded {
             self.loaded_said = true;

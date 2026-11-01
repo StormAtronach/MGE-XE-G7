@@ -1563,11 +1563,26 @@ impl Statics {
         self.loading.is_none() && self.catalog.is_some()
     }
 
+    /// Nothing more comes of the load: the catalog is there, or it failed. A wait on a load does
+    /// not wait for more.
+    pub fn load_ended(&self) -> bool {
+        self.failed || self.loaded()
+    }
+
     /// The subsets near the camera are on the GPU: none is asked for from the reader thread,
     /// and none is wanted that the cap would let in. Subsets that wait for the cap count as
     /// there: they come when the camera comes nearer.
     pub fn settled(&self) -> bool {
-        self.loaded() && self.requested.is_empty() && (self.wanted.is_empty() || self.cap_waiting)
+        self.failed || (self.loaded() && self.requested.is_empty() && (self.wanted.is_empty() || self.cap_waiting))
+    }
+
+    /// The reader thread ended (a panic): what it was asked for never comes. The statics are
+    /// off, and a wait on a load does not wait for them.
+    fn reader_ended(&mut self) {
+        println!("distant statics: off: the reader thread ended; {} subsets did not come", self.requested.len());
+        self.arrivals = None;
+        self.requested.clear();
+        self.failed = true;
     }
 
     /// Why the data was rejected, when it was: distant land must then be off.
@@ -1929,6 +1944,7 @@ impl Statics {
         let (mut count, mut bytes) = (0, 0);
         // The places of the merged subsets that arrived in play, counted after the loop.
         let mut in_play = Vec::new();
+        let mut reader_ended = false;
         while self.synchronous || (count < ARRIVALS_IN_FRAME && bytes < ARRIVAL_BYTES_IN_FRAME) {
             // Synchronous: all that was asked for comes now; every request is answered, so
             // the limit of time covers a dead reader thread only.
@@ -1938,7 +1954,14 @@ impl Statics {
                 }
                 arrivals.recv_timeout(std::time::Duration::from_secs(5)).ok()
             } else {
-                arrivals.try_recv().ok()
+                match arrivals.try_recv() {
+                    Ok(arrival) => Some(arrival),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => {
+                        reader_ended = true;
+                        None
+                    }
+                }
             };
             let Some(arrival) = arrival else {
                 if self.synchronous {
@@ -2015,6 +2038,9 @@ impl Statics {
         }
         for index in in_play {
             self.count_arrival(index, eye);
+        }
+        if reader_ended {
+            self.reader_ended();
         }
     }
 
@@ -2442,7 +2468,7 @@ impl Statics {
         self.frame = scene.frame;
         // At the first load of a session the catalog comes in a frame with no world.
         self.finish_load(scene);
-        if !self.loaded() {
+        if self.failed || !self.loaded() {
             return;
         }
         let wait = self.wait.get_or_insert_default();
@@ -3279,6 +3305,46 @@ mod tests {
         drop(sender);
         assert!(statics.take_catalog().is_none());
         assert!(!statics.loading() && statics.failed);
+    }
+
+    /// A failed catalog (a missing statics file, with the terrain there) ends the wait of a load:
+    /// before, the wait's clock started again at each frame, and the wait had no end. While the
+    /// catalog is on its way, the wait goes on.
+    #[test]
+    fn a_failed_catalog_ends_the_wait_of_a_load() {
+        use nirender_wgpu::Extension;
+        let root = std::env::temp_dir().join(format!("statics-wait-{}", std::process::id()));
+        let document = mge_config::ConfigDocument::open(root.join("absent.toml"));
+        let mut land = super::super::DistantLand::start(&root, false);
+        land.loading = None;
+        land.generation = None;
+        land.statics = Some(super::Statics::start(&document, root.join("distantland")));
+        land.arrival = Some((std::time::Instant::now(), 2));
+        assert!(land.messages().is_empty());
+        assert!(land.arrival.is_some(), "the catalog is on its way");
+        let statics = land.statics.as_mut().unwrap();
+        statics.loading = None;
+        statics.failed = true;
+        let messages = land.messages();
+        assert!(land.arrival.is_none(), "the wait ended");
+        let (kind, words) = &messages[0];
+        assert_eq!(*kind, super::super::MESSAGE_DISTANT_LAND);
+        assert_eq!(u32::from_le_bytes(words[4..8].try_into().unwrap()), super::super::ARRIVED);
+    }
+
+    /// A reader thread that ended: what it was asked for never comes, so a wait on a load
+    /// must not wait for it, and the arrivals are not looked at again.
+    #[test]
+    fn a_reader_thread_that_ends_turns_the_statics_off_and_ends_the_wait() {
+        let folder = std::env::temp_dir().join(format!("statics-reader-{}", std::process::id()));
+        let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
+        let mut statics = super::Statics::start(&document, folder);
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        statics.arrivals = Some(receiver);
+        statics.requested.insert(7);
+        assert!(!statics.settled());
+        statics.reader_ended();
+        assert!(statics.settled() && statics.failed && statics.requested.is_empty() && statics.arrivals.is_none());
     }
 
     #[test]
