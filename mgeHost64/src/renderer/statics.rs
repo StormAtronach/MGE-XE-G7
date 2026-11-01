@@ -1563,6 +1563,12 @@ impl Statics {
         self.loading.is_none() && self.catalog.is_some()
     }
 
+    /// Nothing more comes of the load: the catalog is there, or it failed. A wait on a load does
+    /// not wait for more.
+    pub fn load_ended(&self) -> bool {
+        self.failed || self.loaded()
+    }
+
     /// The subsets near the camera are on the GPU: none is asked for from the reader thread,
     /// and none is wanted that the cap would let in. Subsets that wait for the cap count as
     /// there: they come when the camera comes nearer.
@@ -3299,6 +3305,31 @@ mod tests {
         drop(sender);
         assert!(statics.take_catalog().is_none());
         assert!(!statics.loading() && statics.failed);
+    }
+
+    /// A failed catalog (a missing statics file, with the terrain there) ends the wait of a load:
+    /// before, the wait's clock started again at each frame, and the wait had no end. While the
+    /// catalog is on its way, the wait goes on.
+    #[test]
+    fn a_failed_catalog_ends_the_wait_of_a_load() {
+        use nirender_wgpu::Extension;
+        let root = std::env::temp_dir().join(format!("statics-wait-{}", std::process::id()));
+        let document = mge_config::ConfigDocument::open(root.join("absent.toml"));
+        let mut land = super::super::DistantLand::start(&root, false);
+        land.loading = None;
+        land.generation = None;
+        land.statics = Some(super::Statics::start(&document, root.join("distantland")));
+        land.arrival = Some((std::time::Instant::now(), 2));
+        assert!(land.messages().is_empty());
+        assert!(land.arrival.is_some(), "the catalog is on its way");
+        let statics = land.statics.as_mut().unwrap();
+        statics.loading = None;
+        statics.failed = true;
+        let messages = land.messages();
+        assert!(land.arrival.is_none(), "the wait ended");
+        let (kind, words) = &messages[0];
+        assert_eq!(*kind, super::super::MESSAGE_DISTANT_LAND);
+        assert_eq!(u32::from_le_bytes(words[4..8].try_into().unwrap()), super::super::ARRIVED);
     }
 
     /// A reader thread that ended: what it was asked for never comes, so a wait on a load
