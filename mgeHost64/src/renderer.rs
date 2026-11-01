@@ -1487,10 +1487,11 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
     Ok(texture.create_view(&Default::default()))
 }
 
-/// Does `work`, the GPU objects of a load or the pipelines of a part, and logs its time: one
-/// line for each such step of the frame thread, the numbers for the watchdog's limits on slow
-/// hardware.
+/// Does `work`, the GPU objects of a load or the pipelines of a part, as a long step: a slow PC
+/// does not make it a stall. Logs its time: one line for each such step of the frame thread, the
+/// numbers for the watchdog's limits on slow hardware.
 fn timed<T>(what: &str, work: impl FnOnce() -> T) -> T {
+    let _long = nirender_wgpu::LongStep::begin();
     let started = Instant::now();
     let done = work();
     println!("step time: {what} in {:.3} s", started.elapsed().as_secs_f64());

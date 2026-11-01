@@ -1085,6 +1085,7 @@ impl Volumes {
     fn pipeline(&mut self, device: &wgpu::Device, key: Key) -> &wgpu::RenderPipeline {
         let (module, layout, target_format, depth_format, multisample) = (&self.modules[key.shader as usize], &self.pipeline_layout, self.target_format, self.depth_format, self.multisample);
         self.pipelines.entry(key).or_insert_with(|| {
+            let _long = nirender_wgpu::LongStep::begin();
             if key.far {
                 // A distant static: the position with the palette entry, the normal with the
                 // light of the material, the colour, the coordinate (statics.rs).
