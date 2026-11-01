@@ -4772,6 +4772,7 @@ impl Post {
     /// or a port. Returns false, and tells the log one time, for a name with neither and
     /// for a shader that does not compile. The caller calls `order` after it.
     fn load(&mut self, scene: &SceneView, name: &str, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> bool {
+        let _long = nirender_wgpu::LongStep::begin();
         if self.chain.iter().any(|c| c.name == name) {
             return true;
         }
@@ -5186,6 +5187,7 @@ fn sampler(binding: u32, kind: wgpu::SamplerBindingType) -> wgpu::BindGroupLayou
 }
 
 pub(super) fn full_screen_pipeline(device: &wgpu::Device, label: &str, source: &str, layout: &wgpu::BindGroupLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    let _long = nirender_wgpu::LongStep::begin();
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[Some(layout)], immediate_size: 0 });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
