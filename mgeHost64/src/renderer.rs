@@ -1493,6 +1493,10 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
 /// The frames without a load before the slow step of [`SlowStep`]: the watchdog's flag of the
 /// load, which follows at a frame's end, is off by then, so the test shows the guard alone.
 const SLOW_STEP_QUIET_FRAMES: u32 = 300;
+/// The rest of the slow step's step, after its guard: over two looks of the watchdog (250 ms
+/// apart), so that the watchdog looks at the step after the guard's drop. Without the restart
+/// of the step's clock at the drop, that look is a stall.
+const SLOW_STEP_REST: Duration = Duration::from_millis(600);
 
 /// `MGE_XE_SLOW_STEP=<seconds>`: one long step of that many seconds, inside the guard of [`timed`],
 /// after the loads ended: the test of the long limits of the watchdog and the plugin.
@@ -2409,6 +2413,7 @@ impl Extension for DistantLand {
         if let Some(seconds) = self.slow_step.as_mut().and_then(|slow| slow.due(loading)) {
             self.slow_step = None;
             timed("the slow step of MGE_XE_SLOW_STEP", || thread::sleep(Duration::from_secs(seconds)));
+            thread::sleep(SLOW_STEP_REST);
         }
         let statics_loaded = self.statics.as_ref().is_none_or(|statics| statics.load_ended());
         let say = |reason: u32, serial: u32| (MESSAGE_DISTANT_LAND, [1u32, reason, serial].iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
