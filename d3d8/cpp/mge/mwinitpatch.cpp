@@ -54,7 +54,13 @@ void MWInitPatch::patch() {
     // With the wgpu renderer MWSE applies these (patchWgpu, after MWSE loads).
     if (!Configuration.RendererWgpu) {
         patchEarlyEngineChanges();
+        patchDirect3D9EngineChanges();
     }
+}
+
+void MWInitPatch::patchDirect3D9EngineChanges() {
+    // Patch engine issue with light emissive particle material that affects particle rendering
+    MWPatches::patchLightParticleMaterialModifier();
 }
 
 void MWInitPatch::patchEarlyEngineChanges() {
@@ -65,9 +71,6 @@ void MWInitPatch::patchEarlyEngineChanges() {
 
     // Patches certain calls to timeGetTime to redirect to a better time.
     MWPatches::patchFrameTimer(&HighResolutionTimer::getMilliseconds);
-
-    // Patch engine issue with light emissive particle material that affects particle rendering
-    MWPatches::patchLightParticleMaterialModifier();
 }
 
 void MWInitPatch::patchWgpu(HMODULE mwse) {

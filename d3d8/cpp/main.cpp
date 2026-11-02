@@ -42,6 +42,7 @@ static void showMessageBox(const char* text, bool endGame);
 static void wgpuPathOff(const char* reason, const std::string& box) {
     LOG::logline("!! wgpu renderer: not in use, %s. MGE XE continues with Direct3D 9", reason);
     Configuration.RendererWgpu = false;
+    MWInitPatch::patchDirect3D9EngineChanges();
     if (box.empty()) {
         return;
     }

@@ -84,6 +84,7 @@ void patchResolveDuringInit(void (__cdecl* newfunc)());
 
 // Fix code that quenches light particles to stop affecting shared emissive materials
 // In conjunction with per-pixel lighting, an engine bug causes fire particles from lights to be weak and transparent
+// Direct3D 9 only: the wgpu renderer keeps the engine's behaviour (the owner, 2026-11-02)
 void patchLightParticleMaterialModifier();
 
 // Alter rendering of cells without water, so that alphas are deferred to a new scene, enabling detection
