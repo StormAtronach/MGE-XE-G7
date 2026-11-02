@@ -340,9 +340,11 @@ change. That start can take some minutes. With an older file, set it below
 - For mod authors: the event `distantLandReady` tells when the distant land is loaded and
   when it is there around the camera after a load or a teleport (see
   `docs/architecture/mwse-api.md`). It works on Direct3D 9 too.
-- If the renderer program stops (`numidium.exe` crashed or was ended), a message box says
-  so. The game cannot show a new picture after that: quit and start again, and send
-  `nirender-host.log` and `mgeXE.log`.
+- The window can be resized, and the game's own menu changes the resolution during play: the
+  picture scales into the window. A fullscreen game is a borderless window on its own monitor.
+- If the renderer program stops (`numidium.exe` crashed or was ended), the game saves as
+  "MGE XE autosave <date>", and a message box says so and closes the game. Start again, load
+  that save, and send `nirender-host.log`, `mgeXE.log`, and `numidium.dmp` if it is there.
 
 ## Licenses
 
@@ -379,6 +381,8 @@ Differences from MGE XE on Direct3D 9 that are by design, not issues:
   fades as the shadow on the ground under it does; Direct3D 9 ends it at once. The
   parameter "Grass: shadow" of the renderer's parameters window chooses: 2 (as the ground),
   1 (as Direct3D 9), 0 (no shadow on the grass).
+- A skinned shape takes every authored influence. On Direct3D 9 a vertex has at most 4, so a
+  picture differs on a triangle with over 4 bones across its vertices.
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
   `Morrowind.ini` names under `[Inventory]`; Direct3D 9 draws it wrong.
 
@@ -418,7 +422,8 @@ asks for the files below. There is no other address.
    and the line `adapter:` of `nirender-host.log` names the graphics card, the backend and
    the driver. With Mod Organizer 2 and Root Builder, these files are in `overwrite\Root`
    of the instance after the game has ended.
-3. After a crash, attach `MWSE_MiniDump.dmp` from the Morrowind folder too. MWSE writes it
+3. After a crash, attach `MWSE_MiniDump.dmp` from the Morrowind folder too, and `numidium.dmp`
+   if it is there. MWSE writes it
    when the game crashes, and the next start of the game deletes it: copy it first.
 4. If the game does not start or shows nothing: set `renderer_wgpu = false`, start again,
    and send the same logs.
