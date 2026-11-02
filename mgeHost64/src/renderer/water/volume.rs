@@ -19,6 +19,8 @@ use super::shading;
 const REFLECTS_SCENE: f32 = 99998.0;
 /// The specular power of a surface that reflects the sky only.
 const REFLECTS_SKY: f32 = 99997.0;
+/// `D3DCMP_LESSEQUAL`, the function of the far water's depth test.
+const D3DCMP_LESSEQUAL: u32 = 4;
 /// The specular power of look slot 0; there are 4096 slots (`WaterLooks::maxSlots`).
 const SLOT_FIRST: f32 = 100000.0;
 const SLOTS: f32 = 4096.0;
@@ -775,9 +777,13 @@ struct Key {
     cut: bool,
     /// The depth only, for the count of the dry spaces behind it.
     depth_only: bool,
-    /// The mesh is drawn with the depth test (and writes its depth); without it, it is drawn
-    /// whatever the depth is, as it asks.
+    /// The mesh is drawn with the depth test; without it, it is drawn whatever the depth is,
+    /// as it asks.
     depth_test: bool,
+    /// The mesh writes its depth, as the game's z-buffer property asks: independent of the test.
+    depth_write: bool,
+    /// The function of the depth test (`D3DCMPFUNC`); it counts with `depth_test` on.
+    depth_function: u32,
     /// The stencil test of the mesh, when it has one: the function, the mask, and the
     /// operations on a failed test, a failed depth test and a pass (Direct3D values). The
     /// reference is set for each draw.
@@ -789,12 +795,26 @@ struct Key {
     shader: u16,
 }
 
+/// The depth state of a held shape as the game's z-buffer property asks for it: the test, the
+/// write, and the function (see [`Key`]). The test and the write are separate: the game writes
+/// the depth of a shape by its own flag, with the test off too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DepthState {
+    test: bool,
+    write: bool,
+    function: u32,
+}
+
+/// The state of [`HeldDraw::depth`]: on, write, function (`D3DCMPFUNC`).
+fn depth_state(depth: [u32; 3]) -> DepthState {
+    // D3DCMP_ALWAYS is 8: the game turns the depth test off that way too.
+    DepthState { test: depth[0] != 0 && depth[2] != 8, write: depth[1] != 0, function: depth[2] }
+}
+
 /// The tests that a held shape asks for: the depth test, and its own stencil test (see [`Key`]).
 fn tests_of(held: &HeldDraw) -> (bool, Option<[u32; 5]>) {
-    // D3DCMP_ALWAYS is 8: the game turns the depth test off that way too.
-    let depth_test = held.depth[0] != 0 && held.depth[2] != 8;
     let s = held.stencil;
-    (depth_test, (s[0] != 0).then_some([s[1], s[3], s[4], s[5], s[6]]))
+    (depth_state(held.depth).test, (s[0] != 0).then_some([s[1], s[3], s[4], s[5], s[6]]))
 }
 
 pub(super) struct Volumes {
@@ -1157,12 +1177,14 @@ impl Volumes {
                     polygon_mode: if key.lines { wgpu::PolygonMode::Line } else { wgpu::PolygonMode::Fill },
                     ..Default::default()
                 },
-                // A mesh drawn whatever the depth is writes no depth: it can lie under the
-                // ground, as the water of a well that only its mask shows.
+                // The depth as the game's z-buffer property asks: the function when the test is
+                // on, and the write by its own flag. A mesh that tests nothing and writes (a
+                // well's water under the ground, which only its mask shows) writes its depth
+                // where it draws.
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth_format,
-                    depth_write_enabled: Some(key.depth_test),
-                    depth_compare: Some(if key.depth_test { nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual) } else { wgpu::CompareFunction::Always }),
+                    depth_write_enabled: Some(key.depth_write),
+                    depth_compare: Some(if key.depth_test { nirender_wgpu::depth::compare(nirender_wgpu::d3d_compare(key.depth_function)) } else { wgpu::CompareFunction::Always }),
                     stencil: match key.stencil {
                         // The test of the mesh, without the bit of the dry spaces.
                         Some([function, mask, fail, depth_fail, pass]) => {
@@ -1287,7 +1309,7 @@ impl Volumes {
         if !far.is_empty() {
             for (index, water) in far.iter().enumerate() {
                 let shader = self.shader_of(&water.look);
-                let key = Key { stride: 20, position: 0, normal: None, color: None, topology: wgpu::PrimitiveTopology::TriangleList, lines, far: true, cut: false, depth_only: false, depth_test: true, stencil: None, coordinates: [None; 2], shader };
+                let key = Key { stride: 20, position: 0, normal: None, color: None, topology: wgpu::PrimitiveTopology::TriangleList, lines, far: true, cut: false, depth_only: false, depth_test: true, depth_write: true, depth_function: D3DCMP_LESSEQUAL, stencil: None, coordinates: [None; 2], shader };
                 pass.set_pipeline(self.pipeline(scene.device, key));
                 // A water shader of a mod has the base texture of the baked mesh.
                 let mesh = match (&water.texture, shader) {
@@ -1322,11 +1344,16 @@ impl Volumes {
                 if depth_only && (stencil.is_some() || !depth_test) {
                     continue;
                 }
+                // The pass that counts the dry spaces behind the surface writes its depth
+                // whatever the flag says: with dry spaces a surface that asks for no write
+                // still leaves its depth in this frame.
+                let depth = depth_state(held.depth);
+                let depth_write = depth_only || depth.write;
                 let cut = cut && stencil.is_none();
                 let shader = if depth_only { 0 } else { self.shader_of(&Look::of(held.facts.specular_power, looks)) };
                 let first = layout.coordinates.first().copied();
                 let coordinates = [first, layout.coordinates.get(1).copied().or(first)];
-                let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines: lines && !cut && !depth_only, far: false, cut, depth_only, depth_test, stencil, coordinates, shader };
+                let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines: lines && !cut && !depth_only, far: false, cut, depth_only, depth_test, depth_write, depth_function: depth.function, stencil, coordinates, shader };
                 pass.set_pipeline(self.pipeline(scene.device, key));
                 let mesh = if shader == 0 { self.plain_mesh.clone() } else { self.mesh_group(scene.device, held) };
                 pass.set_bind_group(2, &mesh, &[]);
@@ -1361,6 +1388,21 @@ mod tests {
         assert_eq!(Look::of(99997.0, &table).flags & LOOK_REFLECTS_SCENE, 0);
         assert_eq!(Look::of(100003.0, &table).glow, 0.5);
         assert_eq!(Look::of(100004.0, &table), Look::STANDARD);
+    }
+
+    #[test]
+    fn the_depth_state_follows_the_game() {
+        // The kit's surfaces: test on, write off, function less or equal (D3DCMP 4).
+        assert_eq!(depth_state([1, 0, 4]), DepthState { test: true, write: false, function: 4 });
+        // The default z-buffer property: test and write.
+        assert_eq!(depth_state([1, 1, 4]), DepthState { test: true, write: true, function: 4 });
+        // Another function keeps its value, for the pipeline.
+        assert_eq!(depth_state([1, 1, 5]), DepthState { test: true, write: true, function: 5 });
+        // ALWAYS (8) is no test, and the write stays as the game asks.
+        assert_eq!(depth_state([1, 1, 8]), DepthState { test: false, write: true, function: 8 });
+        // No test, as the game sends it (function 8): the write is independent.
+        assert_eq!(depth_state([0, 1, 8]), DepthState { test: false, write: true, function: 8 });
+        assert_eq!(depth_state([0, 0, 8]), DepthState { test: false, write: false, function: 8 });
     }
 
     #[test]
