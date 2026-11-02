@@ -813,7 +813,9 @@ fn depth_state(depth: [u32; 3]) -> DepthState {
 
 /// The function of a surface in the pass after its depth-only pass (`D3DCMPFUNC`): the surface
 /// must also pass at the depth that it wrote itself. Where that pass failed, the depth differs
-/// from the surface's own, and the answer is the one that the first test gave.
+/// from the surface's own, and the answer is the one that the first test gave. One known case
+/// differs: where the buffer already had the surface's own depth, LESS, GREATER and NOTEQUAL
+/// failed the first test and pass here, so the surface draws there.
 fn function_after_depth_pass(function: u32) -> u32 {
     match function {
         2 => 4, // LESS: LESSEQUAL
@@ -1442,6 +1444,11 @@ mod tests {
                 let written = if first { 0.5 } else { buffer };
                 assert_eq!(passes(after, 0.5, written), first, "function {function}, depth {buffer}");
             }
+        }
+        // The known case: the buffer already has the surface's own depth.
+        for function in [2, 5, 6] {
+            assert!(!passes(function, 0.5, 0.5), "function {function}");
+            assert!(passes(function_after_depth_pass(function), 0.5, 0.5), "function {function}");
         }
     }
 
