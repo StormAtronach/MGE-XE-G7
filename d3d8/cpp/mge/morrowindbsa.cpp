@@ -329,6 +329,16 @@ static EntryData BSALoadFile(BSAHash3 hash) {
     }
 }
 
+// The cache keeps a reference of its own, and the caller gets another. A failed load is cached
+// too, as null.
+static IDirect3DTexture9* cacheTexture(const std::string& key, IDirect3DTexture9* tex) {
+    loadedTextures[key] = tex;
+    if (tex) {
+        tex->AddRef();
+    }
+    return tex;
+}
+
 static IDirect3DTexture9* loadTextureExact(IDirect3DDevice9* dev, const char* filename) {
     char pathbuf[MAX_PATH];
     BSAHash3 hash = hashString(filename);
@@ -356,9 +366,7 @@ static IDirect3DTexture9* loadTextureExact(IDirect3DDevice9* dev, const char* fi
                                                       D3DX_FILTER_NONE, 0, 0, 0, &tex);
 
         if (hr == D3D_OK) {
-            // Cache failures too, so a missing or undecodable asset is not retried every draw.
-            loadedTextures[key] = tex;
-            return tex;
+            return cacheTexture(key, tex);
         }
     }
 
@@ -371,8 +379,7 @@ static IDirect3DTexture9* loadTextureExact(IDirect3DDevice9* dev, const char* fi
                                                       D3DX_FILTER_NONE, 0, 0, 0, &tex);
 
         if (hr == D3D_OK) {
-            loadedTextures[key] = tex;
-            return tex;
+            return cacheTexture(key, tex);
         }
     }
 
@@ -388,8 +395,8 @@ static IDirect3DTexture9* loadTextureExact(IDirect3DDevice9* dev, const char* fi
                                                 D3DX_DEFAULT, 0, 0, 0, &tex);
         }
 
-        loadedTextures[key] = tex;
-        return tex;
+        // Cache failures too, so a missing or undecodable asset is not retried every draw.
+        return cacheTexture(key, tex);
     }
 
     return nullptr;
