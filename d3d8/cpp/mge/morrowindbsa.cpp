@@ -1,7 +1,9 @@
 
 #include "morrowindbsa.h"
 #include "bc7format.h"
+#include "support/log.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdint>
@@ -412,12 +414,18 @@ IDirect3DTexture9* loadTexture(IDirect3DDevice9* dev, const char* filename) {
 }
 
 void clearTextureCache() {
+    unsigned released = 0, heldElsewhere = 0;
+    unsigned long largestCount = 0;
     for (auto& entry : loadedTextures) {
         if (entry.second) {
-            entry.second->Release();
+            const auto count = entry.second->Release();
+            ++released;
+            heldElsewhere += count != 0;
+            largestCount = std::max(largestCount, count);
         }
     }
     loadedTextures.clear();
+    LOG::logline("-- Texture cache: %u textures released, %u held elsewhere, the largest count left %lu", released, heldElsewhere, largestCount);
 }
 
 }
