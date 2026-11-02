@@ -811,6 +811,18 @@ fn depth_state(depth: [u32; 3]) -> DepthState {
     DepthState { test: depth[0] != 0 && depth[2] != 8, write: depth[1] != 0, function: depth[2] }
 }
 
+/// The function of a surface in the pass after its depth-only pass (`D3DCMPFUNC`): the surface
+/// must also pass at the depth that it wrote itself. Where that pass failed, the depth differs
+/// from the surface's own, and the answer is the one that the first test gave.
+fn function_after_depth_pass(function: u32) -> u32 {
+    match function {
+        2 => 4, // LESS: LESSEQUAL
+        5 => 7, // GREATER: GREATEREQUAL
+        6 => 3, // NOTEQUAL: EQUAL
+        other => other,
+    }
+}
+
 /// The tests that a held shape asks for: the depth test, and its own stencil test (see [`Key`]).
 fn tests_of(held: &HeldDraw) -> (bool, Option<[u32; 5]>) {
     let s = held.stencil;
@@ -1224,9 +1236,10 @@ impl Volumes {
     /// the near surfaces do: they go over it. Returns the number drawn.
     /// With `dry`, the dry spaces cut the near surfaces: they write their depth first, the
     /// faces of the dry spaces behind it are counted, and then they are drawn outside
-    /// (`flushWaterVolumes`). The far water is not cut.
+    /// (`flushWaterVolumes`). The far water is not cut. `before_plane`: the sea plane of the
+    /// frame comes after these surfaces.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>, dry: Option<&super::dry::Dry>) -> usize {
+    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame_group: &wgpu::BindGroup, held: &[HeldDraw], far: &[FarWater], frame_look: &VolumeLook, looks: &HashMap<u32, Look>, dry: Option<&super::dry::Dry>, before_plane: bool) -> usize {
         let surfaces: Vec<&HeldDraw> = held.iter().filter(|h| marked(h.facts.specular_power)).collect();
         if surfaces.is_empty() && far.is_empty() {
             return 0;
@@ -1347,13 +1360,15 @@ impl Volumes {
                 // The pass that counts the dry spaces behind the surface writes its depth
                 // whatever the flag says: with dry spaces a surface that asks for no write
                 // still leaves its depth in this frame.
+                // Before the sea plane, a surface that wrote no depth would be under the plane.
                 let depth = depth_state(held.depth);
-                let depth_write = depth_only || depth.write;
+                let depth_write = depth_only || depth.write || before_plane;
                 let cut = cut && stencil.is_none();
+                let depth_function = if cut { function_after_depth_pass(depth.function) } else { depth.function };
                 let shader = if depth_only { 0 } else { self.shader_of(&Look::of(held.facts.specular_power, looks)) };
                 let first = layout.coordinates.first().copied();
                 let coordinates = [first, layout.coordinates.get(1).copied().or(first)];
-                let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines: lines && !cut && !depth_only, far: false, cut, depth_only, depth_test, depth_write, depth_function: depth.function, stencil, coordinates, shader };
+                let key = Key { stride: layout.stride, position: layout.position, normal: layout.normal, color: layout.color, topology: held.topology, lines: lines && !cut && !depth_only, far: false, cut, depth_only, depth_test, depth_write, depth_function, stencil, coordinates, shader };
                 pass.set_pipeline(self.pipeline(scene.device, key));
                 let mesh = if shader == 0 { self.plain_mesh.clone() } else { self.mesh_group(scene.device, held) };
                 pass.set_bind_group(2, &mesh, &[]);
@@ -1403,6 +1418,31 @@ mod tests {
         // No test, as the game sends it (function 8): the write is independent.
         assert_eq!(depth_state([0, 1, 8]), DepthState { test: false, write: true, function: 8 });
         assert_eq!(depth_state([0, 0, 8]), DepthState { test: false, write: false, function: 8 });
+    }
+
+    #[test]
+    fn a_surface_passes_at_the_depth_of_its_depth_only_pass() {
+        // The compare of each function at the depth that passed the first test (equal), and at
+        // one where the first test failed.
+        let passes = |function: u32, surface: f32, buffer: f32| match function {
+            1 => false,
+            2 => surface < buffer,
+            3 => surface == buffer,
+            4 => surface <= buffer,
+            5 => surface > buffer,
+            6 => surface != buffer,
+            7 => surface >= buffer,
+            _ => true,
+        };
+        for function in 1..=8 {
+            let after = function_after_depth_pass(function);
+            // Each value of the buffer: nearer than the surface, and farther.
+            for buffer in [0.25, 0.75] {
+                let first = passes(function, 0.5, buffer);
+                let written = if first { 0.5 } else { buffer };
+                assert_eq!(passes(after, 0.5, written), first, "function {function}, depth {buffer}");
+            }
+        }
     }
 
     #[test]

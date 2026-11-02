@@ -827,16 +827,17 @@ impl Water {
 impl Water {
     /// Draws the surfaces of water volumes among the shapes that the renderer held for the
     /// extension, with the picture and the depth of the scene so far. `view` is the group of
-    /// the game view. Returns the number drawn.
+    /// the game view. `before_plane`: the sea plane of the frame comes after these surfaces.
+    /// Returns the number drawn.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], far: &[FarWater], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>, light: &VolumeLight) -> usize {
+    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], far: &[FarWater], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>, light: &VolumeLight, before_plane: bool) -> usize {
         if far.is_empty() && !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
             return 0;
         }
         let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light)) else { return 0 };
         // The dry spaces cut the surfaces near the camera, but not from under the water.
         let dry = (self.dry.any() && !frame.underwater).then_some(&self.dry);
-        self.volumes.draw(scene, pass, view, &group, held, far, look, looks, dry)
+        self.volumes.draw(scene, pass, view, &group, held, far, look, looks, dry, before_plane)
     }
 
     /// The stencil test of a pixel outside the dry spaces, for a pass that the count cuts.
