@@ -294,10 +294,6 @@ void MGEhud::setTexture(hud_id hud, const char* texturePath) {
         e->w = float(desc.Width);
         e->h = float(desc.Height);
         e->texture = tex;
-
-        // As the BSA cache cannot reload a texture after it is released, (it returns a pointer to the released texture)
-        // we have to add a loose reference to keep the texture in memory and avoid a crash
-        tex->AddRef();
         e->textureFilename = texturePath;
     } else {
         LOG::logline("LoadHUDTexture : Cannot load texture %s", texturePath);
