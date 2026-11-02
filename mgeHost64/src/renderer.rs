@@ -71,7 +71,9 @@ const NEAR: f32 = 64.0;
 /// at the same distance, by 0.25 % of the distance, as Direct3D 9's 4 - 0.01 against 4.
 const LAND_NEAR_SCALE: f32 = 0.9975;
 /// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend`): the parts named are not drawn, for a
-/// replay that tests one suspect at a time. Read once.
+/// replay that tests one suspect at a time. Read once. `held_sorted` is not a part: it draws the
+/// surfaces of water volumes at the end of the world scene, as before their place in the engine's
+/// sorted queue, for the A/B of that place.
 fn skipped(part: &str) -> bool {
     static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SKIP.get_or_init(|| nirender_wgpu::switches::text("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
@@ -3041,8 +3043,9 @@ impl Extension for DistantLand {
         water::volume_marked(facts.specular_power)
     }
 
-    /// The surfaces of water volumes, at the end of the draws that do not blend: what
-    /// blends goes over them, and they show what is under them.
+    /// The surfaces of water volumes that do not blend, and those that the engine did not
+    /// queue, at the end of the world scene: they show what is under them. A surface that
+    /// blends draws at its place in the engine's sorted queue (`held_sorted`).
     fn draw_held(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
         let Some(frame) = self.volume_frame(scene) else { return };
         // The caustics under the sea first, on the picture of the game: the surfaces of volumes
@@ -3077,6 +3080,13 @@ impl Extension for DistantLand {
     /// through the same mask (the shaft of a well).
     fn held_in_place(&self, held: &nirender_wgpu::HeldDraw) -> bool {
         water::volume_marked(held.facts.specular_power) && held.stencil[0] != 0
+    }
+
+    /// A surface of a water volume that blends draws among the blends of the game, far to
+    /// near: the engine draws it in its sorted queue, so a blend behind it goes first and
+    /// shows through it, and a blend before it goes over it.
+    fn held_sorted(&self, held: &nirender_wgpu::HeldDraw) -> bool {
+        water::volume_marked(held.facts.specular_power) && !skipped("held_sorted")
     }
 
     fn draw_held_in_place(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
