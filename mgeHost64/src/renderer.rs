@@ -3071,7 +3071,8 @@ impl Extension for DistantLand {
         let far = std::mem::take(&mut self.far_water);
         // The flag is for the near surfaces: the sea plane at the top of the volume of the
         // camera goes when one was drawn.
-        self.volumes_drawn = self.draw_surfaces(scene, pass, &frame, held, &far) > far.len();
+        let near_surfaces = self.draw_surfaces(scene, pass, &frame, held, &far) > far.len();
+        self.volumes_drawn |= near_surfaces;
     }
 
     /// A surface that shows through a mask of its mesh (its own stencil test, as the water of
@@ -3084,9 +3085,12 @@ impl Extension for DistantLand {
 
     /// A surface of a water volume that blends draws among the blends of the game, far to
     /// near: the engine draws it in its sorted queue, so a blend behind it goes first and
-    /// shows through it, and a blend before it goes over it.
-    fn held_sorted(&self, held: &nirender_wgpu::HeldDraw) -> bool {
-        water::volume_marked(held.facts.specular_power) && !skipped("held_sorted")
+    /// shows through it, and a blend before it goes over it. That place is after the sea
+    /// plane, which must know now that the surface will be drawn.
+    fn held_sorted(&mut self, held: &nirender_wgpu::HeldDraw) -> bool {
+        let sorted = water::volume_marked(held.facts.specular_power) && !skipped("held_sorted");
+        self.volumes_drawn |= sorted;
+        sorted
     }
 
     fn draw_held_in_place(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
