@@ -13,5 +13,6 @@ MGE_StreamPresent
 MGE_StreamTransform
 MGE_StreamSceneBegin
 MGE_StreamMessage
+MGE_LightFadeRadius
 MGE_DistantLandReadyNext
 MGE_LogLine

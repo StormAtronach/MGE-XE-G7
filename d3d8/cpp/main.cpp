@@ -4,6 +4,7 @@
 #include "mge_probe_ffi.h"
 #include "mge/mwinitpatch.h"
 #include "mge/mged3d8device.h"
+#include "mge/mwbridge.h"
 #include "mge/startupgen.h"
 #include "mwse/mgebridge.h"
 #include "support/winheader.h"
@@ -399,6 +400,13 @@ extern "C" void __cdecl MGE_StreamTransform(UINT state, float* matrix, UINT targ
     if (isMW && Configuration.RendererWgpu) {
         Deviceless::transform(state, reinterpret_cast<D3DMATRIX*>(matrix), targetIsBackBuffer != 0);
     }
+}
+
+// The nirender plugin calls this for the radius that the helper's fade takes: the one recovery
+// from a light's attenuation, which lightAttachRadius also takes, so that the fade ends inside
+// the attach radius. 0 when the attenuation gives no radius: the light has no fade.
+extern "C" float __cdecl MGE_LightFadeRadius(float constant, float linear, float quadratic) {
+    return MWBridge::get()->pointLightRadius(constant, linear, quadratic);
 }
 
 // The nirender plugin calls this for each message of the extension in the helper, at the end
