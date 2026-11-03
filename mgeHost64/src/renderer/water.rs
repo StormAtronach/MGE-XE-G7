@@ -12,7 +12,7 @@ use nirender_wgpu::{Replay, ReplayView, SceneView, wgpu};
 /// `MGE_XE_WATER_DEBUG`, read once: the water is made again at each change of the size.
 static WATER_DEBUG: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
 
-use super::{multiply, planes};
+use super::multiply;
 
 /// The size of the reflection, as the Direct3D 9 path has it.
 const REFLECTION_SIZE: u32 = 1024;
@@ -693,9 +693,12 @@ impl Water {
         self.waves.clone()
     }
 
-    /// The planes of the view of the reflection, for the cull of the distant land.
-    pub fn reflection_planes(mirrored_view: &[f32; 16], projection: &[f32; 16]) -> [[f32; 4]; 6] {
-        planes(&multiply(mirrored_view, projection))
+    /// The planes of the view of the reflection, for the cull of the distant land: relative
+    /// to the eye of the mirrored view, the eye of the scene mirrored at `mirror_level`
+    /// ([`Self::mirror`] is its own inverse).
+    pub fn reflection_planes(mirrored_view: &[f32; 16], projection: &[f32; 16], eye: [f64; 3], mirror_level: f32) -> [[f32; 4]; 6] {
+        let mirrored_eye = [eye[0], eye[1], 2.0 * mirror_level as f64 - eye[2]];
+        nirender_wgpu::view_planes(mirrored_view, projection, mirrored_eye)
     }
 
     /// Writes the values of the frame and makes the group of the shared shading (group 1): the
