@@ -3041,8 +3041,9 @@ impl Extension for DistantLand {
         water::volume_marked(facts.specular_power)
     }
 
-    /// The surfaces of water volumes, at the end of the draws that do not blend: what
-    /// blends goes over them, and they show what is under them.
+    /// The surfaces of water volumes that do not blend, and those that the engine did not
+    /// queue, at the end of the world scene: they show what is under them. A surface that
+    /// blends draws at its place in the engine's sorted queue (`held_sorted`).
     fn draw_held(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
         let Some(frame) = self.volume_frame(scene) else { return };
         // The caustics under the sea first, on the picture of the game: the surfaces of volumes
@@ -3068,7 +3069,8 @@ impl Extension for DistantLand {
         let far = std::mem::take(&mut self.far_water);
         // The flag is for the near surfaces: the sea plane at the top of the volume of the
         // camera goes when one was drawn.
-        self.volumes_drawn = self.draw_surfaces(scene, pass, &frame, held, &far) > far.len();
+        let near_surfaces = self.draw_surfaces(scene, pass, &frame, held, &far, true) > far.len();
+        self.volumes_drawn |= near_surfaces;
     }
 
     /// A surface that shows through a mask of its mesh (its own stencil test, as the water of
@@ -3079,9 +3081,19 @@ impl Extension for DistantLand {
         water::volume_marked(held.facts.specular_power) && held.stencil[0] != 0
     }
 
+    /// A surface of a water volume that blends draws among the blends of the game, far to
+    /// near: the engine draws it in its sorted queue, so a blend behind it goes first and
+    /// shows through it, and a blend before it goes over it. That place is after the sea
+    /// plane, which must know now that the surface will be drawn.
+    fn held_sorted(&mut self, held: &nirender_wgpu::HeldDraw) -> bool {
+        let sorted = water::volume_marked(held.facts.specular_power);
+        self.volumes_drawn |= sorted;
+        sorted
+    }
+
     fn draw_held_in_place(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, held: &[nirender_wgpu::HeldDraw], _replay: &mut dyn Replay) {
         let Some(frame) = self.volume_frame(scene) else { return };
-        if self.draw_surfaces(scene, pass, &frame, held, &[]) > 0 {
+        if self.draw_surfaces(scene, pass, &frame, held, &[], false) > 0 {
             self.volumes_drawn = true;
         }
     }
@@ -3225,8 +3237,9 @@ impl DistantLand {
     }
 
     /// Draws the surfaces of water volumes among `held` and the far water `far`, with the look
-    /// and the light of the frame. Returns the number drawn ([`Water::draw_volumes`]).
-    fn draw_surfaces(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, held: &[nirender_wgpu::HeldDraw], far: &[water::FarWater]) -> usize {
+    /// and the light of the frame. `before_plane`: the sea plane of the frame comes after them.
+    /// Returns the number drawn ([`Water::draw_volumes`]).
+    fn draw_surfaces(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, held: &[nirender_wgpu::HeldDraw], far: &[water::FarWater], before_plane: bool) -> usize {
         // What a surface reflects in place of the sky in an interior: the light of the room,
         // as the reflection of the water of the cell has it.
         let sky = if self.like_exterior {
@@ -3266,7 +3279,7 @@ impl DistantLand {
             }
         }
         let Some(game_view) = self.view_binding.as_ref().and_then(|views| views.groups().get(view::GAME)) else { return 0 };
-        water.draw_volumes(scene, pass, game_view, frame, self.ripples.as_ref(), held, far, &look, &self.water_looks, &light)
+        water.draw_volumes(scene, pass, game_view, frame, self.ripples.as_ref(), held, far, &look, &self.water_looks, &light, before_plane)
     }
 
     /// What the water needs from the environment of the frame, or [`None`] without water in
