@@ -1739,6 +1739,10 @@ impl Gpu {
     }
 }
 
+/// The planes of an orthographic view from its combined matrix: the layers of the shadow
+/// map. A view in perspective takes `nirender_wgpu::view_planes`: its far plane is the
+/// difference of two columns that differ by about near / far, which 32 bits lose far from the
+/// origin of the world; the far plane of an orthographic view is not such a difference.
 fn planes(m: &[f32; 16]) -> [[f32; 4]; 6] {
     let column = |j: usize| [m[j], m[4 + j], m[8 + j], m[12 + j]];
     let add = |a: [f32; 4], b: [f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
@@ -2700,7 +2704,6 @@ impl Extension for DistantLand {
         let Some(gpu) = self.gpu.as_ref() else { return false };
 
         let projection = self.land_projection(scene);
-        let view_projection = multiply(&scene.view, &projection);
         let eye = scene.eye.map(|v| v as f32);
         let main_view = self.frame_view(scene, &projection);
         // The fog: from the game with this frame, or the linear fog of the settings.
@@ -2723,7 +2726,7 @@ impl Extension for DistantLand {
         let Some(views) = self.view_binding.as_ref() else { return false };
         views.write(scene.queue, view::MAIN, &main_view);
 
-        let planes = planes(&view_projection);
+        let planes = nirender_wgpu::view_planes(&scene.view, &projection);
         let mut drawn = 0;
         // The terrain is for an exterior; an interior cell has the statics of its own world
         // space over the clear colour.
@@ -2943,7 +2946,6 @@ impl Extension for DistantLand {
         if self.statics.is_none() {
             return;
         }
-        let view_projection = multiply(&scene.view, &scene.projection);
         let eye = scene.eye.map(|v| v as f32);
         let environment = self.environment;
         // The multipliers of the weather for the light reach the distant land only with the
@@ -2966,7 +2968,7 @@ impl Extension for DistantLand {
             ambient: [ambient[0], ambient[1], ambient[2], 0.0],
             wind: environment.map_or([0.0; 4], |e| [e.wind[0], e.wind[1], e.time, 0.0]),
             foot: environment.map_or([0.0; 4], |e| [e.foot_pos[0], e.foot_pos[1], e.foot_pos[2], e.foot_valid as f32]),
-            planes: planes(&view_projection),
+            planes: nirender_wgpu::view_planes(&scene.view, &scene.projection),
             // The shadow map of the frame (an exterior or a cell like one, with shadows on),
             // as `renderGrassInst` of the Direct3D 9 path.
             shadow: self.shadow.as_ref().filter(|_| self.shadow_in_frame).map(|shadow| statics::GrassShadow {
