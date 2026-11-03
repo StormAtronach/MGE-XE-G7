@@ -1264,12 +1264,15 @@ namespace Deviceless {
         const bool expFog = (Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & EXP_FOG);
         float fogStart, fogEnd;
 
-        if (underwater) {
-            fogStart = Configuration.DL.BelowWaterFogStart;
-            fogEnd = Configuration.DL.BelowWaterFogEnd;
-        } else if (exterior) {
+        // The weather values of the frame follow the weather and not the place of the eye. The
+        // Direct3D 9 path keeps them in members that adjustFog changes above the water only, so
+        // under water they hold the values of the last frame above it; here they come from the
+        // weather of this frame, in each place with weather. The two differ in a frame under
+        // water in which the weather changed.
+        float ff = 1.0f, fo = 0.0f;
+        if (exterior) {
             int wthr1 = mwBridge->GetCurrentWeather(), wthr2 = mwBridge->GetNextWeather();
-            float ratio = mwBridge->GetWeatherRatio(), ff = 1.0f, fo = 0.0f, ws = 0.0f;
+            float ratio = mwBridge->GetWeatherRatio(), ws = 0.0f;
 
             if (ratio != 0 && wthr1 >= 0 && wthr1 <= 9 && wthr2 >= 0 && wthr2 <= 9) {
                 ff = mix(Configuration.DL.FogD[wthr1], Configuration.DL.FogD[wthr2], ratio);
@@ -1287,10 +1290,15 @@ namespace Deviceless {
                 e.lightSunMult = Configuration.Lighting.SunMult[wthr1];
                 e.lightAmbMult = Configuration.Lighting.AmbMult[wthr1];
             }
+            e.windScaling = ws;
+        }
 
+        if (underwater) {
+            fogStart = Configuration.DL.BelowWaterFogStart;
+            fogEnd = Configuration.DL.BelowWaterFogEnd;
+        } else if (exterior) {
             fogEnd = std::max(0.875f, ff * Configuration.DL.AboveWaterFogEnd);
             fogStart = ff * Configuration.DL.AboveWaterFogStart - fo * fogEnd;
-            e.windScaling = ws;
             if (expFog) {
                 float lg = log(1.0f - 0.25f * fo);
                 float expCorrection = lg / (1 + lg);
@@ -1347,11 +1355,14 @@ namespace Deviceless {
             gameLoaded = false;
         }
 
-        // The scattering of the atmosphere, as in DistantLand::adjustFog: the fog colour of
-        // the near cells becomes the colour that the scattering has at the view range of the
-        // game, and the game gets it through its scene graph. The shaders of the helper get
-        // the values for the same sum in each pixel.
-        const bool scatter = (Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER) && exterior && !underwater;
+        // The scattering of the atmosphere. The shaders of the Direct3D 9 path scatter by the
+        // weather and by the eye above the sea (fogColourScatter), also under a water volume
+        // above the sea, so the flag does not stop under water: the helper tests the sea
+        // itself. As in DistantLand::adjustFog, the fog colour of the near cells becomes the
+        // colour that the scattering has at the view range of the game, and the game gets it
+        // through its scene graph, above the water only (`nearFog`).
+        const bool scatter = (Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER) && exterior;
+        const bool nearFog = scatter && !underwater;
         scatterFogValid = false;
         e.sunVis = exterior ? mwBridge->GetSunVis() / 255.0f : 0.0f;
         if (exterior) {
@@ -1379,6 +1390,8 @@ namespace Deviceless {
 
             if (scatter) {
                 e.flags |= 8u;
+            }
+            if (nearFog) {
                 const float newSky[3] = {
                     mix(skyCol->r, far4.x, far4.w), mix(skyCol->g, far4.y, far4.w), mix(skyCol->b, far4.z, far4.w)
                 };
