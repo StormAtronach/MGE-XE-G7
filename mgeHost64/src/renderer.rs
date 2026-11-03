@@ -54,7 +54,7 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
-use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
+use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_DISTANT_WATER, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status, TableShade};
@@ -147,8 +147,9 @@ impl Settings {
 
     /// The names of the flags that differ between two records, each with its new state.
     pub fn changed_flags(before: Option<Settings>, now: Settings) -> Vec<String> {
-        const NAMES: [(u32, &str); 13] = [
+        const NAMES: [(u32, &str); 14] = [
             (USE_DISTANT_LAND, "distant land"),
+            (USE_DISTANT_WATER, "distant water"),
             (USE_DISTANT_STATICS, "distant statics"),
             (USE_GRASS, "grass"),
             (USE_SHADOWS, "shadows"),
@@ -594,6 +595,12 @@ struct Gpu {
 
 pub struct DistantLand {
     enabled: bool,
+    /// The water is wanted: distant land is on, or only distant water is (`USE_DISTANT_WATER`,
+    /// as `distantWater` of the Direct3D 9 path). Two differences from that path are open:
+    /// after a start with distant land off the exterior water does not draw (the GPU data of
+    /// the land is not loaded; Direct3D 9 draws it), and the water-only picture differs from
+    /// Direct3D 9 (E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt, section 1).
+    water_on: bool,
     /// The distances of the settings of MGE XE, in the units of the game.
     draw_distance: f32,
     settings_fog: (f32, f32),
@@ -1012,6 +1019,7 @@ impl DistantLand {
         let settings = &document.settings().distant_land;
         let mut land = DistantLand {
             enabled: settings.enabled,
+            water_on: settings.enabled,
             draw_distance: settings.draw_distance * CELL,
             settings_fog: (settings.fog.above_water_start * CELL, settings.fog.above_water_end * CELL),
             environment: None,
@@ -2225,8 +2233,9 @@ impl Extension for DistantLand {
         let distant = self.enabled && self.distant_cell && self.gpu.is_some();
         // The water: an exterior with its land, or an interior cell with water (`CellHasWater`
         // of MGE XE, which draws its water there too, with a flat reflection).
-        let water_cell = self.enabled && self.environment.is_some_and(|e| e.has_water != 0) && (land || scene.interior);
-        if (water_cell || (self.enabled && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
+        let water_land = self.water_on && !scene.interior && self.gpu.is_some();
+        let water_cell = self.water_on && self.environment.is_some_and(|e| e.has_water != 0) && (water_land || scene.interior);
+        if (water_cell || (self.water_on && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
             let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
             match timed("the water's pipelines", || Water::new(scene, &self.waves, &views.layout)) {
                 Ok(water) => self.water = Some(water),
@@ -2250,13 +2259,16 @@ impl Extension for DistantLand {
             water.start_frame();
         }
         self.far_water.clear();
-        self.volumes_ready = self.enabled && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_some();
+        self.volumes_ready = self.water_on && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_some();
         // In a water volume its top is the level of the water of the frame: the sea plane is
         // not cut there.
         let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
         // The dynamic waves: the simulation of the frame, before a water surface reads it.
-        // It runs in a cell without water too, as on the Direct3D 9 path.
-        if self.enabled && self.ripples_enabled {
+        // It runs in a cell without water too, as on the Direct3D 9 path, and with distant
+        // land off: Direct3D 9 simulates the waves when `isDistantCell` is false, under
+        // `DYNAMIC_RIPPLES` alone (`DistantLand::renderStage0`, its else branch). Here the
+        // water is the only reader, so it follows the water.
+        if self.water_on && self.ripples_enabled {
             if let Some(e) = self.environment {
                 let ripples = self.ripples.get_or_insert_with(|| timed("the dynamic waves' pipelines", || ripples::Ripples::new(scene)));
                 ripples.simulate(
@@ -2347,7 +2359,7 @@ impl Extension for DistantLand {
                 let level = self.environment.map_or(-1.0, |e| e.mirror_level()) as f64;
                 (10, if self.under_water() { [0.0, 0.0, -1.0, level] } else { [0.0, 0.0, 1.0, -level] })
             }),
-            hold: self.volumes_ready || (self.enabled && self.water_enabled && self.water.is_none()),
+            hold: self.volumes_ready || (self.water_on && self.water_enabled && self.water.is_none()),
             lights: self.volume_point_lights && near_volumes && self.volumes_ready,
             clustered_lights: self.clustered_lights,
             world_lights: self.world_lights,
@@ -3525,7 +3537,9 @@ impl DistantLand {
         if before.is_none_or(|b| b.debug != settings.debug) {
             self.light_debug = settings.debug & SETTINGS_DEBUG_LIGHT != 0;
         }
-        self.enabled = on(USE_DISTANT_LAND) && (self.gpu.is_some() || self.loading.is_some());
+        let loaded = self.gpu.is_some() || self.loading.is_some();
+        self.enabled = on(USE_DISTANT_LAND) && loaded;
+        self.water_on = (on(USE_DISTANT_LAND) || on(USE_DISTANT_WATER)) && loaded;
         self.shadows_enabled = on(USE_SHADOWS);
         self.post_enabled = on(USE_HW_SHADER);
         self.per_pixel.0 = on(USE_FFESHADER);
@@ -3855,12 +3869,30 @@ mod settings_tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// The water follows distant land or distant water; the land follows distant land only.
+    #[test]
+    fn the_water_follows_distant_land_or_distant_water() {
+        let root = std::env::temp_dir().join(format!("mge-water-flag-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        // A start with distant land on has the load under way.
+        let (_sender, receiver) = channel();
+        land.loading = Some(receiver);
+        for (flags, enabled, water_on) in [(0, false, false), (USE_DISTANT_WATER, false, true), (USE_DISTANT_LAND, true, true), (USE_DISTANT_LAND | USE_DISTANT_WATER, true, true)] {
+            land.settings = Some(Settings { version: 1, flags, ..bytemuck::Zeroable::zeroed() });
+            land.apply_settings();
+            assert_eq!((land.enabled, land.water_on), (enabled, water_on), "flags {flags:#x}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn the_changed_flags_are_named() {
         let a = Settings { version: 1, flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
         let b = Settings { flags: USE_DISTANT_LAND | USE_GRASS | USE_HDR, ..a };
         assert_eq!(Settings::changed_flags(Some(a), b), vec!["shadows off".to_string(), "HDR measure on".to_string()]);
-        assert_eq!(Settings::changed_flags(None, a).len(), 13);
+        assert_eq!(Settings::changed_flags(None, a).len(), 14);
         let c = Settings { flags: a.flags | REFLECT_SKY, ..a };
         assert_eq!(Settings::changed_flags(Some(a), c), vec!["sky in the reflections on".to_string()]);
         let d = Settings { flags: a.flags | REFLECT_INTERIOR, ..a };
