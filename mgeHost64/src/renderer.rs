@@ -54,7 +54,7 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
-use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_DISTANT_WATER, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
+use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, EXP_FOG, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY, USE_ATM_SCATTER, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_DISTANT_WATER, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status, TableShade};
@@ -606,12 +606,20 @@ struct Gpu {
 pub struct DistantLand {
     enabled: bool,
     /// The water is wanted: distant land is on, or only distant water is (`USE_DISTANT_WATER`,
-    /// as `distantWater` of the Direct3D 9 path). Two differences from that path are open:
-    /// after a start with distant land off the exterior water does not draw (the GPU data of
-    /// the land is not loaded; Direct3D 9 draws it), and the near water of the water-only
-    /// picture is paler than on Direct3D 9 (E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt,
-    /// section 3).
+    /// as `distantWater` of the Direct3D 9 path). One difference from that path is open: after
+    /// a start with distant land off the exterior water does not draw (the GPU data of the land
+    /// is not loaded; Direct3D 9 draws it). The water-only picture equals that of Direct3D 9
+    /// (mean difference 0.73 of 255; E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt,
+    /// section 5).
     water_on: bool,
+    /// The shaders of Direct3D 9 have the scattering of the atmosphere in them
+    /// (`USE_SCATTERING`): the exponential fog and the scattering were both on when the shaders
+    /// last started, which is at the start and at each change of either, and with distant land
+    /// off then they are not (`DistantLand::initShader` clears both). The water scatters then in
+    /// each state, also with distant land off, by the weather and by the eye above the sea
+    /// (`fogColourScatter`); the record's scattering flag needs distant land, so this decides
+    /// for the water of a start without it.
+    scatter_shaders: bool,
     /// The distances of the settings of MGE XE, in the units of the game.
     draw_distance: f32,
     settings_fog: (f32, f32),
@@ -1031,6 +1039,8 @@ impl DistantLand {
         let mut land = DistantLand {
             enabled: settings.enabled,
             water_on: settings.enabled,
+            // As the shaders start with the settings of the file, before a settings record.
+            scatter_shaders: settings.enabled && settings.fog.exponential && settings.fog.atmosphere_scattering,
             draw_distance: settings.draw_distance * CELL,
             settings_fog: (settings.fog.above_water_start * CELL, settings.fog.above_water_end * CELL),
             environment: None,
@@ -3409,7 +3419,9 @@ impl DistantLand {
         let mut scattering = [[0.0f32; 4]; 5];
         if let Some(e) = self.environment.filter(|e| e.flags & 4 != 0) {
             fog_color = [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 1.0];
-            if e.flags & 8 != 0 {
+            // The record's flag needs distant land; the water of a state without it scatters as
+            // the shaders of Direct3D 9 do.
+            if e.flags & 8 != 0 || (!self.enabled && self.scatter_shaders) {
                 let far = e.sky_scatter_far;
                 let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
                 let altitude = (1.0 + e.sun_pos[2]).powi(10);
@@ -3453,9 +3465,17 @@ impl DistantLand {
     fn water_frame_of(&self, scene: &SceneView, e: Environment) -> Option<WaterFrame> {
         self.water.as_ref()?;
         // The draws of the game end at the fog end of an interior, and under the water: the
-        // plane ends there too (the clip plane of `renderStageWater`).
+        // plane ends there too (the clip plane of `renderStageWater`). With distant land off
+        // they end at the far plane of the game, its view range: Direct3D 9 moves that plane
+        // out to the draw distance only with distant land.
         let underwater = e.flags & 2 != 0;
-        let view_end = (self.interior || underwater).then_some(self.interior_fog_end);
+        let view_end = if self.interior || underwater {
+            Some(self.interior_fog_end)
+        } else if !self.enabled {
+            Some(e.near_view_range)
+        } else {
+            None
+        };
         if e.flags & 4 == 0 {
             // A plain interior cell: no sun on the water (`sunPos` is straight down and
             // `sunVis` 0 on Direct3D 9), the sky colour and the far fog colour are the
@@ -3568,6 +3588,11 @@ impl DistantLand {
         let loaded = self.gpu.is_some() || self.loading.is_some();
         self.enabled = on(USE_DISTANT_LAND) && loaded;
         self.water_on = (on(USE_DISTANT_LAND) || on(USE_DISTANT_WATER)) && loaded;
+        // The shaders start again when either fog flag changes (`MGEAPIv1::loadConfig`).
+        let fog_flags = |flags: u32| flags & (EXP_FOG | USE_ATM_SCATTER);
+        if before.is_none_or(|b| fog_flags(b.flags) != fog_flags(settings.flags)) {
+            self.scatter_shaders = on(USE_DISTANT_LAND) && fog_flags(settings.flags) == (EXP_FOG | USE_ATM_SCATTER);
+        }
         self.shadows_enabled = on(USE_SHADOWS);
         self.post_enabled = on(USE_HW_SHADER);
         self.per_pixel.0 = on(USE_FFESHADER);
@@ -3911,6 +3936,39 @@ mod settings_tests {
             land.settings = Some(Settings { version: 1, flags, ..bytemuck::Zeroable::zeroed() });
             land.apply_settings();
             assert_eq!((land.enabled, land.water_on), (enabled, water_on), "flags {flags:#x}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The water scatters with the shaders that have the scattering: both fog flags on when the
+    /// shaders last started, with distant land on then. A later change of distant land alone
+    /// leaves them as they are; a change of a fog flag starts them again.
+    #[test]
+    fn the_water_scatters_when_the_shaders_have_the_scattering() {
+        let root = std::env::temp_dir().join(format!("mge-scatter-flag-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        let (_sender, receiver) = channel();
+        land.loading = Some(receiver);
+        let fog = EXP_FOG | USE_ATM_SCATTER;
+        // (flags of the record, the water scatters after it)
+        for (flags, scatters) in [
+            // A start with distant land off: the shaders have no scattering.
+            (fog | USE_DISTANT_WATER, false),
+            (fog | USE_DISTANT_WATER | USE_DISTANT_LAND, false),
+            // The scattering off, then on, with distant land on: the shaders start again.
+            (EXP_FOG | USE_DISTANT_LAND, false),
+            (fog | USE_DISTANT_LAND, true),
+            // Distant land off, the fog flags as before: the shaders stay.
+            (fog | USE_DISTANT_WATER, true),
+            // A change of a fog flag with distant land off: they start without it.
+            (EXP_FOG | USE_DISTANT_WATER, false),
+            (fog | USE_DISTANT_WATER, false),
+        ] {
+            land.settings = Some(Settings { version: 1, flags, ..bytemuck::Zeroable::zeroed() });
+            land.apply_settings();
+            assert_eq!(land.scatter_shaders, scatters, "flags {flags:#x}");
         }
         std::fs::remove_dir_all(&root).unwrap();
     }
