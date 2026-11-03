@@ -2339,7 +2339,7 @@ impl Extension for DistantLand {
             watched: (if water { 1 << 10 } else { 0 }) | (if no_glare { 1 << 8 } else { 0 }),
             values,
             texture,
-            post: post || self.menu_keeping,
+            post: post || self.menu_keeping || self.picture_without_ui_wanted(),
             // The surface of the water (`Environment::mirror_level`): what blends on its far
             // side goes into the picture before the water, so the water shows it, and what
             // blends on the side of the camera goes over the water.
@@ -3026,6 +3026,11 @@ impl Extension for DistantLand {
             self.menu_kept = true;
             return;
         }
+        // A frame without a chain runs this call only to take a picture before the interface
+        // (`picture_without_ui_wanted`): the picture of the game stays as it is.
+        if !self.chain_wanted() {
+            return;
+        }
         self.run_post(scene, encoder, target);
     }
 
@@ -3139,6 +3144,7 @@ impl Extension for DistantLand {
     fn reads(&self, call: ReadingCall) -> Reads {
         match call {
             ReadingCall::Blend => Reads::NONE,
+            ReadingCall::Post if !self.chain_wanted() && !self.menu_reuse && !self.menu_keeping => Reads::NONE,
             ReadingCall::Class(class) if class != 10 => Reads::NONE,
             ReadingCall::Held(held) if held.is_empty() && self.far_water.is_empty() => {
                 if self.sea_caustics() {
@@ -3154,6 +3160,19 @@ impl Extension for DistantLand {
 }
 
 impl DistantLand {
+    /// The chain of post shaders is on and has a shader.
+    fn chain_wanted(&self) -> bool {
+        self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty())
+    }
+
+    /// A picture file without the interface of the game is asked for. The renderer takes it
+    /// after the post call, so the frame has that call even without a chain, as the
+    /// Direct3D 9 path takes it in its post step with or without shaders
+    /// (`checkCaptureScreenshot(false)` in `DistantLand::postProcess`).
+    fn picture_without_ui_wanted(&self) -> bool {
+        self.pictures.iter().any(|request| !request.with_ui)
+    }
+
     /// The chain of post shaders into `target`, with the values of the frame. False without
     /// the chain or the environment.
     fn run_post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
@@ -3818,6 +3837,22 @@ mod settings_tests {
         assert_eq!(Settings::read(&bytes).unwrap().debug, SETTINGS_DEBUG_LIGHT);
         bytes[0] = 0;
         assert!(Settings::read(&bytes).is_none());
+    }
+
+    /// A picture without the interface gives its frame the post call, even with no chain.
+    #[test]
+    fn a_picture_without_the_interface_asks_for_the_post_call() {
+        let root = std::env::temp_dir().join(format!("mge-picture-post-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        assert!(!land.picture_without_ui_wanted());
+        land.pictures.push(PictureRequest { path: "with.png".to_string(), with_ui: true });
+        assert!(!land.picture_without_ui_wanted());
+        land.pictures.push(PictureRequest { path: "without.png".to_string(), with_ui: false });
+        assert!(land.picture_without_ui_wanted());
+        assert!(!land.chain_wanted());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
