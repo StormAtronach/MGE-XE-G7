@@ -2229,7 +2229,6 @@ impl Extension for DistantLand {
         // path): an exterior, an interior that is like one, or a plain interior cell with
         // statics in the distant land data. The shadow map and the sky are for a cell that
         // is like an exterior.
-        let land = self.enabled && !scene.interior && self.gpu.is_some();
         let distant = self.enabled && self.distant_cell && self.gpu.is_some();
         // The water: an exterior with its land, or an interior cell with water (`CellHasWater`
         // of MGE XE, which draws its water there too, with a flat reflection).
