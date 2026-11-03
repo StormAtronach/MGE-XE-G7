@@ -331,6 +331,14 @@ ambient = 1.0
 sun = 1.0
 ambient = 1.0
 
+# The wgpu renderer: views that a mod draws itself (a mirror, a second camera).
+[views]
+# How many views of a frame may get the parts of MGE XE that a mod asks for with
+# mge.camera.setViewOptions (distant land, distant statics, grass, water, shaders, glows).
+# 0 refuses every request. The range is 0 to 4. Each view costs about the main view's
+# extension time again.
+full_tier_max = 1
+
 # Ordered post-processing shader names. A new configuration starts with the chain of the
 # tests of the wgpu renderer.
 [shaders]

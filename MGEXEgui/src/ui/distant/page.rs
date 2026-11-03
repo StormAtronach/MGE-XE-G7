@@ -532,6 +532,15 @@ impl GuiApp {
             ),
             t!("distant.wait_on_load_tip"),
         );
+        tooltip(
+            spin_row(
+                ui,
+                t!("distant.full_tier_max").as_ref(),
+                true,
+                egui::DragValue::new(&mut self.settings.mge.views.full_tier_max).range(0..=4),
+            ),
+            t!("distant.full_tier_max_tip"),
+        );
         // The looks of the grass shader of Remiros' Groundcover (wgpu renderer only).
         let enabled = self.settings.mge.distant_land.enabled;
         let grass = &mut self.settings.mge.distant_land.grass;

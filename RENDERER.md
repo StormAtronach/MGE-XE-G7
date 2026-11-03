@@ -448,6 +448,7 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   7 the normal, 8 the view depth, 9 the heights of the waves.
 - `MGE_XE_POST_DEBUG=<n>`: 1 tints the result of the post chain, 2 shows its linear depth
   over 10000 units as grey.
+- `MGE_XE_FULL_TIER_MAX=<n>` (0 to 4): how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`, in place of `views.full_tier_max` of `mgeXE.toml` (default 1; 0 refuses every request).
 - `MGE_XE_SHADOW_DEBUG=1`: the atlas of the shadow map in the lower left of the picture.
 - `MGE_XE_SHADOW_LAYERS=1`: each pixel coloured by the layer of the shadow map that serves
   it: red the first, green the second, blue outside both, grey a draw without the shadow

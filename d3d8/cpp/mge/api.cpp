@@ -14,6 +14,7 @@
 #include "support/pngsave.h"
 
 #include <array>
+#include <unordered_map>
 
 
 
@@ -57,6 +58,10 @@ static api::MacroFunctions macroFns = {
     MacroFunctions::MoveDown3PCam,
     MacroFunctions::MoveUp3PCam,
 };
+
+// The function of main.cpp that gives the wgpu renderer's plugin the options of a view.
+void sendViewOptions(UINT kind, void* key, const UINT* parts);
+int queryViewOptions(UINT kind, void* key, UINT* parts);
 
 namespace api {
     int MGEAPIv1::getAPIVersion() const {
@@ -1055,5 +1060,80 @@ namespace api {
     void MGEAPIv3::nearRenderDistanceSet(float distance) {
         distance = std::max(2500.0f, std::min(7168.0f, distance));
         MWBridge::get()->SetViewDistance(distance);
+    }
+
+    namespace {
+        // WorldController (the pointer at 0x7C67DC) -> worldCamera (0x124) -> cameraData.camera (+0x10).
+        constexpr uintptr_t WORLD_CONTROLLER_POINTER = 0x7C67DC;
+        constexpr uintptr_t WORLD_CONTROLLER_WORLD_NICAMERA = 0x134;
+
+        void* worldCamera() {
+            const auto controller = *reinterpret_cast<uintptr_t*>(WORLD_CONTROLLER_POINTER);
+            return controller ? *reinterpret_cast<void**>(controller + WORLD_CONTROLLER_WORLD_NICAMERA) : nullptr;
+        }
+
+        struct ViewKey {
+            ViewKeyKind kind;
+            void* key;
+            bool operator==(const ViewKey& other) const { return kind == other.kind && key == other.key; }
+        };
+
+        struct ViewKeyHash {
+            size_t operator()(const ViewKey& key) const {
+                return std::hash<void*>()(key.key) ^ (static_cast<size_t>(key.kind) << 1);
+            }
+        };
+
+        // The options of the views for the Direct3D 9 renderer, by the key's address. Nothing here
+        // sees the key's object freed, so an address that the engine reuses gives its new object
+        // the old options to a getViewOptions; nothing draws from them.
+        std::unordered_map<ViewKey, uint32_t, ViewKeyHash> viewOptions;
+    }
+
+    bool MGEAPIv4::viewOptionsSet(ViewKeyKind kind, void* key, const ViewOptions* options) {
+        const bool known = kind == ViewKeyKind::RenderedTexture || kind == ViewKeyKind::Camera;
+        if (!known || key == nullptr || (kind == ViewKeyKind::Camera && key == worldCamera())) {
+            return false;
+        }
+        // With the wgpu renderer the plugin keeps the options (viewOptionsGet asks it); this copy
+        // is for the Direct3D 9 renderer.
+        UINT unused = 0;
+        const bool renderer = queryViewOptions(static_cast<UINT>(kind), key, &unused) >= 0;
+        if (options == nullptr) {
+            if (!renderer) {
+                viewOptions.erase(ViewKey{ kind, key });
+            }
+            sendViewOptions(static_cast<UINT>(kind), key, nullptr);
+            return true;
+        }
+        if (options->size < sizeof(ViewOptions)) {
+            return false;
+        }
+        const UINT parts = options->parts & VIEW_PARTS_ALL;
+        if (!renderer) {
+            viewOptions[ViewKey{ kind, key }] = parts;
+        }
+        sendViewOptions(static_cast<UINT>(kind), key, &parts);
+        return true;
+    }
+
+    bool MGEAPIv4::viewOptionsGet(ViewKeyKind kind, void* key, ViewOptions* options) {
+        // With the wgpu renderer the plugin has the options, and drops them when the key's object is
+        // freed; the stored copy only serves the Direct3D 9 renderer, which cannot see a free.
+        UINT fromPlugin = 0;
+        const int asked = queryViewOptions(static_cast<UINT>(kind), key, &fromPlugin);
+        if (asked >= 0) {
+            if (asked == 0 || options == nullptr || options->size < sizeof(ViewOptions)) {
+                return false;
+            }
+            options->parts = fromPlugin;
+            return true;
+        }
+        const auto found = viewOptions.find(ViewKey{ kind, key });
+        if (found == viewOptions.end() || options == nullptr || options->size < sizeof(ViewOptions)) {
+            return false;
+        }
+        options->parts = found->second;
+        return true;
     }
 }

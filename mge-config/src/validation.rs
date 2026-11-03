@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::schema::{
-    DRAW_DISTANCE_RANGE, DistantLandSettings, FAR_STATIC_END_RANGE, FOG_ABOVE_END_RANGE, FOG_ABOVE_START_RANGE,
+    DRAW_DISTANCE_RANGE, DistantLandSettings, FAR_STATIC_END_RANGE, FOG_ABOVE_END_RANGE, FULL_TIER_MAX_RANGE, FOG_ABOVE_START_RANGE,
     FOG_BELOW_END_RANGE, FOG_BELOW_START_RANGE, FOG_INTERIOR_END_RANGE, FOG_INTERIOR_START_RANGE, FOV_RANGE,
     GRAPHICS_FUNCTION_COUNT, GRASS_INTERIOR_WIND_RANGE, HORIZON_BIAS_Z_RANGE, HORIZON_BINS_RANGE, HORIZON_MAX_RANGE_RANGE,
     HORIZON_NEAR_UNITS_RANGE, HORIZON_OBJECT_BIAS_Z_RANGE, HORIZON_REBUILD_EYE_THRESHOLD_RANGE, HORIZON_RING_STEP_RANGE,
@@ -522,6 +522,13 @@ pub(crate) fn validate_bounds(settings: &mut Settings) -> Result<Vec<Warning>, V
         clamp_f32(&mut lighting.ambient, 0.0, 10.0, labels[4], &mut warnings)?;
     }
 
+    clamp_u8(
+        &mut settings.views.full_tier_max,
+        FULL_TIER_MAX_RANGE.0,
+        FULL_TIER_MAX_RANGE.1,
+        "views.full_tier_max",
+        &mut warnings,
+    );
     clamp_u8(
         &mut settings.gui.auto_distance_mode,
         0,
