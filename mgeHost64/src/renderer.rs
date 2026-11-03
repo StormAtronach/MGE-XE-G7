@@ -442,6 +442,16 @@ pub fn run(mut arguments: Vec<String>) {
     nirender_wgpu::run_with(arguments, Some(Box::new(DistantLand::start(Path::new("."), live))));
 }
 
+/// The fog distances of a frame ([`DistantLand::fog_ranges`]).
+struct FogRanges {
+    start: f32,
+    end: f32,
+    exp_start: f32,
+    exp_divisor: f32,
+    near_start: f32,
+    near_end: f32,
+}
+
 /// The time of the animated textures of the distant statics: the time of the simulation of
 /// the game, as `ehTime` of the Direct3D 9 path, which stops in a menu; the time of this
 /// program before the first environment record.
@@ -3184,11 +3194,36 @@ impl DistantLand {
         self.pictures.iter().any(|request| !request.with_ui)
     }
 
+    /// The fog distances of the frame: those of distant land in a cell with distant land, else
+    /// the fog of the game, as `DistantLand::adjustFog` of the Direct3D 9 path has them (its
+    /// condition is distant land on and a distant cell). The environment always has those
+    /// of distant land. This holds for the water too: with distant water and no distant land
+    /// its fog is the game's.
+    fn fog_ranges(&self, e: &Environment, scene: &SceneView) -> FogRanges {
+        if self.enabled && self.distant_cell {
+            return FogRanges {
+                start: e.fog_start,
+                end: e.fog_end,
+                exp_start: e.fog_exp_start,
+                exp_divisor: e.fog_exp_divisor,
+                near_start: e.fog_near_start,
+                near_end: e.fog_near_end,
+            };
+        }
+        // The game's fog off: its start and end are 0, full fog in these formulas. Distances
+        // that no pixel reaches give no fog.
+        let (start, end) = if scene.fog_on { (scene.fog_start, scene.fog_end) } else { (1.0e9, 2.0e9) };
+        let exp_start = start / 4.4;
+        FogRanges { start, end, exp_start, exp_divisor: (end - exp_start) / 4.4, near_start: start, near_end: end }
+    }
+
     /// The chain of post shaders into `target`, with the values of the frame. False without
     /// the chain or the environment.
     fn run_post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
         let land_terms = nirender_wgpu::depth::terms(&self.land_projection(scene));
-        let (Some(post), Some(e)) = (self.post.as_mut(), self.environment) else { return false };
+        let Some(e) = self.environment else { return false };
+        let FogRanges { start: fog_start, end: fog_end, exp_start: fog_exp_start, exp_divisor: fog_exp_divisor, near_start: fog_near_start, near_end: fog_near_end } = self.fog_ranges(&e, scene);
+        let Some(post) = self.post.as_mut() else { return false };
         let eye = scene.eye.map(|v| v as f32);
         let rows = |m: &[f32; 16]| -> [[f32; 4]; 4] { core::array::from_fn(|r| [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]]) };
         // `sun_pos` of the environment is the `sunPos` of the Direct3D 9 path: the game side
@@ -3208,18 +3243,6 @@ impl DistantLand {
         let like_exterior = e.flags & 4 != 0;
         let sunvis = e.sun_vis + (1.0 - e.sun_vis) * 0.333 * e.nice_weather;
         let fov = 2.0 * (1.0 / scene.projection[0].max(1e-6)).atan().to_degrees();
-        // The fog distances: those of distant land in a cell with distant land, else the fog
-        // of the game, as `DistantLand::adjustFog` of the Direct3D 9 path has them. The
-        // environment always has those of distant land.
-        let (fog_start, fog_end, fog_exp_start, fog_exp_divisor, fog_near_start, fog_near_end) = if self.enabled && self.distant_cell {
-            (e.fog_start, e.fog_end, e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end)
-        } else {
-            // The game's fog off: its start and end are 0, full fog in these formulas. Distances
-            // that no pixel reaches give no fog.
-            let (start, end) = if scene.fog_on { (scene.fog_start, scene.fog_end) } else { (1.0e9, 2.0e9) };
-            let exp_start = start / 4.4;
-            (start, end, exp_start, (end - exp_start) / 4.4, start, end)
-        };
         let variables = Variables {
             mview: rows(&scene.view),
             mproj: rows(&scene.projection),
@@ -3362,7 +3385,10 @@ impl DistantLand {
         // (`StaticInteriorVS`), not the exponential curve.
         let (fog, exponential, sun_mult, ambient_mult) = match self.environment {
             Some(e) => (
-                [e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end],
+                {
+                    let ranges = self.fog_ranges(&e, scene);
+                    [ranges.exp_start, ranges.exp_divisor, ranges.near_start, ranges.near_end]
+                },
                 e.flags & 1 != 0 && e.flags & 2 == 0 && self.like_exterior,
                 e.light_sun_mult,
                 e.light_amb_mult,
