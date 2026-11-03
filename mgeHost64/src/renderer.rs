@@ -3465,9 +3465,17 @@ impl DistantLand {
     fn water_frame_of(&self, scene: &SceneView, e: Environment) -> Option<WaterFrame> {
         self.water.as_ref()?;
         // The draws of the game end at the fog end of an interior, and under the water: the
-        // plane ends there too (the clip plane of `renderStageWater`).
+        // plane ends there too (the clip plane of `renderStageWater`). With distant land off
+        // they end at the far plane of the game, its view range: Direct3D 9 moves that plane
+        // out to the draw distance only with distant land.
         let underwater = e.flags & 2 != 0;
-        let view_end = (self.interior || underwater).then_some(self.interior_fog_end);
+        let view_end = if self.interior || underwater {
+            Some(self.interior_fog_end)
+        } else if !self.enabled {
+            Some(e.near_view_range)
+        } else {
+            None
+        };
         if e.flags & 4 == 0 {
             // A plain interior cell: no sun on the water (`sunPos` is straight down and
             // `sunVis` 0 on Direct3D 9), the sky colour and the far fog colour are the
