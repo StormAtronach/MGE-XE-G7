@@ -43,5 +43,5 @@ public:
     static void monitor(IDirect3DDevice9* device);
     // The wgpu path: called at each Present of the stream with the size of the back buffer.
     static void monitorStreamed(unsigned width, unsigned height);
-    static void _stdcall patch(int x);
+    static void __fastcall patch(void* camera, void* unused, int x);
 };

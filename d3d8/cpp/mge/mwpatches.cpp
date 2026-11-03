@@ -73,7 +73,7 @@ void patchGameLoading(void (__cdecl* newfunc)()) {
 
 //-----------------------------------------------------------------------------
 
-void redirectMenuBackground(void (_stdcall* func)(int)) {
+void redirectMenuBackground(void (__fastcall* func)(void* camera, void* unused, int x)) {
     DWORD addr = TES3::Address::patch_menuBackgroundCameraClick;
 
     // Reset to original if null is passed

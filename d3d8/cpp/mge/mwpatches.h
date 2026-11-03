@@ -66,7 +66,9 @@ void disableIntroMovies();
 void patchGameLoading(void (__cdecl* newfunc)());
 
 // Redirects splash screen scenegraph draw call to another function
-void redirectMenuBackground(void (_stdcall* func)(int));
+// `func` takes the camera in ECX and the engine's argument of that call on the stack, as the
+// engine's `NiCamera::Click` does, and cleans that argument.
+void redirectMenuBackground(void (__fastcall* func)(void* camera, void* unused, int x));
 
 // Patches the normal call to ui_configureUIScale to redirect to a new function.
 // MWBridge is not required to be loaded for this function.
