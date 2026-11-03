@@ -71,9 +71,7 @@ const NEAR: f32 = 64.0;
 /// at the same distance, by 0.25 % of the distance, as Direct3D 9's 4 - 0.01 against 4.
 const LAND_NEAR_SCALE: f32 = 0.9975;
 /// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend`): the parts named are not drawn, for a
-/// replay that tests one suspect at a time. Read once. `held_sorted` is not a part: it draws the
-/// surfaces of water volumes at the end of the world scene, as before their place in the engine's
-/// sorted queue, for the A/B of that place.
+/// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
     static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SKIP.get_or_init(|| nirender_wgpu::switches::text("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
@@ -3088,7 +3086,7 @@ impl Extension for DistantLand {
     /// shows through it, and a blend before it goes over it. That place is after the sea
     /// plane, which must know now that the surface will be drawn.
     fn held_sorted(&mut self, held: &nirender_wgpu::HeldDraw) -> bool {
-        let sorted = water::volume_marked(held.facts.specular_power) && !skipped("held_sorted");
+        let sorted = water::volume_marked(held.facts.specular_power);
         self.volumes_drawn |= sorted;
         sorted
     }
