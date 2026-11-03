@@ -693,12 +693,9 @@ impl Water {
         self.waves.clone()
     }
 
-    /// The planes of the view of the reflection, for the cull of the distant land: relative
-    /// to the eye of the mirrored view, the eye of the scene mirrored at `mirror_level`
-    /// ([`Self::mirror`] is its own inverse).
-    pub fn reflection_planes(mirrored_view: &[f32; 16], projection: &[f32; 16], eye: [f64; 3], mirror_level: f32) -> [[f32; 4]; 6] {
-        let mirrored_eye = [eye[0], eye[1], 2.0 * mirror_level as f64 - eye[2]];
-        nirender_wgpu::view_planes(mirrored_view, projection, mirrored_eye)
+    /// The planes of the view of the reflection, for the cull of the distant land.
+    pub fn reflection_planes(mirrored_view: &[f32; 16], projection: &[f32; 16]) -> [[f32; 4]; 6] {
+        nirender_wgpu::view_planes(mirrored_view, projection)
     }
 
     /// Writes the values of the frame and makes the group of the shared shading (group 1): the

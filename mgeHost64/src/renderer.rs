@@ -2726,7 +2726,7 @@ impl Extension for DistantLand {
         let Some(views) = self.view_binding.as_ref() else { return false };
         views.write(scene.queue, view::MAIN, &main_view);
 
-        let planes = nirender_wgpu::view_planes(&scene.view, &projection, scene.eye);
+        let planes = nirender_wgpu::view_planes(&scene.view, &projection);
         let mut drawn = 0;
         // The terrain is for an exterior; an interior cell has the statics of its own world
         // space over the clear colour.
@@ -2767,7 +2767,7 @@ impl Extension for DistantLand {
             if let (Some(_), Some(frame)) = (self.water.as_ref().filter(|_| self.reflect_statics), water_frame.as_ref()) {
                 let mirrored_view = multiply(&Water::mirror(frame.mirror_level), &scene.view);
                 let projection = Water::far_projection(scene, frame.draw_distance);
-                sets.push(statics::CullSet { set: 1, planes: Water::reflection_planes(&mirrored_view, &projection, scene.eye, frame.mirror_level), eye, fog_end: fog_end.min(self.near_static_end) });
+                sets.push(statics::CullSet { set: 1, planes: Water::reflection_planes(&mirrored_view, &projection), eye, fog_end: fog_end.min(self.near_static_end) });
             }
             statics.set_waiting(self.arrival.is_some());
             statics.prepare(scene, &sets);
@@ -2862,7 +2862,7 @@ impl Extension for DistantLand {
             // the cut moves to the side that the mirror does not show.
             mirror_view.flags[2] = frame.mirror_level - mirror_view.flags[1] * 0.5 * frame.wave_height.unwrap_or(0.0);
             views.write(scene.queue, view::MIRROR, &mirror_view);
-            let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection, scene.eye, frame.mirror_level);
+            let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
             // path) with `reflect_land`; an interior cell reflects its statics only.
             if !scene.interior && self.reflect_land {
@@ -2968,7 +2968,7 @@ impl Extension for DistantLand {
             ambient: [ambient[0], ambient[1], ambient[2], 0.0],
             wind: environment.map_or([0.0; 4], |e| [e.wind[0], e.wind[1], e.time, 0.0]),
             foot: environment.map_or([0.0; 4], |e| [e.foot_pos[0], e.foot_pos[1], e.foot_pos[2], e.foot_valid as f32]),
-            planes: nirender_wgpu::view_planes(&scene.view, &scene.projection, scene.eye),
+            planes: nirender_wgpu::view_planes(&scene.view, &scene.projection),
             // The shadow map of the frame (an exterior or a cell like one, with shadows on),
             // as `renderGrassInst` of the Direct3D 9 path.
             shadow: self.shadow.as_ref().filter(|_| self.shadow_in_frame).map(|shadow| statics::GrassShadow {
