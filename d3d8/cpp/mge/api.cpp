@@ -61,6 +61,7 @@ static api::MacroFunctions macroFns = {
 
 // The function of main.cpp that gives the wgpu renderer's plugin the options of a view.
 void sendViewOptions(UINT kind, void* key, const UINT* parts);
+int queryViewOptions(UINT kind, void* key, UINT* parts);
 
 namespace api {
     int MGEAPIv1::getAPIVersion() const {
@@ -1083,9 +1084,9 @@ namespace api {
             }
         };
 
-        // The options of the views, by the key's address. Nothing here sees the key's object freed,
-        // so with the Direct3D 9 renderer an address that the engine reuses gives its new object the
-        // old options to a getViewOptions; nothing draws from them.
+        // The options of the views for the Direct3D 9 renderer, by the key's address. Nothing here
+        // sees the key's object freed, so an address that the engine reuses gives its new object
+        // the old options to a getViewOptions; nothing draws from them.
         std::unordered_map<ViewKey, uint32_t, ViewKeyHash> viewOptions;
     }
 
@@ -1094,8 +1095,14 @@ namespace api {
         if (!known || key == nullptr || (kind == ViewKeyKind::Camera && key == worldCamera())) {
             return false;
         }
+        // With the wgpu renderer the plugin keeps the options (viewOptionsGet asks it); this copy
+        // is for the Direct3D 9 renderer.
+        UINT unused = 0;
+        const bool renderer = queryViewOptions(static_cast<UINT>(kind), key, &unused) >= 0;
         if (options == nullptr) {
-            viewOptions.erase(ViewKey{ kind, key });
+            if (!renderer) {
+                viewOptions.erase(ViewKey{ kind, key });
+            }
             sendViewOptions(static_cast<UINT>(kind), key, nullptr);
             return true;
         }
@@ -1103,12 +1110,25 @@ namespace api {
             return false;
         }
         const UINT parts = options->parts & VIEW_PARTS_ALL;
-        viewOptions[ViewKey{ kind, key }] = parts;
+        if (!renderer) {
+            viewOptions[ViewKey{ kind, key }] = parts;
+        }
         sendViewOptions(static_cast<UINT>(kind), key, &parts);
         return true;
     }
 
     bool MGEAPIv4::viewOptionsGet(ViewKeyKind kind, void* key, ViewOptions* options) {
+        // With the wgpu renderer the plugin has the options, and drops them when the key's object is
+        // freed; the stored copy only serves the Direct3D 9 renderer, which cannot see a free.
+        UINT fromPlugin = 0;
+        const int asked = queryViewOptions(static_cast<UINT>(kind), key, &fromPlugin);
+        if (asked >= 0) {
+            if (asked == 0 || options == nullptr || options->size < sizeof(ViewOptions)) {
+                return false;
+            }
+            options->parts = fromPlugin;
+            return true;
+        }
         const auto found = viewOptions.find(ViewKey{ kind, key });
         if (found == viewOptions.end() || options == nullptr || options->size < sizeof(ViewOptions)) {
             return false;

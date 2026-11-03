@@ -206,6 +206,15 @@ void sendToRenderer(UINT id, const void* data, UINT length) {
 // by the address of the key's object, or null.
 static UINT (__cdecl * viewOptionsExport)(UINT kind, void* key, UINT parts, UINT clear) = nullptr;
 
+// The function of the nirender plugin that reads the options of a view back, or null.
+static UINT (__cdecl * viewOptionsGetExport)(UINT kind, void* key, UINT* parts) = nullptr;
+
+// Asks the plugin for the options of a view: 1 and the parts, 0 when the key has none (also when its
+// object was freed), -1 when there is no plugin to ask (the Direct3D 9 renderer).
+int queryViewOptions(UINT kind, void* key, UINT* parts) {
+    return viewOptionsGetExport ? static_cast<int>(viewOptionsGetExport(kind, key, parts)) : -1;
+}
+
 // Gives the plugin the options of a view: the parts, or null to clear them. A plugin from before
 // the options has no function: the call does nothing then.
 void sendViewOptions(UINT kind, void* key, const UINT* parts) {
@@ -343,6 +352,7 @@ static void* createStreamedD3D(UINT version) {
     }
     streamExtension = (void (__cdecl *)(UINT, const void*, UINT))GetProcAddress(plugin, "nirender_stream_extension");
     viewOptionsExport = (UINT (__cdecl *)(UINT, void*, UINT, UINT))GetProcAddress(plugin, "nirender_view_options");
+    viewOptionsGetExport = (UINT (__cdecl *)(UINT, void*, UINT*))GetProcAddress(plugin, "nirender_view_options_get");
     // The build id of the plugin, for the log. A plugin without the export is from before the
     // handshake: the game goes on with its device, and the helper refuses its stream (no
     // stream format in the HEADER) with one box and the exit code 10. No Direct3D 9 fallback:
@@ -368,6 +378,7 @@ static void* createStreamedD3D(UINT version) {
     if (!d3d) {
         streamExtension = nullptr;
         viewOptionsExport = nullptr;
+        viewOptionsGetExport = nullptr;
     }
     return d3d;
 }
