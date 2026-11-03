@@ -1,9 +1,10 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 namespace api {
-	static const int supported_api_version = 3;
+	static const int supported_api_version = 4;
 
 	struct MGEAPI {
 		virtual int getAPIVersion() const = 0;
@@ -228,7 +229,39 @@ namespace api {
 		virtual bool shaderSetVectorArray(ShaderHandle handle, const char* variableName, const float* values, size_t* count);
     };
 
-    typedef MGEAPIv3 MGEAPI_ExportVersion;
+    // The parts of a view, as bits of ViewOptions::parts. The names are those of mge.render.
+    // The values are ABI: MWSE's MGEApi.h has the same.
+    enum ViewPart : uint32_t {
+        VIEW_PART_DISTANT_LAND = 1 << 0,
+        VIEW_PART_DISTANT_STATICS = 1 << 1,
+        VIEW_PART_GRASS = 1 << 2,
+        VIEW_PART_DISTANT_WATER = 1 << 3,
+        VIEW_PART_SHADERS = 1 << 4,
+        VIEW_PART_GLOWS = 1 << 5,
+    };
+    constexpr uint32_t VIEW_PARTS_ALL = (1 << 6) - 1;
+
+    // What a view key is: the object whose address names the view.
+    enum class ViewKeyKind : uint32_t {
+        RenderedTexture = 1, // a NiRenderedTexture: a view into that texture
+        Camera = 2,          // a NiCamera other than the world camera: that camera into the back buffer
+    };
+
+    struct ViewOptions {
+        uint32_t size;  // sizeof(ViewOptions) of the caller
+        uint32_t parts; // bit set of ViewPart
+    };
+
+    struct MGEAPIv4 : public MGEAPIv3 {
+        // Sets the options of a view; options == nullptr clears them. False when the key is refused
+        // (null, the world camera, an unknown kind). The options last until changed, cleared, or
+        // until the key's object is freed.
+        virtual bool viewOptionsSet(ViewKeyKind kind, void* key, const ViewOptions* options);
+        // Reads the options of a view. False when the key has none.
+        virtual bool viewOptionsGet(ViewKeyKind kind, void* key, ViewOptions* options);
+    };
+
+    typedef MGEAPIv4 MGEAPI_ExportVersion;
 
 	inline MGEAPIv1* api = nullptr;
 	inline const MacroFunctions* macros = nullptr;

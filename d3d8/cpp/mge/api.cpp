@@ -14,6 +14,7 @@
 #include "support/pngsave.h"
 
 #include <array>
+#include <unordered_map>
 
 
 
@@ -1055,5 +1056,58 @@ namespace api {
     void MGEAPIv3::nearRenderDistanceSet(float distance) {
         distance = std::max(2500.0f, std::min(7168.0f, distance));
         MWBridge::get()->SetViewDistance(distance);
+    }
+
+    namespace {
+        // WorldController (the pointer at 0x7C67DC) -> worldCamera (0x124) -> cameraData.camera (+0x10).
+        constexpr uintptr_t WORLD_CONTROLLER_POINTER = 0x7C67DC;
+        constexpr uintptr_t WORLD_CONTROLLER_WORLD_NICAMERA = 0x134;
+
+        void* worldCamera() {
+            const auto controller = *reinterpret_cast<uintptr_t*>(WORLD_CONTROLLER_POINTER);
+            return controller ? *reinterpret_cast<void**>(controller + WORLD_CONTROLLER_WORLD_NICAMERA) : nullptr;
+        }
+
+        struct ViewKey {
+            ViewKeyKind kind;
+            void* key;
+            bool operator==(const ViewKey& other) const { return kind == other.kind && key == other.key; }
+        };
+
+        struct ViewKeyHash {
+            size_t operator()(const ViewKey& key) const {
+                return std::hash<void*>()(key.key) ^ (static_cast<size_t>(key.kind) << 1);
+            }
+        };
+
+        // The options of the views, by the key's address. Nothing here sees the key's object freed,
+        // so with the Direct3D 9 renderer an address that the engine reuses gives its new object the
+        // old options to a getViewOptions; nothing draws from them.
+        std::unordered_map<ViewKey, uint32_t, ViewKeyHash> viewOptions;
+    }
+
+    bool MGEAPIv4::viewOptionsSet(ViewKeyKind kind, void* key, const ViewOptions* options) {
+        const bool known = kind == ViewKeyKind::RenderedTexture || kind == ViewKeyKind::Camera;
+        if (!known || key == nullptr || (kind == ViewKeyKind::Camera && key == worldCamera())) {
+            return false;
+        }
+        if (options == nullptr) {
+            viewOptions.erase(ViewKey{ kind, key });
+            return true;
+        }
+        if (options->size < sizeof(ViewOptions)) {
+            return false;
+        }
+        viewOptions[ViewKey{ kind, key }] = options->parts & VIEW_PARTS_ALL;
+        return true;
+    }
+
+    bool MGEAPIv4::viewOptionsGet(ViewKeyKind kind, void* key, ViewOptions* options) {
+        const auto found = viewOptions.find(ViewKey{ kind, key });
+        if (found == viewOptions.end() || options == nullptr || options->size < sizeof(ViewOptions)) {
+            return false;
+        }
+        options->parts = found->second;
+        return true;
     }
 }
