@@ -3589,6 +3589,7 @@ impl DistantLand {
         self.enabled = on(USE_DISTANT_LAND) && loaded;
         self.water_on = (on(USE_DISTANT_LAND) || on(USE_DISTANT_WATER)) && loaded;
         // The shaders start again when either fog flag changes (`MGEAPIv1::loadConfig`).
+        // Difference: `MGEAPIv1::featureSetEnabled` (mge.render) only sets the flag and restarts no shaders; this latch follows any change of the flags.
         let fog_flags = |flags: u32| flags & (EXP_FOG | USE_ATM_SCATTER);
         if before.is_none_or(|b| fog_flags(b.flags) != fog_flags(settings.flags)) {
             self.scatter_shaders = on(USE_DISTANT_LAND) && fog_flags(settings.flags) == (EXP_FOG | USE_ATM_SCATTER);
