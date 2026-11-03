@@ -59,6 +59,9 @@ static api::MacroFunctions macroFns = {
     MacroFunctions::MoveUp3PCam,
 };
 
+// The function of main.cpp that gives the wgpu renderer's plugin the options of a view.
+void sendViewOptions(UINT kind, void* key, const UINT* parts);
+
 namespace api {
     int MGEAPIv1::getAPIVersion() const {
         return supported_api_version;
@@ -1093,12 +1096,15 @@ namespace api {
         }
         if (options == nullptr) {
             viewOptions.erase(ViewKey{ kind, key });
+            sendViewOptions(static_cast<UINT>(kind), key, nullptr);
             return true;
         }
         if (options->size < sizeof(ViewOptions)) {
             return false;
         }
-        viewOptions[ViewKey{ kind, key }] = options->parts & VIEW_PARTS_ALL;
+        const UINT parts = options->parts & VIEW_PARTS_ALL;
+        viewOptions[ViewKey{ kind, key }] = parts;
+        sendViewOptions(static_cast<UINT>(kind), key, &parts);
         return true;
     }
 
