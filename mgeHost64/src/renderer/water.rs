@@ -190,6 +190,10 @@ pub struct WaterFrame {
     /// The height of the mirror of the reflection (`Environment::mirror_level`).
     pub mirror_level: f32,
     pub underwater: bool,
+    /// The cell is an exterior or an interior that behaves like one (`IntLikeExterior`).
+    /// Without distant land its reflection is then the colour of the horizon
+    /// (`DistantLand::clearReflection`).
+    pub like_exterior: bool,
     pub time: f32,
     /// The direction to the sun (z negated when the sun is not visible), its visibility.
     pub sun_pos: [f32; 3],
@@ -631,7 +635,10 @@ impl Water {
     /// sharp at the waterline, each level gets the colour, and the depth of the mirror says
     /// that all is far.
     pub fn fill_reflection(&mut self, scene: &SceneView, frame: &WaterFrame) {
-        let color: [f32; 3] = if frame.underwater {
+        // The horizon colour of Direct3D 9 is the colour of the game's clear of the frame; here
+        // it is the game's fog colour, which `water_frame_of` also takes for the horizon of an
+        // interior. Only a plain interior guesses from its light.
+        let color: [f32; 3] = if frame.underwater || frame.like_exterior {
             [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2]]
         } else {
             core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0))
