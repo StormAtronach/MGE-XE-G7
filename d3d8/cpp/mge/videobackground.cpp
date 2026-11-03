@@ -264,8 +264,15 @@ void VideoPatch::monitorStreamed(unsigned width, unsigned height) {
     advance(&VideoPatch::beginStreamed);
 }
 
-void _stdcall VideoPatch::patch(int x) {
+// The call of `NiCamera::Click` for the splash camera in `LoadScreenManager::render` (the site of
+// `MWPatches::redirectMenuBackground`) comes here, with the camera in ECX and the same argument
+// on the stack as the engine's call has. The video is drawn in place of that Click only while it
+// plays; in each other state the engine's Click runs, so that the loading screens before the main
+// menu draw their splash.
+void __fastcall VideoPatch::patch(void* camera, void*, int x) {
     if (state != VideoState::Playing) {
+        const auto click = reinterpret_cast<void(__thiscall*)(void* camera, int x)>(TES3::Address::NI_Camera_click);
+        click(camera, x);
         return;
     }
     if (d) {
