@@ -175,7 +175,8 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `render.distantLand` | refused before the first frame; after it, followed only if the helper loaded the land at the start |
 | `render.*` features: fpsCounter, displayMessages | followed: the helper draws the status text and the frame rate on the window (not in screenshots, as on Direct3D 9) |
 | `render.pauseRenderingInMenus` | followed: the helper keeps the picture of the first menu frame and does no distant land or post work until a click (`renderer/menu_keep.rs`) |
-| `render.*` features: reflectInterior, distantWater, transparencyAA, noMWMGEBlending, noMWSunglare | the flag is stored, the helper does not use it (sun glare: each post shader's own `disable_sunglare`) |
+| `render.distantWater` | followed: the water draws with distant land on or with only distant water on, as on Direct3D 9 (`distantWater` of `mged3d8device.cpp`). Two parity gaps are open: after a start with distant land off the exterior water does not draw (Direct3D 9 draws it), and the water-only picture differs from Direct3D 9 (mean difference 13.5 of 255 against 1.1 to 1.6 in the other cases; run 20261103-183947-d82w3-wgpu against 20261103-190215-d82w4-d3d9) |
+| `render.*` features: reflectInterior, transparencyAA, noMWMGEBlending, noMWSunglare | the flag is stored, the helper does not use it (sun glare: each post shader's own `disable_sunglare`) |
 | crosshairAutoHide, UI scale, lighting mode | work |
 | `distantLandRenderConfig`: draw distance, static ends, caustics, wave height, interior fog end | followed (settings record) |
 | `distantLandRenderConfig`: fog and wind; `weather` fog, per-pixel lighting, wind, scattering, skylight scattering | followed (environment record) |

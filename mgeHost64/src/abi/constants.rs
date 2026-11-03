@@ -25,6 +25,8 @@ pub const VIS_STATIC: Dword = VIS_NEAR | VIS_FAR | VIS_VERY_FAR;
 
 /// Bit in `mge_flags` that enables distant-land rendering.
 pub const USE_DISTANT_LAND: Dword = 1 << 17;
+/// Bit in `mge_flags` that enables the water without distant land (`distant_land.water_without_land`).
+pub const USE_DISTANT_WATER: Dword = 1 << 16;
 /// The other bits of `mge_flags` (`Configuration.MGEFlags` of MGE XE) that the settings
 /// record carries and that the renderer follows: the post shaders (`render.enable_shaders`),
 /// the light for each pixel, the HDR measure, the distant statics, the grass, the shadows.
