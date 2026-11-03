@@ -606,11 +606,11 @@ struct Gpu {
 pub struct DistantLand {
     enabled: bool,
     /// The water is wanted: distant land is on, or only distant water is (`USE_DISTANT_WATER`,
-    /// as `distantWater` of the Direct3D 9 path). Two differences from that path are open:
-    /// after a start with distant land off the exterior water does not draw (the GPU data of
-    /// the land is not loaded; Direct3D 9 draws it), and the near water of the water-only
-    /// picture is paler than on Direct3D 9 (E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt,
-    /// section 3).
+    /// as `distantWater` of the Direct3D 9 path). One difference from that path is open: after
+    /// a start with distant land off the exterior water does not draw (the GPU data of the land
+    /// is not loaded; Direct3D 9 draws it). The water-only picture equals that of Direct3D 9
+    /// (mean difference 0.73 of 255; E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt,
+    /// section 5).
     water_on: bool,
     /// The shaders of Direct3D 9 have the scattering of the atmosphere in them
     /// (`USE_SCATTERING`): the exponential fog and the scattering were both on when the shaders
