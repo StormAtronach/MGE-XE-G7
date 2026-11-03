@@ -19,7 +19,24 @@ pub const MAIN: usize = 0;
 pub const MIRROR: usize = 1;
 pub const SHADOW: [usize; 2] = [2, 3];
 pub const GAME: usize = 4;
-const VIEWS: usize = 5;
+
+/// The groups of the views of their own that get the full tier (`views.full_tier_max`, at most
+/// [`TIER_VIEWS`]): the groups from [`TIER_FIRST`] on, one for each view of a frame.
+pub const TIER_FIRST: usize = 5;
+pub const TIER_VIEWS: usize = 4;
+pub const VIEWS: usize = TIER_FIRST + TIER_VIEWS;
+
+/// The group of the `k`th view of its own in a frame (0 to [`TIER_VIEWS`] less 1).
+pub const fn tier(k: usize) -> usize {
+    TIER_FIRST + k
+}
+
+/// The group of a set of the statics. The sets 0 to 3 have the groups of the same numbers (the
+/// game view between them has no set); the sets from 4 on are the views of their own, in the
+/// groups from [`TIER_FIRST`].
+pub const fn group_of_set(set: usize) -> usize {
+    if set < GAME { set } else { set + 1 }
+}
 
 /// The values of a view; the layout of [`View`] in [`wgsl()`].
 #[repr(C)]
@@ -108,6 +125,58 @@ fn clip_of(world: vec3f) -> vec4f {
 /// The code of the view group for the start of a shader: `u` and `baked_light`.
 pub fn wgsl() -> String {
     format!("{VIEW_WGSL}{}", distant_lights::baked_wgsl_at(0, 1))
+}
+
+/// The views of their own that drew the full tier ([`TIER_VIEWS`] at most in a frame): which
+/// one a call gets, and the counts for the report. Each call of a frame gets a number of its
+/// own, because the writes of the view's values and of the cull values land before all
+/// commands of the frame (the one-submit rule): two calls with one number would show the last
+/// call's values in both. A view that renders twice in a frame has two calls.
+#[derive(Default)]
+pub struct TierViews {
+    frame: u64,
+    used: usize,
+    /// The calls served, the calls refused because a frame had [`TIER_VIEWS`] already, and
+    /// the calls that could not draw (the land or the statics were not loaded).
+    pub calls: u64,
+    pub refused: u64,
+    pub unserved: u64,
+    /// The draws of the land meshes and the draw calls of the statics, in all calls.
+    pub land_draws: u64,
+    pub static_calls: u64,
+    /// The bytes of GPU memory that the sets of the views of their own made.
+    pub bytes: u64,
+}
+
+impl TierViews {
+    /// The number of the view for a call in `frame`, 0 to [`TIER_VIEWS`] less 1; `None` when
+    /// the frame has used them all.
+    pub fn claim(&mut self, frame: u64) -> Option<usize> {
+        if self.frame != frame {
+            self.frame = frame;
+            self.used = 0;
+        }
+        if self.used >= TIER_VIEWS {
+            self.refused += 1;
+            return None;
+        }
+        self.used += 1;
+        self.calls += 1;
+        Some(self.used - 1)
+    }
+
+    /// The report line, for the end of the session.
+    pub fn line(&self) -> String {
+        format!(
+            "views of their own: {} calls with land or statics, {} refused (a frame had {TIER_VIEWS} already), {} could not draw; {} land mesh draws, {} statics draw calls; {:.1} MB made for their sets",
+            self.calls,
+            self.refused,
+            self.unserved,
+            self.land_draws,
+            self.static_calls,
+            self.bytes as f64 / 1e6
+        )
+    }
 }
 
 pub struct ViewBinding {
@@ -212,6 +281,35 @@ mod tests {
         // what 0.01 units of distance give at this range.
         let slope = 1.0001 / (vs[2] * vs[2]);
         assert!((depth(&clip) - depth(&exact)).abs() < 0.01 * slope, "{} {}", depth(&clip), depth(&exact));
+    }
+
+    /// The sets of the statics take the groups of their views: the four fixed ones by their own
+    /// numbers, the views of their own after the game view, and no two sets share a group.
+    #[test]
+    fn each_set_of_the_statics_has_a_group_of_its_own() {
+        let groups: Vec<usize> = (0..4 + TIER_VIEWS).map(group_of_set).collect();
+        assert_eq!(&groups[..4], &[MAIN, MIRROR, SHADOW[0], SHADOW[1]]);
+        assert!(!groups.contains(&GAME));
+        assert_eq!(groups[4], tier(0));
+        assert_eq!(*groups.last().unwrap(), tier(TIER_VIEWS - 1));
+        let mut sorted = groups.clone();
+        sorted.dedup();
+        assert_eq!(sorted.len(), groups.len());
+        assert!(groups.iter().all(|&group| group < VIEWS));
+    }
+
+    /// Each call of a frame gets a number of its own, the numbers start again in the next frame,
+    /// and a frame with more calls than groups refuses the rest.
+    #[test]
+    fn each_call_of_a_frame_claims_a_view_of_its_own() {
+        let mut tier = TierViews::default();
+        let numbers: Vec<Option<usize>> = (0..TIER_VIEWS + 2).map(|_| tier.claim(7)).collect();
+        assert_eq!(&numbers[..TIER_VIEWS], &(0..TIER_VIEWS).map(Some).collect::<Vec<_>>()[..]);
+        assert_eq!(&numbers[TIER_VIEWS..], &[None, None]);
+        assert_eq!((tier.calls, tier.refused), (TIER_VIEWS as u64, 2));
+        assert_eq!(tier.claim(8), Some(0));
+        assert_eq!(tier.claim(8), Some(1));
+        assert!(tier.line().contains("refused"));
     }
 
     #[test]

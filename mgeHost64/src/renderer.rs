@@ -57,7 +57,7 @@ use mge_config::{ConfigDocument, FILE_NAME};
 use crate::abi::constants::{BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, EXP_FOG, FPS_COUNTER, REFLECTIVE_WATER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY, USE_ATM_SCATTER, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_DISTANT_WATER, USE_MENU_CACHING, USE_FFESHADER, USE_GRASS, USE_HDR, USE_HW_SHADER, USE_SHADOWS};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::{DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status, TableShade};
+use nirender_wgpu::{Additions, DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay, SceneView, Status, TableShade};
 use water::{Water, WaterFrame};
 use post::{Post, Variables};
 use shadow::Shadow;
@@ -588,6 +588,11 @@ struct Gpu {
     /// The land in the mirror of the water: one side only.
     mirror_pipeline: wgpu::RenderPipeline,
     mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
+    /// The samples of `pipeline`. A pass with another count (a view of its own into a rendered
+    /// texture has one) takes the two pipelines below.
+    samples: u32,
+    picture_pipeline: wgpu::RenderPipeline,
+    picture_pipeline_lines: Option<wgpu::RenderPipeline>,
     /// Group 1 of the land ([`LandUniforms`] and the textures), the same in the main view and
     /// in the mirror; group 0 is the view group ([`view::ViewBinding`]).
     group: wgpu::BindGroup,
@@ -828,6 +833,8 @@ pub struct DistantLand {
     started: Instant,
     meshes_drawn: u64,
     frames: u64,
+    /// The views of their own with the land and the statics of the full tier.
+    tier_views: view::TierViews,
 }
 
 /// The values of the land only, group 1 of its shader. Those of the view are in the view
@@ -1149,6 +1156,7 @@ impl DistantLand {
             started: Instant::now(),
             meshes_drawn: 0,
             frames: 0,
+            tier_views: view::TierViews::default(),
         };
         println!(
             "distant land: {}, draw distance {:.1} cells, fog from {:.2} to {:.2} cells",
@@ -1288,6 +1296,7 @@ impl Drop for DistantLand {
             self.meshes_drawn,
             if self.environment.is_some() { "from the game with each frame" } else { "from mgeXE.toml" }
         );
+        println!("distant land: {}", self.tier_views.line());
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("distant lights: {} frames with glows", self.lights.as_ref().map_or(0, |lights| lights.frames));
         println!(
@@ -1674,6 +1683,9 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     // the statics have it.
     let mirror_pipeline = make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Fill, Default::default());
     let mirror_pipeline_lines = lines.then(|| make_pipeline(Some(wgpu::Face::Front), wgpu::PolygonMode::Line, Default::default()));
+    // A view of its own into a rendered texture: one sample, both sides, as the frame has them.
+    let picture_pipeline = make_pipeline(None, wgpu::PolygonMode::Fill, Default::default());
+    let picture_pipeline_lines = lines.then(|| make_pipeline(None, wgpu::PolygonMode::Line, Default::default()));
 
     // The casters of the shadow map: the land with the depth from the sun.
     let shadow_source = format!("{}{LAND_SHADOW_SHADER}", view::wgsl());
@@ -1738,6 +1750,9 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         pipeline_lines,
         mirror_pipeline,
         mirror_pipeline_lines,
+        samples: scene.samples,
+        picture_pipeline,
+        picture_pipeline_lines,
         group,
         uniforms,
         shadow_pipeline,
@@ -1771,7 +1786,28 @@ impl Gpu {
     /// The pipeline of the land for the frame: lines when the game draws in wireframe and
     /// the device has the line mode, filled otherwise.
     fn pipeline_for(&self, scene: &SceneView) -> &wgpu::RenderPipeline {
-        if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline }
+        let (fill, lines) = if scene.samples == self.samples { (&self.pipeline, &self.pipeline_lines) } else { (&self.picture_pipeline, &self.picture_pipeline_lines) };
+        if scene.wireframe { lines.as_ref().unwrap_or(fill) } else { fill }
+    }
+
+    /// Draws the meshes of the land that are inside `planes` into the pass of a view, with the
+    /// view group of that view. Returns the number of meshes drawn.
+    fn draw_meshes(&self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view_group: &wgpu::BindGroup, planes: &[[f32; 4]; 6]) -> u64 {
+        pass.set_pipeline(self.pipeline_for(scene));
+        pass.set_bind_group(0, view_group, &[]);
+        pass.set_bind_group(1, &self.group, &[]);
+        let mut drawn = 0;
+        for mesh in &self.meshes {
+            let inside = planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
+            if !inside {
+                continue;
+            }
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_index_buffer(mesh.indexes.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            drawn += 1;
+        }
+        drawn
     }
 
     /// The same for the land in the mirror of the water.
@@ -2777,19 +2813,7 @@ impl Extension for DistantLand {
         // space over the clear colour.
         if !scene.interior && !skipped("terrain") {
             pass.push_debug_group("distant land");
-            pass.set_pipeline(gpu.pipeline_for(scene));
-            pass.set_bind_group(0, views.group(view::MAIN), &[]);
-            pass.set_bind_group(1, &gpu.group, &[]);
-            for mesh in &gpu.meshes {
-                let inside = planes.iter().all(|p| p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius);
-                if !inside {
-                    continue;
-                }
-                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                pass.set_index_buffer(mesh.indexes.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-                drawn += 1;
-            }
+            drawn = gpu.draw_meshes(scene, pass, views.group(view::MAIN), &planes);
             pass.pop_debug_group();
         }
         self.meshes_drawn += drawn;
@@ -2971,6 +2995,61 @@ impl Extension for DistantLand {
             pass.pop_debug_group();
         }
         true
+    }
+
+    /// The distant land and the distant statics in a view of its own that has them in its
+    /// options (D82 section 3.4f, slice 1). The projection is the view's own with the far plane
+    /// at the draw distance; the view group, the cull set and the uniforms of the statics are
+    /// the view's own, so that the main view's values in the same submit stay as they are. It
+    /// does not redo the work of the frame: the cell facts, the lights, the arrivals and the
+    /// residency of the statics are the main view's and come from its calls (the last frame's,
+    /// when this call comes first in a frame). The residency is keyed to the main eye, so a
+    /// view far from it shows the statics that are resident for that eye only.
+    fn view_before_world(&mut self, scene: &SceneView, parts: Additions, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) -> bool {
+        if self.menu_reuse || !self.enabled || !self.distant_cell {
+            return false;
+        }
+        let ready = self.gpu.is_some() && self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
+        let Some(k) = ready.then(|| self.tier_views.claim(scene.frame)).flatten() else {
+            self.tier_views.unserved += u64::from(!ready);
+            return false;
+        };
+        let (Some(gpu), Some(views)) = (self.gpu.as_ref(), self.view_binding.as_ref()) else { return false };
+        let group = view::tier(k);
+        let projection = self.land_projection(scene);
+        views.write(scene.queue, group, &self.frame_view(scene, &projection));
+        let planes = nirender_wgpu::view_planes(&scene.view, &projection);
+        let mut drew = false;
+        // The terrain is for an exterior, as in the main view.
+        if parts.contains(Additions::LAND) && !scene.interior && !skipped("terrain") {
+            pass.push_debug_group("distant land (view of its own)");
+            let drawn = gpu.draw_meshes(scene, pass, views.group(group), &planes);
+            pass.pop_debug_group();
+            self.tier_views.land_draws += drawn;
+            drew |= drawn > 0;
+        }
+        if parts.contains(Additions::STATICS) && !skipped("statics") {
+            let eye = scene.eye.map(|v| v as f32);
+            let view_range = self.environment.map_or(0.0, |e| e.near_view_range);
+            let eye_range = [eye[0], eye[1], eye[2], view_range];
+            let fog_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end);
+            let time = game_time(self.environment, self.started);
+            if let Some(statics) = self.statics.as_mut() {
+                let set = statics::tier_set(k);
+                match statics.prepare_view(scene, &statics::CullSet { set, planes, eye: eye_range, fog_end }) {
+                    Some(made) => {
+                        self.tier_views.bytes += made;
+                        pass.push_debug_group("distant statics (view of its own)");
+                        let calls = statics.draw(scene, pass, &statics::Frame { eye: eye_range, planes, fog_end, time }, set);
+                        pass.pop_debug_group();
+                        self.tier_views.static_calls += u64::from(calls);
+                        drew |= calls > 0;
+                    }
+                    None => self.tier_views.unserved += 1,
+                }
+            }
+        }
+        drew
     }
 
     fn wants_held(&self) -> bool {
