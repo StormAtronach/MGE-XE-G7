@@ -1177,7 +1177,9 @@ override ALPHA_TO_COVERAGE: bool = false;
             discard;
         }
     }
-    return vec4f(fog_of(texel.rgb * in.color, in.world), alpha);
+    // In the mirror under water (flags.y is -1) the statics have no scattering: the interior
+    // pass of `renderWaterReflection` fogs them with the linear fog of the game.
+    return vec4f(fog_with(texel.rgb * in.color, in.world, u.flags.y >= 0.0), alpha);
 }
 ";
 

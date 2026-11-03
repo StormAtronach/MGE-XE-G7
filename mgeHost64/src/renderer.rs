@@ -971,6 +971,11 @@ struct Out {
 /// `sun_altitude`, and the shader a function `fog_range()`, the view range of the game.
 const FOG_FUNCTION: &str = "
 fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
+    return fog_with(lit, world, true);
+}
+
+// `fog_of` with a switch for the scattering: without it, the light that the air adds is left out.
+fn fog_with(lit: vec3f, world: vec3f, scatter: bool) -> vec3f {
     // fogColour: the exponential curve past the view range of the game, and the linear fog
     // of the near cells before it.
     let to_pixel = world - u.eye.xyz;
@@ -981,7 +986,7 @@ fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
     let fog = select(linear, exponential, u.flags.x > 0.5 && distance > fog_range());
     // fogColourScatter: the light that the air adds, in good weather and over the water.
     var added = u.fog_color.rgb * (1.0 - fog);
-    if u.sky.w > 0.5 && u.sun_pos.w > 0.001 && u.eye.z > u.flags.w {
+    if scatter && u.sky.w > 0.5 && u.sun_pos.w > 0.001 && u.eye.z > u.flags.w {
         let direction = to_pixel / max(distance, 1.0);
         let depth = clamp(0.224 * fog_distance, 0.0, 1.0);
         let sun_cos = dot(direction, u.sun_pos.xyz);
