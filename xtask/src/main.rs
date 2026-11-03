@@ -350,7 +350,10 @@ fn plugin_dir(root: &Path) -> PathBuf {
 
 /// The Lua files of the nirender mod that a player's install needs: `main.lua` and the files
 /// that it reaches ([`reached_lua`]). The other Lua files of the mod are its test harness.
-const SHIPPED_LUA: [&str; 3] = ["main.lua", "failure.lua", "notifier.lua"];
+/// `noplugin.lua` is the stand-in of a run without the plugin: main.lua loads it only when a
+/// run spec asks for that, and the release check (`run_own_device.py --archive`) runs the
+/// archive's own main.lua, so a reference run of an archive needs it.
+const SHIPPED_LUA: [&str; 4] = ["main.lua", "failure.lua", "notifier.lua", "noplugin.lua"];
 
 /// The names of the mod's files that a Lua text loads: a `dofile` of
 /// `mods\\nirender\\<name>.lua` or `mods/nirender/<name>.lua`, and a `require` or `include` of
