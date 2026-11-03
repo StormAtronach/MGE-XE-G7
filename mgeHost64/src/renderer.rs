@@ -620,6 +620,9 @@ pub struct DistantLand {
     /// (`fogColourScatter`); the record's scattering flag needs distant land, so this decides
     /// for the water of a start without it.
     scatter_shaders: bool,
+    /// `views.full_tier_max`: how many views of a frame get the parts that a mod asks for with
+    /// `mge.camera.setViewOptions`. `MGE_XE_FULL_TIER_MAX` (0 to 4) overrides the file for a test.
+    full_tier_max: usize,
     /// The distances of the settings of MGE XE, in the units of the game.
     draw_distance: f32,
     settings_fog: (f32, f32),
@@ -1041,6 +1044,10 @@ impl DistantLand {
             water_on: settings.enabled,
             // As the shaders start with the settings of the file, before a settings record.
             scatter_shaders: settings.enabled && settings.fog.exponential && settings.fog.atmosphere_scattering,
+            full_tier_max: std::env::var("MGE_XE_FULL_TIER_MAX")
+                .ok()
+                .and_then(|text| text.trim().parse::<usize>().ok())
+                .map_or(document.settings().views.full_tier_max as usize, |value| value.min(4)),
             draw_distance: settings.draw_distance * CELL,
             settings_fog: (settings.fog.above_water_start * CELL, settings.fog.above_water_end * CELL),
             environment: None,
@@ -2385,6 +2392,7 @@ impl Extension for DistantLand {
             world_lights: self.world_lights,
             // The far cascade of the shadow map: what it reaches animates in the game.
             shadow_reach: if self.shadow_in_frame { shadow::RADII[1] } else { 0.0 },
+            full_tier_max: Some(self.full_tier_max),
         }
     }
 
@@ -3920,6 +3928,31 @@ mod settings_tests {
         land.pictures.push(PictureRequest { path: "without.png".to_string(), with_ui: false });
         assert!(land.picture_without_ui_wanted());
         assert!(!land.chain_wanted());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `views.full_tier_max` is read from the file (default 1). A value outside 0 to 4 is replaced by
+    /// the default when the document is read, as for every key with a range.
+    #[test]
+    fn the_full_tier_number_comes_from_the_file() {
+        let root = std::env::temp_dir().join(format!("mge-full-tier-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]
+enabled = false
+").unwrap();
+        assert_eq!(DistantLand::start(&root, false).full_tier_max, 1);
+        std::fs::write(root.join(FILE_NAME), "[views]
+full_tier_max = 3
+").unwrap();
+        assert_eq!(DistantLand::start(&root, false).full_tier_max, 3);
+        std::fs::write(root.join(FILE_NAME), "[views]
+full_tier_max = 9
+").unwrap();
+        assert_eq!(DistantLand::start(&root, false).full_tier_max, 1);
+        std::fs::write(root.join(FILE_NAME), "[views]
+full_tier_max = 0
+").unwrap();
+        assert_eq!(DistantLand::start(&root, false).full_tier_max, 0);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

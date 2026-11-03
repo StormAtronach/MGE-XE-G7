@@ -26,6 +26,7 @@ pub const HORIZON_MAX_RANGE_RANGE: (f32, f32) = (1.0, 1_048_576.0);
 pub const HORIZON_BINS_RANGE: (u32, u32) = (64, 4096);
 pub const HORIZON_SAMPLE_SPACING_RANGE: (f32, f32) = (1.0, 8192.0);
 pub const HORIZON_REBUILD_EYE_THRESHOLD_RANGE: (f32, f32) = (0.0, 8192.0);
+pub const FULL_TIER_MAX_RANGE: (u8, u8) = (0, 4);
 
 // Bounds shared with the GUI controls that edit these fields. Validation and
 // the widgets must agree, or a value the user just picked is clamped on save.
@@ -54,6 +55,7 @@ pub struct Settings {
     pub render: RenderSettings,
     pub runtime: RuntimeSettings,
     pub distant_land: DistantLandSettings,
+    pub views: ViewsSettings,
     pub lighting: LightingSettings,
     pub shaders: ShaderSettings,
     pub input: InputSettings,
@@ -68,6 +70,7 @@ impl Default for Settings {
             render: RenderSettings::default(),
             runtime: RuntimeSettings::default(),
             distant_land: DistantLandSettings::default(),
+            views: ViewsSettings::default(),
             lighting: LightingSettings::default(),
             shaders: ShaderSettings::default(),
             input: InputSettings::default(),
@@ -1163,6 +1166,21 @@ impl InputSettings {
             .iter()
             .filter(|(_, target)| **target != 0)
             .map(|(source, target)| 2 + decimal_len((*source).into()) + decimal_len((*target).into()))
+    }
+}
+
+/// The wgpu renderer: the views that a mod draws itself (a mirror, a second camera).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ViewsSettings {
+    /// How many views of a frame may get the parts of MGE XE that a mod asks for with
+    /// `mge.camera.setViewOptions`: 0 refuses every request.
+    pub full_tier_max: u8,
+}
+
+impl Default for ViewsSettings {
+    fn default() -> Self {
+        Self { full_tier_max: 1 }
     }
 }
 
