@@ -608,8 +608,9 @@ pub struct DistantLand {
     /// The water is wanted: distant land is on, or only distant water is (`USE_DISTANT_WATER`,
     /// as `distantWater` of the Direct3D 9 path). Two differences from that path are open:
     /// after a start with distant land off the exterior water does not draw (the GPU data of
-    /// the land is not loaded; Direct3D 9 draws it), and the water-only picture differs from
-    /// Direct3D 9 (E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt, section 1).
+    /// the land is not loaded; Direct3D 9 draws it), and the near water of the water-only
+    /// picture is paler than on Direct3D 9 (E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt,
+    /// section 3).
     water_on: bool,
     /// The distances of the settings of MGE XE, in the units of the game.
     draw_distance: f32,
