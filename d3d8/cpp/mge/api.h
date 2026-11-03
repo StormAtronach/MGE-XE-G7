@@ -255,7 +255,8 @@ namespace api {
     struct MGEAPIv4 : public MGEAPIv3 {
         // Sets the options of a view; options == nullptr clears them. False when the key is refused
         // (null, the world camera, an unknown kind). The options last until changed, cleared, or
-        // until the key's object is freed.
+        // until the key's object is freed (the wgpu renderer sees the free; with the Direct3D 9
+        // renderer an address that the engine reuses keeps the old options in viewOptionsGet).
         virtual bool viewOptionsSet(ViewKeyKind kind, void* key, const ViewOptions* options);
         // Reads the options of a view. False when the key has none.
         virtual bool viewOptionsGet(ViewKeyKind kind, void* key, ViewOptions* options);
