@@ -414,9 +414,18 @@ fn underwater(uv: vec2f, w: f32, texcoords: vec4f, world_xy: vec2f, eye_vec: vec
     let fog = clamp(exp(-dist / 4096.0), 0.0, 1.0);
     let normal = -water_normal(texcoords, dist, world_xy);
     let reffactor = 2.0 * (water.sun_col.w * dist + 0.1) * normal.xy;
-    var refracted = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
-    refracted = mix(u.fog_color.rgb, refracted, exp(-dist / 500.0));
+    let seen = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
+    let refracted = mix(u.fog_color.rgb, seen, exp(-dist / 500.0));
     let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w, 1.0);
+    // A look at one term, for a test: MGE_XE_WATER_DEBUG, as above the water (1 and 2), and
+    // 10 for the picture of the game before the fog of the water is mixed into it.
+    if water.modes.x == 1.0 {
+        return vec4f(reflected, 1.0);
+    } else if water.modes.x == 2.0 {
+        return vec4f(refracted, 1.0);
+    } else if water.modes.x == 10.0 {
+        return vec4f(seen, 1.0);
+    }
     // With the total reflection of the inside of the water.
     let fresnel = pow(clamp(1.12 - 0.65 * dot(-eye_vec, normal), 0.0, 1.0), 8.0);
     let result = mix(refracted, reflected, fresnel);
