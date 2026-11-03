@@ -3165,8 +3165,11 @@ impl DistantLand {
         let (fog_start, fog_end, fog_exp_start, fog_exp_divisor, fog_near_start, fog_near_end) = if self.enabled && self.distant_cell {
             (e.fog_start, e.fog_end, e.fog_exp_start, e.fog_exp_divisor, e.fog_near_start, e.fog_near_end)
         } else {
-            let exp_start = scene.fog_start / 4.4;
-            (scene.fog_start, scene.fog_end, exp_start, (scene.fog_end - exp_start) / 4.4, scene.fog_start, scene.fog_end)
+            // The game's fog off: its start and end are 0, full fog in these formulas. Distances
+            // that no pixel reaches give no fog.
+            let (start, end) = if scene.fog_on { (scene.fog_start, scene.fog_end) } else { (1.0e9, 2.0e9) };
+            let exp_start = start / 4.4;
+            (start, end, exp_start, (end - exp_start) / 4.4, start, end)
         };
         let variables = Variables {
             mview: rows(&scene.view),
