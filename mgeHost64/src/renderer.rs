@@ -835,6 +835,8 @@ pub struct DistantLand {
     frames: u64,
     /// The views of their own with the land and the statics of the full tier.
     tier_views: view::TierViews,
+    /// The wind and the time that the environment records carried, for the report.
+    environment_watch: view::EnvironmentWatch,
 }
 
 /// The values of the land only, group 1 of its shader. Those of the view are in the view
@@ -1157,6 +1159,7 @@ impl DistantLand {
             meshes_drawn: 0,
             frames: 0,
             tier_views: view::TierViews::default(),
+            environment_watch: view::EnvironmentWatch::default(),
         };
         println!(
             "distant land: {}, draw distance {:.1} cells, fog from {:.2} to {:.2} cells",
@@ -1297,6 +1300,7 @@ impl Drop for DistantLand {
             if self.environment.is_some() { "from the game with each frame" } else { "from mgeXE.toml" }
         );
         println!("distant land: {}", self.tier_views.line());
+        println!("distant land: {}", self.environment_watch.line());
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("distant lights: {} frames with glows", self.lights.as_ref().map_or(0, |lights| lights.frames));
         println!(
@@ -2752,6 +2756,9 @@ impl Extension for DistantLand {
                 if environment.flags & 256 != 0 && self.prefetch.is_none() {
                     self.arrival = Some((Instant::now(), 0));
                     self.arrival_serial = 0;
+                }
+                if self.environment_watch.note(environment.time, environment.wind) {
+                    println!("environment: simulation time {:.1} s, wind ({:.2}, {:.2})", environment.time, environment.wind[0], environment.wind[1]);
                 }
                 self.environment = Some(environment);
             }

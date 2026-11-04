@@ -289,6 +289,63 @@ impl TierViews {
     }
 }
 
+/// The inputs of the grass that the game's environment record carries: the smoothed wind and the
+/// time of the simulation. The watch keeps what the records had, so that a report can say whether
+/// two runs had the same wind and time (a picture of the grass moves with both).
+#[derive(Default)]
+pub struct EnvironmentWatch {
+    records: u64,
+    time_first: f32,
+    time_last: f32,
+    wind_first: [f32; 2],
+    wind_last: [f32; 2],
+    wind_min: [f32; 2],
+    wind_max: [f32; 2],
+    /// The wind at the last logged change.
+    logged: [f32; 2],
+    lines: u32,
+}
+
+/// The change of the wind in one component, from the last logged one, that is logged.
+const WIND_LOGGED_STEP: f32 = 0.25;
+/// The logged changes of the wind in a session.
+const WIND_LINES: u32 = 12;
+
+impl EnvironmentWatch {
+    /// Notes one record of the environment. True for the first record and for a change of the
+    /// wind by more than [`WIND_LOGGED_STEP`] in a component, for the first [`WIND_LINES`]
+    /// times: the caller logs those.
+    pub fn note(&mut self, time: f32, wind: [f32; 2]) -> bool {
+        if self.records == 0 {
+            self.time_first = time;
+            self.wind_first = wind;
+            self.wind_min = wind;
+            self.wind_max = wind;
+        }
+        self.records += 1;
+        self.time_last = time;
+        self.wind_last = wind;
+        self.wind_min = core::array::from_fn(|i| self.wind_min[i].min(wind[i]));
+        self.wind_max = core::array::from_fn(|i| self.wind_max[i].max(wind[i]));
+        let first = self.records == 1;
+        let moved = (0..2).any(|i| (wind[i] - self.logged[i]).abs() > WIND_LOGGED_STEP);
+        if !(first || moved) || self.lines >= WIND_LINES {
+            return false;
+        }
+        self.logged = wind;
+        self.lines += 1;
+        true
+    }
+
+    /// The report line, for the end of the session.
+    pub fn line(&self) -> String {
+        format!(
+            "environment records: {}; simulation time {:.1} to {:.1} s; wind first ({:.2}, {:.2}), last ({:.2}, {:.2}), x from {:.2} to {:.2}, y from {:.2} to {:.2}",
+            self.records, self.time_first, self.time_last, self.wind_first[0], self.wind_first[1], self.wind_last[0], self.wind_last[1], self.wind_min[0], self.wind_max[0], self.wind_min[1], self.wind_max[1]
+        )
+    }
+}
+
 pub struct ViewBinding {
     pub layout: wgpu::BindGroupLayout,
     buffers: [wgpu::Buffer; VIEWS],
@@ -458,6 +515,25 @@ mod tests {
         assert!(tier.note_holder(0, 6));
         assert_eq!(tier.holder_changes, 3);
         assert!(tier.line().contains("3 changes of the view that holds a place"));
+    }
+
+    /// The first record of the environment and a step of the wind above a quarter are logged; a
+    /// small change is not; the line keeps the first and last time and the range of the wind.
+    #[test]
+    fn the_wind_and_the_time_of_the_environment_are_watched() {
+        let mut watch = EnvironmentWatch::default();
+        assert!(watch.note(10.0, [0.0, 0.0]));
+        assert!(!watch.note(11.0, [0.1, -0.1]));
+        assert!(watch.note(12.0, [0.5, 0.0]));
+        assert!(!watch.note(13.0, [0.5, 0.1]));
+        let line = watch.line();
+        assert!(line.contains("environment records: 4"), "{line}");
+        assert!(line.contains("simulation time 10.0 to 13.0 s"), "{line}");
+        assert!(line.contains("x from 0.00 to 0.50, y from -0.10 to 0.10"), "{line}");
+        // The lines of a session are few.
+        let logged = (0..40).filter(|step| watch.note(20.0 + *step as f32, [*step as f32, 0.0])).count();
+        assert_eq!(logged as u32 + 2, WIND_LINES);
+        assert!(!watch.note(99.0, [100.0, 0.0]));
     }
 
     /// A change of the near plane of more than 1 % is logged; the same value again is not, and the
