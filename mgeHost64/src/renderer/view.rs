@@ -149,6 +149,15 @@ pub struct TierViews {
     /// The frame of the last call at the start and at the end of the world of each place.
     started: [Option<u64>; TIER_VIEWS],
     ended: [Option<u64>; TIER_VIEWS],
+    /// The frame of the last post chain of each place (the call at the end of its scene).
+    posted: [Option<u64>; TIER_VIEWS],
+    /// The calls of the post chain that were served, the ones refused (no place, or a place above
+    /// the cap), the ones refused because their place had a call in the same frame already, and
+    /// the ones that could not run (no environment record).
+    pub post_calls: u64,
+    pub post_refused: u64,
+    pub post_repeated: u64,
+    pub post_unserved: u64,
     /// The view slot that each place had in its last call, and the changes of it (a place that
     /// a view keeps does not change).
     holder: [Option<u32>; TIER_VIEWS],
@@ -233,6 +242,34 @@ impl TierViews {
                 None
             }
         }
+    }
+
+    /// The number of the place for a call of the post chain at the end of the scene, as
+    /// [`claim`](Self::claim) does for the calls at the start. The post state of a place
+    /// ([`super::post::PostView`]) is written once in a frame.
+    pub fn claim_post(&mut self, frame: u64, place: Option<u8>) -> Option<usize> {
+        match Self::take(&mut self.posted, frame, place) {
+            Claim::Served(place) => {
+                self.post_calls += 1;
+                Some(place)
+            }
+            Claim::Repeated => {
+                self.post_repeated += 1;
+                None
+            }
+            Claim::Refused => {
+                self.post_refused += 1;
+                None
+            }
+        }
+    }
+
+    /// The report line of the post chain of the views of their own.
+    pub fn post_line(&self) -> String {
+        format!(
+            "post chain of the views of their own: {} calls, {} refused (no place, or a place above {TIER_VIEWS}), {} refused for a second call of a place in a frame, {} could not run",
+            self.post_calls, self.post_refused, self.post_repeated, self.post_unserved
+        )
     }
 
     fn take(frames: &mut [Option<u64>; TIER_VIEWS], frame: u64, place: Option<u8>) -> Claim {
@@ -515,6 +552,26 @@ mod tests {
         assert!(tier.note_holder(0, 6));
         assert_eq!(tier.holder_changes, 3);
         assert!(tier.line().contains("3 changes of the view that holds a place"));
+    }
+
+    /// The post chain of a place goes once in a frame: a second call of the place in the frame is
+    /// refused and counted, a view with no place or a place above the cap is refused, and a later
+    /// frame is served again. The calls at the start and at the end of the world do not count
+    /// against it.
+    #[test]
+    fn the_post_chain_of_a_place_goes_once_in_a_frame() {
+        let mut tier = TierViews::default();
+        assert_eq!(tier.claim_post(10, Some(2)), Some(2));
+        assert_eq!(tier.claim_post(10, Some(2)), None);
+        assert_eq!(tier.claim_post(10, Some(0)), Some(0));
+        assert_eq!(tier.claim_post(10, None), None);
+        assert_eq!(tier.claim_post(10, Some(TIER_VIEWS as u8)), None);
+        assert_eq!(tier.claim_post(11, Some(2)), Some(2));
+        assert_eq!((tier.post_calls, tier.post_repeated, tier.post_refused), (3, 1, 2));
+        assert_eq!(tier.claim(10, Some(2)), Some(2));
+        assert_eq!(tier.claim_after(10, Some(2)), Some(2));
+        let line = tier.post_line();
+        assert!(line.contains("3 calls, 2 refused") && line.contains("1 refused for a second call"), "{line}");
     }
 
     /// The first record of the environment and a step of the wind above a quarter are logged; a
