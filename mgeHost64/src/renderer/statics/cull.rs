@@ -470,7 +470,13 @@ struct SetBuffers {
     /// The draws of each texture, then the counts of the work.
     counts: wgpu::Buffer,
     group: wgpu::BindGroup,
+    /// The bytes of the set's buffers on the GPU.
+    bytes: u64,
 }
+
+/// The sets that a list has from the start: the main view, the mirror and the two layers of
+/// the shadow map. The sets of the views of their own come with [`Culling::ensure_sets`].
+const FIXED_SETS: usize = 4;
 
 /// The list of the places of a world space, by texture.
 struct WorldList {
@@ -611,39 +617,54 @@ impl Culling {
             });
             (list, buckets, ranges, indexes.len() as u32)
         });
-        let slots = length.max(1) as u64;
-        let sets = (0..4)
-            .map(|_| {
-                let make = |label: &str, size: u64, usage: wgpu::BufferUsages| {
-                    device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
-                };
-                let uniforms = make("distant statics, cull values", size_of::<CullUniforms>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
-                let flags = make("distant statics, the triangles of each place", slots * 4, wgpu::BufferUsages::STORAGE);
-                let draws = make("distant statics, the draws", slots * 20, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT);
-                let counts = make(
-                    "distant statics, the draws of each texture and the counts",
-                    (ranges.len() + STATS) as u64 * 4,
-                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                );
-                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("distant statics, cull of a world"),
-                    layout: &self.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: self.places.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 2, resource: self.subsets.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 3, resource: self.groups.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 4, resource: list.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 5, resource: buckets.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 6, resource: flags.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 7, resource: draws.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 8, resource: counts.as_entire_binding() },
-                    ],
-                });
-                SetBuffers { uniforms, draws, counts, group }
-            })
-            .collect();
+        let sets = (0..FIXED_SETS).map(|_| self.make_set(device, &list, &buckets, ranges.len(), length)).collect();
         WorldList { name, list, buckets, ranges, length, sets }
+    }
+
+    /// The buffers of one set of a world list: the values, the flags of the places, the draws
+    /// and the counts. The flags and the draws have a slot for each place (24 bytes).
+    fn make_set(&self, device: &wgpu::Device, list: &wgpu::Buffer, buckets: &wgpu::Buffer, textures: usize, length: u32) -> SetBuffers {
+        let slots = length.max(1) as u64;
+        let make = |label: &str, size: u64, usage: wgpu::BufferUsages| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+        let uniforms = make("distant statics, cull values", size_of::<CullUniforms>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+        let flags = make("distant statics, the triangles of each place", slots * 4, wgpu::BufferUsages::STORAGE);
+        let draws = make("distant statics, the draws", slots * 20, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT);
+        let counts = make(
+            "distant statics, the draws of each texture and the counts",
+            (textures + STATS) as u64 * 4,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        );
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("distant statics, cull of a world"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.places.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.subsets.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.groups.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: list.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: buckets.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: flags.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: draws.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: counts.as_entire_binding() },
+            ],
+        });
+        SetBuffers { uniforms, draws, counts, group, bytes: slots * 24 + (textures + STATS) as u64 * 4 }
+    }
+
+    /// Makes the buffers of the sets up to `count` sets in the list of the world space, when it
+    /// has fewer: the views of their own, which the frames with few of them do not pay for.
+    /// Returns the bytes that this call made, 0 when the sets were there.
+    pub fn ensure_sets(&mut self, device: &wgpu::Device, count: usize) -> u64 {
+        let Some(mut world) = self.world.take() else { return 0 };
+        let mut made = 0;
+        while world.sets.len() < count {
+            let set = self.make_set(device, &world.list, &world.buckets, world.ranges.len(), world.length);
+            made += set.bytes;
+            world.sets.push(set);
+        }
+        self.world = Some(world);
+        made
     }
 
     /// Runs the compute passes of a set in a command buffer of their own, before the commands
