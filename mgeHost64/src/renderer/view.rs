@@ -146,6 +146,8 @@ pub struct TierViews {
     /// The draws of the land meshes and the draw calls of the statics, in all calls.
     pub land_draws: u64,
     pub static_calls: u64,
+    /// The calls that drew glows.
+    pub glow_calls: u64,
     /// The bytes of GPU memory that the sets of the views of their own made.
     pub bytes: u64,
     /// The near plane of the last call that was logged, and how many lines were logged.
@@ -187,13 +189,14 @@ impl TierViews {
     /// The report line, for the end of the session.
     pub fn line(&self) -> String {
         format!(
-            "views of their own: {} calls with land or statics, {} refused by the cap of {TIER_VIEWS} calls a frame (the bound views.full_tier_max is the host's, in its full tier line), {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls; {:.1} MB made for their sets",
+            "views of their own: {} calls with land or statics, {} refused by the cap of {TIER_VIEWS} calls a frame (the bound views.full_tier_max is the host's, in its full tier line), {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls; {} calls drew glows; {:.1} MB made for their sets",
             self.calls,
             self.refused,
             self.unserved,
             self.orthographic,
             self.land_draws,
             self.static_calls,
+            self.glow_calls,
             self.bytes as f64 / 1e6
         )
     }

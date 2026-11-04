@@ -2857,20 +2857,11 @@ impl Extension for DistantLand {
         }
         // The glows of the distant lights at night, past the handoff to the game.
         let glows = night > 0.0 && !scene.interior;
-        if let Some(lights) = self.lights.as_mut().filter(|_| glows) {
-            let fade_end = view_range - 1800.0;
-            lights.prepare(
-                scene,
-                &distant_lights::GlowFrame {
-                    eye: eye_range,
-                    planes,
-                    fade: [fade_end - 512.0, fade_end],
-                    draw_distance: self.draw_distance,
-                    time: game_time(self.environment, self.started),
-                    screen: [scene.target_size.0 as f32, scene.target_size.1 as f32, projection[5] * scene.target_size.1 as f32 * 0.5],
-                    glow: [self.tunables.get(tunables::GLOW_SIZE), self.tunables.get(tunables::GLOW_STRENGTH) * night, self.tunables.get(tunables::GLOW_PIXELS)],
-                },
-            );
+        if glows {
+            let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
+            if let Some(lights) = self.lights.as_mut() {
+                lights.prepare(scene, &frame, 0);
+            }
         }
 
         // The shadow map: the land and the statics from the sun, in passes of their own
@@ -3005,14 +2996,14 @@ impl Extension for DistantLand {
         }
         if let Some(lights) = self.lights.as_mut().filter(|_| glows) {
             pass.push_debug_group("distant lights");
-            lights.draw(pass, views.group(view::MAIN));
+            lights.draw(pass, views.group(view::MAIN), 0, scene.samples);
             pass.pop_debug_group();
         }
         true
     }
 
     /// The distant land and the distant statics in a view of its own that has them in its
-    /// options (D82 section 3.4f, slice 1). The projection is the view's own with the far plane
+    /// options (D82 section 3.4f, slice 1), and the glows (slice 2). The projection is the view's own with the far plane
     /// at the draw distance; the view group, the cull set and the uniforms of the statics are
     /// the view's own, so that the main view's values in the same submit stay as they are. It
     /// does not redo the work of the frame: the cell facts, the lights, the arrivals and the
@@ -3043,6 +3034,9 @@ impl Extension for DistantLand {
         }
         views.write(scene.queue, group, &self.frame_view(scene, &projection));
         let planes = nirender_wgpu::view_planes(&scene.view, &projection);
+        let eye = scene.eye.map(|v| v as f32);
+        let view_range = self.environment.map_or(0.0, |e| e.near_view_range);
+        let eye_range = [eye[0], eye[1], eye[2], view_range];
         let mut drew = false;
         // The terrain is for an exterior, as in the main view.
         if parts.contains(Additions::LAND) && !scene.interior && !skipped("terrain") {
@@ -3053,9 +3047,6 @@ impl Extension for DistantLand {
             drew |= drawn > 0;
         }
         if parts.contains(Additions::STATICS) && !skipped("statics") {
-            let eye = scene.eye.map(|v| v as f32);
-            let view_range = self.environment.map_or(0.0, |e| e.near_view_range);
-            let eye_range = [eye[0], eye[1], eye[2], view_range];
             let fog_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end);
             let time = game_time(self.environment, self.started);
             if let Some(statics) = self.statics.as_mut() {
@@ -3074,6 +3065,25 @@ impl Extension for DistantLand {
                     }
                     None => self.tier_views.unserved += 1,
                 }
+            }
+        }
+        // The glows of the distant lights at night, as the main view has them, from the set of
+        // the call (set 0 is the main view's).
+        let night = self.night(scene);
+        if parts.contains(Additions::GLOWS) && night > 0.0 && !scene.interior {
+            let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
+            if let Some(lights) = self.lights.as_mut().filter(|lights| lights.has_glows()) {
+                let made = lights.ensure_sets(scene.device, k + 2);
+                if made > 0 {
+                    println!("distant land: the glow set of view of its own {} is made: {:.2} MB ({} MB in all for the views of their own)", k + 1, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
+                }
+                self.tier_views.bytes += made;
+                lights.prepare(scene, &frame, k + 1);
+                pass.push_debug_group("distant lights (view of its own)");
+                lights.draw(pass, views.group(group), k + 1, scene.samples);
+                pass.pop_debug_group();
+                self.tier_views.glow_calls += 1;
+                drew = true;
             }
         }
         drew
@@ -3764,6 +3774,22 @@ impl DistantLand {
     /// The camera is under the water in this frame.
     fn under_water(&self) -> bool {
         self.environment.is_some_and(|e| e.flags & 2 != 0)
+    }
+
+    /// The values of the glows for a view: `eye` has the view range of the game in w, `planes` and
+    /// `projection` are the view's (the land's projection), `night` is how much of the night
+    /// there is. The glows start at the handoff to the game and are whole 512 units after it.
+    fn glow_frame(&self, scene: &SceneView, eye: [f32; 4], planes: [[f32; 4]; 6], projection: &[f32; 16], night: f32) -> distant_lights::GlowFrame {
+        let fade_end = eye[3] - 1800.0;
+        distant_lights::GlowFrame {
+            eye,
+            planes,
+            fade: [fade_end - 512.0, fade_end],
+            draw_distance: self.draw_distance,
+            time: game_time(self.environment, self.started),
+            screen: [scene.target_size.0 as f32, scene.target_size.1 as f32, projection[5] * scene.target_size.1 as f32 * 0.5],
+            glow: [self.tunables.get(tunables::GLOW_SIZE), self.tunables.get(tunables::GLOW_STRENGTH) * night, self.tunables.get(tunables::GLOW_PIXELS)],
+        }
     }
 
     /// How much of the night there is: the environment record's night of the hour (version
