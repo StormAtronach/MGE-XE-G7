@@ -386,16 +386,75 @@ pub struct GlowFrame {
     pub glow: [f32; 3],
 }
 
-struct Glows {
-    cull: wgpu::ComputePipeline,
+/// The buffers of one choice of glows and its draw: the main view's, and one for each view of
+/// its own of a frame (the writes of a frame land before all its commands, so no two views can
+/// share them).
+struct GlowSet {
     cull_group: wgpu::BindGroup,
     cull_uniforms: wgpu::Buffer,
     args: wgpu::Buffer,
-    draw: wgpu::RenderPipeline,
     /// Group 1 of the draw: the values of the glows ([`GlowUniforms`]) and the list.
     draw_group: wgpu::BindGroup,
     values: wgpu::Buffer,
+    /// The bytes of the set's buffers on the GPU.
+    bytes: u64,
+}
+
+struct Glows {
+    cull: wgpu::ComputePipeline,
+    draw: wgpu::RenderPipeline,
+    /// The samples of `draw`. A pass with another count (a view of its own into a rendered
+    /// texture has one) takes `draw_picture`.
+    samples: u32,
+    draw_picture: wgpu::RenderPipeline,
+    /// The sources, and the layouts that a set takes its groups from.
+    source_buffer: wgpu::Buffer,
+    cull_layout: wgpu::BindGroupLayout,
+    draw_layout: wgpu::BindGroupLayout,
+    /// Set 0 is the main view's; the next ones are made at the first use of a view of its own.
+    sets: Vec<GlowSet>,
     sources: u32,
+}
+
+impl Glows {
+    /// The buffers of one set for `sources` sources, with the groups that read them.
+    fn make_set(&self, device: &wgpu::Device) -> GlowSet {
+        let list_bytes = self.sources.max(1) as u64 * GLOW_WORDS * 4;
+        let list = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("distant lights, the glows of a frame"),
+            size: list_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let args = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("distant lights, the draw"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let uniform_buffer = |label: &str, size: usize| {
+            device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: size as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+        };
+        let cull_uniforms = uniform_buffer("distant lights, cull", size_of::<CullUniforms>());
+        let values = uniform_buffer("distant lights, glows", size_of::<GlowUniforms>());
+        let cull_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("distant lights, cull"),
+            layout: &self.cull_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: cull_uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.source_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: list.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: args.as_entire_binding() },
+            ],
+        });
+        let draw_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("distant lights, glows"),
+            layout: &self.draw_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: values.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: list.as_entire_binding() }],
+        });
+        let bytes = list_bytes + 16 + (size_of::<CullUniforms>() + size_of::<GlowUniforms>()) as u64;
+        GlowSet { cull_group, cull_uniforms, args, draw_group, values, bytes }
+    }
 }
 
 pub struct DistantLights {
@@ -452,72 +511,80 @@ impl DistantLights {
         }
     }
 
-    /// Chooses the glows of the frame, in a command buffer of its own before the frame.
-    pub fn prepare(&mut self, scene: &SceneView, frame: &GlowFrame) {
+    /// Makes the buffers of the sets up to `count` sets (0 is the main view's, made with the
+    /// glows): the views of their own, which a frame without them does not pay for. Returns the
+    /// bytes that this call made, 0 when the sets were there or there are no glows.
+    pub fn ensure_sets(&mut self, device: &wgpu::Device, count: usize) -> u64 {
+        let Some(glows) = self.glows.as_mut() else { return 0 };
+        let mut made = 0;
+        while glows.sets.len() < count {
+            let set = glows.make_set(device);
+            made += set.bytes;
+            glows.sets.push(set);
+        }
+        made
+    }
+
+    /// True when the file has glows: a view of its own can have a set.
+    pub fn has_glows(&self) -> bool {
+        self.glows.is_some()
+    }
+
+    /// Chooses the glows of the frame, in a command buffer of its own before the frame. `set` is
+    /// the main view's (0) or a view of its own's, which [`DistantLights::ensure_sets`] made.
+    pub fn prepare(&mut self, scene: &SceneView, frame: &GlowFrame, set: usize) {
         let Some(glows) = self.glows.as_ref() else { return };
+        let Some(buffers) = glows.sets.get(set) else { return };
         let cull = CullUniforms {
             planes: frame.planes,
             eye: frame.eye,
             range: [frame.fade[0], frame.fade[1], frame.draw_distance, frame.time],
             counts: [glows.sources, 0, 0, 0],
         };
-        scene.queue.write_buffer(&glows.cull_uniforms, 0, bytemuck::bytes_of(&cull));
+        scene.queue.write_buffer(&buffers.cull_uniforms, 0, bytemuck::bytes_of(&cull));
         // Six corners for each glow; the cull adds the glows.
-        scene.queue.write_buffer(&glows.args, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
+        scene.queue.write_buffer(&buffers.args, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
         let values = GlowUniforms {
             range: [frame.eye[3], 0.0, 0.0, 0.0],
             glow: [frame.glow[0], frame.glow[1], frame.glow[2], 64.0],
             screen: [frame.screen[0], frame.screen[1], frame.screen[2], 0.0],
         };
-        scene.queue.write_buffer(&glows.values, 0, bytemuck::bytes_of(&values));
+        scene.queue.write_buffer(&buffers.values, 0, bytemuck::bytes_of(&values));
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant lights, cull") });
         let at = scene.commands.stamps().begin(&mut encoder, "distant lights: the glow cull", nirender_wgpu::stamps::StampKind::Detail);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("distant lights, cull"), timestamp_writes: None });
             pass.set_pipeline(&glows.cull);
-            pass.set_bind_group(0, &glows.cull_group, &[]);
+            pass.set_bind_group(0, &buffers.cull_group, &[]);
             pass.dispatch_workgroups(glows.sources.div_ceil(256), 1, 1);
         }
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
-        self.frames += 1;
+        if set == 0 {
+            self.frames += 1;
+        }
     }
 
     /// Draws the glows chosen in `prepare` into the pass: after the land and the statics,
-    /// against their depth. `view` is the view group of the main view.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup) {
+    /// against their depth. `view` is the view group of the view that draws, `set` its set of
+    /// buffers and `samples` the samples of the pass.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, set: usize, samples: u32) {
         let Some(glows) = self.glows.as_ref() else { return };
-        pass.set_pipeline(&glows.draw);
+        let Some(buffers) = glows.sets.get(set) else { return };
+        pass.set_pipeline(if samples == glows.samples { &glows.draw } else { &glows.draw_picture });
         pass.set_bind_group(0, view, &[]);
-        pass.set_bind_group(1, &glows.draw_group, &[]);
-        pass.draw_indirect(&glows.args, 0);
+        pass.set_bind_group(1, &buffers.draw_group, &[]);
+        pass.draw_indirect(&buffers.args, 0);
     }
 }
 
 fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGroupLayout) -> Glows {
     let device = scene.device;
-    let sources = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant lights, the sources"),
         contents: &file.sources,
         usage: wgpu::BufferUsages::STORAGE,
     });
-    let list = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("distant lights, the glows of a frame"),
-        size: file.source_count.max(1) as u64 * GLOW_WORDS * 4,
-        usage: wgpu::BufferUsages::STORAGE,
-        mapped_at_creation: false,
-    });
-    let args = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("distant lights, the draw"),
-        size: 16,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let uniform_buffer = |label: &str, size: usize| {
-        device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: size as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
-    };
-    let cull_uniforms = uniform_buffer("distant lights, cull", size_of::<CullUniforms>());
-    let values = uniform_buffer("distant lights, glows", size_of::<GlowUniforms>());
     let entry = |binding: u32, stage: wgpu::ShaderStages, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: stage,
@@ -532,16 +599,6 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
             entry(1, compute, wgpu::BufferBindingType::Storage { read_only: true }),
             entry(2, compute, wgpu::BufferBindingType::Storage { read_only: false }),
             entry(3, compute, wgpu::BufferBindingType::Storage { read_only: false }),
-        ],
-    });
-    let cull_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("distant lights, cull"),
-        layout: &cull_layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: cull_uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: sources.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: list.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: args.as_entire_binding() },
         ],
     });
     let cull_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant lights, cull"), source: wgpu::ShaderSource::Wgsl(CULL_SHADER.into()) });
@@ -559,43 +616,47 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
         label: Some("distant lights, glows"),
         entries: &[entry(0, draw_stages, wgpu::BufferBindingType::Uniform), entry(1, wgpu::ShaderStages::VERTEX, wgpu::BufferBindingType::Storage { read_only: true })],
     });
-    let draw_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("distant lights, glows"),
-        layout: &draw_layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: values.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: list.as_entire_binding() }],
-    });
     let source = format!("{}{GLOW_SHADER}", super::view::wgsl());
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant lights, glows"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    // Group 0: the view group of the main view; group 1: the glows.
+    // Group 0: the view group of the view; group 1: the glows.
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant lights, glows"), bind_group_layouts: &[Some(view_layout), Some(&draw_layout)], immediate_size: 0 });
     let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-    let draw = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("distant lights, glows"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: scene.depth_format,
-            depth_write_enabled: Some(false),
-            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
-        multisample: scene.multisample(false),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: scene.target_format,
-                blend: Some(wgpu::BlendState { color: add, alpha: add }),
-                write_mask: wgpu::ColorWrites::COLOR,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-    Glows { cull, cull_group, cull_uniforms, args, draw, draw_group, values, sources: file.source_count }
+    // The glows of the frame go into the pass of the game (its samples); a view of its own into
+    // a rendered texture has one sample.
+    let make_draw = |multisample: wgpu::MultisampleState| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("distant lights, glows"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: scene.depth_format,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: scene.target_format,
+                    blend: Some(wgpu::BlendState { color: add, alpha: add }),
+                    write_mask: wgpu::ColorWrites::COLOR,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    let draw = make_draw(scene.multisample(false));
+    let draw_picture = make_draw(Default::default());
+    let mut glows = Glows { cull, draw, samples: scene.samples, draw_picture, source_buffer, cull_layout, draw_layout, sets: Vec::new(), sources: file.source_count };
+    let main = glows.make_set(device);
+    glows.sets.push(main);
+    glows
 }
 
 /// How much of the night there is, from the colour of the sun of the frame: 1 at night, 0 in

@@ -888,6 +888,14 @@ struct Gpu {
     texture_views: Vec<wgpu::TextureView>,
     grass_pipeline: wgpu::RenderPipeline,
     grass_pipeline_lines: Option<wgpu::RenderPipeline>,
+    /// The grass into a pass with one sample (a view of its own into a rendered texture): no
+    /// alpha to coverage.
+    grass_picture_pipeline: wgpu::RenderPipeline,
+    /// The values of the grass of the views of their own, one set for each call at the end of
+    /// the world in a frame, made when a call first needs it.
+    grass_sets: Vec<GrassSet>,
+    /// The texture of one texel that stands for the shadow map in the group of a view of its own.
+    grass_no_shadow: std::rc::Rc<wgpu::TextureView>,
     grass_group: wgpu::BindGroup,
     grass_layout: wgpu::BindGroupLayout,
     grass_sampler: wgpu::Sampler,
@@ -897,6 +905,32 @@ struct Gpu {
     grass_atlas: std::rc::Rc<wgpu::TextureView>,
     grass_uniforms: wgpu::Buffer,
     grass_records: wgpu::Buffer,
+}
+
+/// The places, the uniforms and the group of the grass for one call of a view of its own. The
+/// writes of a call land before all commands of the frame (the one-submit rule), so each call
+/// of a frame has a set of its own.
+struct GrassSet {
+    records: wgpu::Buffer,
+    uniforms: wgpu::Buffer,
+    group: wgpu::BindGroup,
+}
+
+/// Where the grass of a call goes: the main view at the end of the world of the game, or a
+/// view of its own (the `k`th call at the end of the world in the frame, D82 section 3.4f).
+#[derive(Clone, Copy)]
+pub enum GrassTarget {
+    Main,
+    View(usize),
+}
+
+/// What a call of the grass of a view of its own did.
+#[derive(Default, Clone, Copy)]
+pub struct GrassView {
+    /// The bytes of GPU memory that the call made for its set.
+    pub made: u64,
+    /// The places drawn.
+    pub drawn: usize,
 }
 
 /// The values of a frame for the grass.
@@ -2095,23 +2129,74 @@ impl Statics {
             return;
         }
         let started = Instant::now();
-        self.draw_grass_timed(scene, pass, frame);
+        self.draw_grass_timed(scene, pass, frame, GrassTarget::Main);
         self.grass_stats.calls += 1;
         self.grass_stats.seconds += started.elapsed().as_secs_f64();
         self.grass_stats.drawn += self.grass_draws.len() as u64;
     }
 
-    fn draw_grass_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame) {
+    /// Draws the grass of a view of its own, the `k`th call at the end of the world in the
+    /// frame: the view group `view::tier_game(k)` has the projection of the game, and the call
+    /// has places, uniforms and a group of its own. The view has no shadow on its grass. The
+    /// main view's grass counters stay as they are.
+    pub fn draw_grass_view(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame, k: usize) -> GrassView {
+        if self.failed || !self.settings.grass {
+            return GrassView::default();
+        }
+        let made = self.ensure_grass_sets(scene.device, k);
+        let drawn = self.draw_grass_timed(scene, pass, frame, GrassTarget::View(k));
+        GrassView { made, drawn }
+    }
+
+    /// Makes the sets of the grass of the views of their own up to the `k`th; returns the bytes
+    /// of the sets made.
+    fn ensure_grass_sets(&mut self, device: &wgpu::Device, k: usize) -> u64 {
+        let Some(gpu) = self.gpu.as_mut() else { return 0 };
+        let mut made = 0;
+        while gpu.grass_sets.len() <= k {
+            let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("grass, a view of its own"),
+                size: size_of::<GrassUniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let records = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("grass, the places of a view of its own"),
+                size: (GRASS_RECORDS * GRASS_RECORD) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let group = make_grass_group(device, &gpu.grass_layout, &uniforms, &gpu.grass_sampler, &gpu.grass_no_shadow, &gpu.grass_shadow_sampler);
+            made += uniforms.size() + records.size();
+            gpu.grass_sets.push(GrassSet { records, uniforms, group });
+        }
+        made
+    }
+
+    /// Draws the grass for `target`; returns the places drawn.
+    fn draw_grass_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame, target: GrassTarget) -> usize {
+        let main = matches!(target, GrassTarget::Main);
         // The shadow map is made once in a session: the group takes it at its first frame.
-        if let (Some(shadow), Some(gpu)) = (frame.shadow.as_ref(), self.gpu.as_mut()) {
+        if let (Some(shadow), Some(gpu), true) = (frame.shadow.as_ref(), self.gpu.as_mut(), main) {
             if !std::rc::Rc::ptr_eq(&gpu.grass_atlas, &shadow.atlas) {
                 gpu.grass_group = make_grass_group(scene.device, &gpu.grass_layout, &gpu.grass_uniforms, &gpu.grass_sampler, &shadow.atlas, &gpu.grass_shadow_sampler);
                 gpu.grass_atlas = shadow.atlas.clone();
             }
         }
-        let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else { return };
-        let Some(view) = self.view_groups.get(super::view::GAME) else { return };
-        let Some(world) = catalog.worlds.get(&self.world) else { return };
+        let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else { return 0 };
+        let view_index = match target {
+            GrassTarget::Main => super::view::GAME,
+            GrassTarget::View(k) => super::view::tier_game(k),
+        };
+        let Some(view) = self.view_groups.get(view_index) else { return 0 };
+        let (records_buffer, uniforms_buffer, group) = match target {
+            GrassTarget::Main => (&gpu.grass_records, &gpu.grass_uniforms, &gpu.grass_group),
+            GrassTarget::View(k) => match gpu.grass_sets.get(k) {
+                Some(set) => (&set.records, &set.uniforms, &set.group),
+                None => return 0,
+            },
+        };
+        let Some(world) = catalog.worlds.get(&self.world) else { return 0 };
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
         self.grass_draws.clear();
@@ -2150,14 +2235,16 @@ impl Statics {
                 }
             }
         }
-        self.grass_frames += 1;
-        self.grass_cut += cut as u64;
+        if main {
+            self.grass_frames += 1;
+            self.grass_cut += cut as u64;
+        }
         if self.grass_draws.is_empty() {
-            return;
+            return 0;
         }
         self.grass_draws.sort_unstable_by_key(|draw| (draw.0, draw.1));
         let records: Vec<f32> = self.grass_draws.iter().flat_map(|draw| draw.2.into_iter().chain([draw.3, draw.4, 0.0, 0.0])).collect();
-        scene.queue.write_buffer(&gpu.grass_records, 0, bytemuck::cast_slice(&records));
+        scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&records));
         let uniforms = GrassUniforms {
             range: [view_range, 0.0, 0.0, 0.0],
             fog_color: frame.fog_color,
@@ -2174,12 +2261,21 @@ impl Statics {
             }),
             look: frame.look,
         };
-        scene.queue.write_buffer(&gpu.grass_uniforms, 0, bytemuck::bytes_of(&uniforms));
+        scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        pass.set_pipeline(if scene.wireframe { gpu.grass_pipeline_lines.as_ref().unwrap_or(&gpu.grass_pipeline) } else { &gpu.grass_pipeline });
+        // A pass with another count of samples than the main view's (a rendered texture) has the
+        // pipeline for one sample, filled.
+        let pipeline = if scene.samples != gpu.samples {
+            &gpu.grass_picture_pipeline
+        } else if scene.wireframe {
+            gpu.grass_pipeline_lines.as_ref().unwrap_or(&gpu.grass_pipeline)
+        } else {
+            &gpu.grass_pipeline
+        };
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, view, &[]);
-        pass.set_bind_group(1, &gpu.grass_group, &[]);
-        pass.set_vertex_buffer(1, gpu.grass_records.slice(..));
+        pass.set_bind_group(1, group, &[]);
+        pass.set_vertex_buffer(1, records_buffer.slice(..));
         // One draw for each run of places with the same subset.
         let mut start = 0;
         while start < self.grass_draws.len() {
@@ -2196,7 +2292,10 @@ impl Statics {
             }
             start = end;
         }
-        self.grass_drawn += self.grass_draws.len() as u64;
+        if main {
+            self.grass_drawn += self.grass_draws.len() as u64;
+        }
+        self.grass_draws.len()
     }
 
     /// A wait for the statics is open: the merged subsets that arrive in it are counted apart
@@ -3220,7 +3319,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         immediate_size: 0,
     });
     let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
-    let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("grass"),
         layout: Some(&grass_pipeline_layout),
         vertex: wgpu::VertexState {
@@ -3243,12 +3342,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         }),
         // The alpha of the blade is the coverage of its pixel with `alpha_to_coverage`; the
         // alpha of the back buffer stays 1.
-        multisample: scene.multisample(alpha_to_coverage),
+        multisample,
         fragment: Some(wgpu::FragmentState {
             module: &grass_module,
             entry_point: Some("fs"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("ALPHA_TO_COVERAGE", scene.multisample(alpha_to_coverage).alpha_to_coverage_enabled as u32 as f64)],
+                constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
                 ..Default::default()
             },
             targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
@@ -3256,8 +3355,9 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         multiview_mask: None,
         cache: None,
     });
-    let grass_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill);
-    let grass_pipeline_lines = lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line));
+    let grass_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill, scene.multisample(alpha_to_coverage));
+    let grass_pipeline_lines = lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage)));
+    let grass_picture_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill, Default::default());
     let grass_records = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("grass, the places of a frame"),
         size: (GRASS_RECORDS * GRASS_RECORD) as u64,
@@ -3281,6 +3381,9 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         culling,
         grass_pipeline,
         grass_pipeline_lines,
+        grass_picture_pipeline,
+        grass_sets: Vec::new(),
+        grass_no_shadow: no_shadow.clone(),
         grass_group,
         grass_layout,
         grass_sampler: sampler,
