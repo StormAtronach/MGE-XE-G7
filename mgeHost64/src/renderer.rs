@@ -3089,6 +3089,36 @@ impl Extension for DistantLand {
         drew
     }
 
+    /// The grass of a view of its own that has it in its options (D82 section 3.4f, slice 2),
+    /// at the end of the world of the view. The view group has the projection of the game, as
+    /// the main view's grass has; the places, the uniforms and the group are the call's own
+    /// (the one-submit rule). The grass of the view has no shadow, and the wind, the sun and
+    /// the fog are the main view's.
+    fn view_after_world(&mut self, scene: &SceneView, parts: Additions, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
+        if self.menu_reuse || !self.enabled || !self.distant_cell || !parts.contains(Additions::GRASS) || skipped("grass") {
+            return;
+        }
+        if !is_perspective(&scene.projection) || self.statics.is_none() {
+            return;
+        }
+        let ready = self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
+        let Some(k) = ready.then(|| self.tier_views.claim_after(scene.frame)).flatten() else { return };
+        let Some(views) = self.view_binding.as_ref() else { return };
+        views.write(scene.queue, view::tier_game(k), &self.frame_view(scene, &scene.projection));
+        let mut frame = self.grass_frame(scene);
+        frame.shadow = None;
+        let Some(statics) = self.statics.as_mut() else { return };
+        pass.push_debug_group("grass (view of its own)");
+        let did = statics.draw_grass_view(scene, pass, &frame, k);
+        pass.pop_debug_group();
+        if did.made > 0 {
+            println!("distant land: the grass set of view of its own {} is made: {:.2} MB ({} MB in all for the views of their own)", k + 1, did.made as f64 / 1e6, (self.tier_views.bytes + did.made) as f64 / 1e6);
+        }
+        self.tier_views.bytes += did.made;
+        self.tier_views.grass_calls += u64::from(did.drawn > 0);
+        self.tier_views.grass_places += did.drawn as u64;
+    }
+
     fn wants_held(&self) -> bool {
         !self.far_water.is_empty() || self.sea_caustics()
     }
@@ -3107,43 +3137,7 @@ impl Extension for DistantLand {
         if self.statics.is_none() {
             return;
         }
-        let eye = scene.eye.map(|v| v as f32);
-        let environment = self.environment;
-        // The multipliers of the weather for the light reach the distant land only with the
-        // light for each pixel on, as `DistantLand::setView` of the Direct3D 9 path applies
-        // them to SunCol and SunAmb only when it is; the shadow of the ground (`shadow_sun`)
-        // takes the same sun.
-        let (sun_mult, ambient_mult) = self.shade.map_or((1.0, 1.0), |p| (p.sun, p.ambient));
-        let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
-        let frame = statics::GrassFrame {
-            // The view range of the game is the end of the grass. Without it from the game,
-            // 7168 units: the top of the game's "Render Distance" (2500 to 7168, default 4834),
-            // which the Direct3D 9 path sets at the load. This mode does not set it.
-            eye: [eye[0], eye[1], eye[2], environment.map_or(7168.0, |e| e.near_view_range)],
-            // The grass has the linear fog of the near cells (in the game view), with their
-            // fog colour.
-            fog_color: scene.fog_color,
-            // The light of the sun of the game, also in a frame without its direction (the
-            // land then has none).
-            sun_color: [scene.sun_color[0] * sun_mult, scene.sun_color[1] * sun_mult, scene.sun_color[2] * sun_mult, 0.0],
-            ambient: [ambient[0], ambient[1], ambient[2], 0.0],
-            wind: environment.map_or([0.0; 4], |e| [e.wind[0], e.wind[1], e.time, 0.0]),
-            foot: environment.map_or([0.0; 4], |e| [e.foot_pos[0], e.foot_pos[1], e.foot_pos[2], e.foot_valid as f32]),
-            planes: nirender_wgpu::view_planes(&scene.view, &scene.projection),
-            // The shadow map of the frame (an exterior or a cell like one, with shadows on),
-            // as `renderGrassInst` of the Direct3D 9 path.
-            shadow: self.shadow.as_ref().filter(|_| self.shadow_in_frame).map(|shadow| statics::GrassShadow {
-                atlas: shadow.atlas_view.clone(),
-                layers: shadow.viewproj,
-                rcp: 1.0 / shadow.resolution as f32,
-                sun_vis: environment.map_or(0.0, |e| e.sun_vis),
-                day: self.shadow_day,
-                above_sea: eye[2] > environment.map_or(-1.0, |e| e.sea_plane()),
-                edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
-            })
-            .filter(|_| self.tunables.get(tunables::GRASS_SHADOW) > 0.5),
-            look: self.grass_look,
-        };
+        let frame = self.grass_frame(scene);
         let Some(statics) = self.statics.as_mut() else { return };
         if !skipped("grass") {
             statics.draw_grass(scene, pass, &frame);
@@ -3796,6 +3790,48 @@ impl DistantLand {
     /// 7), else from the colour of the sun.
     fn night(&self, scene: &SceneView) -> f32 {
         self.environment.filter(|e| e.version >= 7).map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night)
+    }
+
+    /// The values of the grass for a view: the camera, the light of the game, the wind and the
+    /// shadow map of the frame. A view of its own takes the shadow off.
+    fn grass_frame(&self, scene: &SceneView) -> statics::GrassFrame {
+        let eye = scene.eye.map(|v| v as f32);
+        let environment = self.environment;
+        // The multipliers of the weather for the light reach the distant land only with the
+        // light for each pixel on, as `DistantLand::setView` of the Direct3D 9 path applies
+        // them to SunCol and SunAmb only when it is; the shadow of the ground (`shadow_sun`)
+        // takes the same sun.
+        let (sun_mult, ambient_mult) = self.shade.map_or((1.0, 1.0), |p| (p.sun, p.ambient));
+        let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
+        statics::GrassFrame {
+            // The view range of the game is the end of the grass. Without it from the game,
+            // 7168 units: the top of the game's "Render Distance" (2500 to 7168, default 4834),
+            // which the Direct3D 9 path sets at the load. This mode does not set it.
+            eye: [eye[0], eye[1], eye[2], environment.map_or(7168.0, |e| e.near_view_range)],
+            // The grass has the linear fog of the near cells (in the game view), with their
+            // fog colour.
+            fog_color: scene.fog_color,
+            // The light of the sun of the game, also in a frame without its direction (the
+            // land then has none).
+            sun_color: [scene.sun_color[0] * sun_mult, scene.sun_color[1] * sun_mult, scene.sun_color[2] * sun_mult, 0.0],
+            ambient: [ambient[0], ambient[1], ambient[2], 0.0],
+            wind: environment.map_or([0.0; 4], |e| [e.wind[0], e.wind[1], e.time, 0.0]),
+            foot: environment.map_or([0.0; 4], |e| [e.foot_pos[0], e.foot_pos[1], e.foot_pos[2], e.foot_valid as f32]),
+            planes: nirender_wgpu::view_planes(&scene.view, &scene.projection),
+            // The shadow map of the frame (an exterior or a cell like one, with shadows on),
+            // as `renderGrassInst` of the Direct3D 9 path.
+            shadow: self.shadow.as_ref().filter(|_| self.shadow_in_frame).map(|shadow| statics::GrassShadow {
+                atlas: shadow.atlas_view.clone(),
+                layers: shadow.viewproj,
+                rcp: 1.0 / shadow.resolution as f32,
+                sun_vis: environment.map_or(0.0, |e| e.sun_vis),
+                day: self.shadow_day,
+                above_sea: eye[2] > environment.map_or(-1.0, |e| e.sea_plane()),
+                edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
+            })
+            .filter(|_| self.tunables.get(tunables::GRASS_SHADOW) > 0.5),
+            look: self.grass_look,
+        }
     }
 
     /// The bits of `counts.w` that `shade` sets for a draw with these facts.

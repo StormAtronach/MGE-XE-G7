@@ -24,11 +24,20 @@ pub const GAME: usize = 4;
 /// [`TIER_VIEWS`]): the groups from [`TIER_FIRST`] on, one for each view of a frame.
 pub const TIER_FIRST: usize = 5;
 pub const TIER_VIEWS: usize = 4;
-pub const VIEWS: usize = TIER_FIRST + TIER_VIEWS;
+/// The groups of the grass of the views of their own: the projection of the game, as [`GAME`]
+/// has it, one for each call at the end of the world (D82 section 3.4f, slice 2).
+pub const TIER_GAME_FIRST: usize = TIER_FIRST + TIER_VIEWS;
+pub const VIEWS: usize = TIER_GAME_FIRST + TIER_VIEWS;
 
 /// The group of the `k`th view of its own in a frame (0 to [`TIER_VIEWS`] less 1).
 pub const fn tier(k: usize) -> usize {
     TIER_FIRST + k
+}
+
+/// The group with the projection of the game for the `k`th call at the end of the world of a
+/// view of its own in a frame (0 to [`TIER_VIEWS`] less 1).
+pub const fn tier_game(k: usize) -> usize {
+    TIER_GAME_FIRST + k
 }
 
 /// The group of a set of the statics. The sets 0 to 3 have the groups of the same numbers (the
@@ -136,6 +145,15 @@ pub fn wgsl() -> String {
 pub struct TierViews {
     frame: u64,
     used: usize,
+    /// The calls at the end of the world (the grass) that the frame has served; they have
+    /// numbers of their own, because a scene's two calls are not in one order with the
+    /// other scenes' calls.
+    used_after: usize,
+    /// The calls at the end of the world that drew grass, and the places they drew.
+    pub grass_calls: u64,
+    pub grass_places: u64,
+    /// The calls at the start of the world that drew glows.
+    pub glow_calls: u64,
     /// The calls served, the calls refused because a frame had [`TIER_VIEWS`] already, and
     /// the calls that could not draw (the land or the statics were not loaded).
     pub calls: u64,
@@ -146,8 +164,6 @@ pub struct TierViews {
     /// The draws of the land meshes and the draw calls of the statics, in all calls.
     pub land_draws: u64,
     pub static_calls: u64,
-    /// The calls that drew glows.
-    pub glow_calls: u64,
     /// The bytes of GPU memory that the sets of the views of their own made.
     pub bytes: u64,
     /// The near plane of the last call that was logged, and how many lines were logged.
@@ -162,10 +178,7 @@ impl TierViews {
     /// The number of the view for a call in `frame`, 0 to [`TIER_VIEWS`] less 1; `None` when
     /// the frame has used them all.
     pub fn claim(&mut self, frame: u64) -> Option<usize> {
-        if self.frame != frame {
-            self.frame = frame;
-            self.used = 0;
-        }
+        self.begin_frame(frame);
         if self.used >= TIER_VIEWS {
             self.refused += 1;
             return None;
@@ -173,6 +186,26 @@ impl TierViews {
         self.used += 1;
         self.calls += 1;
         Some(self.used - 1)
+    }
+
+    /// The number of the call at the end of the world for `frame`, as [`claim`](Self::claim)
+    /// numbers the calls at the start; `None` when the frame has used them all.
+    pub fn claim_after(&mut self, frame: u64) -> Option<usize> {
+        self.begin_frame(frame);
+        if self.used_after >= TIER_VIEWS {
+            self.refused += 1;
+            return None;
+        }
+        self.used_after += 1;
+        Some(self.used_after - 1)
+    }
+
+    fn begin_frame(&mut self, frame: u64) {
+        if self.frame != frame {
+            self.frame = frame;
+            self.used = 0;
+            self.used_after = 0;
+        }
     }
 
     /// True when the near plane of a call differs from the last logged one by more than
@@ -189,7 +222,7 @@ impl TierViews {
     /// The report line, for the end of the session.
     pub fn line(&self) -> String {
         format!(
-            "views of their own: {} calls with land or statics, {} refused by the cap of {TIER_VIEWS} calls a frame (the bound views.full_tier_max is the host's, in its full tier line), {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls; {} calls drew glows; {:.1} MB made for their sets",
+            "views of their own: {} calls with land or statics, {} refused by the cap of {TIER_VIEWS} calls a frame (the bound views.full_tier_max is the host's, in its full tier line), {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls; {} calls drew glows; {} calls at the end of the world drew {} grass places; {:.1} MB made for their sets",
             self.calls,
             self.refused,
             self.unserved,
@@ -197,6 +230,8 @@ impl TierViews {
             self.land_draws,
             self.static_calls,
             self.glow_calls,
+            self.grass_calls,
+            self.grass_places,
             self.bytes as f64 / 1e6
         )
     }
@@ -319,6 +354,25 @@ mod tests {
         sorted.dedup();
         assert_eq!(sorted.len(), groups.len());
         assert!(groups.iter().all(|&group| group < VIEWS));
+        // The groups with the game's projection for the grass of the views of their own come
+        // after the groups of the sets and are all different.
+        assert_eq!(tier_game(0), tier(TIER_VIEWS - 1) + 1);
+        assert_eq!(tier_game(TIER_VIEWS - 1) + 1, VIEWS);
+    }
+
+    /// The calls at the end of the world of a frame have numbers of their own, apart from the
+    /// calls at the start.
+    #[test]
+    fn the_calls_at_the_end_of_the_world_have_numbers_of_their_own() {
+        let mut tier = TierViews::default();
+        assert_eq!(tier.claim(3), Some(0));
+        assert_eq!(tier.claim_after(3), Some(0));
+        assert_eq!(tier.claim_after(3), Some(1));
+        assert_eq!(tier.claim(3), Some(1));
+        let rest: Vec<Option<usize>> = (0..TIER_VIEWS).map(|_| tier.claim_after(3)).collect();
+        assert_eq!(rest.iter().filter(|number| number.is_none()).count(), 2);
+        // The next frame starts both numberings again.
+        assert_eq!((tier.claim(4), tier.claim_after(4)), (Some(0), Some(0)));
     }
 
     /// Each call of a frame gets a number of its own, the numbers start again in the next frame,
