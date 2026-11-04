@@ -60,7 +60,7 @@ static api::MacroFunctions macroFns = {
 };
 
 // The function of main.cpp that gives the wgpu renderer's plugin the options of a view.
-void sendViewOptions(UINT kind, void* key, const UINT* parts);
+bool sendViewOptions(UINT kind, void* key, const UINT* parts);
 int queryViewOptions(UINT kind, void* key, UINT* parts);
 
 namespace api {
@@ -1104,8 +1104,7 @@ namespace api {
             if (!renderer) {
                 viewOptions.erase(ViewKey{ kind, key });
             }
-            sendViewOptions(static_cast<UINT>(kind), key, nullptr);
-            return true;
+            return sendViewOptions(static_cast<UINT>(kind), key, nullptr);
         }
         if (options->size < sizeof(ViewOptions)) {
             return false;
@@ -1114,8 +1113,9 @@ namespace api {
         if (!renderer) {
             viewOptions[ViewKey{ kind, key }] = parts;
         }
-        sendViewOptions(static_cast<UINT>(kind), key, &parts);
-        return true;
+        // False when the plugin refuses the key: a plugin from before a key kind draws nothing for
+        // it. With no plugin (the Direct3D 9 renderer) the copy above is kept, and the call is true.
+        return sendViewOptions(static_cast<UINT>(kind), key, &parts);
     }
 
     bool MGEAPIv4::viewOptionsGet(ViewKeyKind kind, void* key, ViewOptions* options) {

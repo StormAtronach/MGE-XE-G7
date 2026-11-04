@@ -215,12 +215,15 @@ int queryViewOptions(UINT kind, void* key, UINT* parts) {
     return viewOptionsGetExport ? static_cast<int>(viewOptionsGetExport(kind, key, parts)) : -1;
 }
 
-// Gives the plugin the options of a view: the parts, or null to clear them. A plugin from before
-// the options has no function: the call does nothing then.
-void sendViewOptions(UINT kind, void* key, const UINT* parts) {
-    if (viewOptionsExport) {
-        viewOptionsExport(kind, key, parts ? *parts : 0, parts ? 0 : 1);
+// Gives the plugin the options of a view: the parts, or null to clear them. False only when the
+// plugin refuses the key (a plugin from before a key kind refuses that kind). Without the plugin's
+// function (the Direct3D 9 renderer, or a plugin from before the options) the call does nothing
+// and gives true: the caller keeps its own copy then.
+bool sendViewOptions(UINT kind, void* key, const UINT* parts) {
+    if (!viewOptionsExport) {
+        return true;
     }
+    return viewOptionsExport(kind, key, parts ? *parts : 0, parts ? 0 : 1) != 0;
 }
 
 // A message box of MGE XE with the caption "MGE XE". The rule of every box of the three parts
