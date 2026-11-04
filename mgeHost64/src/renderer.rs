@@ -77,6 +77,10 @@ fn skipped(part: &str) -> bool {
     SKIP.get_or_init(|| nirender_wgpu::switches::text("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
 }
 /// The number of the environment data in the stream. `Deviceless::EnvironmentId` of MGE XE.
+/// The adaptation point of the main view is logged at every this many runs of its post chain,
+/// for the first this many lines.
+const MAIN_POINT_EVERY: u64 = 60;
+const MAIN_POINT_LINES: u64 = 400;
 const ENVIRONMENT_ID: u32 = 1;
 /// The state of a post shader that a mod loaded: see [`post::ShaderState`].
 const SHADER_STATE_ID: u32 = 2;
@@ -844,6 +848,8 @@ pub struct DistantLand {
     post_places: [Option<post::PostView>; view::TIER_VIEWS],
     /// The lines logged for a new state of a place.
     post_view_lines: u32,
+    /// The runs of the post chain on the main view's picture.
+    main_post_runs: u64,
 }
 
 /// The values of the land only, group 1 of its shader. Those of the view are in the view
@@ -1170,6 +1176,7 @@ impl DistantLand {
             post_main: None,
             post_places: Default::default(),
             post_view_lines: 0,
+            main_post_runs: 0,
         };
         println!(
             "distant land: {}, draw distance {:.1} cells, fog from {:.2} to {:.2} cells",
@@ -3395,6 +3402,13 @@ impl DistantLand {
         let Some(post) = self.post.as_mut() else { return false };
         let main = self.post_main.get_or_insert_with(|| post::PostView::main(scene.device));
         post.run(main, scene, encoder, target, &variables, flags, distant, [1.0; 4]);
+        // The adaptation point of the main view, now and then: a picture with the post chain
+        // must not move it (the null test of the post of the views of their own).
+        self.main_post_runs += 1;
+        if self.main_post_runs % MAIN_POINT_EVERY == 1 && self.main_post_runs / MAIN_POINT_EVERY < MAIN_POINT_LINES {
+            let point = main.hdr_point();
+            println!("post: main adaptation point ({:.3}, {:.3}, {:.3}, {:.3}) after {} main runs and {} runs of places", point[0], point[1], point[2], point[3], self.main_post_runs, self.tier_views.post_calls);
+        }
         true
     }
 
