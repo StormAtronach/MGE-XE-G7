@@ -77,6 +77,10 @@ fn skipped(part: &str) -> bool {
     SKIP.get_or_init(|| nirender_wgpu::switches::text("MGE_XE_SKIP").unwrap_or_default()).split(',').any(|p| p.trim() == part)
 }
 /// The number of the environment data in the stream. `Deviceless::EnvironmentId` of MGE XE.
+/// The adaptation point of the main view is logged at every this many runs of its post chain,
+/// for the first this many lines.
+const MAIN_POINT_EVERY: u64 = 60;
+const MAIN_POINT_LINES: u64 = 400;
 const ENVIRONMENT_ID: u32 = 1;
 /// The state of a post shader that a mod loaded: see [`post::ShaderState`].
 const SHADER_STATE_ID: u32 = 2;
@@ -835,6 +839,17 @@ pub struct DistantLand {
     frames: u64,
     /// The views of their own with the land and the statics of the full tier.
     tier_views: view::TierViews,
+    /// The wind and the time that the environment records carried, for the report.
+    environment_watch: view::EnvironmentWatch,
+    /// The state of the post chain for the main view (with the HDR measure), and for each place of
+    /// the full tier (without it). A place's state lives as long as the view that holds the place
+    /// (`note_place_holder`).
+    post_main: Option<post::PostView>,
+    post_places: [Option<post::PostView>; view::TIER_VIEWS],
+    /// The lines logged for a new state of a place.
+    post_view_lines: u32,
+    /// The runs of the post chain on the main view's picture.
+    main_post_runs: u64,
 }
 
 /// The values of the land only, group 1 of its shader. Those of the view are in the view
@@ -1157,6 +1172,11 @@ impl DistantLand {
             meshes_drawn: 0,
             frames: 0,
             tier_views: view::TierViews::default(),
+            environment_watch: view::EnvironmentWatch::default(),
+            post_main: None,
+            post_places: Default::default(),
+            post_view_lines: 0,
+            main_post_runs: 0,
         };
         println!(
             "distant land: {}, draw distance {:.1} cells, fog from {:.2} to {:.2} cells",
@@ -1297,6 +1317,14 @@ impl Drop for DistantLand {
             if self.environment.is_some() { "from the game with each frame" } else { "from mgeXE.toml" }
         );
         println!("distant land: {}", self.tier_views.line());
+        println!("distant land: {}", self.environment_watch.line());
+        println!("distant land: {}", self.tier_views.post_line());
+        println!(
+            "post state: main view {:.2} MB; places in use: {} ({:.2} MB)",
+            self.post_main.as_ref().map_or(0, post::PostView::bytes) as f64 / 1e6,
+            self.post_places.iter().flatten().count(),
+            self.post_places.iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6
+        );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("distant lights: {} frames with glows", self.lights.as_ref().map_or(0, |lights| lights.frames));
         println!(
@@ -2753,6 +2781,9 @@ impl Extension for DistantLand {
                     self.arrival = Some((Instant::now(), 0));
                     self.arrival_serial = 0;
                 }
+                if self.environment_watch.note(environment.time, environment.wind) {
+                    println!("environment: simulation time {:.1} s, wind ({:.2}, {:.2})", environment.time, environment.wind[0], environment.wind[1]);
+                }
                 self.environment = Some(environment);
             }
         }
@@ -3121,6 +3152,22 @@ impl Extension for DistantLand {
         self.tier_views.grass_places += did.drawn as u64;
     }
 
+    /// The post chain on the picture of a place of the full tier that has the option `shaders`
+    /// (D82 section 3.4f, slice 3), at the end of the scene. The scene is the view's own, so the
+    /// variables are its camera's; the state of the run is the place's ([`post::PostView`]), so
+    /// the main view's pool, depth frame and buffers are not touched. The HDR point is the main
+    /// view's.
+    fn view_post(&mut self, scene: &SceneView, parts: Additions, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+        if self.menu_reuse || !parts.contains(Additions::POST_COVER) || !self.chain_wanted() || scene.picture.is_none() || scene.depth.is_none() {
+            return;
+        }
+        let Some(k) = self.tier_views.claim_post(scene.frame, scene.view_key.place) else { return };
+        self.note_place_holder(k, scene.view_key.slot);
+        if !self.run_view_post(k, scene, encoder, target) {
+            self.tier_views.post_unserved += 1;
+        }
+    }
+
     fn wants_held(&self) -> bool {
         !self.far_water.is_empty() || self.sea_caustics()
     }
@@ -3351,10 +3398,43 @@ impl DistantLand {
     /// The chain of post shaders into `target`, with the values of the frame. False without
     /// the chain or the environment.
     fn run_post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
-        let land_terms = nirender_wgpu::depth::terms(&self.land_projection(scene));
-        let Some(e) = self.environment else { return false };
-        let FogRanges { start: fog_start, end: fog_end, exp_start: fog_exp_start, exp_divisor: fog_exp_divisor, near_start: fog_near_start, near_end: fog_near_end } = self.fog_ranges(&e, scene);
+        let Some((variables, flags, distant)) = self.post_inputs(scene) else { return false };
         let Some(post) = self.post.as_mut() else { return false };
+        let main = self.post_main.get_or_insert_with(|| post::PostView::main(scene.device));
+        post.run(main, scene, encoder, target, &variables, flags, distant, [1.0; 4]);
+        // The adaptation point of the main view, now and then: a picture with the post chain
+        // must not move it (the null test of the post of the views of their own).
+        self.main_post_runs += 1;
+        if self.main_post_runs % MAIN_POINT_EVERY == 1 && self.main_post_runs / MAIN_POINT_EVERY < MAIN_POINT_LINES {
+            let point = main.hdr_point();
+            println!("post: main adaptation point ({:.3}, {:.3}, {:.3}, {:.3}) after {} main runs and {} runs of places", point[0], point[1], point[2], point[3], self.main_post_runs, self.tier_views.post_calls);
+        }
+        true
+    }
+
+    /// The chain of post shaders on the picture of a place of the full tier, with the values of
+    /// that view's scene. The place's state is its own ([`post::PostView`]); the adaptation point
+    /// is the main view's, as of the frame before when the main view's post comes later.
+    fn run_view_post(&mut self, place: usize, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
+        let Some((variables, flags, distant)) = self.post_inputs(scene) else { return false };
+        let main_point = self.post_main.as_ref().map_or([1.0; 4], post::PostView::hdr_point);
+        let Some(post) = self.post.as_mut() else { return false };
+        let made = self.post_places[place].is_none();
+        let view = self.post_places[place].get_or_insert_with(|| post::PostView::place(scene.device));
+        post.run(view, scene, encoder, target, &variables, flags, distant, main_point);
+        if made && self.post_view_lines < 12 {
+            self.post_view_lines += 1;
+            println!("distant land: the post state of place {place} is made: {:.2} MB for its pool and its depth frame", view.bytes() as f64 / 1e6);
+        }
+        true
+    }
+
+    /// The values of the post chain for a scene: its variables, the flags of the environment and the
+    /// terms of the distant stage's depth. `None` without the environment.
+    fn post_inputs(&self, scene: &SceneView) -> Option<(post::Variables, u32, Option<[f32; 2]>)> {
+        let land_terms = nirender_wgpu::depth::terms(&self.land_projection(scene));
+        let e = self.environment?;
+        let FogRanges { start: fog_start, end: fog_end, exp_start: fog_exp_start, exp_divisor: fog_exp_divisor, near_start: fog_near_start, near_end: fog_near_end } = self.fog_ranges(&e, scene);
         let eye = scene.eye.map(|v| v as f32);
         let rows = |m: &[f32; 16]| -> [[f32; 4]; 4] { core::array::from_fn(|r| [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]]) };
         // `sun_pos` of the environment is the `sunPos` of the Direct3D 9 path: the game side
@@ -3402,8 +3482,7 @@ impl DistantLand {
         // it. The numbers are those of the projection of `before_world`. With distant land
         // off there is no distant stage, and the depth of the game stands in for it.
         let distant = (self.enabled && !underwater).then_some(land_terms);
-        post.run(scene, encoder, target, &variables, flags, distant);
-        true
+        Some((variables, flags, distant))
     }
 
     /// The facts of the cell of the frame, from the scene and from the environment. The
@@ -3774,8 +3853,12 @@ impl DistantLand {
 
     /// Logs the first changes of the view slot that holds a place of the views of their own.
     fn note_place_holder(&mut self, place: usize, slot: u32) {
-        if self.tier_views.note_holder(place, slot) && self.tier_views.holder_changes <= 12 {
-            println!("distant land: place {place} is held by view slot {slot} (change {})", self.tier_views.holder_changes);
+        if self.tier_views.note_holder(place, slot) {
+            // A new holder starts with a new pool: the old one holds the last picture's output.
+            self.post_places[place] = None;
+            if self.tier_views.holder_changes <= 12 {
+                println!("distant land: place {place} is held by view slot {slot} (change {})", self.tier_views.holder_changes);
+            }
         }
     }
 

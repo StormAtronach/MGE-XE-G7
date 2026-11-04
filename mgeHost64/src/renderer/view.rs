@@ -149,6 +149,15 @@ pub struct TierViews {
     /// The frame of the last call at the start and at the end of the world of each place.
     started: [Option<u64>; TIER_VIEWS],
     ended: [Option<u64>; TIER_VIEWS],
+    /// The frame of the last post chain of each place (the call at the end of its scene).
+    posted: [Option<u64>; TIER_VIEWS],
+    /// The calls of the post chain that were served, the ones refused (no place, or a place above
+    /// the cap), the ones refused because their place had a call in the same frame already, and
+    /// the ones that could not run (no environment record).
+    pub post_calls: u64,
+    pub post_refused: u64,
+    pub post_repeated: u64,
+    pub post_unserved: u64,
     /// The view slot that each place had in its last call, and the changes of it (a place that
     /// a view keeps does not change).
     holder: [Option<u32>; TIER_VIEWS],
@@ -235,6 +244,34 @@ impl TierViews {
         }
     }
 
+    /// The number of the place for a call of the post chain at the end of the scene, as
+    /// [`claim`](Self::claim) does for the calls at the start. The post state of a place
+    /// ([`super::post::PostView`]) is written once in a frame.
+    pub fn claim_post(&mut self, frame: u64, place: Option<u8>) -> Option<usize> {
+        match Self::take(&mut self.posted, frame, place) {
+            Claim::Served(place) => {
+                self.post_calls += 1;
+                Some(place)
+            }
+            Claim::Repeated => {
+                self.post_repeated += 1;
+                None
+            }
+            Claim::Refused => {
+                self.post_refused += 1;
+                None
+            }
+        }
+    }
+
+    /// The report line of the post chain of the views of their own.
+    pub fn post_line(&self) -> String {
+        format!(
+            "post chain of the views of their own: {} calls, {} refused (no place, or a place above {TIER_VIEWS}), {} refused for a second call of a place in a frame, {} could not run",
+            self.post_calls, self.post_refused, self.post_repeated, self.post_unserved
+        )
+    }
+
     fn take(frames: &mut [Option<u64>; TIER_VIEWS], frame: u64, place: Option<u8>) -> Claim {
         let Some(place) = place.map(usize::from).filter(|&place| place < TIER_VIEWS) else { return Claim::Refused };
         if frames[place] == Some(frame) {
@@ -285,6 +322,63 @@ impl TierViews {
             self.grass_places,
             self.holder_changes,
             self.bytes as f64 / 1e6
+        )
+    }
+}
+
+/// The inputs of the grass that the game's environment record carries: the smoothed wind and the
+/// time of the simulation. The watch keeps what the records had, so that a report can say whether
+/// two runs had the same wind and time (a picture of the grass moves with both).
+#[derive(Default)]
+pub struct EnvironmentWatch {
+    records: u64,
+    time_first: f32,
+    time_last: f32,
+    wind_first: [f32; 2],
+    wind_last: [f32; 2],
+    wind_min: [f32; 2],
+    wind_max: [f32; 2],
+    /// The wind at the last logged change.
+    logged: [f32; 2],
+    lines: u32,
+}
+
+/// The change of the wind in one component, from the last logged one, that is logged.
+const WIND_LOGGED_STEP: f32 = 0.25;
+/// The logged changes of the wind in a session.
+const WIND_LINES: u32 = 12;
+
+impl EnvironmentWatch {
+    /// Notes one record of the environment. True for the first record and for a change of the
+    /// wind by more than [`WIND_LOGGED_STEP`] in a component, for the first [`WIND_LINES`]
+    /// times: the caller logs those.
+    pub fn note(&mut self, time: f32, wind: [f32; 2]) -> bool {
+        if self.records == 0 {
+            self.time_first = time;
+            self.wind_first = wind;
+            self.wind_min = wind;
+            self.wind_max = wind;
+        }
+        self.records += 1;
+        self.time_last = time;
+        self.wind_last = wind;
+        self.wind_min = core::array::from_fn(|i| self.wind_min[i].min(wind[i]));
+        self.wind_max = core::array::from_fn(|i| self.wind_max[i].max(wind[i]));
+        let first = self.records == 1;
+        let moved = (0..2).any(|i| (wind[i] - self.logged[i]).abs() > WIND_LOGGED_STEP);
+        if !(first || moved) || self.lines >= WIND_LINES {
+            return false;
+        }
+        self.logged = wind;
+        self.lines += 1;
+        true
+    }
+
+    /// The report line, for the end of the session.
+    pub fn line(&self) -> String {
+        format!(
+            "environment records: {}; simulation time {:.1} to {:.1} s; wind first ({:.2}, {:.2}), last ({:.2}, {:.2}), x from {:.2} to {:.2}, y from {:.2} to {:.2}",
+            self.records, self.time_first, self.time_last, self.wind_first[0], self.wind_first[1], self.wind_last[0], self.wind_last[1], self.wind_min[0], self.wind_max[0], self.wind_min[1], self.wind_max[1]
         )
     }
 }
@@ -458,6 +552,45 @@ mod tests {
         assert!(tier.note_holder(0, 6));
         assert_eq!(tier.holder_changes, 3);
         assert!(tier.line().contains("3 changes of the view that holds a place"));
+    }
+
+    /// The post chain of a place goes once in a frame: a second call of the place in the frame is
+    /// refused and counted, a view with no place or a place above the cap is refused, and a later
+    /// frame is served again. The calls at the start and at the end of the world do not count
+    /// against it.
+    #[test]
+    fn the_post_chain_of_a_place_goes_once_in_a_frame() {
+        let mut tier = TierViews::default();
+        assert_eq!(tier.claim_post(10, Some(2)), Some(2));
+        assert_eq!(tier.claim_post(10, Some(2)), None);
+        assert_eq!(tier.claim_post(10, Some(0)), Some(0));
+        assert_eq!(tier.claim_post(10, None), None);
+        assert_eq!(tier.claim_post(10, Some(TIER_VIEWS as u8)), None);
+        assert_eq!(tier.claim_post(11, Some(2)), Some(2));
+        assert_eq!((tier.post_calls, tier.post_repeated, tier.post_refused), (3, 1, 2));
+        assert_eq!(tier.claim(10, Some(2)), Some(2));
+        assert_eq!(tier.claim_after(10, Some(2)), Some(2));
+        let line = tier.post_line();
+        assert!(line.contains("3 calls, 2 refused") && line.contains("1 refused for a second call"), "{line}");
+    }
+
+    /// The first record of the environment and a step of the wind above a quarter are logged; a
+    /// small change is not; the line keeps the first and last time and the range of the wind.
+    #[test]
+    fn the_wind_and_the_time_of_the_environment_are_watched() {
+        let mut watch = EnvironmentWatch::default();
+        assert!(watch.note(10.0, [0.0, 0.0]));
+        assert!(!watch.note(11.0, [0.1, -0.1]));
+        assert!(watch.note(12.0, [0.5, 0.0]));
+        assert!(!watch.note(13.0, [0.5, 0.1]));
+        let line = watch.line();
+        assert!(line.contains("environment records: 4"), "{line}");
+        assert!(line.contains("simulation time 10.0 to 13.0 s"), "{line}");
+        assert!(line.contains("x from 0.00 to 0.50, y from -0.10 to 0.10"), "{line}");
+        // The lines of a session are few.
+        let logged = (0..40).filter(|step| watch.note(20.0 + *step as f32, [*step as f32, 0.0])).count();
+        assert_eq!(logged as u32 + 2, WIND_LINES);
+        assert!(!watch.note(99.0, [100.0, 0.0]));
     }
 
     /// A change of the near plane of more than 1 % is logged; the same value again is not, and the

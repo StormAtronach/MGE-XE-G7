@@ -4497,13 +4497,12 @@ struct Quad {
 }
 ";
 
-/// A pass as it runs: its pipeline, the scale and the format of its target, and the uniform
-/// with the size of the target.
+/// A pass as it runs: its pipeline, and the scale and the format of its target. The uniform with
+/// the size of the target is a view's own ([`PostView::pass_info`]).
 struct CompiledPass {
     pipeline: wgpu::RenderPipeline,
     scale: u32,
     half_float: bool,
-    info: wgpu::Buffer,
 }
 
 struct Compiled {
@@ -4536,6 +4535,100 @@ struct Pooled {
     view: wgpu::TextureView,
 }
 
+/// What a run of the post chain writes or keeps for one view: the main view's picture, or the
+/// picture of a place of the full tier. The chain, its pipelines, layouts, samplers and mod
+/// values are shared ([`Post`]); everything below is the view's own, for two reasons. A write
+/// with `queue.write_buffer` lands before all commands of the frame (the one-submit rule), so
+/// two runs in one frame would read the last write of a shared buffer. A pass loads its target
+/// (`LoadOp::Load`), so a pool texture holds the last run's output where a shader discards a
+/// pixel, and two views would show each other's.
+pub struct PostView {
+    /// The size of the picture; the pool and the depth frame start again at a new size.
+    size: (u32, u32),
+    /// The targets of the passes, by their class, for the size of the picture.
+    pool: Vec<Pooled>,
+    /// The linear depth of the game.
+    depth: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The variables of the frame and the terms of the depth frame.
+    uniforms: wgpu::Buffer,
+    depth_uniform: wgpu::Buffer,
+    /// The uniform with the size of the target of each pass, by the name of the shader and the
+    /// number of the pass in it, so that a reload or a reorder of the chain gives a pass no
+    /// buffer of another. A buffer is written before its pass in every run.
+    infos: std::collections::HashMap<String, Vec<wgpu::Buffer>>,
+    /// This view measures the adaptation point (the main view); the others read its point.
+    owns_hdr: bool,
+    hdr: Option<Hdr>,
+}
+
+impl PostView {
+    /// The state of the main view, which has the HDR measure.
+    pub fn main(device: &wgpu::Device) -> PostView {
+        PostView::new(device, true)
+    }
+
+    /// The state of a place of the full tier: no measure of its own.
+    pub fn place(device: &wgpu::Device) -> PostView {
+        PostView::new(device, false)
+    }
+
+    fn new(device: &wgpu::Device, owns_hdr: bool) -> PostView {
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post depth"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        PostView { size: (0, 0), pool: Vec::new(), depth: None, uniforms, depth_uniform, infos: std::collections::HashMap::new(), owns_hdr, hdr: None }
+    }
+
+    /// The adaptation point that this view measured; `[1; 4]` before the measure exists.
+    pub fn hdr_point(&self) -> [f32; 4] {
+        self.hdr.as_ref().map_or([1.0; 4], |hdr| hdr.point)
+    }
+
+    /// The bytes of GPU memory of the textures of this view: the pool, the depth frame and the
+    /// measure (a texture of 512 x 512 pixels with its levels).
+    pub fn bytes(&self) -> u64 {
+        let pool: u64 = self.pool.iter().map(|pooled| u64::from(self.size.0.div_ceil(pooled.scale).max(1)) * u64::from(self.size.1.div_ceil(pooled.scale).max(1)) * if pooled.half_float { 8 } else { 4 }).sum();
+        let depth = self.depth.as_ref().map_or(0, |_| u64::from(self.size.0) * u64::from(self.size.1) * 4);
+        let hdr = self.hdr.as_ref().map_or(0, |_| 512 * 512 * 4 * 4 / 3);
+        pool + depth + hdr
+    }
+
+    /// The depth texture for the size of the picture; the pool starts again at a new size.
+    fn size_textures(&mut self, device: &wgpu::Device, size: (u32, u32)) {
+        if self.size == size && self.depth.is_some() {
+            return;
+        }
+        self.size = size;
+        self.pool.clear();
+        let depth = make_texture(device, size, wgpu::TextureFormat::R32Float);
+        let view = depth.create_view(&Default::default());
+        self.depth = Some((depth, view));
+    }
+
+    /// The pool texture for a pass: one of its class that is not in use, or a new one.
+    fn pooled(&mut self, device: &wgpu::Device, scale: u32, half_float: bool, in_use: &[usize]) -> usize {
+        if let Some(index) = (0..self.pool.len()).find(|i| self.pool[*i].scale == scale && self.pool[*i].half_float == half_float && !in_use.contains(i)) {
+            return index;
+        }
+        let size = (self.size.0.div_ceil(scale).max(1), self.size.1.div_ceil(scale).max(1));
+        let format = if half_float { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba8Unorm };
+        let view = make_texture(device, size, format).create_view(&Default::default());
+        self.pool.push(Pooled { scale, half_float, view });
+        self.pool.len() - 1
+    }
+
+    /// The uniform with the size of the target of pass `number` of the shader `name`.
+    fn pass_info(&mut self, device: &wgpu::Device, name: &str, number: usize) -> &wgpu::Buffer {
+        if !self.infos.contains_key(name) {
+            self.infos.insert(name.to_string(), Vec::new());
+        }
+        let buffers = self.infos.get_mut(name).expect("the entry was made above");
+        while buffers.len() <= number {
+            buffers.push(device.create_buffer(&wgpu::BufferDescriptor { label: Some("post pass"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+        }
+        &buffers[number]
+    }
+}
+
 pub struct Post {
     /// The shaders of the chain that have a port, and the shaders that a mod loaded, in
     /// their order.
@@ -4556,20 +4649,13 @@ pub struct Post {
     hdr_reaction: f32,
     /// The shaders that came from a port, and from a file of a mod.
     counts: (u32, u32),
-    uniforms: wgpu::Buffer,
     samplers: [wgpu::Sampler; 6],
     white: wgpu::TextureView,
     /// A black pixel: what a shader reads from a texture that was not found, as from an
     /// unset texture of Direct3D 9.
     black: wgpu::TextureView,
-    /// The targets of the passes, by their class, for the size of the picture.
-    pool: Vec<Pooled>,
-    size: (u32, u32),
-    /// The linear depth of the game.
-    depth: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_pipeline: wgpu::RenderPipeline,
     depth_layout: wgpu::BindGroupLayout,
-    depth_uniform: wgpu::Buffer,
     blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
     debug: f32,
@@ -4582,10 +4668,12 @@ pub struct Post {
     pub no_sun_glare: bool,
     /// The number of reloads of each shader that a mod reloaded, as the last state had it.
     reloads: std::collections::HashMap<String, u32>,
-    /// The HDR measure, when a shader of the chain needs it. `hdr_on` is the flag of MGE
-    /// XE (`mge.render.updateHDR`): off, the measure stops and the shaders keep its last
-    /// point, as `evalAdaptHDR` is skipped on Direct3D 9.
-    hdr: Option<Hdr>,
+    /// A shader of the chain needs the HDR measure. The measure itself (`Hdr`) is the state of
+    /// the main view's [`PostView`]: the player's eye adapts once, and a view of its own reads the
+    /// main view's point. `hdr_on` is the flag of MGE XE (`mge.render.updateHDR`): off, the
+    /// measure stops and the shaders keep its last point, as `evalAdaptHDR` is skipped on
+    /// Direct3D 9.
+    needs_hdr: bool,
     hdr_on: bool,
     pub frames: u64,
     pub shaders_run: u64,
@@ -4634,7 +4722,6 @@ impl Post {
             bind_group_layouts: &[Some(&frame_layout), Some(&shader_layout), Some(&pass_layout)],
             immediate_size: 0,
         });
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let make_sampler = |filter: wgpu::FilterMode, address: wgpu::AddressMode| {
             device.create_sampler(&wgpu::SamplerDescriptor { address_mode_u: address, address_mode_v: address, address_mode_w: address, mag_filter: filter, min_filter: filter, ..Default::default() })
         };
@@ -4697,7 +4784,6 @@ impl Post {
             ],
         });
         let depth_pipeline = full_screen_pipeline(device, "post depth", &format!("{}{}", nirender_wgpu::depth::wgsl(), DEPTH_SHADER), &depth_layout, wgpu::TextureFormat::R32Float);
-        let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post depth"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post blit"),
             entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
@@ -4731,16 +4817,11 @@ impl Post {
             hdr_reaction,
             counts: (0, 0),
             reloads: std::collections::HashMap::new(),
-            uniforms,
             samplers,
             white,
             black,
-            pool: Vec::new(),
-            size: (0, 0),
-            depth: None,
             depth_pipeline,
             depth_layout,
-            depth_uniform,
             blit_pipeline,
             blit_layout,
             debug,
@@ -4749,7 +4830,7 @@ impl Post {
             debug_uniform,
             waves,
             no_sun_glare: false,
-            hdr: None,
+            needs_hdr: false,
             hdr_on: true,
             frames: 0,
             shaders_run: 0,
@@ -4847,8 +4928,7 @@ impl Post {
                     multiview_mask: None,
                     cache: None,
                 });
-                let info = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post pass"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-                CompiledPass { pipeline, scale: *scale, half_float: *half_float, info }
+                CompiledPass { pipeline, scale: *scale, half_float: *half_float }
             })
             .collect();
         if let Some(error) = pollster::block_on(scope.pop()) {
@@ -4869,9 +4949,7 @@ impl Post {
         } else {
             self.counts.0 += 1;
         }
-        if shader.requires_hdr && self.hdr.is_none() {
-            self.hdr = Some(Hdr::new(device, &self.blit_layout, self.hdr_reaction));
-        }
+        self.needs_hdr |= shader.requires_hdr;
         // The textures of the shader. One that is not found reads as black, as on Direct3D 9.
         let textures: Vec<wgpu::TextureView> = shader
             .textures
@@ -4981,9 +5059,6 @@ impl Post {
     pub fn set_hdr(&mut self, on: bool, reaction: f32) {
         self.hdr_on = on;
         self.hdr_reaction = reaction;
-        if let Some(hdr) = self.hdr.as_mut() {
-            hdr.reaction = reaction.clamp(0.01, 30.0);
-        }
     }
 
     /// No shader is on.
@@ -4991,48 +5066,35 @@ impl Post {
         !self.chain.iter().any(|c| c.enabled)
     }
 
-    /// The depth texture for the size of the picture; the pool starts again at a new size.
-    fn size_textures(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        if self.size == size && self.depth.is_some() {
-            return;
-        }
-        self.size = size;
-        self.pool.clear();
-        let depth = make_texture(device, size, wgpu::TextureFormat::R32Float);
-        let view = depth.create_view(&Default::default());
-        self.depth = Some((depth, view));
-    }
-
-    /// The pool texture for a pass: one of its class that is not in use, or a new one.
-    fn pooled(&mut self, device: &wgpu::Device, scale: u32, half_float: bool, in_use: &[usize]) -> usize {
-        if let Some(index) = (0..self.pool.len()).find(|i| self.pool[*i].scale == scale && self.pool[*i].half_float == half_float && !in_use.contains(i)) {
-            return index;
-        }
-        let size = (self.size.0.div_ceil(scale).max(1), self.size.1.div_ceil(scale).max(1));
-        let format = if half_float { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba8Unorm };
-        let view = make_texture(device, size, format).create_view(&Default::default());
-        self.pool.push(Pooled { scale, half_float, view });
-        self.pool.len() - 1
-    }
-
-    /// Runs the chain on the picture and writes the result into `target`.
-    /// `distant` has the depth terms of the projection of the distant stage
-    /// (`nirender_wgpu::depth::terms`), when its depth is a part of the depth frame.
-    pub fn run(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, variables: &Variables, environment_flags: u32, distant: Option<[f32; 2]>) {
+    /// Runs the chain on the picture and writes the result into `target`. `view` is the state of
+    /// the view whose picture it is: everything that a run writes is in it, so that two runs in
+    /// one frame (the main view and a picture) do not write the same buffer (the one-submit
+    /// rule). `main_point` is the adaptation point of the main view, which a view without a
+    /// measure of its own reads. `distant` has the depth terms of the projection of the distant
+    /// stage (`nirender_wgpu::depth::terms`), when its depth is a part of the depth frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(&mut self, view: &mut PostView, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, variables: &Variables, environment_flags: u32, distant: Option<[f32; 2]>, main_point: [f32; 4]) {
         let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return };
         if self.is_empty() {
             return;
         }
         let device = scene.device;
-        self.size_textures(device, scene.target_size);
+        view.size_textures(device, scene.target_size);
         self.frames += 1;
-        // The adaptation point of the frame, from the picture before the chain.
+        // The adaptation point of the frame, from the picture before the chain: the main view
+        // measures it, a view of its own reads the main view's.
         let mut variables = *variables;
-        if let Some(hdr) = self.hdr.as_mut() {
+        if !view.owns_hdr {
+            if self.needs_hdr {
+                variables.hdr = main_point;
+            }
+        } else if self.needs_hdr {
+            let hdr = view.hdr.get_or_insert_with(|| Hdr::new(device, &self.blit_layout, self.hdr_reaction));
+            hdr.reaction = self.hdr_reaction.clamp(0.01, 30.0);
             variables.hdr = if self.hdr_on { hdr.frame(device, encoder, picture, &self.blit_layout, &self.samplers[1], environment_flags) } else { hdr.point };
         }
         let variables = &variables;
-        scene.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(variables));
+        scene.queue.write_buffer(&view.uniforms, 0, bytemuck::bytes_of(variables));
         // The linear depth of the game.
         // Without a depth of the distant stage, the depth of the game stands in for it:
         // it is 1 where the first read was 1.
@@ -5040,8 +5102,8 @@ impl Post {
             (Some(view), Some(numbers)) => (view, numbers),
             _ => (depth, [0.0, 0.0]),
         };
-        scene.queue.write_buffer(&self.depth_uniform, 0, bytemuck::cast_slice(&[nirender_wgpu::depth::terms(&scene.projection), distant].concat()));
-        let depth_view = &self.depth.as_ref().unwrap().1.clone();
+        scene.queue.write_buffer(&view.depth_uniform, 0, bytemuck::cast_slice(&[nirender_wgpu::depth::terms(&scene.projection), distant].concat()));
+        let depth_view = &view.depth.as_ref().unwrap().1.clone();
         // The depth frame only when a shader of the chain of this frame reads it, or the
         // look at it is on.
         let reads_depth = self.debug == 2.0 || self.chain.iter().any(|c| c.enabled && c.disable_flags & environment_flags == 0 && c.reads_depth);
@@ -5053,7 +5115,7 @@ impl Post {
                 label: Some("post depth"),
                 layout: &self.depth_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.depth_uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 0, resource: view.depth_uniform.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(distant_depth) },
                 ],
@@ -5073,7 +5135,7 @@ impl Post {
             label: Some("post frame"),
             layout: &self.frame_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: view.uniforms.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.waves) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) },
@@ -5095,29 +5157,30 @@ impl Post {
             let at = if stamps.on() { stamps.begin(encoder, nirender_wgpu::stamps::name(&compiled.name), nirender_wgpu::stamps::StampKind::Detail) } else { nirender_wgpu::stamps::Stamp::NONE };
             let mut in_use: Vec<usize> = last.into_iter().collect();
             let mut targets: Vec<usize> = Vec::with_capacity(compiled.passes.len());
-            for pass in &compiled.passes {
-                let sink = self.pooled(device, pass.scale, pass.half_float, &in_use);
+            for (number, pass) in compiled.passes.iter().enumerate() {
+                let sink = view.pooled(device, pass.scale, pass.half_float, &in_use);
                 in_use.push(sink);
-                let size = (self.size.0.div_ceil(pass.scale).max(1) as f32, self.size.1.div_ceil(pass.scale).max(1) as f32);
-                scene.queue.write_buffer(&pass.info, 0, bytemuck::cast_slice(&[size.0, size.1, 1.0 / size.0, 1.0 / size.1]));
+                let size = (view.size.0.div_ceil(pass.scale).max(1) as f32, view.size.1.div_ceil(pass.scale).max(1) as f32);
+                let info = view.pass_info(device, &compiled.name, number).clone();
+                scene.queue.write_buffer(&info, 0, bytemuck::cast_slice(&[size.0, size.1, 1.0 / size.0, 1.0 / size.1]));
                 let lastshader_view = match last {
-                    Some(index) => &self.pool[index].view,
+                    Some(index) => &view.pool[index].view,
                     None => picture,
                 };
                 let lastpass_view = match targets.last() {
-                    Some(index) => &self.pool[*index].view,
+                    Some(index) => &view.pool[*index].view,
                     None => lastshader_view,
                 };
-                let earlier = |i: usize| targets.get(i).map_or(&self.white, |index| &self.pool[*index].view);
+                let earlier = |i: usize| targets.get(i).map_or(&self.white, |index| &view.pool[*index].view);
                 let mut entries = vec![
-                    wgpu::BindGroupEntry { binding: 0, resource: pass.info.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 0, resource: info.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(lastshader_view) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(lastpass_view) },
                 ];
                 entries.extend((0..8).map(|i| wgpu::BindGroupEntry { binding: i as u32 + 3, resource: wgpu::BindingResource::TextureView(earlier(i)) }));
                 let pass_group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor { label: Some(&compiled.name), layout: &self.pass_layout, entries: &entries });
                 // A pass keeps what the texture held where it discards a pixel.
-                let mut render = full_screen_pass(encoder, &self.pool[sink].view, wgpu::LoadOp::Load);
+                let mut render = full_screen_pass(encoder, &view.pool[sink].view, wgpu::LoadOp::Load);
                 render.set_pipeline(&pass.pipeline);
                 render.set_bind_group(0, &frame_group, &[]);
                 render.set_bind_group(1, &compiled.group, &[]);
@@ -5133,7 +5196,7 @@ impl Post {
         self.chain = chain;
         // A look at a term, for a test.
         if self.debug > 0.0 {
-            let source = if self.debug == 2.0 { depth_view } else { &self.pool[last.unwrap_or(0)].view };
+            let source = if self.debug == 2.0 { depth_view } else { &view.pool[last.unwrap_or(0)].view };
             let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
                 label: Some("post debug"),
                 layout: &self.debug_layout,
@@ -5154,7 +5217,7 @@ impl Post {
             let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
                 label: Some("post blit"),
                 layout: &self.blit_layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.pool[index].view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) }],
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view.pool[index].view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) }],
             });
             let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
             pass.set_pipeline(&self.blit_pipeline);
