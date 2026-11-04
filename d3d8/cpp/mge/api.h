@@ -245,6 +245,8 @@ namespace api {
     enum class ViewKeyKind : uint32_t {
         RenderedTexture = 1, // a NiRenderedTexture: a view into that texture
         Camera = 2,          // a NiCamera other than the world camera: that camera into the back buffer
+        CameraTextures = 3,  // a NiCamera other than the world camera: the default of every
+                             // NiRenderedTexture it draws into that has no options of its own
     };
 
     struct ViewOptions {

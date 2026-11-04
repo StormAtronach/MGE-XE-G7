@@ -1091,8 +1091,9 @@ namespace api {
     }
 
     bool MGEAPIv4::viewOptionsSet(ViewKeyKind kind, void* key, const ViewOptions* options) {
-        const bool known = kind == ViewKeyKind::RenderedTexture || kind == ViewKeyKind::Camera;
-        if (!known || key == nullptr || (kind == ViewKeyKind::Camera && key == worldCamera())) {
+        const bool camera = kind == ViewKeyKind::Camera || kind == ViewKeyKind::CameraTextures;
+        const bool known = kind == ViewKeyKind::RenderedTexture || camera;
+        if (!known || key == nullptr || (camera && key == worldCamera())) {
             return false;
         }
         // With the wgpu renderer the plugin keeps the options (viewOptionsGet asks it); this copy
