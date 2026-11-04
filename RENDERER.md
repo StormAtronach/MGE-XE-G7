@@ -340,6 +340,16 @@ change. That start can take some minutes. With an older file, set it below
 - For mod authors: the event `distantLandReady` tells when the distant land is loaded and
   when it is there around the camera after a load or a teleport (see
   `docs/architecture/mwse-api.md`). It works on Direct3D 9 too.
+- For mod authors: a view that a mod draws itself (a camera into a `niRenderedTexture`, as a
+  mirror, or a second camera into the screen) can get parts of MGE XE with
+  `mge.camera.setViewOptions(key, options, flags)` (MGE XE API version 4, in the `MWSE.dll` of
+  this build): `distantLand`, `distantStatics`, `grass`, `distantWater`, `shaders` and `glows`.
+  With `{ intoTextures = true }` as the flags, the options of a camera are its default for
+  each texture it draws into. `full_tier_max` under `[views]` in `mgeXE.toml` (default 1,
+  0 to 4) limits how many such views of a frame get the parts; 0 refuses every request. With
+  the Direct3D 9 renderer the call stores the options and draws nothing more.
+- MGE XE's menu background video (`Data Files\video\menu_background.bik`) plays on the wgpu
+  renderer too, drawn as the game draws its films.
 - The window can be resized, and the game's own menu changes the resolution during play: the
   picture scales into the window. A fullscreen game is a borderless window on its own monitor.
 - If the renderer program stops (`numidium.exe` crashed or was ended), the game saves as
