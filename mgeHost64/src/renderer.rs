@@ -3021,7 +3021,7 @@ impl Extension for DistantLand {
             return false;
         }
         let ready = self.gpu.is_some() && self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
-        let Some(k) = ready.then(|| self.tier_views.claim(scene.frame)).flatten() else {
+        let Some(k) = ready.then(|| self.tier_views.claim(scene.frame, scene.view_key.place)).flatten() else {
             self.tier_views.unserved += u64::from(!ready);
             return false;
         };
@@ -3030,7 +3030,7 @@ impl Extension for DistantLand {
         let projection = self.land_projection(scene);
         let own = -scene.projection[14] / scene.projection[10];
         if self.tier_views.note_near(own) {
-            println!("distant land: view of its own {} (call {}): the near plane of the view {own:.1}, of its land {:.1}", k + 1, self.tier_views.calls, -projection[14] / projection[10]);
+            println!("distant land: place {} (call {}): the near plane of the view {own:.1}, of its land {:.1}", k, self.tier_views.calls, -projection[14] / projection[10]);
         }
         views.write(scene.queue, group, &self.frame_view(scene, &projection));
         let planes = nirender_wgpu::view_planes(&scene.view, &projection);
@@ -3054,7 +3054,7 @@ impl Extension for DistantLand {
                 match statics.prepare_view(scene, &statics::CullSet { set, planes, eye: eye_range, fog_end }) {
                     Some(made) => {
                         if made > 0 {
-                            println!("distant land: the statics set of view of its own {} is made: {:.2} MB for its cull buffers ({} MB in all for the views of their own)", k + 1, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
+                            println!("distant land: the statics set of place {} is made: {:.2} MB for its cull buffers ({} MB in all for the views of their own)", k, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
                         }
                         self.tier_views.bytes += made;
                         pass.push_debug_group("distant statics (view of its own)");
@@ -3075,7 +3075,7 @@ impl Extension for DistantLand {
             if let Some(lights) = self.lights.as_mut().filter(|lights| lights.has_glows()) {
                 let made = lights.ensure_sets(scene.device, k + 2);
                 if made > 0 {
-                    println!("distant land: the glow set of view of its own {} is made: {:.2} MB ({} MB in all for the views of their own)", k + 1, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
+                    println!("distant land: the glow set of place {} is made: {:.2} MB ({} MB in all for the views of their own)", k, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
                 }
                 self.tier_views.bytes += made;
                 lights.prepare(scene, &frame, k + 1);
@@ -3102,7 +3102,7 @@ impl Extension for DistantLand {
             return;
         }
         let ready = self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
-        let Some(k) = ready.then(|| self.tier_views.claim_after(scene.frame)).flatten() else { return };
+        let Some(k) = ready.then(|| self.tier_views.claim_after(scene.frame, scene.view_key.place)).flatten() else { return };
         let Some(views) = self.view_binding.as_ref() else { return };
         views.write(scene.queue, view::tier_game(k), &self.frame_view(scene, &scene.projection));
         let mut frame = self.grass_frame(scene);
@@ -3112,7 +3112,7 @@ impl Extension for DistantLand {
         let did = statics.draw_grass_view(scene, pass, &frame, k);
         pass.pop_debug_group();
         if did.made > 0 {
-            println!("distant land: the grass set of view of its own {} is made: {:.2} MB ({} MB in all for the views of their own)", k + 1, did.made as f64 / 1e6, (self.tier_views.bytes + did.made) as f64 / 1e6);
+            println!("distant land: the grass set of place {} is made: {:.2} MB ({} MB in all for the views of their own)", k, did.made as f64 / 1e6, (self.tier_views.bytes + did.made) as f64 / 1e6);
         }
         self.tier_views.bytes += did.made;
         self.tier_views.grass_calls += u64::from(did.drawn > 0);

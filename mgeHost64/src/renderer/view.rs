@@ -136,33 +136,36 @@ pub fn wgsl() -> String {
     format!("{VIEW_WGSL}{}", distant_lights::baked_wgsl_at(0, 1))
 }
 
-/// The views of their own that drew the full tier ([`TIER_VIEWS`] at most in a frame): which
-/// one a call gets, and the counts for the report. Each call of a frame gets a number of its
-/// own, because the writes of the view's values and of the cull values land before all
-/// commands of the frame (the one-submit rule): two calls with one number would show the last
-/// call's values in both. A view that renders twice in a frame has two calls.
+/// The views of their own that drew the full tier ([`TIER_VIEWS`] places at most): which
+/// group and sets a call gets, and the counts for the report. What a view needs for its own
+/// draws (its view group, its cull sets) is keyed to the PLACE of the full tier that the host
+/// gives it (`ViewKey::place`), so a mirror that keeps its place keeps its group. The writes of
+/// the view's values and of the cull values land before all commands of the frame (the
+/// one-submit rule), so a place has one call at the start and one at the end of the world in
+/// a frame: a second call of the place in the same frame would show the last call's values in
+/// both, so it is refused and counted.
 #[derive(Default)]
 pub struct TierViews {
-    frame: u64,
-    used: usize,
-    /// The calls at the end of the world (the grass) that the frame has served; they have
-    /// numbers of their own, because a scene's two calls are not in one order with the
-    /// other scenes' calls.
-    used_after: usize,
-    /// The calls at the end of the world that were served and the ones refused because a frame
-    /// had [`TIER_VIEWS`] of them already, the ones among the served that drew grass, and the
-    /// places they drew.
+    /// The frame of the last call at the start and at the end of the world of each place.
+    started: [Option<u64>; TIER_VIEWS],
+    ended: [Option<u64>; TIER_VIEWS],
+    /// The calls at the end of the world (the grass) that were served, the ones refused (no
+    /// place, or a place above the cap) and the ones refused because their place had a call in
+    /// the same frame already, the ones among the served that drew grass, and the places they
+    /// drew.
     pub calls_after: u64,
     pub refused_after: u64,
+    pub repeated_after: u64,
     pub grass_calls: u64,
     pub grass_places: u64,
     /// The calls at the start of the world that drew glows.
     pub glow_calls: u64,
-    /// The calls at the start of the world that were served, the ones refused because a frame
-    /// had [`TIER_VIEWS`] of them already, and the ones that could not draw (the land or the
-    /// statics were not loaded).
+    /// The calls at the start of the world that were served, the ones refused (no place, or a
+    /// place above the cap), the ones refused because their place had a call in the same frame
+    /// already, and the ones that could not draw (the land or the statics were not loaded).
     pub calls: u64,
     pub refused: u64,
+    pub repeated: u64,
     pub unserved: u64,
     /// The calls of a view with an orthographic projection, which gets no parts.
     pub orthographic: u64,
@@ -179,39 +182,62 @@ pub struct TierViews {
 /// The most lines of the near plane of a view of its own in a session.
 const NEAR_LINES: u32 = 12;
 
+/// The answer to a call that asks for its place.
+enum Claim {
+    Served(usize),
+    /// The view has no place, or one above the cap of [`TIER_VIEWS`].
+    Refused,
+    /// The place had a call of this kind in the same frame already.
+    Repeated,
+}
+
 impl TierViews {
-    /// The number of the view for a call in `frame`, 0 to [`TIER_VIEWS`] less 1; `None` when
-    /// the frame has used them all.
-    pub fn claim(&mut self, frame: u64) -> Option<usize> {
-        self.begin_frame(frame);
-        if self.used >= TIER_VIEWS {
-            self.refused += 1;
-            return None;
+    /// The number of the place for a call at the start of the world in `frame` (the place of the
+    /// view's key, 0 to [`TIER_VIEWS`] less 1); `None` when the view has no place or one above
+    /// the cap, or when the place had its call in this frame already.
+    pub fn claim(&mut self, frame: u64, place: Option<u8>) -> Option<usize> {
+        match Self::take(&mut self.started, frame, place) {
+            Claim::Served(place) => {
+                self.calls += 1;
+                Some(place)
+            }
+            Claim::Repeated => {
+                self.repeated += 1;
+                None
+            }
+            Claim::Refused => {
+                self.refused += 1;
+                None
+            }
         }
-        self.used += 1;
-        self.calls += 1;
-        Some(self.used - 1)
     }
 
-    /// The number of the call at the end of the world for `frame`, as [`claim`](Self::claim)
-    /// numbers the calls at the start; `None` when the frame has used them all.
-    pub fn claim_after(&mut self, frame: u64) -> Option<usize> {
-        self.begin_frame(frame);
-        if self.used_after >= TIER_VIEWS {
-            self.refused_after += 1;
-            return None;
+    /// The number of the place for a call at the end of the world, as [`claim`](Self::claim)
+    /// does for the calls at the start.
+    pub fn claim_after(&mut self, frame: u64, place: Option<u8>) -> Option<usize> {
+        match Self::take(&mut self.ended, frame, place) {
+            Claim::Served(place) => {
+                self.calls_after += 1;
+                Some(place)
+            }
+            Claim::Repeated => {
+                self.repeated_after += 1;
+                None
+            }
+            Claim::Refused => {
+                self.refused_after += 1;
+                None
+            }
         }
-        self.used_after += 1;
-        self.calls_after += 1;
-        Some(self.used_after - 1)
     }
 
-    fn begin_frame(&mut self, frame: u64) {
-        if self.frame != frame {
-            self.frame = frame;
-            self.used = 0;
-            self.used_after = 0;
+    fn take(frames: &mut [Option<u64>; TIER_VIEWS], frame: u64, place: Option<u8>) -> Claim {
+        let Some(place) = place.map(usize::from).filter(|&place| place < TIER_VIEWS) else { return Claim::Refused };
+        if frames[place] == Some(frame) {
+            return Claim::Repeated;
         }
+        frames[place] = Some(frame);
+        Claim::Served(place)
     }
 
     /// True when the near plane of a call differs from the last logged one by more than
@@ -228,9 +254,10 @@ impl TierViews {
     /// The report line, for the end of the session.
     pub fn line(&self) -> String {
         format!(
-            "views of their own: {} calls at the start of the world (land, statics, glows), {} refused by the cap of {TIER_VIEWS} calls a frame, {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls, {} calls drew glows; {} calls at the end of the world (grass), {} refused by the cap of {TIER_VIEWS}, {} drew {} grass places (the bound views.full_tier_max is the host's, in its full tier line); {:.1} MB made for their sets",
+            "views of their own: {} calls at the start of the world (land, statics, glows), {} refused (no place, or a place above {TIER_VIEWS}), {} refused for a second call of a place in a frame, {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls, {} calls drew glows; {} calls at the end of the world (grass), {} refused, {} refused for a second call of a place in a frame, {} drew {} grass places (the bound views.full_tier_max is the host's, in its full tier line); {:.1} MB made for their sets",
             self.calls,
             self.refused,
+            self.repeated,
             self.unserved,
             self.orthographic,
             self.land_draws,
@@ -238,6 +265,7 @@ impl TierViews {
             self.glow_calls,
             self.calls_after,
             self.refused_after,
+            self.repeated_after,
             self.grass_calls,
             self.grass_places,
             self.bytes as f64 / 1e6
@@ -368,35 +396,40 @@ mod tests {
         assert_eq!(tier_game(TIER_VIEWS - 1) + 1, VIEWS);
     }
 
-    /// The calls at the end of the world of a frame have numbers of their own, apart from the
-    /// calls at the start.
+    /// A call is keyed to the place of its view: the number it gets is the place, in any order of
+    /// the calls, and the calls at the start and at the end of the world are counted apart.
     #[test]
-    fn the_calls_at_the_end_of_the_world_have_numbers_of_their_own() {
+    fn a_call_gets_the_number_of_its_place_in_any_order() {
         let mut tier = TierViews::default();
-        assert_eq!(tier.claim(3), Some(0));
-        assert_eq!(tier.claim_after(3), Some(0));
-        assert_eq!(tier.claim_after(3), Some(1));
-        assert_eq!(tier.claim(3), Some(1));
-        let rest: Vec<Option<usize>> = (0..TIER_VIEWS).map(|_| tier.claim_after(3)).collect();
-        assert_eq!(rest.iter().filter(|number| number.is_none()).count(), 2);
-        // The refused calls at the end of the world have a counter of their own.
-        assert_eq!((tier.calls, tier.refused, tier.calls_after, tier.refused_after), (2, 0, TIER_VIEWS as u64, 2));
-        // The next frame starts both numberings again.
-        assert_eq!((tier.claim(4), tier.claim_after(4)), (Some(0), Some(0)));
+        assert_eq!(tier.claim(3, Some(2)), Some(2));
+        assert_eq!(tier.claim_after(3, Some(0)), Some(0));
+        assert_eq!(tier.claim(3, Some(0)), Some(0));
+        assert_eq!(tier.claim_after(3, Some(2)), Some(2));
+        // The next frame gives the same places the same numbers.
+        assert_eq!(tier.claim(4, Some(0)), Some(0));
+        assert_eq!(tier.claim(4, Some(2)), Some(2));
+        assert_eq!((tier.calls, tier.calls_after), (4, 2));
+        assert_eq!((tier.refused, tier.repeated, tier.refused_after, tier.repeated_after), (0, 0, 0, 0));
     }
 
-    /// Each call of a frame gets a number of its own, the numbers start again in the next frame,
-    /// and a frame with more calls than groups refuses the rest.
+    /// A view with no place, or a place above the cap, gets no call. A second call of a place in
+    /// one frame is refused apart, because the place's buffers hold one call's values.
     #[test]
-    fn each_call_of_a_frame_claims_a_view_of_its_own() {
+    fn a_call_without_a_place_or_a_second_call_of_a_place_is_refused() {
         let mut tier = TierViews::default();
-        let numbers: Vec<Option<usize>> = (0..TIER_VIEWS + 2).map(|_| tier.claim(7)).collect();
-        assert_eq!(&numbers[..TIER_VIEWS], &(0..TIER_VIEWS).map(Some).collect::<Vec<_>>()[..]);
-        assert_eq!(&numbers[TIER_VIEWS..], &[None, None]);
-        assert_eq!((tier.calls, tier.refused), (TIER_VIEWS as u64, 2));
-        assert_eq!(tier.claim(8), Some(0));
-        assert_eq!(tier.claim(8), Some(1));
-        assert!(tier.line().contains("refused"));
+        assert_eq!(tier.claim(7, None), None);
+        assert_eq!(tier.claim(7, Some(TIER_VIEWS as u8)), None);
+        assert_eq!(tier.claim(7, Some(1)), Some(1));
+        assert_eq!(tier.claim(7, Some(1)), None);
+        assert_eq!(tier.claim_after(7, Some(1)), Some(1));
+        assert_eq!(tier.claim_after(7, Some(1)), None);
+        assert_eq!(tier.claim_after(7, None), None);
+        assert_eq!((tier.calls, tier.refused, tier.repeated), (1, 2, 1));
+        assert_eq!((tier.calls_after, tier.refused_after, tier.repeated_after), (1, 1, 1));
+        // The next frame serves the place again.
+        assert_eq!((tier.claim(8, Some(1)), tier.claim_after(8, Some(1))), (Some(1), Some(1)));
+        let line = tier.line();
+        assert!(line.contains("refused") && line.contains("second call of a place"));
     }
 
     /// A change of the near plane of more than 1 % is logged; the same value again is not, and the
