@@ -3029,7 +3029,7 @@ impl Extension for DistantLand {
             self.tier_views.orthographic += 1;
             return false;
         }
-        let ready =self.gpu.is_some() && self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
+        let ready = self.gpu.is_some() && self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
         let Some(k) = ready.then(|| self.tier_views.claim(scene.frame)).flatten() else {
             self.tier_views.unserved += u64::from(!ready);
             return false;
