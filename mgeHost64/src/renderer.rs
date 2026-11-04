@@ -3058,6 +3058,9 @@ impl Extension for DistantLand {
                 let set = statics::tier_set(k);
                 match statics.prepare_view(scene, &statics::CullSet { set, planes, eye: eye_range, fog_end }) {
                     Some(made) => {
+                        if made > 0 {
+                            println!("distant land: the statics set of view of its own {} is made: {:.2} MB for its cull buffers ({} MB in all for the views of their own)", k + 1, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
+                        }
                         self.tier_views.bytes += made;
                         pass.push_debug_group("distant statics (view of its own)");
                         let calls = statics.draw(scene, pass, &statics::Frame { eye: eye_range, planes, fog_end, time }, set);

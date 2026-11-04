@@ -170,7 +170,7 @@ impl TierViews {
     /// The report line, for the end of the session.
     pub fn line(&self) -> String {
         format!(
-            "views of their own: {} calls with land or statics, {} refused (a frame had {TIER_VIEWS} already), {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls; {:.1} MB made for their sets",
+            "views of their own: {} calls with land or statics, {} refused by the cap of {TIER_VIEWS} calls a frame (the bound views.full_tier_max is the host's, in its full tier line), {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls; {:.1} MB made for their sets",
             self.calls,
             self.refused,
             self.unserved,
