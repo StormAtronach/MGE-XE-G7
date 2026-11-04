@@ -149,6 +149,10 @@ pub struct TierViews {
     /// The frame of the last call at the start and at the end of the world of each place.
     started: [Option<u64>; TIER_VIEWS],
     ended: [Option<u64>; TIER_VIEWS],
+    /// The view slot that each place had in its last call, and the changes of it (a place that
+    /// a view keeps does not change).
+    holder: [Option<u32>; TIER_VIEWS],
+    pub holder_changes: u64,
     /// The calls at the end of the world (the grass) that were served, the ones refused (no
     /// place, or a place above the cap) and the ones refused because their place had a call in
     /// the same frame already, the ones among the served that drew grass, and the places they
@@ -240,6 +244,17 @@ impl TierViews {
         Claim::Served(place)
     }
 
+    /// Notes the view slot of a call of `place`; true when the place had another slot in its last
+    /// call, or none yet (the call then logs the change).
+    pub fn note_holder(&mut self, place: usize, slot: u32) -> bool {
+        if self.holder[place] == Some(slot) {
+            return false;
+        }
+        self.holder[place] = Some(slot);
+        self.holder_changes += 1;
+        true
+    }
+
     /// True when the near plane of a call differs from the last logged one by more than
     /// 1 %, for the first [`NEAR_LINES`] such changes of a session: the call then logs it.
     pub fn note_near(&mut self, near: f32) -> bool {
@@ -254,7 +269,7 @@ impl TierViews {
     /// The report line, for the end of the session.
     pub fn line(&self) -> String {
         format!(
-            "views of their own: {} calls at the start of the world (land, statics, glows), {} refused (no place, or a place above {TIER_VIEWS}), {} refused for a second call of a place in a frame, {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls, {} calls drew glows; {} calls at the end of the world (grass), {} refused, {} refused for a second call of a place in a frame, {} drew {} grass places (the bound views.full_tier_max is the host's, in its full tier line); {:.1} MB made for their sets",
+            "views of their own: {} calls at the start of the world (land, statics, glows), {} refused (no place, or a place above {TIER_VIEWS}), {} refused for a second call of a place in a frame, {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls, {} calls drew glows; {} calls at the end of the world (grass), {} refused, {} refused for a second call of a place in a frame, {} drew {} grass places (the bound views.full_tier_max is the host's, in its full tier line); {} changes of the view that holds a place; {:.1} MB made for their sets",
             self.calls,
             self.refused,
             self.repeated,
@@ -268,6 +283,7 @@ impl TierViews {
             self.repeated_after,
             self.grass_calls,
             self.grass_places,
+            self.holder_changes,
             self.bytes as f64 / 1e6
         )
     }
@@ -430,6 +446,18 @@ mod tests {
         assert_eq!((tier.claim(8, Some(1)), tier.claim_after(8, Some(1))), (Some(1), Some(1)));
         let line = tier.line();
         assert!(line.contains("refused") && line.contains("second call of a place"));
+    }
+
+    /// The view slot of a place is noted once: the same slot again is no change, another slot is.
+    #[test]
+    fn a_change_of_the_view_that_holds_a_place_is_noted() {
+        let mut tier = TierViews::default();
+        assert!(tier.note_holder(0, 5));
+        assert!(!tier.note_holder(0, 5));
+        assert!(tier.note_holder(1, 5));
+        assert!(tier.note_holder(0, 6));
+        assert_eq!(tier.holder_changes, 3);
+        assert!(tier.line().contains("3 changes of the view that holds a place"));
     }
 
     /// A change of the near plane of more than 1 % is logged; the same value again is not, and the

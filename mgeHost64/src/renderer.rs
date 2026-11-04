@@ -3025,6 +3025,7 @@ impl Extension for DistantLand {
             self.tier_views.unserved += u64::from(!ready);
             return false;
         };
+        self.note_place_holder(k, scene.view_key.slot);
         let (Some(gpu), Some(views)) = (self.gpu.as_ref(), self.view_binding.as_ref()) else { return false };
         let group = view::tier(k);
         let projection = self.land_projection(scene);
@@ -3103,6 +3104,7 @@ impl Extension for DistantLand {
         }
         let ready = self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
         let Some(k) = ready.then(|| self.tier_views.claim_after(scene.frame, scene.view_key.place)).flatten() else { return };
+        self.note_place_holder(k, scene.view_key.slot);
         let Some(views) = self.view_binding.as_ref() else { return };
         views.write(scene.queue, view::tier_game(k), &self.frame_view(scene, &scene.projection));
         let mut frame = self.grass_frame(scene);
@@ -3768,6 +3770,13 @@ impl DistantLand {
     /// The camera is under the water in this frame.
     fn under_water(&self) -> bool {
         self.environment.is_some_and(|e| e.flags & 2 != 0)
+    }
+
+    /// Logs the first changes of the view slot that holds a place of the views of their own.
+    fn note_place_holder(&mut self, place: usize, slot: u32) {
+        if self.tier_views.note_holder(place, slot) && self.tier_views.holder_changes <= 12 {
+            println!("distant land: place {place} is held by view slot {slot} (change {})", self.tier_views.holder_changes);
+        }
     }
 
     /// The values of the glows for a view: `eye` has the view range of the game in w, `planes` and
