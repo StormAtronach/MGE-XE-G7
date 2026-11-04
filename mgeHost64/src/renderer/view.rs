@@ -148,7 +148,13 @@ pub struct TierViews {
     pub static_calls: u64,
     /// The bytes of GPU memory that the sets of the views of their own made.
     pub bytes: u64,
+    /// The near plane of the last call that was logged, and how many lines were logged.
+    last_near: f32,
+    near_lines: u32,
 }
+
+/// The most lines of the near plane of a view of its own in a session.
+const NEAR_LINES: u32 = 12;
 
 impl TierViews {
     /// The number of the view for a call in `frame`, 0 to [`TIER_VIEWS`] less 1; `None` when
@@ -165,6 +171,17 @@ impl TierViews {
         self.used += 1;
         self.calls += 1;
         Some(self.used - 1)
+    }
+
+    /// True when the near plane of a call differs from the last logged one by more than
+    /// 1 %, for the first [`NEAR_LINES`] such changes of a session: the call then logs it.
+    pub fn note_near(&mut self, near: f32) -> bool {
+        if self.near_lines >= NEAR_LINES || (near - self.last_near).abs() <= self.last_near.abs() * 0.01 {
+            return false;
+        }
+        self.last_near = near;
+        self.near_lines += 1;
+        true
     }
 
     /// The report line, for the end of the session.
@@ -313,6 +330,22 @@ mod tests {
         assert_eq!(tier.claim(8), Some(0));
         assert_eq!(tier.claim(8), Some(1));
         assert!(tier.line().contains("refused"));
+    }
+
+    /// A change of the near plane of more than 1 % is logged; the same value again is not, and the
+    /// lines of a session are few.
+    #[test]
+    fn a_change_of_the_near_plane_is_logged_once() {
+        let mut tier = TierViews::default();
+        assert!(tier.note_near(1.0));
+        assert!(!tier.note_near(1.0));
+        assert!(!tier.note_near(1.005));
+        assert!(tier.note_near(2000.0));
+        assert!(!tier.note_near(2000.0));
+        for index in 0..40 {
+            tier.note_near(10.0 * 2f32.powi(index));
+        }
+        assert!(!tier.note_near(1.0e9));
     }
 
     #[test]

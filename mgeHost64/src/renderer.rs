@@ -3037,6 +3037,10 @@ impl Extension for DistantLand {
         let (Some(gpu), Some(views)) = (self.gpu.as_ref(), self.view_binding.as_ref()) else { return false };
         let group = view::tier(k);
         let projection = self.land_projection(scene);
+        let own = -scene.projection[14] / scene.projection[10];
+        if self.tier_views.note_near(own) {
+            println!("distant land: view of its own {} (call {}): the near plane of the view {own:.1}, of its land {:.1}", k + 1, self.tier_views.calls, -projection[14] / projection[10]);
+        }
         views.write(scene.queue, group, &self.frame_view(scene, &projection));
         let planes = nirender_wgpu::view_planes(&scene.view, &projection);
         let mut drew = false;
