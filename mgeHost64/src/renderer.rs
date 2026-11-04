@@ -1769,6 +1769,20 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     })
 }
 
+/// The near plane of the land's projection for a view whose own near plane is `game_near`.
+/// With one depth buffer it is the view's near times `near_scale`. Otherwise it is MGE XE's own
+/// near plane, 64 units, unless the view's near plane is farther: a mirror whose near plane
+/// is the mirror itself must not show land or statics between its camera and the mirror.
+fn land_near(game_near: f32, one_buffer: bool, near_scale: f32) -> f32 {
+    if one_buffer { game_near * near_scale } else { (NEAR - 1e-2).max(game_near) }
+}
+
+/// The projection is a perspective one: Direct3D's `m[2][3]` is 1 for it and 0 for an
+/// orthographic one, whose depth terms the land's projection cannot take.
+fn is_perspective(projection: &[f32; 16]) -> bool {
+    projection[11] != 0.0
+}
+
 /// `a * b` for two matrices of Direct3D, row after row.
 fn multiply(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut out = [0.0; 16];
@@ -3009,7 +3023,13 @@ impl Extension for DistantLand {
         if self.menu_reuse || !self.enabled || !self.distant_cell {
             return false;
         }
-        let ready = self.gpu.is_some() && self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
+        // A view with an orthographic projection (the local map's camera) gets no land: its
+        // depth terms are not those of a perspective one.
+        if !is_perspective(&scene.projection) {
+            self.tier_views.orthographic += 1;
+            return false;
+        }
+        let ready =self.gpu.is_some() && self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
         let Some(k) = ready.then(|| self.tier_views.claim(scene.frame)).flatten() else {
             self.tier_views.unserved += u64::from(!ready);
             return false;
@@ -3457,12 +3477,8 @@ impl DistantLand {
     /// projection with an infinite far plane (`nirender_wgpu::depth::world_projection`).
     fn land_projection(&self, scene: &SceneView) -> [f32; 16] {
         let mut projection = scene.projection;
-        let near = if nirender_wgpu::depth::one_buffer() {
-            let game_near = -scene.projection[14] / scene.projection[10];
-            game_near * nirender_wgpu::depth::control().near_scale.unwrap_or(LAND_NEAR_SCALE)
-        } else {
-            NEAR - 1e-2
-        };
+        let game_near = -scene.projection[14] / scene.projection[10];
+        let near = land_near(game_near, nirender_wgpu::depth::one_buffer(), nirender_wgpu::depth::control().near_scale.unwrap_or(LAND_NEAR_SCALE));
         let far = self.draw_distance.max(NEAR * 2.0);
         projection[10] = far / (far - near);
         projection[14] = -near * far / (far - near);
@@ -3805,6 +3821,31 @@ impl DistantLand {
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade, original })
+    }
+}
+
+#[cfg(test)]
+mod land_near_tests {
+    use super::*;
+
+    /// The game's own near plane (1) leaves the land's near plane at 64, as for the main view; a
+    /// mirror with its near plane at 300 moves it to 300, and a nearer one (4) does not move it.
+    #[test]
+    fn the_land_never_starts_before_the_near_plane_of_its_view() {
+        assert_eq!(land_near(1.0, false, 0.9975), NEAR - 1e-2);
+        assert_eq!(land_near(4.0, false, 0.9975), NEAR - 1e-2);
+        assert_eq!(land_near(300.0, false, 0.9975), 300.0);
+        assert_eq!(land_near(1.0, true, 0.9975), 0.9975);
+        assert_eq!(land_near(300.0, true, 0.9975), 300.0 * 0.9975);
+    }
+
+    /// A perspective projection of Direct3D has 1 at m[2][3]; an orthographic one has 0.
+    #[test]
+    fn an_orthographic_projection_is_not_perspective() {
+        let mut perspective = [0.0f32; 16];
+        perspective[11] = 1.0;
+        assert!(is_perspective(&perspective));
+        assert!(!is_perspective(&[0.0; 16]));
     }
 }
 

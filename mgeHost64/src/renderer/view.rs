@@ -141,6 +141,8 @@ pub struct TierViews {
     pub calls: u64,
     pub refused: u64,
     pub unserved: u64,
+    /// The calls of a view with an orthographic projection, which gets no parts.
+    pub orthographic: u64,
     /// The draws of the land meshes and the draw calls of the statics, in all calls.
     pub land_draws: u64,
     pub static_calls: u64,
@@ -168,10 +170,11 @@ impl TierViews {
     /// The report line, for the end of the session.
     pub fn line(&self) -> String {
         format!(
-            "views of their own: {} calls with land or statics, {} refused (a frame had {TIER_VIEWS} already), {} could not draw; {} land mesh draws, {} statics draw calls; {:.1} MB made for their sets",
+            "views of their own: {} calls with land or statics, {} refused (a frame had {TIER_VIEWS} already), {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls; {:.1} MB made for their sets",
             self.calls,
             self.refused,
             self.unserved,
+            self.orthographic,
             self.land_draws,
             self.static_calls,
             self.bytes as f64 / 1e6
