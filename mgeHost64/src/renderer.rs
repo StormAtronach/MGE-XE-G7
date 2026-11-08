@@ -127,7 +127,7 @@ pub struct Settings {
     pub water_wave_height: f32,
     /// In cells.
     pub interior_fog_end: f32,
-    /// Version 2: the debug views of a run ([`SETTINGS_DEBUG_LIGHT`]). 0 in a version 1 record.
+    /// The debug views of a run ([`SETTINGS_DEBUG_LIGHT`]).
     pub debug: u32,
 }
 
@@ -136,20 +136,14 @@ pub struct Settings {
 const SETTINGS_DEBUG_LIGHT: u32 = 1;
 
 impl Settings {
-    /// The bytes of a version 1 record: the members up to `interior_fog_end`.
-    const V1_SIZE: usize = 13 * 4;
+    /// The version of the record that this build reads, the one `Deviceless::sendSettings`
+    /// writes.
+    const VERSION: u32 = 2;
 
-    /// Reads the record: version 1 (the members up to `interior_fog_end`) or a later one,
-    /// which only adds members at the end; [`None`] for a short record or a version 0.
+    /// Reads the record; [`None`] for a short record or another version.
     pub fn read(bytes: &[u8]) -> Option<Settings> {
-        let version = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
-        if version == 0 || bytes.len() < Self::V1_SIZE {
-            return None;
-        }
-        let mut settings: Settings = bytemuck::Zeroable::zeroed();
-        let n = bytes.len().min(size_of::<Settings>());
-        bytemuck::bytes_of_mut(&mut settings)[..n].copy_from_slice(&bytes[..n]);
-        Some(settings)
+        let settings: Settings = bytemuck::pod_read_unaligned(bytes.get(..size_of::<Settings>())?);
+        (settings.version == Self::VERSION).then_some(settings)
     }
 
     /// The names of the flags that differ between two records, each with its new state.
@@ -322,12 +316,14 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
         }
         // The version, the ui flag; the path to the end.
         PICTURE_ID => 8,
-        // Version 1: the 13 words; a later version adds members at the end.
-        SETTINGS_ID => match word(0) {
-            0 => 4,
-            1 => Settings::V1_SIZE,
-            _ => size_of::<Settings>(),
-        },
+        // The 14 words of its version; another version needs its version word only.
+        SETTINGS_ID => {
+            if word(0) == Settings::VERSION as usize {
+                size_of::<Settings>()
+            } else {
+                4
+            }
+        }
         // The version, the number of slots, then for each its number, its size and its look
         // (at least 8 bytes).
         WATER_LOOKS_ID => {
@@ -4195,29 +4191,27 @@ mod settings_tests {
     #[test]
     fn the_settings_record_is_read() {
         let mut bytes = Vec::new();
-        for word in [1u32, USE_DISTANT_LAND | USE_SHADOWS, 1] {
+        for word in [Settings::VERSION, USE_DISTANT_LAND | USE_SHADOWS, 1] {
             bytes.extend(word.to_le_bytes());
         }
         for number in [0.5f32, 5.0, 1.0, 2.0, 3.0, 150.0, 400.0, 50.0, 30.0, 0.8] {
             bytes.extend(number.to_le_bytes());
         }
-        // A version 1 record: no debug word.
-        assert_eq!(bytes.len(), Settings::V1_SIZE);
+        bytes.extend(SETTINGS_DEBUG_LIGHT.to_le_bytes());
+        assert_eq!(bytes.len(), size_of::<Settings>());
         let settings = Settings::read(&bytes).unwrap();
         assert_eq!(settings.flags, USE_DISTANT_LAND | USE_SHADOWS);
         assert_eq!(settings.per_pixel_mode, 1);
         assert_eq!(settings.hdr_reaction_speed, 0.5);
         assert_eq!(settings.draw_distance, 5.0);
         assert_eq!(settings.interior_fog_end, 0.8);
-        assert_eq!(settings.debug, 0);
-        assert!(Settings::read(&bytes[..40]).is_none());
-        // A version 2 record: the debug word follows.
-        bytes[0] = 2;
-        bytes.extend(SETTINGS_DEBUG_LIGHT.to_le_bytes());
-        assert_eq!(bytes.len(), size_of::<Settings>());
-        assert_eq!(Settings::read(&bytes).unwrap().debug, SETTINGS_DEBUG_LIGHT);
-        bytes[0] = 0;
-        assert!(Settings::read(&bytes).is_none());
+        assert_eq!(settings.debug, SETTINGS_DEBUG_LIGHT);
+        // A record without its last word, and a record of another version, are not read.
+        assert!(Settings::read(&bytes[..size_of::<Settings>() - 4]).is_none());
+        for version in [0, 1, Settings::VERSION + 1] {
+            bytes[..4].copy_from_slice(&version.to_le_bytes());
+            assert!(Settings::read(&bytes).is_none(), "version {version}");
+        }
     }
 
     /// A picture without the interface gives its frame the post call, even with no chain.
@@ -4272,7 +4266,7 @@ full_tier_max = 0
         let (_sender, receiver) = channel();
         land.loading = Some(receiver);
         for (flags, enabled, water_on) in [(0, false, false), (USE_DISTANT_WATER, false, true), (USE_DISTANT_LAND, true, true), (USE_DISTANT_LAND | USE_DISTANT_WATER, true, true)] {
-            land.settings = Some(Settings { version: 1, flags, ..bytemuck::Zeroable::zeroed() });
+            land.settings = Some(Settings { version: Settings::VERSION,flags, ..bytemuck::Zeroable::zeroed() });
             land.apply_settings();
             assert_eq!((land.enabled, land.water_on), (enabled, water_on), "flags {flags:#x}");
         }
@@ -4305,7 +4299,7 @@ full_tier_max = 0
             (EXP_FOG | USE_DISTANT_WATER, false),
             (fog | USE_DISTANT_WATER, false),
         ] {
-            land.settings = Some(Settings { version: 1, flags, ..bytemuck::Zeroable::zeroed() });
+            land.settings = Some(Settings { version: Settings::VERSION,flags, ..bytemuck::Zeroable::zeroed() });
             land.apply_settings();
             assert_eq!(land.scatter_shaders, scatters, "flags {flags:#x}");
         }
@@ -4314,7 +4308,7 @@ full_tier_max = 0
 
     #[test]
     fn the_changed_flags_are_named() {
-        let a = Settings { version: 1, flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
+        let a = Settings { version: Settings::VERSION,flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
         let b = Settings { flags: USE_DISTANT_LAND | USE_GRASS | USE_HDR, ..a };
         assert_eq!(Settings::changed_flags(Some(a), b), vec!["shadows off".to_string(), "HDR measure on".to_string()]);
         assert_eq!(Settings::changed_flags(None, a).len(), 14);
