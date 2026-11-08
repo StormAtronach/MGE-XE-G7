@@ -209,6 +209,17 @@ pub fn layer_matrix(eye: [f32; 3], eye_vec: [f32; 3], light_vec: [f32; 3], radiu
 }
 
 impl Shadow {
+    /// The depth format of the shadow map for a frame whose depth has the format `frame_depth`:
+    /// the same depth bits with no stencil, as the shadow map uses no stencil. The pipelines that
+    /// draw into the map take this format too.
+    pub fn depth_format(frame_depth: wgpu::TextureFormat) -> wgpu::TextureFormat {
+        match frame_depth {
+            wgpu::TextureFormat::Depth32FloatStencil8 => wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureFormat::Depth24PlusStencil8 => wgpu::TextureFormat::Depth24Plus,
+            other => other,
+        }
+    }
+
     pub fn new(scene: &SceneView, resolution: u32) -> Shadow {
         let device = scene.device;
         // The map is two layers wide: each at most half of the largest texture of the GPU.
@@ -228,7 +239,7 @@ impl Shadow {
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let atlas = target("shadow atlas", wgpu::TextureFormat::R16Float, usage);
         let blur = target("shadow blur", wgpu::TextureFormat::R16Float, usage);
-        let depth_view = target("shadow depth", scene.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
+        let depth_view = target("shadow depth", Shadow::depth_format(scene.depth_format), wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
         let atlas_view = Rc::new(atlas.create_view(&Default::default()));
         let blur_view = blur.create_view(&Default::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -347,7 +358,7 @@ impl Shadow {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -415,7 +426,8 @@ impl Shadow {
 
 #[cfg(test)]
 mod tests {
-    use super::{sun_light, BLUR_SHADER, DEBUG_SHADER};
+    use super::{sun_light, Shadow, BLUR_SHADER, DEBUG_SHADER};
+    use nirender_wgpu::wgpu::TextureFormat;
 
     /// The shaders of the shadow map compile as the device checks them: the blur of the map,
     /// and the debug view of its atlas.
@@ -424,6 +436,19 @@ mod tests {
         let check = crate::renderer::shader_check::check;
         check("shadow blur", BLUR_SHADER).unwrap();
         check("shadow debug", DEBUG_SHADER).unwrap();
+    }
+
+    /// The shadow map keeps the depth bits of the frame's format and drops the stencil. A format
+    /// with no stencil stays as it is.
+    #[test]
+    fn the_shadow_depth_has_no_stencil() {
+        assert_eq!(Shadow::depth_format(TextureFormat::Depth32FloatStencil8), TextureFormat::Depth32Float);
+        assert_eq!(Shadow::depth_format(TextureFormat::Depth24PlusStencil8), TextureFormat::Depth24Plus);
+        assert_eq!(Shadow::depth_format(TextureFormat::Depth32Float), TextureFormat::Depth32Float);
+        for frame in [TextureFormat::Depth32FloatStencil8, TextureFormat::Depth24PlusStencil8] {
+            assert!(!Shadow::depth_format(frame).has_stencil_aspect(), "{frame:?}");
+            assert!(Shadow::depth_format(frame).has_depth_aspect(), "{frame:?}");
+        }
     }
 
     /// The grass and the ground take the same light of the sun for their shadow: none when

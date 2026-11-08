@@ -1730,7 +1730,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
         // The shadow map is a target of its own with the plain convention (cleared to 1).
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: scene.depth_format,
+            format: Shadow::depth_format(scene.depth_format),
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: Default::default(),
