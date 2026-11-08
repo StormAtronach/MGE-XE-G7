@@ -4482,3 +4482,118 @@ mod extension_record_tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod hello_stop_tests {
+    use super::*;
+
+    /// The longest time that a stop may take in its child process.
+    const CHILD_SECONDS: u64 = 60;
+
+    /// The folder of the settings of a child: one per child process, which the parent removes
+    /// (the child ends without its own clean-up).
+    fn child_root(pid: u32) -> PathBuf {
+        std::env::temp_dir().join(format!("mge-hello-stop-{pid}"))
+    }
+
+    /// A replay's distant land, with distant land off, in the folder of this process.
+    fn replay_land() -> DistantLand {
+        let root = child_root(std::process::id());
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        land.offline();
+        land
+    }
+
+    /// Runs the ignored test `name` of this module alone, in a child process of this test
+    /// program with `MGE_XE_BOX_SECONDS=1` (a box that shows closes by itself), and gives its
+    /// exit code and its output. The child is ended when it takes longer than
+    /// [`CHILD_SECONDS`].
+    fn in_child(name: &str) -> (Option<i32>, String) {
+        let module = module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest);
+        let test = format!("{module}::{name}");
+        // The child's output goes to a file, not a pipe: a pipe that nobody reads while this
+        // test waits would stop a child that writes more than the pipe holds.
+        let log = std::env::temp_dir().join(format!("mge-hello-stop-{name}-{}.txt", std::process::id()));
+        let file = std::fs::File::create(&log).unwrap();
+        let program = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(program)
+            .args([test.as_str(), "--exact", "--ignored", "--test-threads=1", "--nocapture"])
+            .env("MGE_XE_BOX_SECONDS", "1")
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed().as_secs() >= CHILD_SECONDS {
+                child.kill().ok();
+                child.wait().ok();
+                panic!(
+                    "{test} did not end in {CHILD_SECONDS} s in its child process (its output: {})",
+                    log.display()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        std::fs::remove_dir_all(child_root(child.id())).ok();
+        let output = std::fs::read_to_string(&log).unwrap_or_default();
+        std::fs::remove_file(&log).ok();
+        (status.code(), output)
+    }
+
+    /// The child ended with the exit code of another extension format, after the lines of the
+    /// refusal and with no box: a replay has no game.
+    fn assert_replay_stop(code: Option<i32>, output: &str, reason: &str) {
+        let expected = nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT as i32;
+        assert_eq!(code, Some(expected), "the exit code of the child; its output:\n{output}");
+        assert!(
+            output.contains(reason),
+            "the child did not name the reason '{reason}':\n{output}"
+        );
+        assert!(
+            output.contains("make the capture again with this build"),
+            "the child did not ask for a new capture:\n{output}"
+        );
+        let boxed = output
+            .lines()
+            .any(|line| line.starts_with("box:") || line.starts_with("refusal:"));
+        assert!(!boxed, "the child showed the box of a live session:\n{output}");
+    }
+
+    #[test]
+    fn a_replay_without_a_hello_stops_with_no_box() {
+        let (code, output) = in_child("a_replay_without_a_hello_stops_in_this_process");
+        assert_replay_stop(code, &output, "sent no hello record");
+    }
+
+    #[test]
+    fn a_replay_with_a_hello_of_another_format_stops_with_no_box() {
+        let (code, output) = in_child("a_replay_with_a_hello_of_another_format_stops_in_this_process");
+        assert_replay_stop(code, &output, "writes the extension format 2");
+    }
+
+    #[test]
+    #[ignore = "ends its process: run alone by a_replay_without_a_hello_stops_with_no_box"]
+    fn a_replay_without_a_hello_stops_in_this_process() {
+        let land = replay_land();
+        land.stop_without_hello();
+        panic!("the replay played on without a hello");
+    }
+
+    #[test]
+    #[ignore = "ends its process: run alone by a_replay_with_a_hello_of_another_format_stops_with_no_box"]
+    fn a_replay_with_a_hello_of_another_format_stops_in_this_process() {
+        let mut land = replay_land();
+        let mut hello = vec![0u8; HELLO_BUILD_ID_AT + HELLO_BUILD_ID_BYTES];
+        hello[..4].copy_from_slice(&1u32.to_le_bytes());
+        hello[4..8].copy_from_slice(&2u32.to_le_bytes());
+        hello[HELLO_BUILD_ID_AT..HELLO_BUILD_ID_AT + 4].copy_from_slice(b"test");
+        land.data(HELLO_ID, &hello);
+        panic!("the replay played on with a hello of the extension format 2");
+    }
+}
