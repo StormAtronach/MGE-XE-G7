@@ -392,21 +392,19 @@ struct GrassKept {
     call: u64,
 }
 
-/// The records of one world space during one call.
+/// The records of one world space during one call. The world space enters the map with its
+/// first cell, so a call that makes no records (an interior with no grass) allocates nothing.
 struct GrassKeep<'a> {
-    cells: &'a mut HashMap<(i32, i32), CellRecords>,
+    worlds: &'a mut HashMap<Vec<u8>, HashMap<(i32, i32), CellRecords>>,
+    world: &'a [u8],
     call: u64,
 }
 
 impl GrassKept {
     /// Starts a call in the world space `world`.
-    fn begin(&mut self, world: &[u8]) -> GrassKeep<'_> {
+    fn begin<'a>(&'a mut self, world: &'a [u8]) -> GrassKeep<'a> {
         self.call += 1;
-        if !self.worlds.contains_key(world) {
-            self.worlds.insert(world.to_vec(), HashMap::new());
-        }
-        let cells = self.worlds.get_mut(world).expect("the world space is inserted above");
-        GrassKeep { cells, call: self.call }
+        GrassKeep { worlds: &mut self.worlds, world, call: self.call }
     }
 
     /// Ends a call: the cells that no call walked in the last [`GRASS_KEEP_CALLS`] calls go, and
@@ -429,7 +427,7 @@ impl GrassKept {
 impl GrassKeep<'_> {
     /// Marks the cell as walked by this call, when it has records.
     fn walk(&mut self, key: (i32, i32)) {
-        if let Some(cell) = self.cells.get_mut(&key) {
+        if let Some(cell) = self.worlds.get_mut(self.world).and_then(|cells| cells.get_mut(&key)) {
             cell.walked = self.call;
         }
     }
@@ -437,7 +435,11 @@ impl GrassKeep<'_> {
     /// The records of the cell, empty when it has none yet, for a cell of `places` places.
     fn cell(&mut self, key: (i32, i32), places: usize) -> &mut CellRecords {
         let call = self.call;
-        self.cells.entry(key).or_insert_with(|| CellRecords { records: vec![None; places], walked: call })
+        if !self.worlds.contains_key(self.world) {
+            self.worlds.insert(self.world.to_vec(), HashMap::new());
+        }
+        let cells = self.worlds.get_mut(self.world).expect("the world space is inserted above");
+        cells.entry(key).or_insert_with(|| CellRecords { records: vec![None; places], walked: call })
     }
 }
 
@@ -4212,6 +4214,28 @@ mod tests {
         kept_call(&world, &grass, &far, &mut kept);
         assert_eq!(kept.size(), (0, 0));
         assert_eq!(kept_call(&world, &grass, &near, &mut kept), (drawn, made));
+    }
+
+    /// A call in a world space with no grass in reach (an interior) keeps nothing, and allocates
+    /// no entry for its world space. A call with grass makes the entry with its first cell.
+    #[test]
+    fn a_call_with_no_grass_allocates_no_world_space() {
+        let mut state = 5;
+        let (interior, no_grass) = random_world(&mut state, 0);
+        let sight = open_sight(&mut state, [4000.0, 4000.0, 500.0]);
+        let mut kept = GrassKept::default();
+        for _ in 0..3 {
+            let (mut draws, mut counts) = (Vec::new(), GrassParts::default());
+            interior.choose_grass(&no_grass, &sight, hidden_group, on_gpu, &mut draws, &mut counts, kept.begin(b"Balmora, Eve's House"));
+            kept.end();
+            assert!(draws.is_empty());
+        }
+        assert_eq!(kept.worlds.capacity(), 0, "the map never held a world space");
+
+        let (world, grass) = random_world(&mut state, 8000);
+        let (drawn, _) = kept_call(&world, &grass, &sight, &mut kept);
+        assert!(drawn > 0);
+        assert_eq!(kept.worlds.len(), 1);
     }
 
     /// An eye that moves to and fro across the edge of a cell makes no matrix after its first two
