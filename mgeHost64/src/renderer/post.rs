@@ -5435,6 +5435,10 @@ mod tests {
     /// `busy` before the copy and for about `busy_after_map` more from the call after the map. Nothing
     /// else polls the device. Stops at the first read, or at 40 calls.
     fn hdr_run_with_busy_gpu(busy: std::time::Duration, busy_after_map: std::time::Duration) -> HdrRun {
+        // One GPU test at a time: each makes a device, and `gpu::last_submission` is shared by the
+        // process (production has one device). A test that fails does not stop the next one.
+        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
