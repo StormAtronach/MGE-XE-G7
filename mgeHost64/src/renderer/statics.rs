@@ -58,8 +58,8 @@
 //!
 //! The places of a frame are chosen on the GPU when the device can draw from it (`cull.rs`):
 //! a compute pass tests each place as the loop of the CPU does, and one indirect call for each
-//! texture draws them from pools of geometry. Without the features of the device, or with
-//! `MGE_XE_STATICS_CULL=cpu`, the CPU chooses them and draws each place from the same pools.
+//! texture draws them from pools of geometry. Without the features of the device, the CPU
+//! chooses them and draws each place from the same pools.
 //!
 //! No test against the land hides a place.
 
@@ -3672,8 +3672,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         usage: wgpu::BufferUsages::VERTEX,
     });
     let pools = cull::Pools::new(catalog.textures.len(), device);
-    let forced_cpu = nirender_wgpu::switches::choice("MGE_XE_STATICS_CULL", &["cpu", "gpu"]) == Some("cpu");
-    let culling = if cull::supported(device) && !forced_cpu {
+    let culling = if cull::supported(device) {
         let places: Vec<cull::Place> = catalog
             .instances
             .iter()
@@ -3682,10 +3681,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         println!("distant statics: the places are chosen on the GPU");
         Some(cull::Culling::new(device, &places, catalog.subsets.len(), catalog.textures.len()))
     } else {
-        println!(
-            "distant statics: the places are chosen on the CPU ({})",
-            if forced_cpu { "MGE_XE_STATICS_CULL=cpu" } else { "the device has no first instance or count for indirect draws" }
-        );
+        println!("distant statics: the places are chosen on the CPU (the device has no first instance or count for indirect draws)");
         None
     };
 

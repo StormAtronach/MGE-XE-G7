@@ -476,7 +476,6 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `NIRENDER_HOST_EXE`: not a switch of a player. d3d8.dll sets it to `numidium.exe` of the
   game folder before it loads the plugin, which starts the program it names as the helper
   (the plugin's README has the other `NIRENDER_*` variables).
-- `MGE_XE_STATICS_CULL=cpu`: the distant statics are culled on the CPU, not on the GPU.
 - `MGE_XE_STATICS_CAP_MB=<n>`: a fixed cap of the merged subsets of the distant statics, in
   place of `distant_land.statics_fallback_cap_mb`.
 - `MGE_XE_LIST_WORLDS=1`: the report lists every interior world space of the distant
