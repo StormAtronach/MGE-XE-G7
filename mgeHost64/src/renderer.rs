@@ -2319,11 +2319,7 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
-        // The kept records came before the first frame: a session or a capture without the
-        // hello of d3d8.dll has a d3d8.dll from before the handshake (the owner's choice: stop).
-        if self.hello.is_none() {
-            stop_mismatch(&no_hello_text(), self.synchronous);
-        }
+        self.stop_without_hello();
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
@@ -3362,6 +3358,15 @@ impl Extension for DistantLand {
 }
 
 impl DistantLand {
+    /// Ends this program when no hello record of d3d8.dll ([`HELLO_ID`]) came before the
+    /// first world frame: the kept records come before it, so the d3d8.dll is from before the
+    /// handshake (the owner's choice: stop). A replay ends with the exit code and no box.
+    fn stop_without_hello(&self) {
+        if self.hello.is_none() {
+            stop_mismatch(&no_hello_text(), self.synchronous);
+        }
+    }
+
     /// The chain of post shaders is on and has a shader.
     fn chain_wanted(&self) -> bool {
         self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty())
