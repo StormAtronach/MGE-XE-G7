@@ -80,9 +80,6 @@ fn skipped(part: &str) -> bool {
 /// The adaptation point of the main view is logged at every this many runs of its post chain,
 /// for the first this many lines.
 const MAIN_POINT_EVERY: u64 = 60;
-/// The frames that a spare post state of a view of its own may stay unused before it is freed
-/// (D82 section 3.4f, R2).
-const SPARE_IDLE_FRAMES: u64 = 60;
 const MAIN_POINT_LINES: u64 = 400;
 const ENVIRONMENT_ID: u32 = 1;
 /// The state of a post shader that a mod loaded: see [`post::ShaderState`].
@@ -849,10 +846,9 @@ pub struct DistantLand {
     /// (`note_place_holder`).
     post_main: Option<post::PostView>,
     /// The sets from [`view::TIER_VIEWS`] on are the spares of the later calls of a place in a
-    /// frame (D82 section 3.4f, R2); `post_used` has the frame of the last run of each, and a spare
-    /// that no call used for [`SPARE_IDLE_FRAMES`] frames is freed.
+    /// frame (D82 section 3.4f, R2); a spare that no call used for [`view::SPARE_IDLE_FRAMES`]
+    /// frames is freed ([`view::TierViews::idle_post_spares`]).
     post_places: [Option<post::PostView>; view::TIER_SETS],
-    post_used: [u64; view::TIER_SETS],
     post_spares_freed: u64,
     /// The lines logged for a new state of a place.
     post_view_lines: u32,
@@ -1183,7 +1179,6 @@ impl DistantLand {
             environment_watch: view::EnvironmentWatch::default(),
             post_main: None,
             post_places: Default::default(),
-            post_used: [0; view::TIER_SETS],
             post_spares_freed: 0,
             post_view_lines: 0,
             main_post_runs: 0,
@@ -1337,7 +1332,7 @@ impl Drop for DistantLand {
             self.post_places[view::TIER_VIEWS..].iter().flatten().count(),
             self.post_places[view::TIER_VIEWS..].iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6,
             self.post_spares_freed,
-            SPARE_IDLE_FRAMES
+            view::SPARE_IDLE_FRAMES
         );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("distant lights: {} frames with glows", self.lights.as_ref().map_or(0, |lights| lights.frames));
@@ -3066,7 +3061,7 @@ impl Extension for DistantLand {
             return false;
         }
         let ready = self.gpu.is_some() && self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
-        let Some(k) = ready.then(|| self.tier_views.claim(scene.frame, scene.view_key.place)).flatten() else {
+        let Some(k) = ready.then(|| self.tier_views.claim(scene.frame, scene.view_key.place, scene.view_key.repeat)).flatten() else {
             self.tier_views.unserved += u64::from(!ready);
             return false;
         };
@@ -3148,7 +3143,7 @@ impl Extension for DistantLand {
             return;
         }
         let ready = self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
-        let Some(k) = ready.then(|| self.tier_views.claim_after(scene.frame, scene.view_key.place)).flatten() else { return };
+        let Some(k) = ready.then(|| self.tier_views.claim_after(scene.frame, scene.view_key.place, scene.view_key.repeat)).flatten() else { return };
         self.note_place_holder(k, scene.view_key.slot);
         let Some(views) = self.view_binding.as_ref() else { return };
         views.write(scene.queue, view::tier_game(k), &self.frame_view(scene, &scene.projection));
@@ -3176,9 +3171,8 @@ impl Extension for DistantLand {
             return;
         }
         self.free_idle_spares(scene.frame);
-        let Some(k) = self.tier_views.claim_post(scene.frame, scene.view_key.place) else { return };
+        let Some(k) = self.tier_views.claim_post(scene.frame, scene.view_key.place, scene.view_key.repeat) else { return };
         self.note_place_holder(k, scene.view_key.slot);
-        self.post_used[k] = scene.frame;
         if !self.run_view_post(k, scene, encoder, target) {
             self.tier_views.post_unserved += 1;
         }
@@ -3867,13 +3861,12 @@ impl DistantLand {
         self.environment.is_some_and(|e| e.flags & 2 != 0)
     }
 
-    /// Frees the post state of a spare that no call has used for [`SPARE_IDLE_FRAMES`] frames.
+    /// Frees the post state of a spare that no call has used for [`view::SPARE_IDLE_FRAMES`] frames.
     fn free_idle_spares(&mut self, frame: u64) {
-        for set in view::TIER_VIEWS..view::TIER_SETS {
-            if self.post_places[set].is_some() && frame.saturating_sub(self.post_used[set]) > SPARE_IDLE_FRAMES {
-                self.post_places[set] = None;
-                self.post_spares_freed += 1;
-            }
+        let present = core::array::from_fn(|set| self.post_places[set].is_some());
+        for set in self.tier_views.idle_post_spares(present, frame) {
+            self.post_places[set] = None;
+            self.post_spares_freed += 1;
         }
     }
 
