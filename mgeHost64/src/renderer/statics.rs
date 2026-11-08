@@ -866,6 +866,37 @@ struct Resident {
     bent: bool,
 }
 
+impl Resident {
+    /// The share of the subset that is in, as the shaders have it, at the time `now` of the clock
+    /// of the arrivals with the fade time `seconds` (0 for no fade).
+    fn fade(&self, now: f32, seconds: f32) -> f32 {
+        Self::fade_after(now - self.arrived, seconds)
+    }
+
+    /// The share of a subset that is in `since` seconds after its arrival.
+    fn fade_after(since: f32, seconds: f32) -> f32 {
+        if seconds > 0.0 { (since / seconds).clamp(0.0, 1.0) } else { 1.0 }
+    }
+}
+
+/// The draws of a grass call in the order of the draw: by texture, then by subset, then by the
+/// place in which the call found them. The key is a total order, so equal draws keep the order
+/// of the choice and the same view gives the same records.
+#[derive(Default)]
+struct GrassOrder {
+    keys: Vec<(u32, u32, u32)>,
+}
+
+impl GrassOrder {
+    /// Sorts the draws given as (texture, subset) in the order of their choice.
+    fn sort(&mut self, draws: impl Iterator<Item = (u32, u32)>) {
+        self.keys.clear();
+        self.keys.extend(draws.enumerate().map(|(index, (texture, subset))| (texture, subset, index as u32)));
+        // A stable sort on the texture and the subset: the draws start in the order of their choice, so equal ones keep it, and the key is a total order of (texture, subset, index).
+        self.keys.sort_by_key(|key| (key.0, key.1));
+    }
+}
+
 /// What the loader thread gives to the renderer: the catalog, and the bytes of the texture
 /// files in the order of the catalog ([`None`] for a file that is not there).
 struct Loaded {
@@ -1340,6 +1371,9 @@ pub struct Statics {
     prepare_seconds: f64,
     /// The grass of the frame: texture, subset, record, the fade-in, 1 for bent normals.
     grass_draws: Vec<(u32, u32, [f32; 12], f32, f32)>,
+    /// The draws of the call in the order of the draw, and their records, kept from call to call.
+    grass_order: GrassOrder,
+    grass_records: Vec<f32>,
     /// The clock of the arrivals, and the time a subset takes to come in (0: no fade-in).
     clock: Instant,
     fade_seconds: f32,
@@ -1467,6 +1501,8 @@ impl Statics {
             prepare_calls: 0,
             prepare_seconds: 0.0,
             grass_draws: Vec::new(),
+            grass_order: GrassOrder::default(),
+            grass_records: Vec::new(),
             clock: Instant::now(),
             fade_seconds: 1.0,
             prefetching: false,
@@ -2253,6 +2289,7 @@ impl Statics {
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
         self.grass_draws.clear();
+        let [now, fade_seconds, _, _] = self.fade_values();
         let mut counts = GrassParts::default();
         let choose_started = Instant::now();
         let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
@@ -2280,9 +2317,9 @@ impl Statics {
                         continue;
                     }
                     let draws_before = self.grass_draws.len();
-                    let record = grass_record(&world_matrix(place.position, place.rotation, place.scale));
+                    let mut record = None;
                     for subset in place.first_subset..place.first_subset + place.subset_count {
-                        let Some(bent) = self.resident.get(&subset).map(|r| r.bent) else {
+                        let Some(resident) = self.resident.get(&subset) else {
                             counts.subset_misses += 1;
                             continue;
                         };
@@ -2290,8 +2327,8 @@ impl Statics {
                             cut = true;
                             break 'cells;
                         }
-                        let fade = self.fade_of(subset);
-                        self.grass_draws.push((catalog.subsets[subset as usize].texture, subset, record, fade, bent as u32 as f32));
+                        let record = *record.get_or_insert_with(|| grass_record(&world_matrix(place.position, place.rotation, place.scale)));
+                        self.grass_draws.push((catalog.subsets[subset as usize].texture, subset, record, resident.fade(now, fade_seconds), resident.bent as u32 as f32));
                     }
                     counts.without_resident += (self.grass_draws.len() == draws_before) as u64;
                 }
@@ -2308,11 +2345,16 @@ impl Statics {
             return 0;
         }
         let sort_started = Instant::now();
-        self.grass_draws.sort_unstable_by_key(|draw| (draw.0, draw.1));
+        self.grass_order.sort(self.grass_draws.iter().map(|draw| (draw.0, draw.1)));
         counts.sort_seconds = sort_started.elapsed().as_secs_f64();
         let records_started = Instant::now();
-        let records: Vec<f32> = self.grass_draws.iter().flat_map(|draw| draw.2.into_iter().chain([draw.3, draw.4, 0.0, 0.0])).collect();
-        scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&records));
+        let draws = &self.grass_draws;
+        self.grass_records.clear();
+        self.grass_records.extend(self.grass_order.keys.iter().flat_map(|&(_, _, index)| {
+            let draw = &draws[index as usize];
+            draw.2.into_iter().chain([draw.3, draw.4, 0.0, 0.0])
+        }));
+        scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&self.grass_records));
         counts.records_seconds = records_started.elapsed().as_secs_f64();
         let setup_started = Instant::now();
         let uniforms = GrassUniforms {
@@ -2350,10 +2392,10 @@ impl Statics {
         let draw_started = Instant::now();
         // One draw for each run of places with the same subset.
         let mut start = 0;
-        while start < self.grass_draws.len() {
-            let (texture, subset, ..) = self.grass_draws[start];
+        while start < self.grass_order.keys.len() {
+            let (texture, subset, _) = self.grass_order.keys[start];
             let mut end = start + 1;
-            while end < self.grass_draws.len() && self.grass_draws[end].1 == subset {
+            while end < self.grass_order.keys.len() && self.grass_order.keys[end].1 == subset {
                 end += 1;
             }
             if let Some(Resident { geometry: Geometry::Own { vertices, indexes }, faces, .. }) = self.resident.get(&subset) {
@@ -2390,15 +2432,6 @@ impl Statics {
     /// time. A replay has no fade: its pictures must not depend on the time of the machine.
     fn fade_values(&self) -> [f32; 4] {
         [self.clock.elapsed().as_secs_f32(), if self.synchronous { 0.0 } else { self.fade_seconds }, 0.0, 0.0]
-    }
-
-    /// The share of a subset that is in, as the shaders have it.
-    fn fade_of(&self, subset: u32) -> f32 {
-        let [now, seconds, _, _] = self.fade_values();
-        match self.resident.get(&subset) {
-            Some(resident) if seconds > 0.0 => ((now - resident.arrived) / seconds).clamp(0.0, 1.0),
-            _ => 1.0,
-        }
     }
 
     /// Adds the counts of a grass call of the main view to the report; the calls of the views
@@ -3535,6 +3568,31 @@ mod shader_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::{GrassOrder, Resident};
+
+    /// The fade of a subset runs from 0 at its arrival to 1 after the fade time, and a fade time
+    /// of 0 means no fade (a replay).
+    #[test]
+    fn a_subset_fades_in_over_the_fade_time() {
+        assert_eq!(Resident::fade_after(5.0, 0.0), 1.0);
+        assert_eq!(Resident::fade_after(0.0, 2.0), 0.0);
+        assert_eq!(Resident::fade_after(1.0, 2.0), 0.5);
+        assert_eq!(Resident::fade_after(9.0, 2.0), 1.0);
+        assert_eq!(Resident::fade_after(-1.0, 2.0), 0.0);
+    }
+
+    /// The draws of a grass call sort by texture, then by subset, then by the order of their
+    /// choice, so that the order has no equal keys and the same call gives the same records.
+    #[test]
+    fn the_grass_draws_sort_by_texture_subset_and_choice() {
+        let mut order = GrassOrder::default();
+        order.sort([(2, 7), (1, 9), (2, 7), (1, 4), (1, 9), (2, 3)].into_iter());
+        assert_eq!(order.keys, vec![(1, 4, 3), (1, 9, 1), (1, 9, 4), (2, 3, 5), (2, 7, 0), (2, 7, 2)]);
+        // The keys are made again for the next call, not added to.
+        order.sort([(5, 5)].into_iter());
+        assert_eq!(order.keys, vec![(5, 5, 0)]);
+    }
+
     use super::{bytes_limit, cap_from_budget, cap_move, event_stamp, half, memory_event, qpc, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
