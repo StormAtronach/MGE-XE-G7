@@ -480,6 +480,12 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   place of `distant_land.statics_fallback_cap_mb`.
 - `MGE_XE_LIST_WORLDS=1`: the report lists every interior world space of the distant
   statics, not the first 12.
+- `MGE_XE_GRASS_HASH=1`: each grass call prints a line with the hash of its record list, in two
+  forms: `ordered` (the records in the order of the draw) and `unordered` (the sum of the hashes
+  of the records, which does not see the order). Two builds that draw the same grass give the
+  same lines for the same capture. A picture does not show the order of the draws; this line does.
+  The line is `grass hash frame <n> main|view: <r> records, cut <c>, ordered <h>, unordered <h>`.
+  Without the switch the call does no hashing.
 - `MGE_XE_DISTANT_LAND_DIR=<folder>`: the distant land of another folder, for a replay or a
   test.
 - `MGE_XE_GAME_DIR=<folder>`: the folder of the game (its Data Files and archives), for a
