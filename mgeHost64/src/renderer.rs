@@ -4506,9 +4506,19 @@ mod hello_stop_tests {
         land
     }
 
-    /// Runs the ignored test `name` of this module alone, in a child process of this test
-    /// program with `MGE_XE_BOX_SECONDS=1` (a box that shows closes by itself), and gives its
-    /// exit code and its output. The child is ended when it takes longer than
+    /// The variable that makes a child entry of this module stop its process. Without it the
+    /// entry returns at once, so that no other run of the tests (`--ignored` too) ends early.
+    /// Not an `MGE_XE_` name: it is no switch of the helper.
+    const CHILD: &str = "MGE_TEST_HELLO_STOP_CHILD";
+
+    /// True in the child process that [`in_child`] starts.
+    fn in_the_child() -> bool {
+        std::env::var_os(CHILD).is_some()
+    }
+
+    /// Runs the test `name` of this module alone, in a child process of this test program with
+    /// [`CHILD`] set and `MGE_XE_BOX_SECONDS=1` (a box that shows closes by itself), and gives
+    /// its exit code and its output. The child is ended when it takes longer than
     /// [`CHILD_SECONDS`].
     fn in_child(name: &str) -> (Option<i32>, String) {
         let module = module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest);
@@ -4519,7 +4529,8 @@ mod hello_stop_tests {
         let file = std::fs::File::create(&log).unwrap();
         let program = std::env::current_exe().unwrap();
         let mut child = std::process::Command::new(program)
-            .args([test.as_str(), "--exact", "--ignored", "--test-threads=1", "--nocapture"])
+            .args([test.as_str(), "--exact", "--test-threads=1", "--nocapture"])
+            .env(CHILD, "1")
             .env("MGE_XE_BOX_SECONDS", "1")
             .stdout(file.try_clone().unwrap())
             .stderr(file)
@@ -4577,17 +4588,24 @@ mod hello_stop_tests {
         assert_replay_stop(code, &output, "writes the extension format 2");
     }
 
+    /// The child entry of [`a_replay_without_a_hello_stops_with_no_box`]: it ends its process.
     #[test]
-    #[ignore = "ends its process: run alone by a_replay_without_a_hello_stops_with_no_box"]
     fn a_replay_without_a_hello_stops_in_this_process() {
+        if !in_the_child() {
+            return;
+        }
         let land = replay_land();
         land.stop_without_hello();
         panic!("the replay played on without a hello");
     }
 
+    /// The child entry of [`a_replay_with_a_hello_of_another_format_stops_with_no_box`]: it
+    /// ends its process.
     #[test]
-    #[ignore = "ends its process: run alone by a_replay_with_a_hello_of_another_format_stops_with_no_box"]
     fn a_replay_with_a_hello_of_another_format_stops_in_this_process() {
+        if !in_the_child() {
+            return;
+        }
         let mut land = replay_land();
         let mut hello = vec![0u8; HELLO_BUILD_ID_AT + HELLO_BUILD_ID_BYTES];
         hello[..4].copy_from_slice(&1u32.to_le_bytes());
