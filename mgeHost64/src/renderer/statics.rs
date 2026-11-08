@@ -3209,7 +3209,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         },
         primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: scene.depth_format,
+            format: super::shadow::Shadow::depth_format(scene.depth_format),
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: Default::default(),
