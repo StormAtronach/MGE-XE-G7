@@ -216,9 +216,8 @@ int queryViewOptions(UINT kind, void* key, UINT* parts) {
 }
 
 // Gives the plugin the options of a view: the parts, or null to clear them. False only when the
-// plugin refuses the key (a plugin from before a key kind refuses that kind). Without the plugin's
-// function (the Direct3D 9 renderer, or a plugin from before the options) the call does nothing
-// and gives true: the caller keeps its own copy then.
+// plugin refuses the key (a key kind that it does not take). Without the plugin's function (the
+// Direct3D 9 renderer) the call does nothing and gives true: the caller keeps its own copy then.
 bool sendViewOptions(UINT kind, void* key, const UINT* parts) {
     if (!viewOptionsExport) {
         return true;
@@ -356,9 +355,9 @@ static void* createStreamedD3D(UINT version) {
     streamExtension = (void (__cdecl *)(UINT, const void*, UINT))GetProcAddress(plugin, "nirender_stream_extension");
     viewOptionsExport = (UINT (__cdecl *)(UINT, void*, UINT, UINT))GetProcAddress(plugin, "nirender_view_options");
     viewOptionsGetExport = (UINT (__cdecl *)(UINT, void*, UINT*))GetProcAddress(plugin, "nirender_view_options_get");
-    // The build id of the plugin, for the log. A plugin without the export is from before the
-    // handshake: the game goes on with its device, and the helper refuses its stream (no
-    // stream format in the HEADER) with one box and the exit code 10. No Direct3D 9 fallback:
+    // The build id of the plugin, for the log. A plugin without the export has no handshake:
+    // the game goes on with its device, and the helper refuses its stream (no stream format
+    // in the HEADER) with one box and the exit code 10. No Direct3D 9 fallback:
     // the plugin's live ports, installed early, leave that frame black (the owner's D10 (a),
     // 2026-10-27, after run 4c of records entry 192).
     typedef const char* (__cdecl * BuildIdProc) ();
