@@ -80,6 +80,9 @@ fn skipped(part: &str) -> bool {
 /// The adaptation point of the main view is logged at every this many runs of its post chain,
 /// for the first this many lines.
 const MAIN_POINT_EVERY: u64 = 60;
+/// The frames that a spare post state of a view of its own may stay unused before it is freed
+/// (D82 section 3.4f, R2).
+const SPARE_IDLE_FRAMES: u64 = 60;
 const MAIN_POINT_LINES: u64 = 400;
 const ENVIRONMENT_ID: u32 = 1;
 /// The state of a post shader that a mod loaded: see [`post::ShaderState`].
@@ -845,7 +848,12 @@ pub struct DistantLand {
     /// the full tier (without it). A place's state lives as long as the view that holds the place
     /// (`note_place_holder`).
     post_main: Option<post::PostView>,
-    post_places: [Option<post::PostView>; view::TIER_VIEWS],
+    /// The sets from [`view::TIER_VIEWS`] on are the spares of the later calls of a place in a
+    /// frame (D82 section 3.4f, R2); `post_used` has the frame of the last run of each, and a spare
+    /// that no call used for [`SPARE_IDLE_FRAMES`] frames is freed.
+    post_places: [Option<post::PostView>; view::TIER_SETS],
+    post_used: [u64; view::TIER_SETS],
+    post_spares_freed: u64,
     /// The lines logged for a new state of a place.
     post_view_lines: u32,
     /// The runs of the post chain on the main view's picture.
@@ -1175,6 +1183,8 @@ impl DistantLand {
             environment_watch: view::EnvironmentWatch::default(),
             post_main: None,
             post_places: Default::default(),
+            post_used: [0; view::TIER_SETS],
+            post_spares_freed: 0,
             post_view_lines: 0,
             main_post_runs: 0,
         };
@@ -1320,10 +1330,14 @@ impl Drop for DistantLand {
         println!("distant land: {}", self.environment_watch.line());
         println!("distant land: {}", self.tier_views.post_line());
         println!(
-            "post state: main view {:.2} MB; places in use: {} ({:.2} MB)",
+            "post state: main view {:.2} MB; places in use: {} ({:.2} MB); spares in use: {} ({:.2} MB), {} spares freed after {} idle frames",
             self.post_main.as_ref().map_or(0, post::PostView::bytes) as f64 / 1e6,
-            self.post_places.iter().flatten().count(),
-            self.post_places.iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6
+            self.post_places[..view::TIER_VIEWS].iter().flatten().count(),
+            self.post_places[..view::TIER_VIEWS].iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6,
+            self.post_places[view::TIER_VIEWS..].iter().flatten().count(),
+            self.post_places[view::TIER_VIEWS..].iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6,
+            self.post_spares_freed,
+            SPARE_IDLE_FRAMES
         );
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("distant lights: {} frames with glows", self.lights.as_ref().map_or(0, |lights| lights.frames));
@@ -3161,8 +3175,10 @@ impl Extension for DistantLand {
         if self.menu_reuse || !parts.contains(Additions::POST_COVER) || !self.chain_wanted() || scene.picture.is_none() || scene.depth.is_none() {
             return;
         }
+        self.free_idle_spares(scene.frame);
         let Some(k) = self.tier_views.claim_post(scene.frame, scene.view_key.place) else { return };
         self.note_place_holder(k, scene.view_key.slot);
+        self.post_used[k] = scene.frame;
         if !self.run_view_post(k, scene, encoder, target) {
             self.tier_views.post_unserved += 1;
         }
@@ -3849,6 +3865,16 @@ impl DistantLand {
     /// The camera is under the water in this frame.
     fn under_water(&self) -> bool {
         self.environment.is_some_and(|e| e.flags & 2 != 0)
+    }
+
+    /// Frees the post state of a spare that no call has used for [`SPARE_IDLE_FRAMES`] frames.
+    fn free_idle_spares(&mut self, frame: u64) {
+        for set in view::TIER_VIEWS..view::TIER_SETS {
+            if self.post_places[set].is_some() && frame.saturating_sub(self.post_used[set]) > SPARE_IDLE_FRAMES {
+                self.post_places[set] = None;
+                self.post_spares_freed += 1;
+            }
+        }
     }
 
     /// Logs the first changes of the view slot that holds a place of the views of their own.
