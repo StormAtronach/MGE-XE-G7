@@ -287,18 +287,14 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
         return Some(4);
     }
     Some(match id {
-        // The end of the fields of the record's version: each version ends where the first
-        // member of the next one starts, and the newest needs the whole struct (a version
-        // that adds a member gives the version before it the offset of that member). A
-        // version the reader does not take needs its version word only.
-        ENVIRONMENT_ID => match word(0) {
-            4 => core::mem::offset_of!(Environment, interior_name),
-            5 => core::mem::offset_of!(Environment, precipitation),
-            6 => core::mem::offset_of!(Environment, night),
-            7 => core::mem::offset_of!(Environment, water_plane),
-            8.. => size_of::<Environment>(),
-            _ => 4,
-        },
+        // The whole struct of its version; another version needs its version word only.
+        ENVIRONMENT_ID => {
+            if word(0) == Environment::VERSION as usize {
+                size_of::<Environment>()
+            } else {
+                4
+            }
+        }
         // The version, the flags, the priority, the number of variables, the name (64), then
         // for each variable its name (64), its kind, its count and its floats.
         SHADER_STATE_ID => {
@@ -534,9 +530,8 @@ struct Environment {
     precipitation: f32,
     player_height: f32,
     /// Version 7: how much of the night there is, 1 at night and 0 in the day, from the
-    /// hour against the weather's sunrise and sunset spans on the game side. A record below
-    /// version 7 leaves it 0, and the helper takes the night from the sun's colour
-    /// ([`distant_lights::night_of`]).
+    /// hour against the weather's sunrise and sunset spans on the game side. Before the first
+    /// record, the helper takes the night from the sun's colour ([`distant_lights::night_of`]).
     night: f32,
     /// Version 8: the height of the engine's water plane (`MWBridge::WaterPlaneHeight`): -1
     /// in an exterior, the cell's water level in an interior, the lowest float in a cell
@@ -545,23 +540,33 @@ struct Environment {
 }
 
 impl Environment {
-    /// The height of the sea for the tests "above the sea" of the Direct3D 9 path. A record
-    /// below version 8 gives -1, the plane of an exterior.
-    fn sea_plane(&self) -> f32 {
-        if self.version >= 8 { self.water_plane } else { -1.0 }
+    /// The version of the record that this build reads, the one `Deviceless::sendEnvironment`
+    /// writes.
+    const VERSION: u32 = 8;
+
+    /// Reads the record; [`None`] for a short record or another version.
+    fn read(bytes: &[u8]) -> Option<Environment> {
+        let environment: Environment = bytemuck::pod_read_unaligned(bytes.get(..size_of::<Environment>())?);
+        (environment.version == Self::VERSION).then_some(environment)
     }
 
-    /// The height of the water surface that MGE XE draws: the engine's water plane (version
-    /// 8), or the top of the water volume the camera is in (flag 16). A record below version 8,
-    /// and a cell without water, give the level of the record, as Direct3D 9 draws it.
+    /// The height of the sea for the tests "above the sea" of the Direct3D 9 path: the
+    /// engine's water plane.
+    fn sea_plane(&self) -> f32 {
+        self.water_plane
+    }
+
+    /// The height of the water surface that MGE XE draws: the engine's water plane, or the top
+    /// of the water volume the camera is in (flag 16). A cell without water gives the level of
+    /// the record, as Direct3D 9 draws it.
     fn surface_level(&self) -> f32 {
-        if self.version >= 8 && self.flags & 16 == 0 && self.has_water != 0 { self.water_plane } else { self.water_level }
+        if self.flags & 16 == 0 && self.has_water != 0 { self.water_plane } else { self.water_level }
     }
 
     /// The height of the mirror of the reflection and of the split of the blends at the water:
-    /// the surface (version 8). Below version 8 the level less 1, as Direct3D 9 mirrors it.
+    /// the surface.
     fn mirror_level(&self) -> f32 {
-        if self.version >= 8 { self.surface_level() } else { self.water_level - 1.0 }
+        self.surface_level()
     }
 }
 
@@ -2775,25 +2780,17 @@ impl Extension for DistantLand {
             }
             return;
         }
-        // Version 4 ends before the name of the interior cell.
-        const VERSION_4: usize = core::mem::offset_of!(Environment, interior_name);
-        if id == ENVIRONMENT_ID && bytes.len() >= VERSION_4 {
-            let mut raw = [0u8; size_of::<Environment>()];
-            let length = bytes.len().min(raw.len());
-            raw[..length].copy_from_slice(&bytes[..length]);
-            let environment: Environment = bytemuck::pod_read_unaligned(&raw);
-            if (4..=8).contains(&environment.version) {
-                // A game was loaded (flag 256, in one record only): the wait for the statics
-                // starts. The record can come in a loading screen, which has no world frame.
-                if environment.flags & 256 != 0 && self.prefetch.is_none() {
-                    self.arrival = Some((Instant::now(), 0));
-                    self.arrival_serial = 0;
-                }
-                if self.environment_watch.note(environment.time, environment.wind) {
-                    println!("environment: simulation time {:.1} s, wind ({:.2}, {:.2})", environment.time, environment.wind[0], environment.wind[1]);
-                }
-                self.environment = Some(environment);
+        if id == ENVIRONMENT_ID && let Some(environment) = Environment::read(bytes) {
+            // A game was loaded (flag 256, in one record only): the wait for the statics
+            // starts. The record can come in a loading screen, which has no world frame.
+            if environment.flags & 256 != 0 && self.prefetch.is_none() {
+                self.arrival = Some((Instant::now(), 0));
+                self.arrival_serial = 0;
             }
+            if self.environment_watch.note(environment.time, environment.wind) {
+                println!("environment: simulation time {:.1} s, wind ({:.2}, {:.2})", environment.time, environment.wind[0], environment.wind[1]);
+            }
+            self.environment = Some(environment);
         }
         if id != ENVIRONMENT_ID && first_time(&mut self.unknown_ids, id) {
             println!("extension id {id}: no reader in this build; d3d8.dll is another build");
@@ -2853,7 +2850,7 @@ impl Extension for DistantLand {
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
         // The baked light of the distant lights: at night, in the exterior. The night is the
         // game's, from the hour against the weather's sunrise and sunset (the environment
-        // record, version 7); the sun's colour serves for an older game side.
+        // record); before the first record, the sun's colour serves.
         let night = self.night(scene);
         let Some(binding) = self.light_binding.as_mut() else { return false };
         binding.set_strength(scene.queue, if scene.interior { 0.0 } else { self.tunables.get(tunables::BAKED_STRENGTH) * night });
@@ -3898,10 +3895,10 @@ impl DistantLand {
         }
     }
 
-    /// How much of the night there is: the environment record's night of the hour (version
-    /// 7), else from the colour of the sun.
+    /// How much of the night there is: the environment record's night of the hour; before the
+    /// first record, from the colour of the sun.
     fn night(&self, scene: &SceneView) -> f32 {
-        self.environment.filter(|e| e.version >= 7).map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night)
+        self.environment.map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night)
     }
 
     /// The values of the grass for a view: the camera, the light of the game, the wind and the
@@ -4149,27 +4146,30 @@ mod dds_tests {
 mod environment_tests {
     use super::*;
 
+    /// The record of this build's version is read whole; a short one and another version are
+    /// not.
     #[test]
-    fn the_sea_plane_is_the_engines_from_version_8() {
+    fn only_the_environment_record_of_this_version_is_read() {
         let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.version = Environment::VERSION;
         e.water_plane = 512.0;
-        e.version = 7;
-        assert_eq!(e.sea_plane(), -1.0);
-        e.version = 8;
-        assert_eq!(e.sea_plane(), 512.0);
+        let bytes = bytemuck::bytes_of(&e).to_vec();
+        assert_eq!(Environment::read(&bytes).map(|e| e.sea_plane()), Some(512.0));
+        assert!(Environment::read(&bytes[..bytes.len() - 4]).is_none());
+        for version in [0, 7, Environment::VERSION + 1] {
+            let mut other = bytes.clone();
+            other[..4].copy_from_slice(&version.to_le_bytes());
+            assert!(Environment::read(&other).is_none(), "version {version}");
+        }
     }
 
     #[test]
-    fn the_surface_and_its_mirror_are_the_engines_plane_from_version_8() {
+    fn the_surface_and_its_mirror_are_the_engines_plane() {
         let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.version = Environment::VERSION;
         e.water_level = 0.0;
         e.water_plane = -1.0;
         e.has_water = 1;
-        // Version 7: Direct3D 9's surface at the level, its mirror 1 under it.
-        e.version = 7;
-        assert_eq!((e.surface_level(), e.mirror_level()), (0.0, -1.0));
-        // Version 8: both at the engine's plane.
-        e.version = 8;
         assert_eq!((e.surface_level(), e.mirror_level()), (-1.0, -1.0));
         // In a water volume: its top.
         e.flags = 16;
@@ -4352,7 +4352,7 @@ mod extension_record_tests {
         match id {
             ENVIRONMENT_ID => {
                 let mut record = vec![0u8; size_of::<Environment>()];
-                record[..4].copy_from_slice(&8u32.to_le_bytes());
+                record[..4].copy_from_slice(&Environment::VERSION.to_le_bytes());
                 record
             }
             SHADER_STATE_ID => {
@@ -4470,7 +4470,7 @@ mod extension_record_tests {
         assert_eq!(land.extension_refused, refused);
         assert!(refused > 0);
         // The whole records were taken.
-        assert_eq!(land.environment.map(|e| e.version), Some(8));
+        assert_eq!(land.environment.map(|e| e.version), Some(Environment::VERSION));
         assert_eq!(land.settings.map(|s| s.version), Some(2));
         assert_eq!(land.vis_groups, vec![1, 0]);
         assert_eq!(land.water_masks.as_ref().map(Vec::len), Some(3));
