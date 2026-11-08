@@ -540,6 +540,33 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
     Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, worlds, textures, palettes, merged_place, grass, groups, ordinary_bytes, merged_bytes })
 }
 
+/// The work of the grass calls of the main view since the last report, by what the loop does:
+/// the places it meets and drops, the draws it makes, and the time of its parts.
+#[derive(Default, Clone, Copy)]
+struct GrassParts {
+    calls: u64,
+    /// The places in the cells within reach.
+    visited: u64,
+    /// Of them: hidden by a vis group, beyond the view range, out of the view.
+    hidden: u64,
+    too_far: u64,
+    out_of_view: u64,
+    /// Of the places in the view: with no subset on the GPU, and the subsets missing.
+    without_resident: u64,
+    subset_misses: u64,
+    /// The draws (a place with one subset) and the runs of one subset after the sort.
+    draws: u64,
+    runs: u64,
+    triangles: u64,
+    /// The seconds of the choice of the places (with the matrix and the fade of each), the
+    /// sort, the records and their write, the uniforms and the pipeline, and the draw loop.
+    choose_seconds: f64,
+    sort_seconds: f64,
+    records_seconds: f64,
+    setup_seconds: f64,
+    draw_seconds: f64,
+}
+
 /// The work of the draws of one set (the main view, the mirror, the two layers of the shadow
 /// map) since the last report (`statics report` of `nirender.tune`).
 #[derive(Default, Clone, Copy)]
@@ -1345,6 +1372,7 @@ pub struct Statics {
     /// The work of each set since the last `report`, and of the grass.
     set_stats: [SetStats; SETS],
     grass_stats: SetStats,
+    grass_parts: GrassParts,
     /// The view range of the game in the last main view ([`CullSet::eye`] w).
     game_range: f32,
     /// The merged subsets that arrived in play (no wait open) since the last `report`: all
@@ -1459,6 +1487,7 @@ impl Statics {
             hidden_skipped: 0,
             set_stats: [SetStats::default(); SETS],
             grass_stats: SetStats::default(),
+            grass_parts: GrassParts::default(),
             game_range: 0.0,
             play_arrivals: 0,
             late_arrivals: 0,
@@ -1546,6 +1575,29 @@ impl Statics {
                 per(stats.triangles)
             );
         }
+        let parts = &self.grass_parts;
+        if parts.calls > 0 {
+            let per = |n: u64| n as f64 / parts.calls as f64;
+            let ms = |seconds: f64| seconds * 1000.0 / parts.calls as f64;
+            println!(
+                "statics report {label}: grass parts: {} calls; for each call {:.0} places visited ({:.0} hidden, {:.0} beyond the range, {:.0} out of the view, {:.0} in the view with no subset on the GPU), {:.0} subsets missed, {:.0} draws in {:.0} runs of one subset, {:.0} triangles; ms for each call: choice of the places {:.3}, sort {:.3}, records and their write {:.3}, uniforms and pipeline {:.3}, draw loop {:.3}",
+                parts.calls,
+                per(parts.visited),
+                per(parts.hidden),
+                per(parts.too_far),
+                per(parts.out_of_view),
+                per(parts.without_resident),
+                per(parts.subset_misses),
+                per(parts.draws),
+                per(parts.runs),
+                per(parts.triangles),
+                ms(parts.choose_seconds),
+                ms(parts.sort_seconds),
+                ms(parts.records_seconds),
+                ms(parts.setup_seconds),
+                ms(parts.draw_seconds)
+            );
+        }
         if self.prepare_calls > 0 {
             println!(
                 "statics report {label}: prepare: {} calls, {:.3} ms a call (the work of the frame and the culling of its sets)",
@@ -1599,6 +1651,7 @@ impl Statics {
         self.late_nearest = f32::MAX;
         self.set_stats = [SetStats::default(); SETS];
         self.grass_stats = SetStats::default();
+        self.grass_parts = GrassParts::default();
     }
 
     /// The catalog and its textures are on their way, and a frame will take them: their GPU
@@ -2200,6 +2253,8 @@ impl Statics {
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
         self.grass_draws.clear();
+        let mut counts = GrassParts::default();
+        let choose_started = Instant::now();
         let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
         let cells = (view_range / CELL).ceil() as i32;
         let mut cut = false;
@@ -2208,21 +2263,27 @@ impl Statics {
                 let Some(list) = world.grass_cells.get(&(x, y)) else { continue };
                 for index in list {
                     let place = &catalog.grass[*index as usize];
+                    counts.visited += 1;
                     if hidden(&self.shown, place.group) {
+                        counts.hidden += 1;
                         continue;
                     }
                     let to = [place.position[0] - eye[0], place.position[1] - eye[1], place.position[2] - eye[2]];
                     let reach = view_range + place.radius;
                     if to[0] * to[0] + to[1] * to[1] + to[2] * to[2] > reach * reach {
+                        counts.too_far += 1;
                         continue;
                     }
                     let p = place.position;
                     if !frame.planes.iter().all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -place.radius) {
+                        counts.out_of_view += 1;
                         continue;
                     }
+                    let draws_before = self.grass_draws.len();
                     let record = grass_record(&world_matrix(place.position, place.rotation, place.scale));
                     for subset in place.first_subset..place.first_subset + place.subset_count {
                         let Some(bent) = self.resident.get(&subset).map(|r| r.bent) else {
+                            counts.subset_misses += 1;
                             continue;
                         };
                         if self.grass_draws.len() == GRASS_RECORDS {
@@ -2232,6 +2293,7 @@ impl Statics {
                         let fade = self.fade_of(subset);
                         self.grass_draws.push((catalog.subsets[subset as usize].texture, subset, record, fade, bent as u32 as f32));
                     }
+                    counts.without_resident += (self.grass_draws.len() == draws_before) as u64;
                 }
             }
         }
@@ -2239,12 +2301,20 @@ impl Statics {
             self.grass_frames += 1;
             self.grass_cut += cut as u64;
         }
+        counts.choose_seconds = choose_started.elapsed().as_secs_f64();
+        counts.draws = self.grass_draws.len() as u64;
         if self.grass_draws.is_empty() {
+            self.note_grass(main, &counts);
             return 0;
         }
+        let sort_started = Instant::now();
         self.grass_draws.sort_unstable_by_key(|draw| (draw.0, draw.1));
+        counts.sort_seconds = sort_started.elapsed().as_secs_f64();
+        let records_started = Instant::now();
         let records: Vec<f32> = self.grass_draws.iter().flat_map(|draw| draw.2.into_iter().chain([draw.3, draw.4, 0.0, 0.0])).collect();
         scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&records));
+        counts.records_seconds = records_started.elapsed().as_secs_f64();
+        let setup_started = Instant::now();
         let uniforms = GrassUniforms {
             range: [view_range, 0.0, 0.0, 0.0],
             fog_color: frame.fog_color,
@@ -2276,6 +2346,8 @@ impl Statics {
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, group, &[]);
         pass.set_vertex_buffer(1, records_buffer.slice(..));
+        counts.setup_seconds = setup_started.elapsed().as_secs_f64();
+        let draw_started = Instant::now();
         // One draw for each run of places with the same subset.
         let mut start = 0;
         while start < self.grass_draws.len() {
@@ -2289,9 +2361,13 @@ impl Statics {
                 pass.set_vertex_buffer(0, vertices.slice(..));
                 pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..faces[0] * 3, 0, start as u32..end as u32);
+                counts.triangles += faces[0] as u64 * (end - start) as u64;
             }
+            counts.runs += 1;
             start = end;
         }
+        counts.draw_seconds = draw_started.elapsed().as_secs_f64();
+        self.note_grass(main, &counts);
         if main {
             self.grass_drawn += self.grass_draws.len() as u64;
         }
@@ -2323,6 +2399,38 @@ impl Statics {
             Some(resident) if seconds > 0.0 => ((now - resident.arrived) / seconds).clamp(0.0, 1.0),
             _ => 1.0,
         }
+    }
+
+    /// Adds the counts of a grass call of the main view to the report; the calls of the views
+    /// of their own stay out of it.
+    fn note_grass(&mut self, main: bool, counts: &GrassParts) {
+        if !main {
+            return;
+        }
+        let parts = &mut self.grass_parts;
+        parts.calls += 1;
+        parts.visited += counts.visited;
+        parts.hidden += counts.hidden;
+        parts.too_far += counts.too_far;
+        parts.out_of_view += counts.out_of_view;
+        parts.without_resident += counts.without_resident;
+        parts.subset_misses += counts.subset_misses;
+        parts.draws += counts.draws;
+        parts.runs += counts.runs;
+        parts.triangles += counts.triangles;
+        parts.choose_seconds += counts.choose_seconds;
+        parts.sort_seconds += counts.sort_seconds;
+        parts.records_seconds += counts.records_seconds;
+        parts.setup_seconds += counts.setup_seconds;
+        parts.draw_seconds += counts.draw_seconds;
+        // The set line of the grass has the same counts under the names of the other sets.
+        let stats = &mut self.grass_stats;
+        stats.visited += counts.visited;
+        stats.distance += counts.hidden + counts.too_far;
+        stats.frustum += counts.out_of_view;
+        stats.waiting += counts.without_resident;
+        stats.runs += counts.runs;
+        stats.triangles += counts.triangles;
     }
 
     /// The statics and the grass on or off, from the settings record of MGE XE. A kind
