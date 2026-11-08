@@ -2602,8 +2602,6 @@ impl Extension for DistantLand {
     }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {
-        // A plugin from before the kept records leaves their bit in the number.
-        let id = id & !0x8000_0000;
         if id == HELLO_ID {
             match hello_check(bytes) {
                 Ok(build) => {
