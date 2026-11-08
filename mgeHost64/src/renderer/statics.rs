@@ -913,14 +913,14 @@ struct WaitStats {
 
 /// The sets of a frame: the main view, the mirror, the two layers of the shadow map, and the
 /// views of their own with the full tier ([`tier_set`]).
-pub const SETS: usize = 4 + super::view::TIER_VIEWS;
+pub const SETS: usize = 4 + super::view::TIER_SETS;
 
 /// The set of the `k`th view of its own in a frame.
 pub const fn tier_set(k: usize) -> usize {
     4 + k
 }
 
-const SET_NAMES: [&str; SETS] = ["view", "mirror", "shadow 1", "shadow 2", "view of its own 1", "view of its own 2", "view of its own 3", "view of its own 4"];
+const SET_NAMES: [&str; SETS] = ["view", "mirror", "shadow 1", "shadow 2", "view of its own 1", "view of its own 2", "view of its own 3", "view of its own 4", "spare 1", "spare 2", "spare 3", "spare 4"];
 
 /// True when the place of a group is hidden: `shown` has a byte for each group, 0 for a hidden
 /// one. A place without a group (0) is always shown, and so is each place before the first
@@ -3636,7 +3636,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         },
         primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: scene.depth_format,
+            format: super::shadow::Shadow::depth_format(scene.depth_format),
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: Default::default(),
