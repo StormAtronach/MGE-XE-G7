@@ -850,21 +850,69 @@ struct Hdr {
     levels: Vec<wgpu::TextureView>,
     pipeline: wgpu::RenderPipeline,
     buffer: wgpu::Buffer,
-    state: HdrState,
     /// The last luminance read, 0.5 before the first one.
     luminance: f32,
     point: [f32; 4],
-    last: Option<std::time::Instant>,
+    /// The step of the point from the clock of the game.
+    clock: HdrClock,
+    /// The call of the cycle that comes next.
+    cycle: HdrCycle,
+    /// Set by the callback of the map, from the call that asks for the map to the call that reads.
+    mapped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// `render.hdr_reaction_time`, seconds.
     reaction: f32,
 }
 
-/// The copy of the pixel into the buffer is in the commands of a frame; the map of the
-/// buffer is asked for in the frame after, when those commands are with the GPU.
-enum HdrState {
-    Idle,
-    Copied,
-    Mapping(std::sync::Arc<std::sync::atomic::AtomicBool>),
+/// What a call of [`Hdr::frame`] does in the cycle of the measure.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum HdrAction {
+    /// Downsample the picture and copy the pixel into the buffer, in the commands of the frame.
+    Copy,
+    /// Ask for the map of the buffer, when the commands of the copy are with the GPU.
+    Map,
+    /// Nothing: the GPU works.
+    Wait,
+    /// Read the pixel that the copy made.
+    Read,
+}
+
+/// The calls of the cycle, in the order of `PostShaders::evalAdaptHDR` of MGE XE (HDR_IDLE,
+/// HDR_DOWNSAMPLING, HDR_WAITING, HDR_READY_TO_READ): the pixel is read at the third call after
+/// its copy, whatever the progress of the GPU.
+const HDR_CYCLE: [HdrAction; 4] = [HdrAction::Copy, HdrAction::Map, HdrAction::Wait, HdrAction::Read];
+
+#[derive(Default)]
+struct HdrCycle {
+    next: usize,
+}
+
+impl HdrCycle {
+    fn step(&mut self) -> HdrAction {
+        let action = HDR_CYCLE[self.next];
+        self.next = (self.next + 1) % HDR_CYCLE.len();
+        action
+    }
+}
+
+/// The longest step of the point, in seconds. A step above it is a load or a jump of the clock,
+/// not a frame: the clamp is that of the ripples (`MOST_FRAME_TIME`).
+const HDR_MOST_STEP: f32 = 0.5;
+
+/// The step of the point: the time that the clock of the game (`Environment::time`) advanced
+/// since the call before, as MGE XE takes the frame time of the game.
+#[derive(Default)]
+struct HdrClock {
+    last: Option<f32>,
+}
+
+impl HdrClock {
+    /// The step to the time `time`: 0 for the first call, for a clock that stands (a menu) and for a
+    /// clock that goes back (a load); at most [`HDR_MOST_STEP`].
+    fn step(&mut self, time: f32) -> f32 {
+        let step = self.last.map_or(0.0, |last| time - last);
+        self.last = Some(time);
+        if step > 0.0 { step.min(HDR_MOST_STEP) } else { 0.0 }
+    }
 }
 
 impl Hdr {
@@ -882,14 +930,15 @@ impl Hdr {
         let levels = (0..10).map(|level| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: level, mip_level_count: Some(1), ..Default::default() })).collect();
         let pipeline = full_screen_pipeline(device, "post hdr", BLIT_SHADER, blit_layout, wgpu::TextureFormat::Rgba8Unorm);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post hdr"), size: 4, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        Hdr { texture, levels, pipeline, buffer, state: HdrState::Idle, luminance: 0.5, point: [1.0; 4], last: None, reaction: reaction.clamp(0.01, 30.0) }
+        Hdr { texture, levels, pipeline, buffer, luminance: 0.5, point: [1.0; 4], clock: HdrClock::default(), cycle: HdrCycle::default(), mapped: None, reaction: reaction.clamp(0.01, 30.0) }
     }
 
-    /// One frame of the measure. Returns the adaptation point.
-    fn frame(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, picture: &wgpu::TextureView, blit_layout: &wgpu::BindGroupLayout, linear: &wgpu::Sampler, environment_flags: u32) -> [f32; 4] {
+    /// One frame of the measure, at the time `time` of the clock of the game. Returns the
+    /// adaptation point.
+    fn frame(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, picture: &wgpu::TextureView, blit_layout: &wgpu::BindGroupLayout, linear: &wgpu::Sampler, environment_flags: u32, time: f32) -> [f32; 4] {
         use std::sync::atomic::{AtomicBool, Ordering};
-        match &self.state {
-            HdrState::Idle => {
+        match self.cycle.step() {
+            HdrAction::Copy => {
                 // A linear copy into each level is the linear `StretchRect` of Direct3D 9:
                 // the mean of 2 x 2 pixels from the second level on.
                 let mut source = picture;
@@ -911,9 +960,8 @@ impl Hdr {
                     wgpu::TexelCopyBufferInfo { buffer: &self.buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: None, rows_per_image: None } },
                     wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
                 );
-                self.state = HdrState::Copied;
             }
-            HdrState::Copied => {
+            HdrAction::Map => {
                 let ready = std::sync::Arc::new(AtomicBool::new(false));
                 let flag = ready.clone();
                 self.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
@@ -921,24 +969,30 @@ impl Hdr {
                         flag.store(true, Ordering::Relaxed);
                     }
                 });
-                self.state = HdrState::Mapping(ready);
+                self.mapped = Some(ready);
             }
-            HdrState::Mapping(ready) => {
-                if ready.load(Ordering::Relaxed) {
-                    if let Ok(pixel) = self.buffer.slice(..).get_mapped_range() {
-                        let (r, g, b) = (pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0, pixel[2] as f32 / 255.0);
-                        self.luminance = 0.27 * r + 0.67 * g + 0.06 * b;
+            HdrAction::Wait => {}
+            HdrAction::Read => {
+                // The read is at this call. When the GPU has not finished the copy, the call waits
+                // for it, as `LockRect` of Direct3D 9 does, so the value does not depend on the
+                // progress of the GPU.
+                if let Some(ready) = self.mapped.take() {
+                    if !ready.load(Ordering::Relaxed) {
+                        let _ = device.poll(wgpu::PollType::wait_indefinitely());
                     }
-                    self.buffer.unmap();
-                    self.state = HdrState::Idle;
+                    if ready.load(Ordering::Relaxed) {
+                        if let Ok(pixel) = self.buffer.slice(..).get_mapped_range() {
+                            let (r, g, b) = (pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0, pixel[2] as f32 / 255.0);
+                            self.luminance = 0.27 * r + 0.67 * g + 0.06 * b;
+                        }
+                        self.buffer.unmap();
+                    }
                 }
             }
         }
         // Each frame: the point follows the luminance with the reaction time. The scale is
         // for an exterior and an interior that behaves as one (the flags 2 and 4).
-        let now = std::time::Instant::now();
-        let dt = self.last.map_or(0.0, |last| (now - last).as_secs_f32());
-        self.last = Some(now);
+        let dt = self.clock.step(time);
         let scale = if environment_flags & 6 != 0 { 2.5 } else { 1.0 };
         let lambda = (-dt / self.reaction).exp();
         let p = &mut self.point;
@@ -5091,7 +5145,7 @@ impl Post {
         } else if self.needs_hdr {
             let hdr = view.hdr.get_or_insert_with(|| Hdr::new(device, &self.blit_layout, self.hdr_reaction));
             hdr.reaction = self.hdr_reaction.clamp(0.01, 30.0);
-            variables.hdr = if self.hdr_on { hdr.frame(device, encoder, picture, &self.blit_layout, &self.samplers[1], environment_flags) } else { hdr.point };
+            variables.hdr = if self.hdr_on { hdr.frame(device, encoder, picture, &self.blit_layout, &self.samplers[1], environment_flags, variables.sunvec[3]) } else { hdr.point };
         }
         let variables = &variables;
         scene.queue.write_buffer(&view.uniforms, 0, bytemuck::bytes_of(variables));
@@ -5296,6 +5350,33 @@ mod shader_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The step of the point is the advance of the clock of the game: 0 for the first call, for a
+    /// clock that stands and for a clock that goes back (the next step counts from the new time),
+    /// and at most HDR_MOST_STEP for a jump.
+    #[test]
+    fn the_hdr_step_follows_the_clock_of_the_game() {
+        let mut clock = HdrClock::default();
+        assert_eq!(clock.step(100.0), 0.0, "the first call");
+        assert_eq!(clock.step(100.016), 100.016 - 100.0, "a frame");
+        assert_eq!(clock.step(100.016), 0.0, "a clock that stands");
+        assert_eq!(clock.step(100.05), 100.05 - 100.016, "the frame after a pause");
+        assert_eq!(clock.step(40.0), 0.0, "a clock that goes back");
+        assert_eq!(clock.step(40.02), 40.02 - 40.0, "counts from the new time");
+        assert_eq!(clock.step(3640.0), HDR_MOST_STEP, "a jump");
+        assert_eq!(clock.step(f32::NAN), 0.0, "a clock that is not a number");
+        assert_eq!(clock.step(41.0), 0.0, "after the NaN there is no earlier time to count from");
+    }
+
+    /// The cycle of the measure is that of MGE XE: copy, map, wait, read, and again, at the same
+    /// calls whatever the progress of the GPU.
+    #[test]
+    fn the_hdr_cycle_reads_at_the_third_call_after_the_copy() {
+        let mut cycle = HdrCycle::default();
+        let actions: Vec<HdrAction> = (0..9).map(|_| cycle.step()).collect();
+        use HdrAction::*;
+        assert_eq!(actions, vec![Copy, Map, Wait, Read, Copy, Map, Wait, Read, Copy]);
+    }
 
     const FILE: &str = "// A shader.\n#define N 16 // samples\nstatic const float strength = 1.8; // more is more\nfloat fov;\nfloat4 pass(float2 t : TEXCOORD0) : COLOR0 { return strength * N; }\ntechnique T0 < string MGEinterface = \"MGE XE 0\"; string category = \"scene\"; int priorityAdjust = -10000; > { pass { PixelShader = compile ps_3_0 pass(); } }\n";
 
