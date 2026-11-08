@@ -251,6 +251,226 @@ struct GrassPlace {
     group: u16,
 }
 
+/// The edge of a tile of a grass cell, in units: a cell has 8 by 8 tiles.
+const GRASS_TILE: f32 = 1024.0;
+
+/// Why a place is not in the view.
+#[derive(Debug, PartialEq)]
+enum GrassMiss {
+    TooFar,
+    OutOfView,
+}
+
+impl GrassPlace {
+    /// The tile of the place: its row and its column, in tiles of [`GRASS_TILE`] units.
+    fn tile(&self) -> (i32, i32) {
+        ((self.position[1] / GRASS_TILE).floor() as i32, (self.position[0] / GRASS_TILE).floor() as i32)
+    }
+
+    /// Why the place is not in the view of the eye with the view range and the planes of the
+    /// view: [`None`] when it is taken.
+    fn miss(&self, eye: [f32; 3], range: f32, planes: &[[f32; 4]; 6]) -> Option<GrassMiss> {
+        let to = [self.position[0] - eye[0], self.position[1] - eye[1], self.position[2] - eye[2]];
+        let reach = range + self.radius;
+        if to[0] * to[0] + to[1] * to[1] + to[2] * to[2] > reach * reach {
+            return Some(GrassMiss::TooFar);
+        }
+        let p = self.position;
+        if !planes.iter().all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -self.radius) {
+            return Some(GrassMiss::OutOfView);
+        }
+        None
+    }
+}
+
+/// A run of the places of a grass cell that lie in one tile, with the box of their positions and
+/// the largest radius among them.
+struct GrassTile {
+    first: u32,
+    count: u32,
+    min: [f32; 3],
+    max: [f32; 3],
+    radius: f32,
+}
+
+impl GrassTile {
+    /// The tile of the places `members` (not empty), starting at `first` in the list of the cell.
+    fn of(first: u32, members: &[&GrassPlace]) -> GrassTile {
+        let mut tile = GrassTile { first, count: members.len() as u32, min: [f32::MAX; 3], max: [f32::MIN; 3], radius: 0.0 };
+        for place in members {
+            for axis in 0..3 {
+                tile.min[axis] = tile.min[axis].min(place.position[axis]);
+                tile.max[axis] = tile.max[axis].max(place.position[axis]);
+            }
+            tile.radius = tile.radius.max(place.radius);
+        }
+        tile
+    }
+
+    fn range(&self) -> std::ops::Range<usize> {
+        self.first as usize..(self.first + self.count) as usize
+    }
+
+    /// True when [`GrassPlace::miss`] is `Some` for every place of the tile. The range test takes
+    /// the nearest point of the box in place of the position, and each plane test takes the
+    /// corner of the box that lies farthest along the normal of the plane. Both use the largest
+    /// radius in place of the radius. The operations are those of the place test and each is
+    /// monotonic in the position and in the radius, so a place inside the box cannot pass where
+    /// the box fails, in the numbers of the machine too.
+    fn misses(&self, eye: [f32; 3], range: f32, planes: &[[f32; 4]; 6]) -> bool {
+        let to: [f32; 3] = core::array::from_fn(|axis| (self.min[axis] - eye[axis]).max(0.0).max(eye[axis] - self.max[axis]));
+        let reach = range + self.radius;
+        if to[0] * to[0] + to[1] * to[1] + to[2] * to[2] > reach * reach {
+            return true;
+        }
+        planes.iter().any(|plane| {
+            let corner: [f32; 3] = core::array::from_fn(|axis| if plane[axis] >= 0.0 { self.max[axis] } else { self.min[axis] });
+            plane[0] * corner[0] + plane[1] * corner[1] + plane[2] * corner[2] + plane[3] < -self.radius
+        })
+    }
+}
+
+/// The grass places of one cell of the world, in tile order, with the tiles. The list holds
+/// indexes into [`Catalog::grass`].
+#[derive(Default)]
+struct GrassCell {
+    places: Vec<u32>,
+    tiles: Vec<GrassTile>,
+}
+
+impl GrassCell {
+    /// Orders the places by tile (row by row, and in the order of the catalog within a tile) and
+    /// makes the tiles. Called once, when the catalog is made.
+    fn make_tiles(&mut self, grass: &[GrassPlace]) {
+        self.places.sort_by_key(|index| (grass[*index as usize].tile(), *index));
+        self.tiles.clear();
+        let mut first = 0;
+        while first < self.places.len() {
+            let tile = grass[self.places[first] as usize].tile();
+            let end = first + self.places[first..].iter().take_while(|index| grass[**index as usize].tile() == tile).count();
+            let members: Vec<&GrassPlace> = self.places[first..end].iter().map(|index| &grass[*index as usize]).collect();
+            self.tiles.push(GrassTile::of(first as u32, &members));
+            first = end;
+        }
+    }
+
+    /// The places of the tiles that can have a place for the view, in the order of the cell, each
+    /// with its position in the list of the cell.
+    fn reachable<'a>(&'a self, eye: [f32; 3], range: f32, planes: &'a [[f32; 4]; 6]) -> impl Iterator<Item = (usize, u32)> + 'a {
+        self.tiles.iter().filter(move |tile| !tile.misses(eye, range, planes)).flat_map(move |tile| tile.range().map(move |at| (at, self.places[at])))
+    }
+}
+
+/// The number of calls after which a cell that no call walks loses its records. A cell at the
+/// edge of the reach keeps them while the eye moves to and fro across the edge of the cell.
+const GRASS_KEEP_CALLS: u64 = 8;
+
+/// The records of the places of one grass cell, each made when its place is first taken.
+struct CellRecords {
+    /// One for each place of the cell, in the order of [`GrassCell::places`].
+    records: Vec<Option<[f32; 12]>>,
+    /// The number of the last call that walked the cell.
+    walked: u64,
+}
+
+impl CellRecords {
+    /// The record of the place at `at` in the list of the cell. A record that is made adds to `made`.
+    fn record(&mut self, at: usize, place: &GrassPlace, made: &mut u64) -> [f32; 12] {
+        *self.records[at].get_or_insert_with(|| {
+            *made += 1;
+            grass_record(&world_matrix(place.position, place.rotation, place.scale))
+        })
+    }
+}
+
+/// The records of the grass places that the calls keep, by world space and cell. A record only
+/// depends on its place, so the records stay valid until the catalog changes.
+#[derive(Default)]
+struct GrassKept {
+    worlds: HashMap<Vec<u8>, HashMap<(i32, i32), CellRecords>>,
+    /// The number of the current call.
+    call: u64,
+}
+
+/// The records of one world space during one call.
+struct GrassKeep<'a> {
+    cells: &'a mut HashMap<(i32, i32), CellRecords>,
+    call: u64,
+}
+
+impl GrassKept {
+    /// Starts a call in the world space `world`.
+    fn begin(&mut self, world: &[u8]) -> GrassKeep<'_> {
+        self.call += 1;
+        if !self.worlds.contains_key(world) {
+            self.worlds.insert(world.to_vec(), HashMap::new());
+        }
+        let cells = self.worlds.get_mut(world).expect("the world space is inserted above");
+        GrassKeep { cells, call: self.call }
+    }
+
+    /// Ends a call: the cells that no call walked in the last [`GRASS_KEEP_CALLS`] calls go, and
+    /// the world spaces that have no cell left.
+    fn end(&mut self) {
+        let call = self.call;
+        self.worlds.retain(|_, cells| {
+            cells.retain(|_, cell| call - cell.walked <= GRASS_KEEP_CALLS);
+            !cells.is_empty()
+        });
+    }
+
+    /// The number of cells with records, and the bytes of their records.
+    fn size(&self) -> (usize, usize) {
+        let cells = self.worlds.values().flat_map(|cells| cells.values());
+        cells.fold((0, 0), |(count, bytes), cell| (count + 1, bytes + cell.records.len() * std::mem::size_of::<Option<[f32; 12]>>()))
+    }
+}
+
+impl GrassKeep<'_> {
+    /// Marks the cell as walked by this call, when it has records.
+    fn walk(&mut self, key: (i32, i32)) {
+        if let Some(cell) = self.cells.get_mut(&key) {
+            cell.walked = self.call;
+        }
+    }
+
+    /// The records of the cell, empty when it has none yet, for a cell of `places` places.
+    fn cell(&mut self, key: (i32, i32), places: usize) -> &mut CellRecords {
+        let call = self.call;
+        self.cells.entry(key).or_insert_with(|| CellRecords { records: vec![None; places], walked: call })
+    }
+}
+
+/// What a grass call sees: the eye, the view range of the game, the planes of the view, the
+/// time on the clock of the arrivals with the fade time (read once for the call), and the most
+/// draws that the call may make.
+struct GrassSight {
+    eye: [f32; 3],
+    range: f32,
+    planes: [[f32; 4]; 6],
+    now: f32,
+    fade_seconds: f32,
+    limit: usize,
+}
+
+/// What a grass call needs of a subset that is on the GPU.
+struct GrassSubset {
+    texture: u32,
+    /// The time of the arrival of the subset ([`Resident::arrived`]).
+    arrived: f32,
+    bent: f32,
+}
+
+/// One draw of a grass call: a subset of a place, with its record.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GrassDraw {
+    texture: u32,
+    subset: u32,
+    record: [f32; 12],
+    fade: f32,
+    bent: f32,
+}
+
 /// The places of one world space: the exterior, or one interior cell.
 #[derive(Default)]
 struct World {
@@ -259,9 +479,87 @@ struct World {
     /// The instances by the cell of their centre.
     cells: HashMap<(i32, i32), Vec<u32>>,
     /// The grass places by the cell of their position.
-    grass_cells: HashMap<(i32, i32), Vec<u32>>,
+    grass_cells: HashMap<(i32, i32), GrassCell>,
     /// The places of merged subsets in `cells`.
     merged: Vec<u32>,
+}
+
+impl World {
+    /// Orders the places of each grass cell by tile and makes the tiles. Called once, when the
+    /// catalog is made.
+    fn make_grass_tiles(&mut self, grass: &[GrassPlace]) {
+        for cell in self.grass_cells.values_mut() {
+            cell.make_tiles(grass);
+        }
+    }
+
+    /// Chooses the grass draws for a view: each place in the cells within the range of the eye
+    /// that is not hidden, is within the range and the planes, and has a subset on the GPU. The
+    /// draws go to `draws`, at most `sight.limit` of them. Returns true when the limit cut the choice.
+    #[allow(clippy::too_many_arguments)]
+    fn choose_grass(
+        &self,
+        grass: &[GrassPlace],
+        sight: &GrassSight,
+        hidden: impl Fn(u16) -> bool,
+        subset: impl Fn(u32) -> Option<GrassSubset>,
+        draws: &mut Vec<GrassDraw>,
+        counts: &mut GrassParts,
+        mut keep: GrassKeep<'_>,
+    ) -> bool {
+        let eye = sight.eye;
+        let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
+        let cells = (sight.range / CELL).ceil() as i32;
+        for y in cell_y - cells..=cell_y + cells {
+            for x in cell_x - cells..=cell_x + cells {
+                let Some(cell) = self.grass_cells.get(&(x, y)) else { continue };
+                keep.walk((x, y));
+                let mut places = cell.reachable(eye, sight.range, &sight.planes).peekable();
+                if places.peek().is_none() {
+                    counts.skipped += cell.places.len() as u64;
+                    continue;
+                }
+                let kept = keep.cell((x, y), cell.places.len());
+                let visited_before = counts.visited;
+                for (at, index) in places {
+                    let place = &grass[index as usize];
+                    counts.visited += 1;
+                    if hidden(place.group) {
+                        counts.hidden += 1;
+                        continue;
+                    }
+                    match place.miss(eye, sight.range, &sight.planes) {
+                        Some(GrassMiss::TooFar) => {
+                            counts.too_far += 1;
+                            continue;
+                        }
+                        Some(GrassMiss::OutOfView) => {
+                            counts.out_of_view += 1;
+                            continue;
+                        }
+                        None => {}
+                    }
+                    let draws_before = draws.len();
+                    let mut record = None;
+                    for id in place.first_subset..place.first_subset + place.subset_count {
+                        let Some(on_gpu) = subset(id) else {
+                            counts.subset_misses += 1;
+                            continue;
+                        };
+                        if draws.len() == sight.limit {
+                            return true;
+                        }
+                        let record = *record.get_or_insert_with(|| kept.record(at, place, &mut counts.records_made));
+                        let fade = Resident::fade_after(sight.now - on_gpu.arrived, sight.fade_seconds);
+                        draws.push(GrassDraw { texture: on_gpu.texture, subset: id, record, fade, bent: on_gpu.bent });
+                    }
+                    counts.without_resident += (draws.len() == draws_before) as u64;
+                }
+                counts.skipped += cell.places.len() as u64 - (counts.visited - visited_before);
+            }
+        }
+        false
+    }
 }
 
 /// All that the files say without their vertices and indexes.
@@ -494,7 +792,7 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
                 if settings.grass {
                     let center = (model.center[0].powi(2) + model.center[1].powi(2) + model.center[2].powi(2)).sqrt();
                     let cell = ((place.location.x / CELL).floor() as i32, (place.location.y / CELL).floor() as i32);
-                    world_space.grass_cells.entry(cell).or_default().push(grass.len() as u32);
+                    world_space.grass_cells.entry(cell).or_default().places.push(grass.len() as u32);
                     grass.push(GrassPlace {
                         first_subset: model.first_subset,
                         subset_count: model.subset_count,
@@ -536,8 +834,42 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
             }
         }
     }
+    for world in worlds.values_mut() {
+        world.make_grass_tiles(&grass);
+    }
     let groups = usage.vis_groups.len() + 1;
     Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, worlds, textures, palettes, merged_place, grass, groups, ordinary_bytes, merged_bytes })
+}
+
+/// The work of the grass calls of the main view since the last report, by what the loop does:
+/// the places it meets and drops, the draws it makes, and the time of its parts.
+#[derive(Default, Clone, Copy)]
+struct GrassParts {
+    calls: u64,
+    /// The places walked, in the tiles that can have a place for the view.
+    visited: u64,
+    /// The places of the cells within reach that sit in a tile skipped as a whole.
+    skipped: u64,
+    /// The matrices made: the places taken that had no record kept.
+    records_made: u64,
+    /// Of the places walked: hidden by a vis group, beyond the view range, out of the view.
+    hidden: u64,
+    too_far: u64,
+    out_of_view: u64,
+    /// Of the places in the view: with no subset on the GPU, and the subsets missing.
+    without_resident: u64,
+    subset_misses: u64,
+    /// The draws (a place with one subset) and the runs of one subset after the sort.
+    draws: u64,
+    runs: u64,
+    triangles: u64,
+    /// The seconds of the choice of the places (with the matrix and the fade of each), the
+    /// sort, the records and their write, the uniforms and the pipeline, and the draw loop.
+    choose_seconds: f64,
+    sort_seconds: f64,
+    records_seconds: f64,
+    setup_seconds: f64,
+    draw_seconds: f64,
 }
 
 /// The work of the draws of one set (the main view, the mirror, the two layers of the shadow
@@ -837,6 +1169,32 @@ struct Resident {
     wanted_at: f32,
     /// A grass subset with bent normals ([`Arrival::bent`]).
     bent: bool,
+}
+
+impl Resident {
+    /// The share of a subset that is in `since` seconds after its arrival, as the shaders have it,
+    /// with the fade time `seconds` (0 for no fade).
+    fn fade_after(since: f32, seconds: f32) -> f32 {
+        if seconds > 0.0 { (since / seconds).clamp(0.0, 1.0) } else { 1.0 }
+    }
+}
+
+/// The draws of a grass call in the order of the draw: by texture, then by subset, then by the
+/// place in which the call found them. The key is a total order, so equal draws keep the order
+/// of the choice and the same view gives the same records.
+#[derive(Default)]
+struct GrassOrder {
+    keys: Vec<(u32, u32, u32)>,
+}
+
+impl GrassOrder {
+    /// Sorts the draws given as (texture, subset) in the order of their choice.
+    fn sort(&mut self, draws: impl Iterator<Item = (u32, u32)>) {
+        self.keys.clear();
+        self.keys.extend(draws.enumerate().map(|(index, (texture, subset))| (texture, subset, index as u32)));
+        // A stable sort on the texture and the subset: the draws start in the order of their choice, so equal ones keep it, and the key is a total order of (texture, subset, index).
+        self.keys.sort_by_key(|key| (key.0, key.1));
+    }
 }
 
 /// What the loader thread gives to the renderer: the catalog, and the bytes of the texture
@@ -1312,7 +1670,10 @@ pub struct Statics {
     prepare_calls: u64,
     prepare_seconds: f64,
     /// The grass of the frame: texture, subset, record, the fade-in, 1 for bent normals.
-    grass_draws: Vec<(u32, u32, [f32; 12], f32, f32)>,
+    grass_draws: Vec<GrassDraw>,
+    /// The draws of the call in the order of the draw, and their records, kept from call to call.
+    grass_order: GrassOrder,
+    grass_records: Vec<f32>,
     /// The clock of the arrivals, and the time a subset takes to come in (0: no fade-in).
     clock: Instant,
     fade_seconds: f32,
@@ -1345,6 +1706,8 @@ pub struct Statics {
     /// The work of each set since the last `report`, and of the grass.
     set_stats: [SetStats; SETS],
     grass_stats: SetStats,
+    grass_parts: GrassParts,
+    grass_kept: GrassKept,
     /// The view range of the game in the last main view ([`CullSet::eye`] w).
     game_range: f32,
     /// The merged subsets that arrived in play (no wait open) since the last `report`: all
@@ -1439,6 +1802,8 @@ impl Statics {
             prepare_calls: 0,
             prepare_seconds: 0.0,
             grass_draws: Vec::new(),
+            grass_order: GrassOrder::default(),
+            grass_records: Vec::new(),
             clock: Instant::now(),
             fade_seconds: 1.0,
             prefetching: false,
@@ -1459,6 +1824,8 @@ impl Statics {
             hidden_skipped: 0,
             set_stats: [SetStats::default(); SETS],
             grass_stats: SetStats::default(),
+            grass_parts: GrassParts::default(),
+            grass_kept: GrassKept::default(),
             game_range: 0.0,
             play_arrivals: 0,
             late_arrivals: 0,
@@ -1493,7 +1860,7 @@ impl Statics {
         let (cx, cy) = ((x / CELL).floor() as i32, (y / CELL).floor() as i32);
         for gy in cy - cells..=cy + cells {
             for gx in cx - cells..=cx + cells {
-                for index in world.grass_cells.get(&(gx, gy)).into_iter().flatten() {
+                for index in world.grass_cells.get(&(gx, gy)).into_iter().flat_map(|cell| &cell.places) {
                     let place = &catalog.grass[*index as usize];
                     let (dx, dy) = (place.position[0] - x, place.position[1] - y);
                     if dx * dx + dy * dy > radius * radius {
@@ -1544,6 +1911,36 @@ impl Statics {
                 per(stats.drawn),
                 per(stats.runs),
                 per(stats.triangles)
+            );
+        }
+        let parts = &self.grass_parts;
+        if parts.calls > 0 {
+            let per = |n: u64| n as f64 / parts.calls as f64;
+            let ms = |seconds: f64| seconds * 1000.0 / parts.calls as f64;
+            println!(
+                "statics report {label}: grass parts: {} calls; for each call {:.0} places visited and {:.0} skipped with their tile ({:.0} hidden, {:.0} beyond the range, {:.0} out of the view, {:.0} in the view with no subset on the GPU), {:.0} subsets missed, {:.0} draws in {:.0} runs of one subset, {:.0} triangles; ms for each call: choice of the places {:.3}, sort {:.3}, records and their write {:.3}, uniforms and pipeline {:.3}, draw loop {:.3}",
+                parts.calls,
+                per(parts.visited),
+                per(parts.skipped),
+                per(parts.hidden),
+                per(parts.too_far),
+                per(parts.out_of_view),
+                per(parts.without_resident),
+                per(parts.subset_misses),
+                per(parts.draws),
+                per(parts.runs),
+                per(parts.triangles),
+                ms(parts.choose_seconds),
+                ms(parts.sort_seconds),
+                ms(parts.records_seconds),
+                ms(parts.setup_seconds),
+                ms(parts.draw_seconds)
+            );
+            let (cells, bytes) = self.grass_kept.size();
+            println!(
+                "statics report {label}: grass kept: {cells} cells with records, {:.0} KiB; {:.2} matrices made for each call",
+                bytes as f64 / 1024.0,
+                per(parts.records_made)
             );
         }
         if self.prepare_calls > 0 {
@@ -1599,6 +1996,7 @@ impl Statics {
         self.late_nearest = f32::MAX;
         self.set_stats = [SetStats::default(); SETS];
         self.grass_stats = SetStats::default();
+        self.grass_parts = GrassParts::default();
     }
 
     /// The catalog and its textures are on their way, and a frame will take them: their GPU
@@ -1705,7 +2103,7 @@ impl Statics {
         let Some(world) = catalog.worlds.get(&self.world) else { return };
         let mut wanted: Vec<u32> = world.cells.values().chain(world.water_cells.values()).flatten().map(|i| catalog.instances[*i as usize].subset).filter(|s| catalog.subsets[*s as usize].components.is_empty()).collect();
         // The subsets of the grass too: they are never merged.
-        wanted.extend(world.grass_cells.values().flatten().flat_map(|i| {
+        wanted.extend(world.grass_cells.values().flat_map(|cell| &cell.places).flat_map(|i| {
             let place = &catalog.grass[*i as usize];
             place.first_subset..place.first_subset + place.subset_count
         }));
@@ -1982,6 +2380,7 @@ impl Statics {
         self.requests = Some(request_sender);
         self.arrivals = Some(arrival_receiver);
         self.catalog = Some(catalog);
+        self.grass_kept = GrassKept::default();
         // A record of the groups that came before the catalog.
         self.apply_groups();
         // All ordinary subsets that a place of the world space uses go to the GPU now.
@@ -2200,51 +2599,48 @@ impl Statics {
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
         self.grass_draws.clear();
-        let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
-        let cells = (view_range / CELL).ceil() as i32;
-        let mut cut = false;
-        'cells: for y in cell_y - cells..=cell_y + cells {
-            for x in cell_x - cells..=cell_x + cells {
-                let Some(list) = world.grass_cells.get(&(x, y)) else { continue };
-                for index in list {
-                    let place = &catalog.grass[*index as usize];
-                    if hidden(&self.shown, place.group) {
-                        continue;
-                    }
-                    let to = [place.position[0] - eye[0], place.position[1] - eye[1], place.position[2] - eye[2]];
-                    let reach = view_range + place.radius;
-                    if to[0] * to[0] + to[1] * to[1] + to[2] * to[2] > reach * reach {
-                        continue;
-                    }
-                    let p = place.position;
-                    if !frame.planes.iter().all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -place.radius) {
-                        continue;
-                    }
-                    let record = grass_record(&world_matrix(place.position, place.rotation, place.scale));
-                    for subset in place.first_subset..place.first_subset + place.subset_count {
-                        let Some(bent) = self.resident.get(&subset).map(|r| r.bent) else {
-                            continue;
-                        };
-                        if self.grass_draws.len() == GRASS_RECORDS {
-                            cut = true;
-                            break 'cells;
-                        }
-                        let fade = self.fade_of(subset);
-                        self.grass_draws.push((catalog.subsets[subset as usize].texture, subset, record, fade, bent as u32 as f32));
-                    }
-                }
-            }
-        }
+        let [now, fade_seconds, _, _] = self.fade_values();
+        let mut counts = GrassParts::default();
+        let choose_started = Instant::now();
+        let sight = GrassSight { eye, range: view_range, planes: frame.planes, now, fade_seconds, limit: GRASS_RECORDS };
+        let keep = self.grass_kept.begin(&self.world);
+        let (shown, resident) = (&self.shown, &self.resident);
+        let cut = world.choose_grass(
+            &catalog.grass,
+            &sight,
+            |group| hidden(shown, group),
+            |subset| {
+                let r = resident.get(&subset)?;
+                Some(GrassSubset { texture: catalog.subsets[subset as usize].texture, arrived: r.arrived, bent: r.bent as u32 as f32 })
+            },
+            &mut self.grass_draws,
+            &mut counts,
+            keep,
+        );
+        self.grass_kept.end();
         if main {
             self.grass_frames += 1;
             self.grass_cut += cut as u64;
         }
+        counts.choose_seconds = choose_started.elapsed().as_secs_f64();
+        counts.draws = self.grass_draws.len() as u64;
         if self.grass_draws.is_empty() {
+            self.note_grass(main, &counts);
             return 0;
         }
-        self.grass_draws.sort_unstable_by_key(|draw| (draw.0, draw.1));
-        let records: Vec<f32> = self.grass_draws.iter().flat_map(|draw| draw.2.into_iter().chain([draw.3, draw.4, 0.0, 0.0])).collect();
-        scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&records));
+        let sort_started = Instant::now();
+        self.grass_order.sort(self.grass_draws.iter().map(|draw| (draw.texture, draw.subset)));
+        counts.sort_seconds = sort_started.elapsed().as_secs_f64();
+        let records_started = Instant::now();
+        let draws = &self.grass_draws;
+        self.grass_records.clear();
+        self.grass_records.extend(self.grass_order.keys.iter().flat_map(|&(_, _, index)| {
+            let draw = &draws[index as usize];
+            draw.record.into_iter().chain([draw.fade, draw.bent, 0.0, 0.0])
+        }));
+        scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&self.grass_records));
+        counts.records_seconds = records_started.elapsed().as_secs_f64();
+        let setup_started = Instant::now();
         let uniforms = GrassUniforms {
             range: [view_range, 0.0, 0.0, 0.0],
             fog_color: frame.fog_color,
@@ -2276,12 +2672,14 @@ impl Statics {
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, group, &[]);
         pass.set_vertex_buffer(1, records_buffer.slice(..));
+        counts.setup_seconds = setup_started.elapsed().as_secs_f64();
+        let draw_started = Instant::now();
         // One draw for each run of places with the same subset.
         let mut start = 0;
-        while start < self.grass_draws.len() {
-            let (texture, subset, ..) = self.grass_draws[start];
+        while start < self.grass_order.keys.len() {
+            let (texture, subset, _) = self.grass_order.keys[start];
             let mut end = start + 1;
-            while end < self.grass_draws.len() && self.grass_draws[end].1 == subset {
+            while end < self.grass_order.keys.len() && self.grass_order.keys[end].1 == subset {
                 end += 1;
             }
             if let Some(Resident { geometry: Geometry::Own { vertices, indexes }, faces, .. }) = self.resident.get(&subset) {
@@ -2289,9 +2687,13 @@ impl Statics {
                 pass.set_vertex_buffer(0, vertices.slice(..));
                 pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..faces[0] * 3, 0, start as u32..end as u32);
+                counts.triangles += faces[0] as u64 * (end - start) as u64;
             }
+            counts.runs += 1;
             start = end;
         }
+        counts.draw_seconds = draw_started.elapsed().as_secs_f64();
+        self.note_grass(main, &counts);
         if main {
             self.grass_drawn += self.grass_draws.len() as u64;
         }
@@ -2316,13 +2718,38 @@ impl Statics {
         [self.clock.elapsed().as_secs_f32(), if self.synchronous { 0.0 } else { self.fade_seconds }, 0.0, 0.0]
     }
 
-    /// The share of a subset that is in, as the shaders have it.
-    fn fade_of(&self, subset: u32) -> f32 {
-        let [now, seconds, _, _] = self.fade_values();
-        match self.resident.get(&subset) {
-            Some(resident) if seconds > 0.0 => ((now - resident.arrived) / seconds).clamp(0.0, 1.0),
-            _ => 1.0,
+    /// Adds the counts of a grass call of the main view to the report; the calls of the views
+    /// of their own stay out of it.
+    fn note_grass(&mut self, main: bool, counts: &GrassParts) {
+        if !main {
+            return;
         }
+        let parts = &mut self.grass_parts;
+        parts.calls += 1;
+        parts.visited += counts.visited;
+        parts.skipped += counts.skipped;
+        parts.records_made += counts.records_made;
+        parts.hidden += counts.hidden;
+        parts.too_far += counts.too_far;
+        parts.out_of_view += counts.out_of_view;
+        parts.without_resident += counts.without_resident;
+        parts.subset_misses += counts.subset_misses;
+        parts.draws += counts.draws;
+        parts.runs += counts.runs;
+        parts.triangles += counts.triangles;
+        parts.choose_seconds += counts.choose_seconds;
+        parts.sort_seconds += counts.sort_seconds;
+        parts.records_seconds += counts.records_seconds;
+        parts.setup_seconds += counts.setup_seconds;
+        parts.draw_seconds += counts.draw_seconds;
+        // The set line of the grass has the same counts under the names of the other sets.
+        let stats = &mut self.grass_stats;
+        stats.visited += counts.visited;
+        stats.distance += counts.hidden + counts.too_far;
+        stats.frustum += counts.out_of_view;
+        stats.waiting += counts.without_resident;
+        stats.runs += counts.runs;
+        stats.triangles += counts.triangles;
     }
 
     /// The statics and the grass on or off, from the settings record of MGE XE. A kind
@@ -3427,6 +3854,406 @@ mod shader_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::{grass_record, world_matrix, GrassDraw, GrassKept, GrassOrder, GrassParts, GrassMiss, GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, CELL, GRASS_KEEP_CALLS, GRASS_RECORDS};
+
+    /// A small generator of numbers for the tests: the same sequence on each run.
+    fn lcg(state: &mut u64) -> f32 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*state >> 40) as f32) / (1u64 << 24) as f32
+    }
+
+    /// The grass places of the cells, as lists of indexes into the catalog.
+    type CellLists = std::collections::HashMap<(i32, i32), Vec<u32>>;
+
+    /// Random grass places in the cells around the cell (0, 0), with the places of each cell in
+    /// the order of the catalog.
+    fn random_catalog(state: &mut u64, places: usize) -> (CellLists, Vec<GrassPlace>) {
+        let mut lists = CellLists::new();
+        let mut grass = Vec::new();
+        for _ in 0..places {
+            let position = [lcg(state) * 3.0 * CELL - CELL, lcg(state) * 3.0 * CELL - CELL, lcg(state) * 2000.0 - 500.0];
+            let cell = ((position[0] / CELL).floor() as i32, (position[1] / CELL).floor() as i32);
+            lists.entry(cell).or_default().push(grass.len() as u32);
+            grass.push(GrassPlace {
+                first_subset: (lcg(state) * 7.0) as u32,
+                subset_count: 1 + (lcg(state) * 2.0) as u32,
+                position,
+                rotation: [lcg(state), lcg(state), lcg(state) * 6.0],
+                scale: 0.5 + lcg(state),
+                radius: lcg(state) * 300.0,
+                group: (lcg(state) * 5.0) as u16,
+            });
+        }
+        (lists, grass)
+    }
+
+    /// The world with the cells of `lists`, made as the catalog makes it: the places of each cell
+    /// in tile order, with the tiles.
+    fn world_of(lists: &CellLists, grass: &[GrassPlace]) -> World {
+        let mut world = World::default();
+        for (cell, list) in lists {
+            world.grass_cells.entry(*cell).or_default().places = list.clone();
+        }
+        world.make_grass_tiles(grass);
+        world
+    }
+
+    /// A world of random grass places, made as the catalog makes it.
+    fn random_world(state: &mut u64, places: usize) -> (World, Vec<GrassPlace>) {
+        let (lists, grass) = random_catalog(state, places);
+        (world_of(&lists, &grass), grass)
+    }
+
+    /// The lists of the places of the cells of a world, in the order of the cells.
+    fn lists_of(world: &World) -> CellLists {
+        world.grass_cells.iter().map(|(cell, grass_cell)| (*cell, grass_cell.places.clone())).collect()
+    }
+
+    /// A view from a random eye with random planes.
+    fn random_sight(state: &mut u64) -> GrassSight {
+        let planes = core::array::from_fn(|_| {
+            let n = [lcg(state) - 0.5, lcg(state) - 0.5, lcg(state) - 0.5];
+            let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-3);
+            [n[0] / length, n[1] / length, n[2] / length, lcg(state) * 6000.0 - 1500.0]
+        });
+        GrassSight { eye: [lcg(state) * 3.0 * CELL - CELL, lcg(state) * 3.0 * CELL - CELL, lcg(state) * 3000.0], range: 500.0 + lcg(state) * 7000.0, planes, now: 10.0, fade_seconds: 2.0, limit: GRASS_RECORDS }
+    }
+
+    /// The subsets on the GPU in the tests: the ones whose number is not a multiple of 4.
+    fn on_gpu(subset: u32) -> Option<GrassSubset> {
+        (subset % 4 != 0).then(|| GrassSubset { texture: subset % 3, arrived: 8.0 + subset as f32 * 0.3, bent: (subset % 2) as f32 })
+    }
+
+    /// The group 3 is hidden in the tests.
+    fn hidden_group(group: u16) -> bool {
+        group == 3
+    }
+
+    /// The choice of the grass of 58fe62e: each place of the cells within reach, in the order of
+    /// the lists, tested one by one, with its matrix made when it is taken.
+    fn reference_choice(lists: &CellLists, grass: &[GrassPlace], sight: &GrassSight) -> (Vec<GrassDraw>, bool) {
+        let mut draws: Vec<GrassDraw> = Vec::new();
+        let eye = sight.eye;
+        let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
+        let cells = (sight.range / CELL).ceil() as i32;
+        for y in cell_y - cells..=cell_y + cells {
+            for x in cell_x - cells..=cell_x + cells {
+                let Some(list) = lists.get(&(x, y)) else { continue };
+                for index in list {
+                    let place = &grass[*index as usize];
+                    if hidden_group(place.group) {
+                        continue;
+                    }
+                    let d = [place.position[0] - eye[0], place.position[1] - eye[1], place.position[2] - eye[2]];
+                    let reach = sight.range + place.radius;
+                    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > reach * reach {
+                        continue;
+                    }
+                    let p = place.position;
+                    if !sight.planes.iter().all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -place.radius) {
+                        continue;
+                    }
+                    for id in place.first_subset..place.first_subset + place.subset_count {
+                        let Some(on_gpu) = on_gpu(id) else { continue };
+                        if draws.len() == sight.limit {
+                            return (draws, true);
+                        }
+                        let record = grass_record(&world_matrix(place.position, place.rotation, place.scale));
+                        let fade = Resident::fade_after(sight.now - on_gpu.arrived, sight.fade_seconds);
+                        draws.push(GrassDraw { texture: on_gpu.texture, subset: id, record, fade, bent: on_gpu.bent });
+                    }
+                }
+            }
+        }
+        (draws, false)
+    }
+
+    /// World::choose_grass takes the places that the reference takes, with the same records, over
+    /// a random world and many views, with the cap of the call and with a small one. The reference
+    /// walks the lists of the cells in tile order, so the cap is compared against tile order; the
+    /// test of the tile order below compares with the order of the catalog, below the cap.
+    #[test]
+    fn the_grass_choice_equals_the_reference() {
+        let mut state = 11;
+        let (world, grass) = random_world(&mut state, 4000);
+        let tile_lists = lists_of(&world);
+        let mut kept = GrassKept::default();
+        let (mut taken, mut cuts) = (0, 0);
+        for round in 0..120 {
+            let sight = GrassSight { limit: if round % 3 == 0 { 40 } else { GRASS_RECORDS }, ..random_sight(&mut state) };
+            let (expected, expected_cut) = reference_choice(&tile_lists, &grass, &sight);
+            let mut draws = Vec::new();
+            let mut counts = GrassParts::default();
+            let cut = world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut counts, kept.begin(b""));
+            kept.end();
+            assert_eq!(draws, expected, "round {round}");
+            assert_eq!(cut, expected_cut, "round {round}");
+            taken += draws.len();
+            cuts += cut as usize;
+        }
+        assert!(taken > 1000 && cuts > 5 && kept.size().0 > 0, "{taken} draws, {cuts} cuts, {} cells kept", kept.size().0);
+    }
+
+    /// The clock is read once for a call, and the fade is still one value for each subset: every
+    /// draw of a subset has the fade of its arrival at that time, and subsets that arrived at
+    /// different times have different fades.
+    #[test]
+    fn each_subset_has_its_own_fade_in_a_call() {
+        let mut state = 5;
+        let (world, grass) = random_world(&mut state, 2000);
+        let sight = GrassSight { range: 9000.0, eye: [4000.0, 4000.0, 500.0], planes: [[0.0, 0.0, 0.0, 1.0]; 6], ..random_sight(&mut state) };
+        let mut draws = Vec::new();
+        world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut GrassParts::default(), GrassKept::default().begin(b""));
+        let mut fades = std::collections::HashMap::new();
+        for draw in &draws {
+            let arrived = on_gpu(draw.subset).expect("a draw has a subset on the GPU").arrived;
+            assert_eq!(draw.fade, Resident::fade_after(sight.now - arrived, sight.fade_seconds), "subset {}", draw.subset);
+            assert_eq!(*fades.entry(draw.subset).or_insert(draw.fade), draw.fade, "subset {}", draw.subset);
+        }
+        let distinct: std::collections::HashSet<u32> = fades.values().map(|fade| fade.to_bits()).collect();
+        assert!(distinct.len() > 1 && draws.len() > 100, "{} fades in {} draws", distinct.len(), draws.len());
+    }
+
+    /// The draws of a call as a sorted list of their bits: the order of the records is left out.
+    fn sorted_bits(draws: &[GrassDraw]) -> Vec<Vec<u32>> {
+        let mut bits: Vec<Vec<u32>> = draws
+            .iter()
+            .map(|draw| {
+                let mut one = vec![draw.texture, draw.subset, draw.fade.to_bits(), draw.bent.to_bits()];
+                one.extend(draw.record.iter().map(|value| value.to_bits()));
+                one
+            })
+            .collect();
+        bits.sort();
+        bits
+    }
+
+    /// Restores the test of c5ba423 that 5efb335 dropped. A world made as the catalog makes it, with
+    /// the cells in tile order and the tiles skipped, gives the draws of the walk over the cells in
+    /// the order of the catalog, as a sorted list. No call is cut by the cap: at the cap the new
+    /// order keeps other places, by design. Some calls come in another order, so that the test
+    /// can fail.
+    #[test]
+    fn the_tile_order_keeps_the_draws_of_a_call_below_the_cap() {
+        let mut state = 11;
+        let (catalog_lists, grass) = random_catalog(&mut state, 4000);
+        let world = world_of(&catalog_lists, &grass);
+        let (mut taken, mut reordered) = (0, 0);
+        for round in 0..120 {
+            let sight = random_sight(&mut state);
+            let (expected, expected_cut) = reference_choice(&catalog_lists, &grass, &sight);
+            let mut draws = Vec::new();
+            let cut = world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut GrassParts::default(), GrassKept::default().begin(b""));
+            assert!(!expected_cut && !cut, "round {round} is cut by the cap");
+            assert_eq!(sorted_bits(&draws), sorted_bits(&expected), "round {round}");
+            taken += draws.len();
+            reordered += (draws != expected) as usize;
+        }
+        assert!(taken > 1000 && reordered > 20, "{taken} draws, {reordered} calls in another order");
+    }
+
+    /// The cells of a world made as the catalog makes it hold the same places as the lists of the
+    /// catalog, once each, and the tiles cover each list once: every place of a tile is in the tile
+    /// (its box and its radius) and in one tile of the grid.
+    #[test]
+    fn make_tiles_keeps_every_place_of_the_catalog() {
+        let mut state = 31;
+        let (catalog_lists, grass) = random_catalog(&mut state, 4000);
+        let world = world_of(&catalog_lists, &grass);
+        assert_eq!(world.grass_cells.len(), catalog_lists.len());
+        let mut biggest = 0;
+        for (key, list) in &catalog_lists {
+            let cell = &world.grass_cells[key];
+            let (mut kept, mut expected) = (cell.places.clone(), list.clone());
+            kept.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(kept, expected, "cell {key:?}");
+            let mut next = 0;
+            for tile in &cell.tiles {
+                assert_eq!((tile.first as usize, tile.count > 0), (next, true), "cell {key:?}");
+                let first = grass[cell.places[next] as usize].tile();
+                for index in &cell.places[tile.range()] {
+                    let place = &grass[*index as usize];
+                    assert_eq!(place.tile(), first);
+                    assert!(place.radius <= tile.radius);
+                    assert!((0..3).all(|axis| tile.min[axis] <= place.position[axis] && place.position[axis] <= tile.max[axis]));
+                }
+                next += tile.count as usize;
+            }
+            assert_eq!(next, cell.places.len(), "cell {key:?}");
+            biggest = biggest.max(list.len());
+        }
+        assert!(biggest > 100, "the biggest cell has {biggest} places");
+    }
+
+    /// The tile skip changes nothing: the draws are those of the walk of every place of the cell,
+    /// in the same order. Some rounds use a small cap, so that the cut falls in the middle of a walk.
+    #[test]
+    fn the_tile_skip_keeps_the_draws_and_their_order() {
+        let mut state = 23;
+        let (world, grass) = random_world(&mut state, 4000);
+        let tile_lists = lists_of(&world);
+        let mut kept = GrassKept::default();
+        let (mut skipped, mut cuts, mut taken) = (0, 0, 0);
+        for round in 0..200 {
+            let sight = GrassSight { limit: if round % 2 == 0 { 25 } else { GRASS_RECORDS }, ..random_sight(&mut state) };
+            let (expected, expected_cut) = reference_choice(&tile_lists, &grass, &sight);
+            let mut draws = Vec::new();
+            let mut counts = GrassParts::default();
+            let cut = world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut counts, kept.begin(b""));
+            kept.end();
+            assert_eq!(draws, expected, "round {round}");
+            assert_eq!(cut, expected_cut, "round {round}");
+            skipped += counts.skipped;
+            cuts += cut as usize;
+            taken += draws.len();
+        }
+        assert!(skipped > 5000 && cuts > 5 && taken > 1000, "{skipped} skipped, {cuts} cuts, {taken} draws");
+    }
+
+    /// A tile is skipped only when no place of it is taken, in cells of random places, eyes, ranges
+    /// and planes. The test counts that some tiles are skipped and some are not, so that it can fail.
+    #[test]
+    fn a_skipped_tile_has_no_place_that_is_taken() {
+        let mut state = 7;
+        let (mut skipped, mut kept) = (0, 0);
+        for _ in 0..300 {
+            let (world, grass) = random_world(&mut state, 200);
+            let sight = random_sight(&mut state);
+            for cell in world.grass_cells.values() {
+                assert_eq!(cell.tiles.iter().map(|tile| tile.count as usize).sum::<usize>(), cell.places.len());
+                for tile in &cell.tiles {
+                    let taken = cell.places[tile.range()].iter().any(|index| grass[*index as usize].miss(sight.eye, sight.range, &sight.planes).is_none());
+                    if tile.misses(sight.eye, sight.range, &sight.planes) {
+                        assert!(!taken);
+                        skipped += 1;
+                    } else {
+                        kept += 1;
+                    }
+                }
+            }
+        }
+        assert!(skipped > 100 && kept > 100, "{skipped} skipped, {kept} kept");
+    }
+
+    /// A plane that cuts the box of a tile diagonally keeps the tile when the corner of the box on
+    /// the side of the normal is inside, even if the corner nearest to the plane is outside.
+    #[test]
+    fn a_plane_that_cuts_a_tile_diagonally_keeps_it() {
+        let at = |x: f32, y: f32, radius: f32| GrassPlace { first_subset: 0, subset_count: 1, position: [x, y, 0.0], rotation: [0.0; 3], scale: 1.0, radius, group: 0 };
+        let grass = [at(10.0, 10.0, 0.0), at(1000.0, 1000.0, 0.0)];
+        let tile = GrassTile::of(0, &[&grass[0], &grass[1]]);
+        let side = std::f32::consts::FRAC_1_SQRT_2;
+        let eye = [500.0, 500.0, 0.0];
+        // The far corner (1000, 1000) is 414 units inside; the near corner (10, 10) is 986 outside.
+        let cutting = [[side, side, 0.0, -1000.0]; 6];
+        assert_eq!(grass[0].miss(eye, 5000.0, &cutting), Some(GrassMiss::OutOfView));
+        assert_eq!(grass[1].miss(eye, 5000.0, &cutting), None);
+        assert!(!tile.misses(eye, 5000.0, &cutting));
+        // The plane moved out by 600 units: every place of the tile is outside it.
+        let outside = [[side, side, 0.0, -1600.0]; 6];
+        assert_eq!(grass[1].miss(eye, 5000.0, &outside), Some(GrassMiss::OutOfView));
+        assert!(tile.misses(eye, 5000.0, &outside));
+        // The same plane with a radius of 200 on a place: it is taken, so the tile stays.
+        let round = [at(10.0, 10.0, 0.0), at(1000.0, 1000.0, 200.0)];
+        let tile = GrassTile::of(0, &[&round[0], &round[1]]);
+        assert_eq!(round[1].miss(eye, 5000.0, &outside), None);
+        assert!(!tile.misses(eye, 5000.0, &outside));
+    }
+
+    /// The tiles of a cell follow the tile grid, row by row, and keep the order of the catalog
+    /// inside a tile.
+    #[test]
+    fn a_cell_orders_its_places_by_tile() {
+        let at = |x: f32, y: f32, z: f32, radius: f32| GrassPlace { first_subset: 0, subset_count: 1, position: [x, y, z], rotation: [0.0; 3], scale: 1.0, radius, group: 0 };
+        let grass = vec![at(100.0, 1100.0, 0.0, 2.0), at(1100.0, 100.0, 0.0, 5.0), at(100.0, 100.0, 0.0, 9.0), at(1200.0, 200.0, 4.0, 1.0)];
+        let mut world = World::default();
+        world.grass_cells.entry((0, 0)).or_default().places = vec![0, 1, 2, 3];
+        world.make_grass_tiles(&grass);
+        let cell = &world.grass_cells[&(0, 0)];
+        assert_eq!(cell.places, vec![2, 1, 3, 0]);
+        let spans: Vec<(u32, u32)> = cell.tiles.iter().map(|tile| (tile.first, tile.count)).collect();
+        assert_eq!(spans, vec![(0, 1), (1, 2), (3, 1)]);
+        assert_eq!(cell.tiles[1].radius, 5.0);
+        assert_eq!(cell.tiles[1].max, [1200.0, 200.0, 4.0]);
+    }
+
+    /// One call of the kept-records tests: the draws, and the matrices that the call made.
+    fn kept_call(world: &World, grass: &[GrassPlace], sight: &GrassSight, kept: &mut GrassKept) -> (usize, u64) {
+        let (mut draws, mut counts) = (Vec::new(), GrassParts::default());
+        world.choose_grass(grass, sight, hidden_group, on_gpu, &mut draws, &mut counts, kept.begin(b""));
+        kept.end();
+        (draws.len(), counts.records_made)
+    }
+
+    /// A sight in which every place passes the planes.
+    fn open_sight(state: &mut u64, eye: [f32; 3]) -> GrassSight {
+        GrassSight { eye, range: 1500.0, planes: [[0.0, 0.0, 0.0, 1.0]; 6], ..random_sight(state) }
+    }
+
+    /// A cell keeps its records over the next GRASS_KEEP_CALLS calls that do not walk it, loses
+    /// them at the call after, and a second call over the same view makes no matrix.
+    #[test]
+    fn a_cell_keeps_its_records_for_a_while() {
+        let mut state = 3;
+        let (world, grass) = random_world(&mut state, 8000);
+        let near = open_sight(&mut state, [4000.0, 4000.0, 500.0]);
+        let far = GrassSight { eye: [4000.0 + 40.0 * CELL, 4000.0, 500.0], ..open_sight(&mut state, [0.0; 3]) };
+        let mut kept = GrassKept::default();
+        let (drawn, made) = kept_call(&world, &grass, &near, &mut kept);
+        assert!(drawn > 5 && made > 0, "{drawn} draws, {made} matrices");
+        assert_eq!(kept_call(&world, &grass, &near, &mut kept), (drawn, 0));
+        let size = kept.size();
+        assert!(size.0 > 0 && size.1 > 0);
+        for _ in 0..GRASS_KEEP_CALLS {
+            assert_eq!(kept_call(&world, &grass, &far, &mut kept).0, 0);
+            assert_eq!(kept.size(), size);
+        }
+        kept_call(&world, &grass, &far, &mut kept);
+        assert_eq!(kept.size(), (0, 0));
+        assert_eq!(kept_call(&world, &grass, &near, &mut kept), (drawn, made));
+    }
+
+    /// An eye that moves to and fro across the edge of a cell makes no matrix after its first two
+    /// calls: each cell is walked at least once in two calls.
+    #[test]
+    fn a_walk_along_a_cell_edge_makes_no_matrix_again() {
+        let mut state = 9;
+        let (world, grass) = random_world(&mut state, 8000);
+        let sights = [open_sight(&mut state, [CELL - 100.0, 4000.0, 500.0]), open_sight(&mut state, [CELL + 100.0, 4000.0, 500.0])];
+        let mut kept = GrassKept::default();
+        let mut made_late = 0;
+        for call in 0..40 {
+            let (drawn, made) = kept_call(&world, &grass, &sights[call % 2], &mut kept);
+            assert!(drawn > 5, "call {call}: {drawn} draws");
+            made_late += if call >= 2 { made } else { 0 };
+        }
+        assert_eq!(made_late, 0);
+    }
+
+    /// The fade of a subset runs from 0 at its arrival to 1 after the fade time, and a fade time
+    /// of 0 means no fade (a replay).
+    #[test]
+    fn a_subset_fades_in_over_the_fade_time() {
+        assert_eq!(Resident::fade_after(5.0, 0.0), 1.0);
+        assert_eq!(Resident::fade_after(0.0, 2.0), 0.0);
+        assert_eq!(Resident::fade_after(1.0, 2.0), 0.5);
+        assert_eq!(Resident::fade_after(9.0, 2.0), 1.0);
+        assert_eq!(Resident::fade_after(-1.0, 2.0), 0.0);
+    }
+
+    /// The draws of a grass call sort by texture, then by subset, then by the order of their
+    /// choice, so that the order has no equal keys and the same call gives the same records.
+    #[test]
+    fn the_grass_draws_sort_by_texture_subset_and_choice() {
+        let mut order = GrassOrder::default();
+        order.sort([(2, 7), (1, 9), (2, 7), (1, 4), (1, 9), (2, 3)].into_iter());
+        assert_eq!(order.keys, vec![(1, 4, 3), (1, 9, 1), (1, 9, 4), (2, 3, 5), (2, 7, 0), (2, 7, 2)]);
+        // The keys are made again for the next call, not added to.
+        order.sort([(5, 5)].into_iter());
+        assert_eq!(order.keys, vec![(5, 5, 0)]);
+    }
+
     use super::{bytes_limit, cap_from_budget, cap_move, event_stamp, half, memory_event, qpc, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
 
     const MB: u64 = 1 << 20;
