@@ -1199,6 +1199,51 @@ impl GrassOrder {
     }
 }
 
+/// The hash of the record list of a grass call, as two numbers: `ordered` hashes the records in
+/// the order of the draw, so a change of the order changes it; `unordered` adds the hashes of the
+/// records, so it holds the set of the records and not their order. A record is the 16 floats that
+/// go to the GPU, hashed by their bits. It is a proof that two builds draw the same grass: a
+/// picture does not show the order of the draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GrassHash {
+    ordered: u64,
+    unordered: u64,
+}
+
+impl GrassHash {
+    /// The floats of one record.
+    const RECORD_FLOATS: usize = 16;
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x100_0000_01b3;
+
+    /// The hash of `records`, the floats of whole records one after the other.
+    fn of(records: &[f32]) -> GrassHash {
+        let (whole, rest) = records.as_chunks::<{ Self::RECORD_FLOATS }>();
+        debug_assert!(rest.is_empty());
+        let mut hash = GrassHash { ordered: Self::FNV_OFFSET, unordered: 0 };
+        for record in whole {
+            let one = record.iter().fold(Self::FNV_OFFSET, |one, value| (one ^ value.to_bits() as u64).wrapping_mul(Self::FNV_PRIME));
+            hash.ordered = (hash.ordered ^ one).wrapping_mul(Self::FNV_PRIME);
+            hash.unordered = hash.unordered.wrapping_add(one);
+        }
+        hash
+    }
+
+    /// The report line of a call: the frame of the main view counted so far, the view it is for,
+    /// the records drawn and whether the limit of records cut the choice.
+    fn line(&self, frame: u64, main: bool, record_floats: usize, cut: bool) -> String {
+        format!(
+            "grass hash frame {} {}: {} records, cut {}, ordered {:016x}, unordered {:016x}",
+            frame,
+            if main { "main" } else { "view" },
+            record_floats / Self::RECORD_FLOATS,
+            cut,
+            self.ordered,
+            self.unordered
+        )
+    }
+}
+
 /// What the loader thread gives to the renderer: the catalog, and the bytes of the texture
 /// files in the order of the catalog ([`None`] for a file that is not there).
 struct Loaded {
@@ -1676,6 +1721,8 @@ pub struct Statics {
     /// The draws of the call in the order of the draw, and their records, kept from call to call.
     grass_order: GrassOrder,
     grass_records: Vec<f32>,
+    /// Each grass call reports the hash of its records (`MGE_XE_GRASS_HASH=1`), read once.
+    grass_hash: bool,
     /// The clock of the arrivals, and the time a subset takes to come in (0: no fade-in).
     clock: Instant,
     fade_seconds: f32,
@@ -1806,6 +1853,7 @@ impl Statics {
             grass_draws: Vec::new(),
             grass_order: GrassOrder::default(),
             grass_records: Vec::new(),
+            grass_hash: nirender_wgpu::switches::on("MGE_XE_GRASS_HASH") == Some(true),
             clock: Instant::now(),
             fade_seconds: 1.0,
             prefetching: false,
@@ -2640,6 +2688,9 @@ impl Statics {
             let draw = &draws[index as usize];
             draw.record.into_iter().chain([draw.fade, draw.bent, 0.0, 0.0])
         }));
+        if self.grass_hash {
+            println!("{}", GrassHash::of(&self.grass_records).line(self.grass_frames, main, self.grass_records.len(), cut));
+        }
         scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&self.grass_records));
         counts.records_seconds = records_started.elapsed().as_secs_f64();
         let setup_started = Instant::now();
@@ -3852,7 +3903,54 @@ mod shader_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{grass_record, world_matrix, GrassDraw, GrassKept, GrassOrder, GrassParts, GrassMiss, GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, CELL, GRASS_KEEP_CALLS, GRASS_RECORDS};
+    use super::{grass_record, world_matrix, GrassDraw, GrassHash, GrassKept, GrassOrder, GrassParts, GrassMiss, GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, CELL, GRASS_KEEP_CALLS, GRASS_RECORDS};
+
+    /// A record of 16 floats that starts at `first` and rises by one.
+    fn rising_record(first: f32) -> Vec<f32> {
+        (0..16).map(|index| first + index as f32).collect()
+    }
+
+    /// The hash of known records. The numbers come from a second implementation of the hash (FNV-1a
+    /// on the bits of the floats, written in Python), not from this one.
+    #[test]
+    fn the_record_hash_has_known_values() {
+        assert_eq!(GrassHash::of(&[]), GrassHash { ordered: 0xcbf29ce484222325, unordered: 0 });
+        assert_eq!(GrassHash::of(&[0.0; 16]), GrassHash { ordered: 0x1bfc788be40011c0, unordered: 0x88201fb960ff6465 });
+        assert_eq!(GrassHash::of(&rising_record(0.0)), GrassHash { ordered: 0xebffe88ca04011c0, unordered: 0x9b3cfa2d13bf6465 });
+        let two: Vec<f32> = [rising_record(0.0), rising_record(0.5)].concat();
+        assert_eq!(GrassHash::of(&two), GrassHash { ordered: 0xd97f375d8634e75f, unordered: 0xd9548e063fdec8ca });
+    }
+
+    /// Two records in the other order change the ordered hash and keep the unordered one: the
+    /// hash shows a fault of the order that a picture does not show. A changed value, or a zero of
+    /// the other sign, changes both.
+    #[test]
+    fn the_ordered_hash_sees_the_order_and_the_unordered_hash_does_not() {
+        let forward: Vec<f32> = [rising_record(0.0), rising_record(0.5)].concat();
+        let backward: Vec<f32> = [rising_record(0.5), rising_record(0.0)].concat();
+        let (a, b) = (GrassHash::of(&forward), GrassHash::of(&backward));
+        assert_ne!(a.ordered, b.ordered);
+        assert_eq!(a.unordered, b.unordered);
+        assert_eq!(b, GrassHash { ordered: 0x5e661f88f7f4e75f, unordered: 0xd9548e063fdec8ca });
+
+        let mut changed = forward.clone();
+        changed[31] += 0.25;
+        let c = GrassHash::of(&changed);
+        assert_ne!(c.ordered, a.ordered);
+        assert_ne!(c.unordered, a.unordered);
+
+        let (zero, negative_zero) = (GrassHash::of(&[0.0; 16]), GrassHash::of(&[-0.0; 16]));
+        assert_ne!(zero.ordered, negative_zero.ordered);
+    }
+
+    /// The report line keeps the form of the first measurement (the proof of the order of 2026-11-08),
+    /// so that old and new lines compare.
+    #[test]
+    fn the_hash_line_has_the_form_of_the_first_measurement() {
+        let hash = GrassHash::of(&rising_record(0.0));
+        assert_eq!(hash.line(7, true, 16 * 3, true), "grass hash frame 7 main: 3 records, cut true, ordered ebffe88ca04011c0, unordered 9b3cfa2d13bf6465");
+        assert!(hash.line(1, false, 0, false).starts_with("grass hash frame 1 view: 0 records, cut false, ordered "));
+    }
 
     /// A small generator of numbers for the tests: the same sequence on each run.
     fn lcg(state: &mut u64) -> f32 {
