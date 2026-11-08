@@ -195,8 +195,8 @@ const PREFETCH_ID: u32 = 10;
 /// The hello of MGE XE's d3d8.dll (`Deviceless::sendHello`), sent once at the plugin's load
 /// and kept: version 1, the extension format of d3d8.dll, then its build id as 64 bytes of
 /// ASCII. This build compares the format with [`EXTENSION_FORMAT`] and stops on a
-/// difference; a live session without the record stops at its first world frame (a d3d8.dll
-/// from before the handshake). A replay plays on: a capture from before the record has none.
+/// difference; a session without the record stops at its first world frame (a d3d8.dll from
+/// before the handshake). A replay stops in the same cases (D131).
 const HELLO_ID: u32 = 11;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
@@ -255,10 +255,14 @@ fn mismatch_text(writer: &str, writes: &str) -> String {
 
 /// Ends this program for a d3d8.dll of another build: the lines in the log, then the refusal
 /// of the host crate (one message box, the exit code that the plugin reads; it shows no
-/// second box).
-fn stop_mismatch(message: &str) -> ! {
+/// second box). A replay (`replay`) has no game and shows no box: it ends with the exit code.
+fn stop_mismatch(message: &str, replay: bool) -> ! {
     for line in message.lines() {
         println!("{line}");
+    }
+    if replay {
+        println!("make the capture again with this build");
+        std::process::exit(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT as i32);
     }
     nirender_wgpu::gpu::refuse(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."))
 }
@@ -2315,10 +2319,10 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
-        // The kept records came before the first frame: a live session without the hello of
-        // d3d8.dll has a d3d8.dll from before the handshake (the owner's choice: stop).
-        if !self.synchronous && self.hello.is_none() {
-            stop_mismatch(&no_hello_text());
+        // The kept records came before the first frame: a session or a capture without the
+        // hello of d3d8.dll has a d3d8.dll from before the handshake (the owner's choice: stop).
+        if self.hello.is_none() {
+            stop_mismatch(&no_hello_text(), self.synchronous);
         }
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
@@ -2609,15 +2613,7 @@ impl Extension for DistantLand {
                     println!("d3d8.dll {build}, extension format {EXTENSION_FORMAT}");
                     self.hello = Some(build);
                 }
-                // A replay of a capture of another format plays on, as for the stream format
-                // (the owner's answer 1): the picture can differ.
-                Err(message) if self.synchronous => {
-                    println!("capture of another extension format; the picture can differ:");
-                    for line in message.lines().skip(1).take(2) {
-                        println!("  {line}");
-                    }
-                }
-                Err(message) => stop_mismatch(&message),
+                Err(message) => stop_mismatch(&message, self.synchronous),
             }
             return;
         }
