@@ -402,7 +402,11 @@ impl GrassKept {
     /// Starts a call in the world space `world`.
     fn begin(&mut self, world: &[u8]) -> GrassKeep<'_> {
         self.call += 1;
-        GrassKeep { cells: self.worlds.entry(world.to_vec()).or_default(), call: self.call }
+        if !self.worlds.contains_key(world) {
+            self.worlds.insert(world.to_vec(), HashMap::new());
+        }
+        let cells = self.worlds.get_mut(world).expect("the world space is inserted above");
+        GrassKeep { cells, call: self.call }
     }
 
     /// Ends a call: the cells that no call walked in the last [`GRASS_KEEP_CALLS`] calls go, and
