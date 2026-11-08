@@ -5432,8 +5432,9 @@ mod tests {
     }
 
     /// Runs the measure on a real device, on a white picture, while the GPU works for about
-    /// `busy` before the copy. Nothing else polls the device. Stops at the first read, or at 40 calls.
-    fn hdr_run_with_busy_gpu(busy: std::time::Duration) -> HdrRun {
+    /// `busy` before the copy and for about `busy_after_map` more from the call after the map. Nothing
+    /// else polls the device. Stops at the first read, or at 40 calls.
+    fn hdr_run_with_busy_gpu(busy: std::time::Duration, busy_after_map: std::time::Duration) -> HdrRun {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
@@ -5473,6 +5474,7 @@ mod tests {
         let per_copy = timed.elapsed().as_secs_f64() / 100.0;
         let copies = (busy.as_secs_f64() / per_copy).ceil().max(1.0) as u32;
         work(copies);
+        let copies_after_map = (busy_after_map.as_secs_f64() / per_copy).ceil() as u32;
 
         let mut hdr = Hdr::new(&device, &blit_layout, 1.0);
         assert_eq!(hdr.luminance, 0.5, "the luminance before the first read");
@@ -5485,9 +5487,13 @@ mod tests {
             run.longest = run.longest.max(called.elapsed());
             nirender_wgpu::gpu::submit(&queue, [encoder.finish()]);
             run.calls += 1;
+            // The map is asked for at the second call: the work after it comes after the copy.
+            if run.calls == 2 && copies_after_map > 0 {
+                work(copies_after_map);
+            }
         }
         run.luminance = hdr.luminance;
-        println!("hdr read: busy {busy:?} ({copies} copies, {per_copy:.6} s each): {} calls, longest call {:?}, luminance {}", run.calls, run.longest, run.luminance);
+        println!("hdr read: busy {busy:?} before the copy and {busy_after_map:?} after the map ({copies} + {copies_after_map} copies, {per_copy:.6} s each): {} calls, longest call {:?}, luminance {}", run.calls, run.longest, run.luminance);
         run
     }
 
@@ -5497,8 +5503,22 @@ mod tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn the_hdr_read_waits_for_the_copy_while_the_gpu_is_busy() {
-        let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(100));
+        let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(100), std::time::Duration::ZERO);
         assert_eq!(run.calls, 4, "the read comes at the fourth call");
+        assert!(run.luminance > 0.99, "the read gets the white of the copy: {}", run.luminance);
+    }
+
+    /// The GPU works for about 150 ms before the copy and for 800 ms more after the call of the map.
+    /// The read waits for the submit that holds the copy, not for the work after it: the read comes
+    /// at the fourth call and no call waits long (a read that waits for the newest submit waits to the
+    /// limit). This tells a wait for the copy's submit from a wait for the newest submit, which the
+    /// tests with work before the copy only cannot. Reviewer's probe, bound 200 ms.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_hdr_read_does_not_wait_for_work_sent_after_the_map() {
+        let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(150), std::time::Duration::from_millis(800));
+        assert_eq!(run.calls, 4, "the read comes at the fourth call");
+        assert!(run.longest < std::time::Duration::from_millis(200), "no call waits for the work after the map: {:?}", run.longest);
         assert!(run.luminance > 0.99, "the read gets the white of the copy: {}", run.luminance);
     }
 
@@ -5507,7 +5527,7 @@ mod tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn a_read_that_waits_past_the_limit_comes_again_and_gets_the_pixel() {
-        let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(800));
+        let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(800), std::time::Duration::ZERO);
         assert!(run.calls > 4, "the read gave up at least once: {} calls", run.calls);
         assert!(run.longest < HDR_MOST_WAIT * 2, "no call waits much longer than the limit: {:?}", run.longest);
         assert!(run.luminance > 0.99, "the later read gets the white of the copy: {}", run.luminance);
