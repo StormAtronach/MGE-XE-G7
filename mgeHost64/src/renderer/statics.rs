@@ -251,6 +251,16 @@ struct GrassPlace {
     group: u16,
 }
 
+/// The edge of a tile of a grass cell, in units: a cell has 8 by 8 tiles.
+const GRASS_TILE: f32 = 1024.0;
+
+impl GrassPlace {
+    /// The tile of the place: its row and its column, in tiles of [`GRASS_TILE`] units.
+    fn tile(&self) -> (i32, i32) {
+        ((self.position[1] / GRASS_TILE).floor() as i32, (self.position[0] / GRASS_TILE).floor() as i32)
+    }
+}
+
 /// What a grass call sees: the eye, the view range of the game, the planes of the view, the
 /// time on the clock of the arrivals with the fade time (read once for the call), and the most
 /// draws that the call may make.
@@ -295,6 +305,14 @@ struct World {
 }
 
 impl World {
+    /// Orders the places of each grass cell by tile (row by row, and in the order of the catalog
+    /// within a tile). Called once, when the catalog is made.
+    fn order_grass_by_tile(&mut self, grass: &[GrassPlace]) {
+        for list in self.grass_cells.values_mut() {
+            list.sort_by_key(|index| (grass[*index as usize].tile(), *index));
+        }
+    }
+
     /// Chooses the grass draws for a view: each place in the cells within the range of the eye
     /// that is not hidden, is within the range and the planes, and has a subset on the GPU. The
     /// draws go to `draws`, at most `sight.limit` of them. Returns true when the limit cut the choice.
@@ -624,6 +642,9 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
                 instances.push(Instance { subset, world, center, radius, tier, group: place.vis_index });
             }
         }
+    }
+    for world in worlds.values_mut() {
+        world.order_grass_by_tile(&grass);
     }
     let groups = usage.vis_groups.len() + 1;
     Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, worlds, textures, palettes, merged_place, grass, groups, ordinary_bytes, merged_bytes })
@@ -3751,6 +3772,53 @@ mod tests {
         }
         let distinct: std::collections::HashSet<u32> = fades.values().map(|fade| fade.to_bits()).collect();
         assert!(distinct.len() > 1 && draws.len() > 100, "{} fades in {} draws", distinct.len(), draws.len());
+    }
+
+    /// The draws of a call as a sorted list of their bits: the order of the records is left out.
+    fn sorted_bits(draws: &[GrassDraw]) -> Vec<Vec<u32>> {
+        let mut bits: Vec<Vec<u32>> = draws
+            .iter()
+            .map(|draw| {
+                let mut one = vec![draw.texture, draw.subset, draw.fade.to_bits(), draw.bent.to_bits()];
+                one.extend(draw.record.iter().map(|value| value.to_bits()));
+                one
+            })
+            .collect();
+        bits.sort();
+        bits
+    }
+
+    /// A cell in tile order gives the draws of the cell in the order of the catalog, in another
+    /// order. A call that the cap does not cut has the same draws, as a sorted list.
+    #[test]
+    fn the_tile_order_keeps_the_draws_of_a_call_below_the_cap() {
+        let (mut state, mut other) = (11, 11);
+        let (world, grass) = random_world(&mut state, 4000);
+        let (mut ordered, same) = random_world(&mut other, 4000);
+        ordered.order_grass_by_tile(&same);
+        let (mut taken, mut reordered) = (0, 0);
+        for round in 0..120 {
+            let sight = random_sight(&mut state);
+            let (expected, expected_cut) = reference_choice(&world, &grass, &sight);
+            let mut draws = Vec::new();
+            let cut = ordered.choose_grass(&same, &sight, hidden_group, on_gpu, &mut draws, &mut GrassParts::default());
+            assert!(!expected_cut && !cut, "round {round} is cut by the cap");
+            assert_eq!(sorted_bits(&draws), sorted_bits(&expected), "round {round}");
+            taken += draws.len();
+            reordered += (draws != expected) as usize;
+        }
+        assert!(taken > 1000 && reordered > 20, "{taken} draws, {reordered} calls in another order");
+    }
+
+    /// The places of a cell go row by row of tiles, and by the order of the catalog in a tile.
+    #[test]
+    fn a_cell_orders_its_places_by_tile() {
+        let at = |x: f32, y: f32| GrassPlace { first_subset: 0, subset_count: 1, position: [x, y, 0.0], rotation: [0.0; 3], scale: 1.0, radius: 0.0, group: 0 };
+        let grass = vec![at(100.0, 1100.0), at(1100.0, 100.0), at(100.0, 100.0), at(1200.0, 200.0)];
+        let mut world = World::default();
+        world.grass_cells.insert((0, 0), vec![0, 1, 2, 3]);
+        world.order_grass_by_tile(&grass);
+        assert_eq!(world.grass_cells[&(0, 0)], vec![2, 1, 3, 0]);
     }
 
     /// The fade of a subset runs from 0 at its arrival to 1 after the fade time, and a fade time
