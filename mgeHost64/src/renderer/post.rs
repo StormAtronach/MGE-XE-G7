@@ -859,6 +859,9 @@ struct Hdr {
     cycle: HdrCycle,
     /// Set by the callback of the map, from the call that asks for the map to the call that reads.
     mapped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The newest submit at the call that asks for the map: it holds the commands of the copy,
+    /// and the read waits for it, not for the submits of the frames after it.
+    copy_submission: Option<wgpu::SubmissionIndex>,
     /// `render.hdr_reaction_time`, seconds.
     reaction: f32,
 }
@@ -892,6 +895,20 @@ impl HdrCycle {
         self.next = (self.next + 1) % HDR_CYCLE.len();
         action
     }
+
+    /// The call that was just stepped comes again at the next call.
+    fn repeat(&mut self) {
+        self.next = (self.next + HDR_CYCLE.len() - 1) % HDR_CYCLE.len();
+    }
+}
+
+/// The longest wait of the read for the GPU. A GPU that is slower than this (a hang) does not
+/// hold the helper: the read comes again at the next call.
+const HDR_MOST_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The wait of the read: until the submit `copy` has run, for at most [`HDR_MOST_WAIT`].
+fn hdr_wait(copy: Option<wgpu::SubmissionIndex>) -> wgpu::PollType {
+    wgpu::PollType::Wait { submission_index: copy, timeout: Some(HDR_MOST_WAIT) }
 }
 
 /// The longest step of the point, in seconds. A step above it is a load or a jump of the clock,
@@ -930,7 +947,7 @@ impl Hdr {
         let levels = (0..10).map(|level| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: level, mip_level_count: Some(1), ..Default::default() })).collect();
         let pipeline = full_screen_pipeline(device, "post hdr", BLIT_SHADER, blit_layout, wgpu::TextureFormat::Rgba8Unorm);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post hdr"), size: 4, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        Hdr { texture, levels, pipeline, buffer, luminance: 0.5, point: [1.0; 4], clock: HdrClock::default(), cycle: HdrCycle::default(), mapped: None, reaction: reaction.clamp(0.01, 30.0) }
+        Hdr { texture, levels, pipeline, buffer, luminance: 0.5, point: [1.0; 4], clock: HdrClock::default(), cycle: HdrCycle::default(), mapped: None, copy_submission: None, reaction: reaction.clamp(0.01, 30.0) }
     }
 
     /// One frame of the measure, at the time `time` of the clock of the game. Returns the
@@ -970,15 +987,18 @@ impl Hdr {
                     }
                 });
                 self.mapped = Some(ready);
+                self.copy_submission = nirender_wgpu::gpu::last_submission();
             }
             HdrAction::Wait => {}
             HdrAction::Read => {
                 // The read is at this call. When the GPU has not finished the copy, the call waits
-                // for it, as `LockRect` of Direct3D 9 does, so the value does not depend on the
-                // progress of the GPU.
+                // for the submit that holds it, as `LockRect` of Direct3D 9 does, so the value does
+                // not depend on the progress of the GPU. The wait has a limit: when it ends before
+                // the copy, the map stays and the read comes again at the next call (the buffer
+                // is not copied into while the map is open).
                 if let Some(ready) = self.mapped.take() {
-                    if !ready.load(Ordering::Relaxed) {
-                        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                    if !ready.load(Ordering::Relaxed) && !nirender_wgpu::gpu::lost() {
+                        let _ = device.poll(hdr_wait(self.copy_submission.clone()));
                     }
                     if ready.load(Ordering::Relaxed) {
                         if let Ok(pixel) = self.buffer.slice(..).get_mapped_range() {
@@ -986,6 +1006,10 @@ impl Hdr {
                             self.luminance = 0.27 * r + 0.67 * g + 0.06 * b;
                         }
                         self.buffer.unmap();
+                        self.copy_submission = None;
+                    } else {
+                        self.mapped = Some(ready);
+                        self.cycle.repeat();
                     }
                 }
             }
@@ -5376,6 +5400,141 @@ mod tests {
         let actions: Vec<HdrAction> = (0..9).map(|_| cycle.step()).collect();
         use HdrAction::*;
         assert_eq!(actions, vec![Copy, Map, Wait, Read, Copy, Map, Wait, Read, Copy]);
+    }
+
+    /// A read whose wait ended before the copy comes again at the next call, then the cycle goes on.
+    #[test]
+    fn a_read_that_timed_out_comes_again() {
+        let mut cycle = HdrCycle::default();
+        let mut actions: Vec<HdrAction> = (0..4).map(|_| cycle.step()).collect();
+        cycle.repeat();
+        actions.extend((0..3).map(|_| cycle.step()));
+        use HdrAction::*;
+        assert_eq!(actions, vec![Copy, Map, Wait, Read, Read, Copy, Map]);
+    }
+
+    /// The wait of the read names the submit of the copy and has a time limit.
+    #[test]
+    fn the_hdr_wait_has_a_limit_and_names_a_submit() {
+        match hdr_wait(None) {
+            wgpu::PollType::Wait { submission_index: None, timeout: Some(limit) } => assert_eq!(limit, HDR_MOST_WAIT),
+            _ => panic!("a wait with a time limit"),
+        }
+    }
+
+    /// What a run of the measure on a real device gave.
+    struct HdrRun {
+        /// The calls of `Hdr::frame` until the luminance was read.
+        calls: u32,
+        /// The longest call.
+        longest: std::time::Duration,
+        luminance: f32,
+    }
+
+    /// Runs the measure on a real device, on a white picture, while the GPU works for about
+    /// `busy` before the copy and for about `busy_after_map` more from the call after the map. Nothing
+    /// else polls the device. Stops at the first read, or at 40 calls.
+    fn hdr_run_with_busy_gpu(busy: std::time::Duration, busy_after_map: std::time::Duration) -> HdrRun {
+        // One GPU test at a time: each makes a device, and `gpu::last_submission` is shared by the
+        // process (production has one device). A test that fails does not stop the next one.
+        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("test blit"),
+            entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
+        });
+        let linear = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        let picture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test picture"),
+            size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = picture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Work for the GPU: copies of 128 MB, as many as take about `busy`. One timed run of 100 copies
+        // gives the time of a copy.
+        let size = 128 << 20;
+        let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+        let from = device.create_buffer(&wgpu::BufferDescriptor { label: Some("test busy from"), size, usage, mapped_at_creation: false });
+        let to = device.create_buffer(&wgpu::BufferDescriptor { label: Some("test busy to"), size, usage, mapped_at_creation: false });
+        let work = |copies: u32| {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            for _ in 0..copies {
+                encoder.copy_buffer_to_buffer(&from, 0, &to, 0, size);
+            }
+            nirender_wgpu::gpu::submit(&queue, [encoder.finish()])
+        };
+        let timed = std::time::Instant::now();
+        let index = work(100);
+        let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None });
+        let per_copy = timed.elapsed().as_secs_f64() / 100.0;
+        let copies = (busy.as_secs_f64() / per_copy).ceil().max(1.0) as u32;
+        work(copies);
+        let copies_after_map = (busy_after_map.as_secs_f64() / per_copy).ceil() as u32;
+
+        let mut hdr = Hdr::new(&device, &blit_layout, 1.0);
+        assert_eq!(hdr.luminance, 0.5, "the luminance before the first read");
+        let mut run = HdrRun { calls: 0, longest: std::time::Duration::ZERO, luminance: 0.5 };
+        while hdr.luminance == 0.5 && run.calls < 40 {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            drop(full_screen_pass(&mut encoder, &view, wgpu::LoadOp::Clear(wgpu::Color::WHITE)));
+            let called = std::time::Instant::now();
+            hdr.frame(&device, &mut encoder, &view, &blit_layout, &linear, 0, run.calls as f32 * 0.016);
+            run.longest = run.longest.max(called.elapsed());
+            nirender_wgpu::gpu::submit(&queue, [encoder.finish()]);
+            run.calls += 1;
+            // The map is asked for at the second call: the work after it comes after the copy.
+            if run.calls == 2 && copies_after_map > 0 {
+                work(copies_after_map);
+            }
+        }
+        run.luminance = hdr.luminance;
+        println!("hdr read: busy {busy:?} before the copy and {busy_after_map:?} after the map ({copies} + {copies_after_map} copies, {per_copy:.6} s each): {} calls, longest call {:?}, luminance {}", run.calls, run.longest, run.luminance);
+        run
+    }
+
+    /// The GPU is busy for about 100 ms before the copy, less than the limit: the read at the
+    /// fourth call waits for the copy and gets its pixel (nothing else polls the device). Needs a
+    /// GPU: `cargo test -p mgeHost64 --release -- --ignored --nocapture the_hdr_read`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_hdr_read_waits_for_the_copy_while_the_gpu_is_busy() {
+        let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(100), std::time::Duration::ZERO);
+        assert_eq!(run.calls, 4, "the read comes at the fourth call");
+        assert!(run.luminance > 0.99, "the read gets the white of the copy: {}", run.luminance);
+    }
+
+    /// The GPU works for about 150 ms before the copy and for 800 ms more after the call of the map.
+    /// The read waits for the submit that holds the copy, not for the work after it: the read comes
+    /// at the fourth call and no call waits long (a read that waits for the newest submit waits to the
+    /// limit). This tells a wait for the copy's submit from a wait for the newest submit, which the
+    /// tests with work before the copy only cannot. Reviewer's probe, bound 200 ms.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_hdr_read_does_not_wait_for_work_sent_after_the_map() {
+        let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(150), std::time::Duration::from_millis(800));
+        assert_eq!(run.calls, 4, "the read comes at the fourth call");
+        assert!(run.longest < std::time::Duration::from_millis(200), "no call waits for the work after the map: {:?}", run.longest);
+        assert!(run.luminance > 0.99, "the read gets the white of the copy: {}", run.luminance);
+    }
+
+    /// The GPU is busy for about 800 ms, more than the limit: the first read gives up, the
+    /// map stays, and a later call reads the same pixel.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_read_that_waits_past_the_limit_comes_again_and_gets_the_pixel() {
+        let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(800), std::time::Duration::ZERO);
+        assert!(run.calls > 4, "the read gave up at least once: {} calls", run.calls);
+        assert!(run.longest < HDR_MOST_WAIT * 2, "no call waits much longer than the limit: {:?}", run.longest);
+        assert!(run.luminance > 0.99, "the later read gets the white of the copy: {}", run.luminance);
     }
 
     const FILE: &str = "// A shader.\n#define N 16 // samples\nstatic const float strength = 1.8; // more is more\nfloat fov;\nfloat4 pass(float2 t : TEXCOORD0) : COLOR0 { return strength * N; }\ntechnique T0 < string MGEinterface = \"MGE XE 0\"; string category = \"scene\"; int priorityAdjust = -10000; > { pass { PixelShader = compile ps_3_0 pass(); } }\n";
