@@ -227,15 +227,21 @@ pub fn duplicate_to_process(source: HANDLE, target_process: HANDLE) -> Result<HA
     Ok(duplicate)
 }
 
-/// Errors are ignored during best-effort remote cleanup.
+/// Closes the handle `remote` in the process `target_process`. Errors are ignored during
+/// best-effort remote cleanup.
+///
+/// This is the call that the `DuplicateHandle` page of Microsoft Learn gives for closing a
+/// duplicated handle from the source process: the source process is the process that received the
+/// duplicate, the source handle is the duplicate, the target process is NULL, and the option is
+/// `DUPLICATE_CLOSE_SOURCE`. With a target process the call would make a new handle in it for each
+/// close, and nothing would close that handle.
 pub fn close_remote_handle(target_process: HANDLE, remote: u32) {
-    let mut dummy = null_mut();
     unsafe {
         DuplicateHandle(
             target_process,
             remote as usize as HANDLE,
-            target_process,
-            &raw mut dummy,
+            null_mut(),
+            null_mut(),
             0,
             FALSE,
             DUPLICATE_CLOSE_SOURCE,
@@ -304,11 +310,77 @@ impl Drop for MappedView {
 
 #[cfg(test)]
 mod tests {
+    use windows_sys::Win32::System::Threading::{GetProcessHandleCount, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION};
+
     use super::*;
 
     #[test]
     fn parses_pointer_style_handles() {
         assert_eq!(parse_pointer("0x1234").unwrap(), 0x1234);
         assert_eq!(parse_pointer("00000000000000FF").unwrap(), 0xFF);
+    }
+
+    /// A child process that waits and does nothing else: a target process for duplicates, whose
+    /// handle count no other test changes.
+    struct IdleChild(std::process::Child);
+
+    impl Drop for IdleChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn handle_count(process: HANDLE) -> u32 {
+        let mut count = 0;
+        assert_ne!(unsafe { GetProcessHandleCount(process, &raw mut count) }, 0, "GetProcessHandleCount failed");
+        count
+    }
+
+    /// The handle count of `process` once it has stopped changing (a new process opens handles while
+    /// it starts).
+    fn settled_handle_count(process: HANDLE) -> u32 {
+        let mut last = handle_count(process);
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let now = handle_count(process);
+            if now == last {
+                return now;
+            }
+            last = now;
+        }
+        panic!("the handle count of the child does not settle");
+    }
+
+    /// Closing a duplicate in another process leaves no handle behind in it. The count of the child
+    /// first rises by the number of duplicates (so the count can show a leak), then returns to the
+    /// start after the closes. `DuplicateHandle` with a target pointer and the close-source option
+    /// makes one more handle in the target for each close.
+    #[test]
+    fn closing_remote_handles_leaves_no_handle_in_the_target_process() {
+        const DUPLICATES: u32 = 20;
+        let child = IdleChild(
+            std::process::Command::new("ping")
+                .args(["-n", "60", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("the ping command starts"),
+        );
+        let process = OwnedHandle(unsafe { OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, child.0.id()) });
+        assert!(!process.raw().is_null(), "OpenProcess failed");
+        let start = settled_handle_count(process.raw());
+
+        let duplicates: Vec<u32> = (0..DUPLICATES)
+            .map(|_| {
+                let event = OwnedHandle(create_auto_reset_event().unwrap());
+                duplicate_to_process(event.raw(), process.raw()).unwrap() as usize as u32
+            })
+            .collect();
+        assert_eq!(handle_count(process.raw()), start + DUPLICATES, "the duplicates are in the child");
+
+        for remote in duplicates {
+            close_remote_handle(process.raw(), remote);
+        }
+        assert_eq!(handle_count(process.raw()), start, "the closes leave no handle in the child");
     }
 }
