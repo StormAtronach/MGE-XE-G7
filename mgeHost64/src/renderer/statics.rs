@@ -3858,15 +3858,18 @@ mod tests {
         ((*state >> 40) as f32) / (1u64 << 24) as f32
     }
 
-    /// A world of random grass places in the cells around the cell (0, 0), with the places of
-    /// each cell in the order of the catalog.
-    fn random_world(state: &mut u64, places: usize) -> (World, Vec<GrassPlace>) {
-        let mut world = World::default();
+    /// The grass places of the cells, as lists of indexes into the catalog.
+    type CellLists = std::collections::HashMap<(i32, i32), Vec<u32>>;
+
+    /// Random grass places in the cells around the cell (0, 0), with the places of each cell in
+    /// the order of the catalog.
+    fn random_catalog(state: &mut u64, places: usize) -> (CellLists, Vec<GrassPlace>) {
+        let mut lists = CellLists::new();
         let mut grass = Vec::new();
         for _ in 0..places {
             let position = [lcg(state) * 3.0 * CELL - CELL, lcg(state) * 3.0 * CELL - CELL, lcg(state) * 2000.0 - 500.0];
             let cell = ((position[0] / CELL).floor() as i32, (position[1] / CELL).floor() as i32);
-            world.grass_cells.entry(cell).or_default().places.push(grass.len() as u32);
+            lists.entry(cell).or_default().push(grass.len() as u32);
             grass.push(GrassPlace {
                 first_subset: (lcg(state) * 7.0) as u32,
                 subset_count: 1 + (lcg(state) * 2.0) as u32,
@@ -3877,8 +3880,29 @@ mod tests {
                 group: (lcg(state) * 5.0) as u16,
             });
         }
-        world.make_grass_tiles(&grass);
-        (world, grass)
+        (lists, grass)
+    }
+
+    /// The world with the cells of `lists`, made as the catalog makes it: the places of each cell
+    /// in tile order, with the tiles.
+    fn world_of(lists: &CellLists, grass: &[GrassPlace]) -> World {
+        let mut world = World::default();
+        for (cell, list) in lists {
+            world.grass_cells.entry(*cell).or_default().places = list.clone();
+        }
+        world.make_grass_tiles(grass);
+        world
+    }
+
+    /// A world of random grass places, made as the catalog makes it.
+    fn random_world(state: &mut u64, places: usize) -> (World, Vec<GrassPlace>) {
+        let (lists, grass) = random_catalog(state, places);
+        (world_of(&lists, &grass), grass)
+    }
+
+    /// The lists of the places of the cells of a world, in the order of the cells.
+    fn lists_of(world: &World) -> CellLists {
+        world.grass_cells.iter().map(|(cell, grass_cell)| (*cell, grass_cell.places.clone())).collect()
     }
 
     /// A view from a random eye with random planes.
@@ -3901,17 +3925,17 @@ mod tests {
         group == 3
     }
 
-    /// The choice of the grass with no tile skipped: each place of the cells within reach, in the
-    /// order of the cell, tested one by one, with its matrix made when it is taken.
-    fn reference_choice(world: &World, grass: &[GrassPlace], sight: &GrassSight) -> (Vec<GrassDraw>, bool) {
+    /// The choice of the grass of 58fe62e: each place of the cells within reach, in the order of
+    /// the lists, tested one by one, with its matrix made when it is taken.
+    fn reference_choice(lists: &CellLists, grass: &[GrassPlace], sight: &GrassSight) -> (Vec<GrassDraw>, bool) {
         let mut draws: Vec<GrassDraw> = Vec::new();
         let eye = sight.eye;
         let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
         let cells = (sight.range / CELL).ceil() as i32;
         for y in cell_y - cells..=cell_y + cells {
             for x in cell_x - cells..=cell_x + cells {
-                let Some(cell) = world.grass_cells.get(&(x, y)) else { continue };
-                for index in &cell.places {
+                let Some(list) = lists.get(&(x, y)) else { continue };
+                for index in list {
                     let place = &grass[*index as usize];
                     if hidden_group(place.group) {
                         continue;
@@ -3941,16 +3965,19 @@ mod tests {
     }
 
     /// World::choose_grass takes the places that the reference takes, with the same records, over
-    /// a random world and many views, with the cap of the call and with a small one.
+    /// a random world and many views, with the cap of the call and with a small one. The reference
+    /// walks the lists of the cells in tile order, so the cap is compared against tile order; the
+    /// test of the tile order below compares with the order of the catalog, below the cap.
     #[test]
     fn the_grass_choice_equals_the_reference() {
         let mut state = 11;
         let (world, grass) = random_world(&mut state, 4000);
+        let tile_lists = lists_of(&world);
         let mut kept = GrassKept::default();
         let (mut taken, mut cuts) = (0, 0);
         for round in 0..120 {
             let sight = GrassSight { limit: if round % 3 == 0 { 40 } else { GRASS_RECORDS }, ..random_sight(&mut state) };
-            let (expected, expected_cut) = reference_choice(&world, &grass, &sight);
+            let (expected, expected_cut) = reference_choice(&tile_lists, &grass, &sight);
             let mut draws = Vec::new();
             let mut counts = GrassParts::default();
             let cut = world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut counts, kept.begin(b""));
@@ -3983,17 +4010,90 @@ mod tests {
         assert!(distinct.len() > 1 && draws.len() > 100, "{} fades in {} draws", distinct.len(), draws.len());
     }
 
+    /// The draws of a call as a sorted list of their bits: the order of the records is left out.
+    fn sorted_bits(draws: &[GrassDraw]) -> Vec<Vec<u32>> {
+        let mut bits: Vec<Vec<u32>> = draws
+            .iter()
+            .map(|draw| {
+                let mut one = vec![draw.texture, draw.subset, draw.fade.to_bits(), draw.bent.to_bits()];
+                one.extend(draw.record.iter().map(|value| value.to_bits()));
+                one
+            })
+            .collect();
+        bits.sort();
+        bits
+    }
+
+    /// Restores the test of c5ba423 that 5efb335 dropped. A world made as the catalog makes it, with
+    /// the cells in tile order and the tiles skipped, gives the draws of the walk over the cells in
+    /// the order of the catalog, as a sorted list. No call is cut by the cap: at the cap the new
+    /// order keeps other places, by design. Some calls come in another order, so that the test
+    /// can fail.
+    #[test]
+    fn the_tile_order_keeps_the_draws_of_a_call_below_the_cap() {
+        let mut state = 11;
+        let (catalog_lists, grass) = random_catalog(&mut state, 4000);
+        let world = world_of(&catalog_lists, &grass);
+        let (mut taken, mut reordered) = (0, 0);
+        for round in 0..120 {
+            let sight = random_sight(&mut state);
+            let (expected, expected_cut) = reference_choice(&catalog_lists, &grass, &sight);
+            let mut draws = Vec::new();
+            let cut = world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut GrassParts::default(), GrassKept::default().begin(b""));
+            assert!(!expected_cut && !cut, "round {round} is cut by the cap");
+            assert_eq!(sorted_bits(&draws), sorted_bits(&expected), "round {round}");
+            taken += draws.len();
+            reordered += (draws != expected) as usize;
+        }
+        assert!(taken > 1000 && reordered > 20, "{taken} draws, {reordered} calls in another order");
+    }
+
+    /// The cells of a world made as the catalog makes it hold the same places as the lists of the
+    /// catalog, once each, and the tiles cover each list once: every place of a tile is in the tile
+    /// (its box and its radius) and in one tile of the grid.
+    #[test]
+    fn make_tiles_keeps_every_place_of_the_catalog() {
+        let mut state = 31;
+        let (catalog_lists, grass) = random_catalog(&mut state, 4000);
+        let world = world_of(&catalog_lists, &grass);
+        assert_eq!(world.grass_cells.len(), catalog_lists.len());
+        let mut biggest = 0;
+        for (key, list) in &catalog_lists {
+            let cell = &world.grass_cells[key];
+            let (mut kept, mut expected) = (cell.places.clone(), list.clone());
+            kept.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(kept, expected, "cell {key:?}");
+            let mut next = 0;
+            for tile in &cell.tiles {
+                assert_eq!((tile.first as usize, tile.count > 0), (next, true), "cell {key:?}");
+                let first = grass[cell.places[next] as usize].tile();
+                for index in &cell.places[tile.range()] {
+                    let place = &grass[*index as usize];
+                    assert_eq!(place.tile(), first);
+                    assert!(place.radius <= tile.radius);
+                    assert!((0..3).all(|axis| tile.min[axis] <= place.position[axis] && place.position[axis] <= tile.max[axis]));
+                }
+                next += tile.count as usize;
+            }
+            assert_eq!(next, cell.places.len(), "cell {key:?}");
+            biggest = biggest.max(list.len());
+        }
+        assert!(biggest > 100, "the biggest cell has {biggest} places");
+    }
+
     /// The tile skip changes nothing: the draws are those of the walk of every place of the cell,
     /// in the same order. Some rounds use a small cap, so that the cut falls in the middle of a walk.
     #[test]
     fn the_tile_skip_keeps_the_draws_and_their_order() {
         let mut state = 23;
         let (world, grass) = random_world(&mut state, 4000);
+        let tile_lists = lists_of(&world);
         let mut kept = GrassKept::default();
         let (mut skipped, mut cuts, mut taken) = (0, 0, 0);
         for round in 0..200 {
             let sight = GrassSight { limit: if round % 2 == 0 { 25 } else { GRASS_RECORDS }, ..random_sight(&mut state) };
-            let (expected, expected_cut) = reference_choice(&world, &grass, &sight);
+            let (expected, expected_cut) = reference_choice(&tile_lists, &grass, &sight);
             let mut draws = Vec::new();
             let mut counts = GrassParts::default();
             let cut = world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut counts, kept.begin(b""));
