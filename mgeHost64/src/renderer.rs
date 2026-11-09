@@ -461,6 +461,107 @@ struct FogRanges {
     near_end: f32,
 }
 
+/// The light of the game's world draw that the land, the statics, the grass and the post
+/// shaders take: the sun, if the draw has one, and the ambient light. The values of
+/// [`SceneView`].
+#[derive(Clone, Copy)]
+struct SceneLight {
+    sun_direction: Option<[f32; 3]>,
+    sun_color: [f32; 3],
+    sun_ambient: [f32; 3],
+    ambient: [f32; 3],
+}
+
+impl SceneLight {
+    fn of(scene: &SceneView) -> Self {
+        Self {
+            sun_direction: scene.sun_direction,
+            sun_color: scene.sun_color,
+            sun_ambient: scene.sun_ambient,
+            ambient: scene.ambient,
+        }
+    }
+
+    /// The ambient light: the ambient sum of the scene and the ambient colour of the sun,
+    /// times `multiplier`. A draw without a sun has a sun ambient of 0.
+    fn ambient(&self, multiplier: f32) -> [f32; 3] {
+        core::array::from_fn(|i| (self.ambient[i] + self.sun_ambient[i]) * multiplier)
+    }
+
+    /// The sun colour and the ambient light of the land and the statics. Without a sun in the
+    /// draw, the sun colour is 0 and the ambient light is that of the scene only.
+    fn land(&self, sun_mult: f32, ambient_mult: f32) -> ([f32; 3], [f32; 3]) {
+        let sun_color = match self.sun_direction {
+            Some(_) => self.sun_color.map(|c| c * sun_mult),
+            None => [0.0; 3],
+        };
+        (sun_color, self.ambient(ambient_mult))
+    }
+}
+
+#[cfg(test)]
+mod scene_light_tests {
+    use super::*;
+
+    // Binary fractions: the sums and products below are exact in f32.
+    const SUN_COLOR: [f32; 3] = [0.75, 0.625, 0.5];
+    const SUN_AMBIENT: [f32; 3] = [0.25, 0.375, 0.5];
+
+    /// A draw with the sun on: the sun colour times its multiplier, and the scene's ambient sum
+    /// plus the sun's ambient, times the ambient multiplier.
+    #[test]
+    fn with_a_sun_the_land_has_the_sun_and_both_ambient_parts() {
+        let light = SceneLight {
+            sun_direction: Some([0.0, 0.6, -0.8]),
+            sun_color: SUN_COLOR,
+            sun_ambient: SUN_AMBIENT,
+            ambient: [0.125; 3],
+        };
+        let (sun_color, ambient) = light.land(2.0, 0.5);
+        assert_eq!(sun_color, [1.5, 1.25, 1.0]);
+        assert_eq!(ambient, [0.1875, 0.25, 0.3125]);
+    }
+
+    /// A draw with the sun off and no ambient light (W23, the set s2 outdoors): the land is
+    /// black before the fog, as the engine's own shapes are. Before, its ambient was 1.
+    #[test]
+    fn without_a_sun_and_without_an_ambient_light_the_land_has_no_light() {
+        let light = SceneLight {
+            sun_direction: None,
+            sun_color: [0.0; 3],
+            sun_ambient: [0.0; 3],
+            ambient: [0.0; 3],
+        };
+        assert_eq!(light.land(1.0, 1.0), ([0.0; 3], [0.0; 3]));
+    }
+
+    /// A draw with the sun off and an ambient light: the land has that ambient light times the
+    /// multiplier, and no sun colour, also when the scene still has a sun colour.
+    #[test]
+    fn without_a_sun_the_land_has_the_ambient_light_of_the_scene_only() {
+        let light = SceneLight {
+            sun_direction: None,
+            sun_color: SUN_COLOR,
+            sun_ambient: [0.0; 3],
+            ambient: [0.25, 0.5, 0.75],
+        };
+        assert_eq!(light.land(1.0, 2.0), ([0.0; 3], [0.5, 1.0, 1.5]));
+    }
+
+    /// The grass and the post shaders take the same ambient light as the land.
+    #[test]
+    fn the_ambient_light_is_the_same_for_the_land_and_the_grass() {
+        let light = SceneLight {
+            sun_direction: Some([0.0, 0.0, -1.0]),
+            sun_color: SUN_COLOR,
+            sun_ambient: SUN_AMBIENT,
+            ambient: [0.125, 0.25, 0.375],
+        };
+        assert_eq!(light.land(1.0, 0.75).1, light.ambient(0.75));
+        assert_eq!(light.ambient(1.0), [0.375, 0.625, 0.875]);
+    }
+}
+
 /// The time of the animated textures of the distant statics: the time of the simulation of
 /// the game, as `ehTime` of the Direct3D 9 path, which stops in a menu; the time of this
 /// program before the first environment record.
@@ -3536,7 +3637,10 @@ impl DistantLand {
             eyepos: [eye[0], eye[1], eye[2], fov],
             sunvec: [sunvec[0], sunvec[1], sunvec[2], e.time],
             suncol: [scene.sun_color[0], scene.sun_color[1], scene.sun_color[2], if e.has_water != 0 { e.surface_level() } else { -1.0e9 }],
-            sunamb: [scene.sun_ambient[0] + scene.ambient[0], scene.sun_ambient[1] + scene.ambient[1], scene.sun_ambient[2] + scene.ambient[2], if like_exterior { 0.0 } else { 1.0 }],
+            sunamb: {
+                let ambient = SceneLight::of(scene).ambient(1.0);
+                [ambient[0], ambient[1], ambient[2], if like_exterior { 0.0 } else { 1.0 }]
+            },
             sunpos: [sun_pos[0], sun_pos[1], sun_pos[2], if underwater { 1.0 } else { 0.0 }],
             hdr: [1.0; 4],
             fogcol: [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], if exponential { fog_exp_start } else { fog_start }],
@@ -3677,12 +3781,7 @@ impl DistantLand {
             None => ([0.0, 1.0, self.settings_fog.0, self.settings_fog.1], false, 1.0, 1.0),
         };
         let sun = scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]);
-        let (sun_color, ambient) = match scene.sun_direction {
-            // The ambient light of the terrain shader is that of the sun and that of the scene.
-            Some(_) => (scene.sun_color.map(|c| c * sun_mult), core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult)),
-            // Without a sun in the draw of the game: the colour of the terrain as it is.
-            None => ([0.0; 3], [1.0; 3]),
-        };
+        let (sun_color, ambient) = SceneLight::of(scene).land(sun_mult, ambient_mult);
         // The far fog colour is that of the weather. The fog colour of the game is the near
         // one: MGE XE changes it for the scattering.
         let mut fog_color = scene.fog_color;
@@ -4162,7 +4261,7 @@ impl DistantLand {
         // them to SunCol and SunAmb only when it is; the shadow of the ground (`shadow_sun`)
         // takes the same sun.
         let (sun_mult, ambient_mult) = self.shade.map_or((1.0, 1.0), |p| (p.sun, p.ambient));
-        let ambient: [f32; 3] = core::array::from_fn(|i| (scene.ambient[i] + scene.sun_ambient[i]) * ambient_mult);
+        let ambient = SceneLight::of(scene).ambient(ambient_mult);
         statics::GrassFrame {
             // The view range of the game is the end of the grass. Without it from the game,
             // 7168 units: the top of the game's "Render Distance" (2500 to 7168, default 4834),
