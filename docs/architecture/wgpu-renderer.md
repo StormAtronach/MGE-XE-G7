@@ -196,8 +196,8 @@ flowchart TD
 | caustics, far water, volumes | `draw_held` | game pass | held shapes or far water |
 | post | `post` | own passes | chain not empty |
 
-The host asks for a new game pass after every copy, target change or extension pass; the pass begins at its first draw, and a pass asked for that did not begin gives its clears to the next one on the same targets (nirender d057471; `MGE_XE_LAZY_PASS=0` for the old passes). A pass that begins calls
-`BoundGroups::forget` there, so groups 0 to 2 of the game draws are set again. The game's draws before the world and after the post chain (the sky, the interface) bind a small group 1 of their own textures, with copies of their records whose slots name it (nirender c11bbef; `MGE_XE_PASS_GROUPS=0` for the whole arrays): wgpu does work for each texture of a group at its first bind in a pass.
+The host asks for a new game pass after every copy, target change or extension pass; the pass begins at its first draw, and a pass asked for that did not begin gives its clears to the next one on the same targets (nirender d057471). A pass that begins calls
+`BoundGroups::forget` there, so groups 0 to 2 of the game draws are set again. The game's draws before the world and after the post chain (the sky, the interface) bind a small group 1 of their own textures, with copies of their records whose slots name it (nirender c11bbef): wgpu does work for each texture of a group at its first bind in a pass.
 
 ## 4. Pipelines and bind groups
 
@@ -266,11 +266,8 @@ steps retired at the review of checkpoint 4, nirender 6c8586d): `MGE_XE_RETAINED
 helper ignores the instance records), `MGE_XE_CLUSTERS=0/1` (overrides
 `distant_land.clustered_lights`), `MGE_XE_INDIRECT=0`, `MGE_XE_ARRAY_CAP` and
 `MGE_XE_RECORD_LIMIT` (test limits). In the plugin:
-`NIRENDER_RETAINED=off|dual|gpu` (default gpu), `NIRENDER_LANDSCAPE=0`,
-`NIRENDER_ACTORS=0`, `NIRENDER_ANIMATED=0` (that class stays on the engine's path),
-`NIRENDER_SKIP=0` (the engine displays the retained shapes too), `NIRENDER_PARTICLES=off`
-(the particle systems stay on the engine's path; the table takes them by default since
-nirender 978c0df), `NIRENDER_PORT_TIMING=1` (times each live port call). MSOC is not
+`NIRENDER_RETAINED=off|dual|gpu` (default gpu), `NIRENDER_PORT_TIMING=1` (times each
+live port call). MSOC is not
 supported with this renderer (RENDERER.md).
 
 **"particle quads"** (compute, `host/src/particle_quads.rs`): the particles of a draw (20
@@ -281,7 +278,6 @@ the camera's right plus up and up minus right, times the radius; the first parti
 count, the first vertex). Workgroups of 64. Each system
 gets its own ranges in the frame, also a system drawn twice. The pass goes into the frame's
 commands before its draws; the draws then take the path of any shape.
-`MGE_XE_PARTICLE_QUADS=cpu` makes the corners on the CPU instead.
 
 **"screen draw"**: film frames and screen-space draws. Group 0: texture, sampler (F); a new
 group per draw. Depth test always, no depth write.
