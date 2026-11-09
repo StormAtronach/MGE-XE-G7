@@ -960,7 +960,7 @@ pub(super) fn flat_wave_texture(scene: &SceneView) -> wgpu::TextureView {
 /// - The ambient light of the device sums only the ambient lights
 ///   (`NiDX8LightManager::updateLights` 0x6BB6C0). The sun light's own ambient (the cell's
 ///   ambient colour) is not part of it, and Direct3D 9 does not add it.
-fn fill_colour(horizon: bool, fog_color: [f32; 4], sun_color: [f32; 3], ambient: [f32; 3]) -> [f32; 3] {
+pub(super) fn fill_colour(horizon: bool, fog_color: [f32; 4], sun_color: [f32; 3], ambient: [f32; 3]) -> [f32; 3] {
     if horizon {
         return [fog_color[0], fog_color[1], fog_color[2]];
     }

@@ -3690,11 +3690,12 @@ impl DistantLand {
     /// Returns the number drawn ([`Water::draw_volumes`]).
     fn draw_surfaces(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &WaterFrame, held: &[nirender_wgpu::HeldDraw], far: &[water::FarWater], before_plane: bool) -> usize {
         // What a surface reflects in place of the sky in an interior: the light of the room,
-        // as the reflection of the water of the cell has it.
+        // as the reflection of the water of the cell has it ([`water::fill_colour`]; the
+        // Direct3D 9 path takes the same sum for the volumes, renderwater.cpp).
         let sky = if self.like_exterior {
             [0.0; 4]
         } else {
-            let light: [f32; 3] = core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0));
+            let light = water::fill_colour(false, scene.fog_color, scene.sun_color, scene.ambient);
             [light[0], light[1], light[2], 1.0]
         };
         let look = water::VolumeLook {
