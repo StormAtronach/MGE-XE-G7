@@ -426,6 +426,10 @@ struct Camera : AVObject {
     Point4 port;               // 0x118
     Pointer<Node> scene;       // 0x128
     char pad_12C[0xB4];        // 0x12C
+
+    // NiCamera::UpdateWorldData (0x6CC940): the world transform from the parent, the axes, and
+    // the six culling planes from the frustum. Defined in mge/camerafov.cpp.
+    void updateWorldData();
 };
 static_assert(sizeof(Camera) == 0x1E0, "NI::Camera failed size validation");
 static_assert(offsetof(Camera, worldUp) == 0xE8, "NI::Camera::worldUp failed offset validation");

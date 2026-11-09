@@ -140,6 +140,7 @@ inline constexpr uintptr_t patch_lightAttachHelper[2] = {
 //-----------------------------------------------------------------------------
 
 inline constexpr uintptr_t NI_Camera_click = 0x6CC7B0;
+inline constexpr uintptr_t NI_Camera_updateWorldData = 0x6CC940;
 inline constexpr uintptr_t game_updateDynamicLightingForPointLight = 0x4D2C20;
 inline constexpr uintptr_t game_updateLightHelper2 = 0x4D32F0;
 inline constexpr uintptr_t WorldController_resolveScriptInternalIDs = 0x40FC40;

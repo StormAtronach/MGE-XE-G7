@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "mgeversion.h"
+#include "camerafov.h"
 #include "camerarelative.h"
 #include "configuration.h"
 #include "distantland.h"
@@ -539,7 +540,8 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 
     if (rendertargetNormal) {
         if (a == D3DTS_VIEW) {
-            isMainView = !detectMenu(b);
+            // A view of the world: not a menu view, and drawn by a camera that follows MGE XE.
+            isMainView = !detectMenu(b) && CameraFov::lastClickFollows();
 
             if (CameraRelative::active()) {
                 // The scene was chosen by camera identity; the device view has to
@@ -1167,11 +1169,10 @@ namespace Deviceless {
     static UINT waitSerial = 0;
     // The frames that the game showed: a wait counts the frames of its loading bar.
     static unsigned presentCount = 0;
-    // The views of the player: the world camera's scenes, the first-person arms and the
-    // shadow camera's scenes (the game draws the actors that it shadows through the shadow
-    // camera, in colour), as the plugin's scene packet names them from the camera object
-    // (MGE_StreamSceneBegin). They take the camera effects and the zoom, as every view of the
-    // Direct3D 9 path that is not the menu.
+    // The views of the player: the scenes of a camera that follows MGE XE's field of view (CameraFov):
+    // the world camera, the first-person arms and the shadow camera (the game draws the actors that
+    // it shadows through the shadow camera, in colour). The plugin's scene packet names the camera
+    // object (MGE_StreamSceneBegin). These views take the camera effects and the zoom.
     static bool mainView = false;
     // The world position of the world camera and the direction it looks in, from the camera
     // object at the world scene's Click.
@@ -1909,8 +1910,11 @@ namespace Deviceless {
     // (nirender src/gen/layouts.rs).
     void sceneBegin(const MgeLinkSceneV1* scene) {
         const unsigned kind = scene->kind;
-        mainView = kind == MGE_LINK_SCENE_WORLD || kind == MGE_LINK_SCENE_SORTED_ALPHA || kind == MGE_LINK_SCENE_WATER || kind == MGE_LINK_SCENE_FIRST_PERSON ||
-                   kind == MGE_LINK_SCENE_SHADOW_VOLUME || kind == MGE_LINK_SCENE_SHADOW_CASTERS;
+        // The plugin calls this from its own hook of SetCameraData, so the frustum is written
+        // here before the renderer reads it, as the hook of the Direct3D 9 path does.
+        const auto niCamera = reinterpret_cast<NI::Camera*>(uintptr_t(scene->camera));
+        CameraFov::atClick(niCamera);
+        mainView = niCamera && CameraFov::lastClickFollows();
         if (kind != MGE_LINK_SCENE_WORLD || !scene->camera) {
             return;
         }
