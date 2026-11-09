@@ -394,8 +394,8 @@ mod handshake_tests {
     #[test]
     fn a_hello_of_another_format_is_refused_with_both_builds_named() {
         let message = hello_check(&hello(1, EXTENSION_FORMAT + 1, "MGE-XE G7 Fork v0.22.0 abcdef0")).unwrap_err();
-        assert!(message.contains("d3d8.dll (MGE-XE G7 Fork v0.22.0 abcdef0) writes the extension format 2"), "{message}");
-        assert!(message.contains(&format!("numidium.exe ({}, {}) reads the extension format 1", nirender_wgpu::BUILD_ID, build_id())), "{message}");
+        assert!(message.contains(&format!("d3d8.dll (MGE-XE G7 Fork v0.22.0 abcdef0) writes the extension format {}", EXTENSION_FORMAT + 1)), "{message}");
+        assert!(message.contains(&format!("numidium.exe ({}, {}) reads the extension format {EXTENSION_FORMAT}", nirender_wgpu::BUILD_ID, build_id())), "{message}");
         assert!(message.contains("one archive"), "{message}");
     }
 
@@ -5027,7 +5027,7 @@ mod hello_stop_tests {
     #[test]
     fn a_replay_with_a_hello_of_another_format_stops_with_no_box() {
         let (code, output) = in_child("a_replay_with_a_hello_of_another_format_stops_in_this_process");
-        assert_replay_stop(code, &output, "writes the extension format 2");
+        assert_replay_stop(code, &output, &format!("writes the extension format {}", EXTENSION_FORMAT + 1));
     }
 
     /// The child entry of [`a_replay_without_a_hello_stops_with_no_box`]: it ends its process.
@@ -5051,10 +5051,10 @@ mod hello_stop_tests {
         let mut land = replay_land();
         let mut hello = vec![0u8; HELLO_BUILD_ID_AT + HELLO_BUILD_ID_BYTES];
         hello[..4].copy_from_slice(&1u32.to_le_bytes());
-        hello[4..8].copy_from_slice(&2u32.to_le_bytes());
+        hello[4..8].copy_from_slice(&(EXTENSION_FORMAT + 1).to_le_bytes());
         hello[HELLO_BUILD_ID_AT..HELLO_BUILD_ID_AT + 4].copy_from_slice(b"test");
         land.data(HELLO_ID, &hello);
-        panic!("the replay played on with a hello of the extension format 2");
+        panic!("the replay played on with a hello of the extension format {}", EXTENSION_FORMAT + 1);
     }
 }
 
