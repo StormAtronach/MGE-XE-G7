@@ -17,6 +17,13 @@ namespace Address {
 // Total real time elapsed this session; does not advance in menus.
 inline constexpr uintptr_t simulationTimestamp = 0x7C6708;
 
+// The frustum rules of WorldControllerRenderCameraData::buildFrustum (0x404960) and
+// updateFrustumForViewport (0x404A30): the near plane is the largest of the camera data's
+// nearPlaneDistance, the far plane divided by frustumFarPerNear (10000.0f), and
+// frustumNearFloor (0.1f).
+inline constexpr uintptr_t frustumFarPerNear = 0x7C47FC;
+inline constexpr uintptr_t frustumNearFloor = 0x7C47F8;
+
 
 // Set once both intro movies are done and the main menu is about to display.
 inline constexpr uintptr_t isIntroDone = 0x7D5005;

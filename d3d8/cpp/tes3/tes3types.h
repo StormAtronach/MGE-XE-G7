@@ -471,6 +471,14 @@ struct WorldControllerRenderCamera {
         float farPlaneDistance;          // 0x10
         unsigned int viewportWidth;      // 0x14
         unsigned int viewportHeight;     // 0x18
+
+        // The near plane that buildFrustum (0x404960) gives this camera data for a far plane of
+        // `farPlane`. Defined in mge/mwbridge.cpp.
+        float nearPlaneFor(float farPlane) const;
+
+        // Sets the far plane of the camera data and of its camera's frustum, and the frustum's
+        // near plane as buildFrustum derives it from that far plane. Defined in mge/mwbridge.cpp.
+        void setFarPlane(float farPlane);
     };
 
     void* vTable;                        // 0x00
