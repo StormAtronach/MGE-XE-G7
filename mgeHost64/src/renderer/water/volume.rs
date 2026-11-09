@@ -368,8 +368,8 @@ fn sunlight_at(place: vec3f) -> f32 {
 // over the last quarter of its reach (`nirender_wgpu::light_reach`), where its clusters end.
 fn light_strength(light: Light, distance: f32) -> f32 {
     var reach = light.direction.w;
-    if light.cone.x > 0.0 {
-        reach = 1.0 / light.cone.x;
+    if light.cone.w > 0.0 {
+        reach = 1.0 / light.cone.w;
     } else if light.cone.z > 0.0 {
         reach = light.cone.z;
     }
