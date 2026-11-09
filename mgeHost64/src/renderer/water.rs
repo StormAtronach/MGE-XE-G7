@@ -630,20 +630,11 @@ impl Water {
     /// Fills the reflection with one colour (`clearReflection` of the Direct3D 9 path): a cell
     /// without the distant land, or an interior without `reflect_interiors`. Under the water,
     /// in an exterior and in an interior that behaves like an exterior, the colour is that of
-    /// the horizon (the fog colour). In a plain interior above the water, it is the sun and the
-    /// ambient light of the cell (Direct3D 9 adds the cell's sun colour to the ambient of the
-    /// device; the lights of the first draw of the world stand for them here). With the blur
-    /// that is sharp at the waterline, each level gets the colour, and the depth of the mirror
-    /// says that all is far.
+    /// the horizon (the fog colour). In a plain interior above the water, it is the colour of
+    /// [`fill_colour`]. With the blur that is sharp at the waterline, each level gets the
+    /// colour, and the depth of the mirror says that all is far.
     pub fn fill_reflection(&mut self, scene: &SceneView, frame: &WaterFrame) {
-        // The horizon colour of Direct3D 9 is the colour of the game's clear of the frame; here
-        // it is the game's fog colour, which `water_frame_of` also takes for the horizon of an
-        // interior. Only a plain interior guesses from its light.
-        let color: [f32; 3] = if frame.underwater || frame.like_exterior {
-            [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2]]
-        } else {
-            core::array::from_fn(|i| (scene.sun_color[i] + scene.sun_ambient[i] + scene.ambient[i]).min(1.0))
-        };
+        let color = fill_colour(frame.underwater || frame.like_exterior, scene.fog_color, scene.sun_color, scene.ambient);
         let levels = if frame.blur_reflections && frame.blur_contact { self.reflection_levels.len() } else { 1 };
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection fill") });
         for (index, level) in self.reflection_levels[..levels].iter().enumerate() {
@@ -959,9 +950,36 @@ pub(super) fn flat_wave_texture(scene: &SceneView) -> wgpu::TextureView {
     texture.create_view(&Default::default())
 }
 
+/// The one colour of the reflection, as `clearReflection` of the Direct3D 9 path has it. With
+/// `horizon` (under the water, an exterior, an interior that behaves like an exterior) it is
+/// the fog colour: Direct3D 9 takes the colour of the game's clear of the frame, and
+/// `water_frame_of` takes the fog colour for the horizon of an interior too. In a plain
+/// interior it is the sun colour plus the ambient light of the device, clamped to 1.
+/// - The sun colour of a plain interior is the cell's sun colour
+///   (`DataHandler::setupInteriorLighting` 0x48A2D0, `Cell::getSunColour` 0x4E20F0).
+/// - The ambient light of the device sums only the ambient lights
+///   (`NiDX8LightManager::updateLights` 0x6BB6C0). The sun light's own ambient (the cell's
+///   ambient colour) is not part of it, and Direct3D 9 does not add it.
+pub(super) fn fill_colour(horizon: bool, fog_color: [f32; 4], sun_color: [f32; 3], ambient: [f32; 3]) -> [f32; 3] {
+    if horizon {
+        return [fog_color[0], fog_color[1], fog_color[2]];
+    }
+    core::array::from_fn(|i| (sun_color[i] + ambient[i]).min(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plain_interior_fills_with_the_sun_and_the_ambient_of_the_device() {
+        let fog = [0.1, 0.2, 0.3, 1.0];
+        let sun = [30.0 / 255.0, 26.0 / 255.0, 19.0 / 255.0];
+        // The Foreign Quarter Underworks: one sun light and no ambient light.
+        assert_eq!(fill_colour(false, fog, sun, [0.0; 3]), sun);
+        assert_eq!(fill_colour(false, fog, [0.75; 3], [0.5, 0.25, 0.0]), [1.0, 1.0, 0.75]);
+        assert_eq!(fill_colour(true, fog, sun, [0.5; 3]), [0.1, 0.2, 0.3]);
+    }
 
     /// The shaders of the water compile as the device checks them: the plane of the sea,
     /// and the level of the reflection.
