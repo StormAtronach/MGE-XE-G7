@@ -629,11 +629,12 @@ impl Water {
 
     /// Fills the reflection with one colour (`clearReflection` of the Direct3D 9 path): a cell
     /// without the distant land, or an interior without `reflect_interiors`. Under the water,
-    /// the colour of the horizon (the fog colour); above it, the sun and the ambient light of
-    /// the cell (Direct3D 9 adds the cell's sun colour to the ambient of the device; the
-    /// lights of the first draw of the world stand for them here). With the blur that is
-    /// sharp at the waterline, each level gets the colour, and the depth of the mirror says
-    /// that all is far.
+    /// in an exterior and in an interior that behaves like an exterior, the colour is that of
+    /// the horizon (the fog colour). In a plain interior above the water, it is the sun and the
+    /// ambient light of the cell (Direct3D 9 adds the cell's sun colour to the ambient of the
+    /// device; the lights of the first draw of the world stand for them here). With the blur
+    /// that is sharp at the waterline, each level gets the colour, and the depth of the mirror
+    /// says that all is far.
     pub fn fill_reflection(&mut self, scene: &SceneView, frame: &WaterFrame) {
         // The horizon colour of Direct3D 9 is the colour of the game's clear of the frame; here
         // it is the game's fog colour, which `water_frame_of` also takes for the horizon of an
