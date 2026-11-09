@@ -696,6 +696,33 @@ impl Environment {
     fn mirror_level(&self) -> f32 {
         self.surface_level()
     }
+
+    /// The values of the sky of MGE XE, when the record has the scattering (the flag 8). The
+    /// record does not say if the cell is like an exterior (the scene says it): the caller
+    /// checks that.
+    fn sky(&self) -> Option<[[f32; 4]; 8]> {
+        if self.flags & 8 == 0 {
+            return None;
+        }
+        let far = self.sky_scatter_far;
+        let sky: [f32; 3] = core::array::from_fn(|i| self.sky_col[i] + (far[i] - self.sky_col[i]) * far[3]);
+        let altitude = (1.0 + self.sun_pos[2]).powi(10);
+        Some([
+            [self.fog_col_far[0], self.fog_col_far[1], self.fog_col_far[2], 0.0],
+            [self.sky_col[0], self.sky_col[1], self.sky_col[2], self.nice_weather],
+            [sky[0], sky[1], sky[2], if self.eye[2] > self.sea_plane() { 1.0 } else { 0.0 }],
+            [self.sun_pos[0], self.sun_pos[1], self.sun_pos[2], 0.0],
+            [self.outscatter[0], self.outscatter[1], self.outscatter[2], 0.0],
+            [self.inscatter[0], self.inscatter[1], self.inscatter[2], 0.0],
+            [
+                2.8 + 4.3 / altitude.max(1e-6),
+                (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
+                (-4.0 * self.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
+                0.0,
+            ],
+            [0.0; 4],
+        ])
+    }
 }
 
 /// What the loader thread gives to the renderer: the terrain and the bytes of its five DDS
@@ -3941,25 +3968,7 @@ impl DistantLand {
         if !self.enabled || !self.distant_cell || !self.like_exterior || self.gpu.is_none() {
             return None;
         }
-        let e = self.environment.filter(|e| e.flags & 12 == 12)?;
-        let far = e.sky_scatter_far;
-        let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
-        let altitude = (1.0 + e.sun_pos[2]).powi(10);
-        Some([
-            [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 0.0],
-            [e.sky_col[0], e.sky_col[1], e.sky_col[2], e.nice_weather],
-            [sky[0], sky[1], sky[2], if e.eye[2] > e.sea_plane() { 1.0 } else { 0.0 }],
-            [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], 0.0],
-            [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
-            [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
-            [
-                2.8 + 4.3 / altitude.max(1e-6),
-                (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
-                (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
-                0.0,
-            ],
-            [0.0; 4],
-        ])
+        self.environment.as_ref()?.sky()
     }
 
     /// The light for each pixel, by the setting `distant_land.per_pixel_lighting` and its
@@ -4627,6 +4636,20 @@ mod environment_tests {
         e.water_plane = f32::MIN;
         assert_eq!((e.surface_level(), e.mirror_level()), (0.0, 0.0));
     }
+
+    /// The sky needs the scattering (the flag 8) only. Since version 10 the record has no flag
+    /// for "like an exterior" (W84): a gate on the flags 4 and 8 together lost the sky.
+    #[test]
+    fn the_sky_needs_the_scattering_flag_only() {
+        let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.version = Environment::VERSION;
+        e.flags = 8;
+        e.fog_col_far = [0.5, 0.6, 0.7];
+        let sky = e.sky().expect("a sky with the scattering");
+        assert_eq!(sky[0], [0.5, 0.6, 0.7, 0.0]);
+        e.flags = 0;
+        assert!(e.sky().is_none(), "no sky without the scattering");
+    }
 }
 
 #[cfg(test)]
@@ -5250,7 +5273,6 @@ mod interior_start_tests {
         land.statics = Some(statics);
         let mut environment: Environment = bytemuck::Zeroable::zeroed();
         environment.version = Environment::VERSION;
-        environment.flags = 4;
         environment.interior_name[..INTERIOR.len()].copy_from_slice(INTERIOR);
         land.environment = Some(environment);
 
