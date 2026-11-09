@@ -201,7 +201,7 @@ const HELLO_ID: u32 = 11;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
-const EXTENSION_FORMAT: u32 = 1;
+const EXTENSION_FORMAT: u32 = 2;
 /// The bytes of a hello record: the version, the format, then the build id.
 const HELLO_BUILD_ID_AT: usize = 8;
 const HELLO_BUILD_ID_BYTES: usize = 64;
@@ -394,8 +394,8 @@ mod handshake_tests {
     #[test]
     fn a_hello_of_another_format_is_refused_with_both_builds_named() {
         let message = hello_check(&hello(1, EXTENSION_FORMAT + 1, "MGE-XE G7 Fork v0.22.0 abcdef0")).unwrap_err();
-        assert!(message.contains("d3d8.dll (MGE-XE G7 Fork v0.22.0 abcdef0) writes the extension format 2"), "{message}");
-        assert!(message.contains(&format!("numidium.exe ({}, {}) reads the extension format 1", nirender_wgpu::BUILD_ID, build_id())), "{message}");
+        assert!(message.contains(&format!("d3d8.dll (MGE-XE G7 Fork v0.22.0 abcdef0) writes the extension format {}", EXTENSION_FORMAT + 1)), "{message}");
+        assert!(message.contains(&format!("numidium.exe ({}, {}) reads the extension format {EXTENSION_FORMAT}", nirender_wgpu::BUILD_ID, build_id())), "{message}");
         assert!(message.contains("one archive"), "{message}");
     }
 
@@ -851,6 +851,8 @@ pub struct DistantLand {
     /// The ids whose first refused record is in the log, and the refused records counted.
     refused_ids: Vec<u32>,
     extension_refused: u32,
+    /// True when an environment record of another version came and is in the log.
+    environment_version_logged: bool,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -1258,6 +1260,7 @@ impl DistantLand {
             unknown_ids: Vec::new(),
             refused_ids: Vec::new(),
             extension_refused: 0,
+            environment_version_logged: false,
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -2936,6 +2939,12 @@ impl Extension for DistantLand {
                 println!("environment: simulation time {:.1} s, wind ({:.2}, {:.2})", environment.time, environment.wind[0], environment.wind[1]);
             }
             self.environment = Some(environment);
+        } else if id == ENVIRONMENT_ID && !self.environment_version_logged {
+            // A record of another version: the frame keeps the last environment of this
+            // version, or none. The first such record is in the log.
+            self.environment_version_logged = true;
+            let seen = bytes.get(..4).map_or(0, |word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+            println!("environment record of version {seen} refused: this build reads version {}; d3d8.dll or the capture is of another build", Environment::VERSION);
         }
         if id != ENVIRONMENT_ID && first_time(&mut self.unknown_ids, id) {
             println!("extension id {id}: no reader in this build; d3d8.dll is another build");
@@ -5025,7 +5034,7 @@ mod hello_stop_tests {
     #[test]
     fn a_replay_with_a_hello_of_another_format_stops_with_no_box() {
         let (code, output) = in_child("a_replay_with_a_hello_of_another_format_stops_in_this_process");
-        assert_replay_stop(code, &output, "writes the extension format 2");
+        assert_replay_stop(code, &output, &format!("writes the extension format {}", EXTENSION_FORMAT + 1));
     }
 
     /// The child entry of [`a_replay_without_a_hello_stops_with_no_box`]: it ends its process.
@@ -5049,10 +5058,10 @@ mod hello_stop_tests {
         let mut land = replay_land();
         let mut hello = vec![0u8; HELLO_BUILD_ID_AT + HELLO_BUILD_ID_BYTES];
         hello[..4].copy_from_slice(&1u32.to_le_bytes());
-        hello[4..8].copy_from_slice(&2u32.to_le_bytes());
+        hello[4..8].copy_from_slice(&(EXTENSION_FORMAT + 1).to_le_bytes());
         hello[HELLO_BUILD_ID_AT..HELLO_BUILD_ID_AT + 4].copy_from_slice(b"test");
         land.data(HELLO_ID, &hello);
-        panic!("the replay played on with a hello of the extension format 2");
+        panic!("the replay played on with a hello of the extension format {}", EXTENSION_FORMAT + 1);
     }
 }
 
