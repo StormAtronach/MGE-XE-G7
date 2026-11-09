@@ -124,7 +124,7 @@ pub struct Settings {
     pub water_wave_height: f32,
     /// In cells.
     pub interior_fog_end: f32,
-    /// Version 2: the debug views of a run ([`SETTINGS_DEBUG_LIGHT`]). 0 in a version 1 record.
+    /// The debug views of a run ([`SETTINGS_DEBUG_LIGHT`]).
     pub debug: u32,
 }
 
@@ -133,20 +133,14 @@ pub struct Settings {
 const SETTINGS_DEBUG_LIGHT: u32 = 1;
 
 impl Settings {
-    /// The bytes of a version 1 record: the members up to `interior_fog_end`.
-    const V1_SIZE: usize = 13 * 4;
+    /// The version of the record that this build reads, the one `Deviceless::sendSettings`
+    /// writes.
+    const VERSION: u32 = 2;
 
-    /// Reads the record: version 1 (the members up to `interior_fog_end`) or a later one,
-    /// which only adds members at the end; [`None`] for a short record or a version 0.
+    /// Reads the record; [`None`] for a short record or another version.
     pub fn read(bytes: &[u8]) -> Option<Settings> {
-        let version = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
-        if version == 0 || bytes.len() < Self::V1_SIZE {
-            return None;
-        }
-        let mut settings: Settings = bytemuck::Zeroable::zeroed();
-        let n = bytes.len().min(size_of::<Settings>());
-        bytemuck::bytes_of_mut(&mut settings)[..n].copy_from_slice(&bytes[..n]);
-        Some(settings)
+        let settings: Settings = bytemuck::pod_read_unaligned(bytes.get(..size_of::<Settings>())?);
+        (settings.version == Self::VERSION).then_some(settings)
     }
 
     /// The names of the flags that differ between two records, each with its new state.
@@ -198,8 +192,8 @@ const PREFETCH_ID: u32 = 10;
 /// The hello of MGE XE's d3d8.dll (`Deviceless::sendHello`), sent once at the plugin's load
 /// and kept: version 1, the extension format of d3d8.dll, then its build id as 64 bytes of
 /// ASCII. This build compares the format with [`EXTENSION_FORMAT`] and stops on a
-/// difference; a live session without the record stops at its first world frame (a d3d8.dll
-/// from before the handshake). A replay plays on: a capture from before the record has none.
+/// difference; a session without the record stops at its first world frame (a d3d8.dll from
+/// before the handshake). A replay stops in the same cases (D131).
 const HELLO_ID: u32 = 11;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
@@ -258,10 +252,14 @@ fn mismatch_text(writer: &str, writes: &str) -> String {
 
 /// Ends this program for a d3d8.dll of another build: the lines in the log, then the refusal
 /// of the host crate (one message box, the exit code that the plugin reads; it shows no
-/// second box).
-fn stop_mismatch(message: &str) -> ! {
+/// second box). A replay (`replay`) has no game and shows no box: it ends with the exit code.
+fn stop_mismatch(message: &str, replay: bool) -> ! {
     for line in message.lines() {
         println!("{line}");
+    }
+    if replay {
+        println!("make the capture again with this build");
+        std::process::exit(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT as i32);
     }
     nirender_wgpu::gpu::refuse(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."))
 }
@@ -290,18 +288,14 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
         return Some(4);
     }
     Some(match id {
-        // The end of the fields of the record's version: each version ends where the first
-        // member of the next one starts, and the newest needs the whole struct (a version
-        // that adds a member gives the version before it the offset of that member). A
-        // version the reader does not take needs its version word only.
-        ENVIRONMENT_ID => match word(0) {
-            4 => core::mem::offset_of!(Environment, interior_name),
-            5 => core::mem::offset_of!(Environment, precipitation),
-            6 => core::mem::offset_of!(Environment, night),
-            7 => core::mem::offset_of!(Environment, water_plane),
-            8.. => size_of::<Environment>(),
-            _ => 4,
-        },
+        // The whole struct of its version; another version needs its version word only.
+        ENVIRONMENT_ID => {
+            if word(0) == Environment::VERSION as usize {
+                size_of::<Environment>()
+            } else {
+                4
+            }
+        }
         // The version, the flags, the priority, the number of variables, the name (64), then
         // for each variable its name (64), its kind, its count and its floats.
         SHADER_STATE_ID => {
@@ -319,12 +313,14 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
         }
         // The version, the ui flag; the path to the end.
         PICTURE_ID => 8,
-        // Version 1: the 13 words; a later version adds members at the end.
-        SETTINGS_ID => match word(0) {
-            0 => 4,
-            1 => Settings::V1_SIZE,
-            _ => size_of::<Settings>(),
-        },
+        // The 14 words of its version; another version needs its version word only.
+        SETTINGS_ID => {
+            if word(0) == Settings::VERSION as usize {
+                size_of::<Settings>()
+            } else {
+                4
+            }
+        }
         // The version, the number of slots, then for each its number, its size and its look
         // (at least 8 bytes).
         WATER_LOOKS_ID => {
@@ -535,9 +531,8 @@ struct Environment {
     precipitation: f32,
     player_height: f32,
     /// Version 7: how much of the night there is, 1 at night and 0 in the day, from the
-    /// hour against the weather's sunrise and sunset spans on the game side. A record below
-    /// version 7 leaves it 0, and the helper takes the night from the sun's colour
-    /// ([`distant_lights::night_of`]).
+    /// hour against the weather's sunrise and sunset spans on the game side. Before the first
+    /// record, the helper takes the night from the sun's colour ([`distant_lights::night_of`]).
     night: f32,
     /// Version 8: the height of the engine's water plane (`MWBridge::WaterPlaneHeight`): -1
     /// in an exterior, the cell's water level in an interior, the lowest float in a cell
@@ -546,23 +541,33 @@ struct Environment {
 }
 
 impl Environment {
-    /// The height of the sea for the tests "above the sea" of the Direct3D 9 path. A record
-    /// below version 8 gives -1, the plane of an exterior.
-    fn sea_plane(&self) -> f32 {
-        if self.version >= 8 { self.water_plane } else { -1.0 }
+    /// The version of the record that this build reads, the one `Deviceless::sendEnvironment`
+    /// writes.
+    const VERSION: u32 = 8;
+
+    /// Reads the record; [`None`] for a short record or another version.
+    fn read(bytes: &[u8]) -> Option<Environment> {
+        let environment: Environment = bytemuck::pod_read_unaligned(bytes.get(..size_of::<Environment>())?);
+        (environment.version == Self::VERSION).then_some(environment)
     }
 
-    /// The height of the water surface that MGE XE draws: the engine's water plane (version
-    /// 8), or the top of the water volume the camera is in (flag 16). A record below version 8,
-    /// and a cell without water, give the level of the record, as Direct3D 9 draws it.
+    /// The height of the sea for the tests "above the sea" of the Direct3D 9 path: the
+    /// engine's water plane.
+    fn sea_plane(&self) -> f32 {
+        self.water_plane
+    }
+
+    /// The height of the water surface that MGE XE draws: the engine's water plane, or the top
+    /// of the water volume the camera is in (flag 16). A cell without water gives the level of
+    /// the record, as Direct3D 9 draws it.
     fn surface_level(&self) -> f32 {
-        if self.version >= 8 && self.flags & 16 == 0 && self.has_water != 0 { self.water_plane } else { self.water_level }
+        if self.flags & 16 == 0 && self.has_water != 0 { self.water_plane } else { self.water_level }
     }
 
     /// The height of the mirror of the reflection and of the split of the blends at the water:
-    /// the surface (version 8). Below version 8 the level less 1, as Direct3D 9 mirrors it.
+    /// the surface.
     fn mirror_level(&self) -> f32 {
-        if self.version >= 8 { self.surface_level() } else { self.water_level - 1.0 }
+        self.surface_level()
     }
 }
 
@@ -2309,11 +2314,7 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
-        // The kept records came before the first frame: a live session without the hello of
-        // d3d8.dll has a d3d8.dll from before the handshake (the owner's choice: stop).
-        if !self.synchronous && self.hello.is_none() {
-            stop_mismatch(&no_hello_text());
-        }
+        self.stop_without_hello();
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
@@ -2597,23 +2598,13 @@ impl Extension for DistantLand {
     }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {
-        // A plugin from before the kept records leaves their bit in the number.
-        let id = id & !0x8000_0000;
         if id == HELLO_ID {
             match hello_check(bytes) {
                 Ok(build) => {
                     println!("d3d8.dll {build}, extension format {EXTENSION_FORMAT}");
                     self.hello = Some(build);
                 }
-                // A replay of a capture of another format plays on, as for the stream format
-                // (the owner's answer 1): the picture can differ.
-                Err(message) if self.synchronous => {
-                    println!("capture of another extension format; the picture can differ:");
-                    for line in message.lines().skip(1).take(2) {
-                        println!("  {line}");
-                    }
-                }
-                Err(message) => stop_mismatch(&message),
+                Err(message) => stop_mismatch(&message, self.synchronous),
             }
             return;
         }
@@ -2776,25 +2767,17 @@ impl Extension for DistantLand {
             }
             return;
         }
-        // Version 4 ends before the name of the interior cell.
-        const VERSION_4: usize = core::mem::offset_of!(Environment, interior_name);
-        if id == ENVIRONMENT_ID && bytes.len() >= VERSION_4 {
-            let mut raw = [0u8; size_of::<Environment>()];
-            let length = bytes.len().min(raw.len());
-            raw[..length].copy_from_slice(&bytes[..length]);
-            let environment: Environment = bytemuck::pod_read_unaligned(&raw);
-            if (4..=8).contains(&environment.version) {
-                // A game was loaded (flag 256, in one record only): the wait for the statics
-                // starts. The record can come in a loading screen, which has no world frame.
-                if environment.flags & 256 != 0 && self.prefetch.is_none() {
-                    self.arrival = Some((Instant::now(), 0));
-                    self.arrival_serial = 0;
-                }
-                if self.environment_watch.note(environment.time, environment.wind) {
-                    println!("environment: simulation time {:.1} s, wind ({:.2}, {:.2})", environment.time, environment.wind[0], environment.wind[1]);
-                }
-                self.environment = Some(environment);
+        if id == ENVIRONMENT_ID && let Some(environment) = Environment::read(bytes) {
+            // A game was loaded (flag 256, in one record only): the wait for the statics
+            // starts. The record can come in a loading screen, which has no world frame.
+            if environment.flags & 256 != 0 && self.prefetch.is_none() {
+                self.arrival = Some((Instant::now(), 0));
+                self.arrival_serial = 0;
             }
+            if self.environment_watch.note(environment.time, environment.wind) {
+                println!("environment: simulation time {:.1} s, wind ({:.2}, {:.2})", environment.time, environment.wind[0], environment.wind[1]);
+            }
+            self.environment = Some(environment);
         }
         if id != ENVIRONMENT_ID && first_time(&mut self.unknown_ids, id) {
             println!("extension id {id}: no reader in this build; d3d8.dll is another build");
@@ -2854,7 +2837,7 @@ impl Extension for DistantLand {
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
         // The baked light of the distant lights: at night, in the exterior. The night is the
         // game's, from the hour against the weather's sunrise and sunset (the environment
-        // record, version 7); the sun's colour serves for an older game side.
+        // record); before the first record, the sun's colour serves.
         let night = self.night(scene);
         let Some(binding) = self.light_binding.as_mut() else { return false };
         binding.set_strength(scene.queue, if scene.interior { 0.0 } else { self.tunables.get(tunables::BAKED_STRENGTH) * night });
@@ -3369,6 +3352,15 @@ impl Extension for DistantLand {
 }
 
 impl DistantLand {
+    /// Ends this program when no hello record of d3d8.dll ([`HELLO_ID`]) came before the
+    /// first world frame: the kept records come before it, so the d3d8.dll is from before the
+    /// handshake (the owner's choice: stop). A replay ends with the exit code and no box.
+    fn stop_without_hello(&self) {
+        if self.hello.is_none() {
+            stop_mismatch(&no_hello_text(), self.synchronous);
+        }
+    }
+
     /// The chain of post shaders is on and has a shader.
     fn chain_wanted(&self) -> bool {
         self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty())
@@ -3897,10 +3889,10 @@ impl DistantLand {
         }
     }
 
-    /// How much of the night there is: the environment record's night of the hour (version
-    /// 7), else from the colour of the sun.
+    /// How much of the night there is: the environment record's night of the hour; before the
+    /// first record, from the colour of the sun.
     fn night(&self, scene: &SceneView) -> f32 {
-        self.environment.filter(|e| e.version >= 7).map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night)
+        self.environment.map_or_else(|| distant_lights::night_of(scene.sun_color), |e| e.night)
     }
 
     /// The values of the grass for a view: the camera, the light of the game, the wind and the
@@ -4148,27 +4140,30 @@ mod dds_tests {
 mod environment_tests {
     use super::*;
 
+    /// The record of this build's version is read whole; a short one and another version are
+    /// not.
     #[test]
-    fn the_sea_plane_is_the_engines_from_version_8() {
+    fn only_the_environment_record_of_this_version_is_read() {
         let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.version = Environment::VERSION;
         e.water_plane = 512.0;
-        e.version = 7;
-        assert_eq!(e.sea_plane(), -1.0);
-        e.version = 8;
-        assert_eq!(e.sea_plane(), 512.0);
+        let bytes = bytemuck::bytes_of(&e).to_vec();
+        assert_eq!(Environment::read(&bytes).map(|e| e.sea_plane()), Some(512.0));
+        assert!(Environment::read(&bytes[..bytes.len() - 4]).is_none());
+        for version in [0, 7, Environment::VERSION + 1] {
+            let mut other = bytes.clone();
+            other[..4].copy_from_slice(&version.to_le_bytes());
+            assert!(Environment::read(&other).is_none(), "version {version}");
+        }
     }
 
     #[test]
-    fn the_surface_and_its_mirror_are_the_engines_plane_from_version_8() {
+    fn the_surface_and_its_mirror_are_the_engines_plane() {
         let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.version = Environment::VERSION;
         e.water_level = 0.0;
         e.water_plane = -1.0;
         e.has_water = 1;
-        // Version 7: Direct3D 9's surface at the level, its mirror 1 under it.
-        e.version = 7;
-        assert_eq!((e.surface_level(), e.mirror_level()), (0.0, -1.0));
-        // Version 8: both at the engine's plane.
-        e.version = 8;
         assert_eq!((e.surface_level(), e.mirror_level()), (-1.0, -1.0));
         // In a water volume: its top.
         e.flags = 16;
@@ -4190,29 +4185,27 @@ mod settings_tests {
     #[test]
     fn the_settings_record_is_read() {
         let mut bytes = Vec::new();
-        for word in [1u32, USE_DISTANT_LAND | USE_SHADOWS, 1] {
+        for word in [Settings::VERSION, USE_DISTANT_LAND | USE_SHADOWS, 1] {
             bytes.extend(word.to_le_bytes());
         }
         for number in [0.5f32, 5.0, 1.0, 2.0, 3.0, 150.0, 400.0, 50.0, 30.0, 0.8] {
             bytes.extend(number.to_le_bytes());
         }
-        // A version 1 record: no debug word.
-        assert_eq!(bytes.len(), Settings::V1_SIZE);
+        bytes.extend(SETTINGS_DEBUG_LIGHT.to_le_bytes());
+        assert_eq!(bytes.len(), size_of::<Settings>());
         let settings = Settings::read(&bytes).unwrap();
         assert_eq!(settings.flags, USE_DISTANT_LAND | USE_SHADOWS);
         assert_eq!(settings.per_pixel_mode, 1);
         assert_eq!(settings.hdr_reaction_speed, 0.5);
         assert_eq!(settings.draw_distance, 5.0);
         assert_eq!(settings.interior_fog_end, 0.8);
-        assert_eq!(settings.debug, 0);
-        assert!(Settings::read(&bytes[..40]).is_none());
-        // A version 2 record: the debug word follows.
-        bytes[0] = 2;
-        bytes.extend(SETTINGS_DEBUG_LIGHT.to_le_bytes());
-        assert_eq!(bytes.len(), size_of::<Settings>());
-        assert_eq!(Settings::read(&bytes).unwrap().debug, SETTINGS_DEBUG_LIGHT);
-        bytes[0] = 0;
-        assert!(Settings::read(&bytes).is_none());
+        assert_eq!(settings.debug, SETTINGS_DEBUG_LIGHT);
+        // A record without its last word, and a record of another version, are not read.
+        assert!(Settings::read(&bytes[..size_of::<Settings>() - 4]).is_none());
+        for version in [0, 1, Settings::VERSION + 1] {
+            bytes[..4].copy_from_slice(&version.to_le_bytes());
+            assert!(Settings::read(&bytes).is_none(), "version {version}");
+        }
     }
 
     /// A picture without the interface gives its frame the post call, even with no chain.
@@ -4267,7 +4260,7 @@ full_tier_max = 0
         let (_sender, receiver) = channel();
         land.loading = Some(receiver);
         for (flags, enabled, water_on) in [(0, false, false), (USE_DISTANT_WATER, false, true), (USE_DISTANT_LAND, true, true), (USE_DISTANT_LAND | USE_DISTANT_WATER, true, true)] {
-            land.settings = Some(Settings { version: 1, flags, ..bytemuck::Zeroable::zeroed() });
+            land.settings = Some(Settings { version: Settings::VERSION,flags, ..bytemuck::Zeroable::zeroed() });
             land.apply_settings();
             assert_eq!((land.enabled, land.water_on), (enabled, water_on), "flags {flags:#x}");
         }
@@ -4300,7 +4293,7 @@ full_tier_max = 0
             (EXP_FOG | USE_DISTANT_WATER, false),
             (fog | USE_DISTANT_WATER, false),
         ] {
-            land.settings = Some(Settings { version: 1, flags, ..bytemuck::Zeroable::zeroed() });
+            land.settings = Some(Settings { version: Settings::VERSION,flags, ..bytemuck::Zeroable::zeroed() });
             land.apply_settings();
             assert_eq!(land.scatter_shaders, scatters, "flags {flags:#x}");
         }
@@ -4309,7 +4302,7 @@ full_tier_max = 0
 
     #[test]
     fn the_changed_flags_are_named() {
-        let a = Settings { version: 1, flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
+        let a = Settings { version: Settings::VERSION,flags: USE_DISTANT_LAND | USE_SHADOWS | USE_GRASS, ..bytemuck::Zeroable::zeroed() };
         let b = Settings { flags: USE_DISTANT_LAND | USE_GRASS | USE_HDR, ..a };
         assert_eq!(Settings::changed_flags(Some(a), b), vec!["shadows off".to_string(), "HDR measure on".to_string()]);
         assert_eq!(Settings::changed_flags(None, a).len(), 14);
@@ -4353,7 +4346,7 @@ mod extension_record_tests {
         match id {
             ENVIRONMENT_ID => {
                 let mut record = vec![0u8; size_of::<Environment>()];
-                record[..4].copy_from_slice(&8u32.to_le_bytes());
+                record[..4].copy_from_slice(&Environment::VERSION.to_le_bytes());
                 record
             }
             SHADER_STATE_ID => {
@@ -4471,7 +4464,7 @@ mod extension_record_tests {
         assert_eq!(land.extension_refused, refused);
         assert!(refused > 0);
         // The whole records were taken.
-        assert_eq!(land.environment.map(|e| e.version), Some(8));
+        assert_eq!(land.environment.map(|e| e.version), Some(Environment::VERSION));
         assert_eq!(land.settings.map(|s| s.version), Some(2));
         assert_eq!(land.vis_groups, vec![1, 0]);
         assert_eq!(land.water_masks.as_ref().map(Vec::len), Some(3));
@@ -4480,5 +4473,138 @@ mod extension_record_tests {
         assert!(land.status.is_some());
         assert_eq!(land.arrival_serial, 7);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod hello_stop_tests {
+    use super::*;
+
+    /// The longest time that a stop may take in its child process.
+    const CHILD_SECONDS: u64 = 60;
+
+    /// The folder of the settings of a child: one per child process, which the parent removes
+    /// (the child ends without its own clean-up).
+    fn child_root(pid: u32) -> PathBuf {
+        std::env::temp_dir().join(format!("mge-hello-stop-{pid}"))
+    }
+
+    /// A replay's distant land, with distant land off, in the folder of this process.
+    fn replay_land() -> DistantLand {
+        let root = child_root(std::process::id());
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        land.offline();
+        land
+    }
+
+    /// The variable that makes a child entry of this module stop its process. Without it the
+    /// entry returns at once, so that no other run of the tests (`--ignored` too) ends early.
+    /// Not an `MGE_XE_` name: it is no switch of the helper.
+    const CHILD: &str = "MGE_TEST_HELLO_STOP_CHILD";
+
+    /// True in the child process that [`in_child`] starts.
+    fn in_the_child() -> bool {
+        std::env::var_os(CHILD).is_some()
+    }
+
+    /// Runs the test `name` of this module alone, in a child process of this test program with
+    /// [`CHILD`] set and `MGE_XE_BOX_SECONDS=1` (a box that shows closes by itself), and gives
+    /// its exit code and its output. The child is ended when it takes longer than
+    /// [`CHILD_SECONDS`].
+    fn in_child(name: &str) -> (Option<i32>, String) {
+        let module = module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest);
+        let test = format!("{module}::{name}");
+        // The child's output goes to a file, not a pipe: a pipe that nobody reads while this
+        // test waits would stop a child that writes more than the pipe holds.
+        let log = std::env::temp_dir().join(format!("mge-hello-stop-{name}-{}.txt", std::process::id()));
+        let file = std::fs::File::create(&log).unwrap();
+        let program = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(program)
+            .args([test.as_str(), "--exact", "--test-threads=1", "--nocapture"])
+            .env(CHILD, "1")
+            .env("MGE_XE_BOX_SECONDS", "1")
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed().as_secs() >= CHILD_SECONDS {
+                child.kill().ok();
+                child.wait().ok();
+                panic!(
+                    "{test} did not end in {CHILD_SECONDS} s in its child process (its output: {})",
+                    log.display()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        std::fs::remove_dir_all(child_root(child.id())).ok();
+        let output = std::fs::read_to_string(&log).unwrap_or_default();
+        std::fs::remove_file(&log).ok();
+        (status.code(), output)
+    }
+
+    /// The child ended with the exit code of another extension format, after the lines of the
+    /// refusal and with no box: a replay has no game.
+    fn assert_replay_stop(code: Option<i32>, output: &str, reason: &str) {
+        let expected = nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT as i32;
+        assert_eq!(code, Some(expected), "the exit code of the child; its output:\n{output}");
+        assert!(
+            output.contains(reason),
+            "the child did not name the reason '{reason}':\n{output}"
+        );
+        assert!(
+            output.contains("make the capture again with this build"),
+            "the child did not ask for a new capture:\n{output}"
+        );
+        let boxed = output
+            .lines()
+            .any(|line| line.starts_with("box:") || line.starts_with("refusal:"));
+        assert!(!boxed, "the child showed the box of a live session:\n{output}");
+    }
+
+    #[test]
+    fn a_replay_without_a_hello_stops_with_no_box() {
+        let (code, output) = in_child("a_replay_without_a_hello_stops_in_this_process");
+        assert_replay_stop(code, &output, "sent no hello record");
+    }
+
+    #[test]
+    fn a_replay_with_a_hello_of_another_format_stops_with_no_box() {
+        let (code, output) = in_child("a_replay_with_a_hello_of_another_format_stops_in_this_process");
+        assert_replay_stop(code, &output, "writes the extension format 2");
+    }
+
+    /// The child entry of [`a_replay_without_a_hello_stops_with_no_box`]: it ends its process.
+    #[test]
+    fn a_replay_without_a_hello_stops_in_this_process() {
+        if !in_the_child() {
+            return;
+        }
+        let land = replay_land();
+        land.stop_without_hello();
+        panic!("the replay played on without a hello");
+    }
+
+    /// The child entry of [`a_replay_with_a_hello_of_another_format_stops_with_no_box`]: it
+    /// ends its process.
+    #[test]
+    fn a_replay_with_a_hello_of_another_format_stops_in_this_process() {
+        if !in_the_child() {
+            return;
+        }
+        let mut land = replay_land();
+        let mut hello = vec![0u8; HELLO_BUILD_ID_AT + HELLO_BUILD_ID_BYTES];
+        hello[..4].copy_from_slice(&1u32.to_le_bytes());
+        hello[4..8].copy_from_slice(&2u32.to_le_bytes());
+        hello[HELLO_BUILD_ID_AT..HELLO_BUILD_ID_AT + 4].copy_from_slice(b"test");
+        land.data(HELLO_ID, &hello);
+        panic!("the replay played on with a hello of the extension format 2");
     }
 }

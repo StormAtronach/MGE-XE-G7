@@ -62,14 +62,17 @@ impl SharedVecLayout {
 struct RemoteHandleGuard {
     client_process: HANDLE,
     handle32: u32,
+    /// Closes the remote handle: [`close_remote_handle`], or a recorder in a test.
+    close: fn(HANDLE, u32),
     armed: bool,
 }
 
 impl RemoteHandleGuard {
-    fn new(client_process: HANDLE, handle32: HANDLE) -> Self {
+    fn new(client_process: HANDLE, handle32: HANDLE, close: fn(HANDLE, u32)) -> Self {
         Self {
             client_process,
             handle32: handle32 as usize as u32,
+            close,
             armed: true,
         }
     }
@@ -82,7 +85,7 @@ impl RemoteHandleGuard {
 impl Drop for RemoteHandleGuard {
     fn drop(&mut self) {
         if self.armed && self.handle32 != 0 {
-            close_remote_handle(self.client_process, self.handle32);
+            (self.close)(self.client_process, self.handle32);
         }
     }
 }
@@ -98,19 +101,20 @@ fn duplicate_remote_handles_with<D>(
     shared_mem: HANDLE,
     update_event: HANDLE,
     complete_event: HANDLE,
+    close: fn(HANDLE, u32),
     mut duplicate: D,
 ) -> Result<RemoteHandles32, HostError>
 where
     D: FnMut(HANDLE, HANDLE) -> Result<HANDLE, HostError>,
 {
     let shared_mem32 = duplicate(shared_mem, client_process)?;
-    let mut shared_mem_guard = RemoteHandleGuard::new(client_process, shared_mem32);
+    let mut shared_mem_guard = RemoteHandleGuard::new(client_process, shared_mem32, close);
 
     let update_event32 = duplicate(update_event, client_process)?;
-    let mut update_event_guard = RemoteHandleGuard::new(client_process, update_event32);
+    let mut update_event_guard = RemoteHandleGuard::new(client_process, update_event32, close);
 
     let complete_event32 = duplicate(complete_event, client_process)?;
-    let mut complete_event_guard = RemoteHandleGuard::new(client_process, complete_event32);
+    let mut complete_event_guard = RemoteHandleGuard::new(client_process, complete_event32, close);
 
     shared_mem_guard.disarm();
     update_event_guard.disarm();
@@ -183,6 +187,7 @@ impl SharedVec {
             mapping.raw(),
             update_event.raw(),
             complete_event.raw(),
+            close_remote_handle,
             duplicate_to_process,
         )?;
 
@@ -549,13 +554,11 @@ impl Drop for SharedVec {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
     use std::sync::atomic::{AtomicU8, AtomicU32};
 
     use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 
     use super::*;
-    use crate::win::{create_auto_reset_event, create_reserved_mapping};
 
     #[test]
     fn layout_rounding_matches_cpp_rules() {
@@ -664,64 +667,72 @@ mod tests {
         assert!(vec.reserve(vec.layout.max_size + 1).is_err());
     }
 
-    #[test]
-    fn partial_remote_cleanup_closes_handles_on_second_duplicate_failure() {
-        let mapping = OwnedHandle(create_reserved_mapping(allocation_granularity()).unwrap());
-        let update_event = OwnedHandle(create_auto_reset_event().unwrap());
-        let complete_event = OwnedHandle(create_auto_reset_event().unwrap());
-        let client_process = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() };
-        let mut duplicates = Vec::new();
-        let mut attempts = 0;
+    thread_local! {
+        /// The remote handles that the cleanup of the current test closed, in order.
+        static CLOSED: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
 
+    fn record_close(_client_process: HANDLE, remote: u32) {
+        CLOSED.with(|closed| closed.borrow_mut().push(remote));
+    }
+
+    fn closed_handles() -> Vec<u32> {
+        CLOSED.with(|closed| std::mem::take(&mut *closed.borrow_mut()))
+    }
+
+    /// Runs `duplicate_remote_handles_with` with duplicates that are numbers only, and a recorder in
+    /// place of the close. The numbers are no handles of the process: a test that asks the system
+    /// whether a closed handle is invalid sees the handles of the tests that run at the same time,
+    /// because the system gives a closed number to the next handle that any thread makes.
+    /// Returns the result, the sources that were duplicated, and the remote handles that were closed.
+    fn duplicate_with_failure_at(failing_attempt: u32) -> (Result<RemoteHandles32, HostError>, Vec<usize>, Vec<u32>) {
+        closed_handles();
+        let (mapping, update_event, complete_event) = (0x10 as HANDLE, 0x20 as HANDLE, 0x30 as HANDLE);
+        let mut sources = Vec::new();
+        let mut attempts = 0;
         let result = duplicate_remote_handles_with(
-            client_process,
-            mapping.raw(),
-            update_event.raw(),
-            complete_event.raw(),
-            |source, target| {
+            std::ptr::null_mut(),
+            mapping,
+            update_event,
+            complete_event,
+            record_close,
+            |source, _target| {
                 attempts += 1;
-                if attempts == 2 {
+                if attempts == failing_attempt {
                     return Err(HostError::init("injected failure"));
                 }
-                let duplicate = duplicate_to_process(source, target)?;
-                duplicates.push(duplicate);
-                Ok(duplicate)
+                sources.push(source as usize);
+                Ok((0x1000 + attempts) as HANDLE)
             },
         );
+        (result, sources, closed_handles())
+    }
+
+    #[test]
+    fn partial_remote_cleanup_closes_handles_on_second_duplicate_failure() {
+        let (result, sources, closed) = duplicate_with_failure_at(2);
 
         assert!(result.is_err());
-        assert_eq!(duplicates.len(), 1);
-        assert!(map_view(duplicates[0], 0, size_of::<VecShare>()).is_err());
+        assert_eq!(sources, vec![0x10]);
+        assert_eq!(closed, vec![0x1001], "the duplicate of the mapping is closed");
     }
 
     #[test]
     fn partial_remote_cleanup_closes_handles_on_third_duplicate_failure() {
-        let mapping = OwnedHandle(create_reserved_mapping(allocation_granularity()).unwrap());
-        let update_event = OwnedHandle(create_auto_reset_event().unwrap());
-        let complete_event = OwnedHandle(create_auto_reset_event().unwrap());
-        let client_process = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() };
-        let mut duplicates = Vec::new();
-        let mut attempts = 0;
-
-        let result = duplicate_remote_handles_with(
-            client_process,
-            mapping.raw(),
-            update_event.raw(),
-            complete_event.raw(),
-            |source, target| {
-                attempts += 1;
-                if attempts == 3 {
-                    return Err(HostError::init("injected failure"));
-                }
-                let duplicate = duplicate_to_process(source, target)?;
-                duplicates.push(duplicate);
-                Ok(duplicate)
-            },
-        );
+        let (result, sources, closed) = duplicate_with_failure_at(3);
 
         assert!(result.is_err());
-        assert_eq!(duplicates.len(), 2);
-        assert!(map_view(duplicates[0], 0, size_of::<VecShare>()).is_err());
-        assert!(set_event(duplicates[1]).is_err());
+        assert_eq!(sources, vec![0x10, 0x20]);
+        assert_eq!(closed, vec![0x1002, 0x1001], "the duplicates of the update event and of the mapping are closed, the last first");
+    }
+
+    #[test]
+    fn partial_remote_cleanup_closes_nothing_when_no_duplicate_fails() {
+        let (result, sources, closed) = duplicate_with_failure_at(0);
+
+        let handles = result.unwrap();
+        assert_eq!((handles.shared_mem32, handles.update_event32, handles.complete_event32), (0x1001, 0x1002, 0x1003));
+        assert_eq!(sources, vec![0x10, 0x20, 0x30]);
+        assert!(closed.is_empty());
     }
 }

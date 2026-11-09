@@ -58,8 +58,8 @@
 //!
 //! The places of a frame are chosen on the GPU when the device can draw from it (`cull.rs`):
 //! a compute pass tests each place as the loop of the CPU does, and one indirect call for each
-//! texture draws them from pools of geometry. Without the features of the device, or with
-//! `MGE_XE_STATICS_CULL=cpu`, the CPU chooses them and draws each place from the same pools.
+//! texture draws them from pools of geometry. Without the features of the device, the CPU
+//! chooses them and draws each place from the same pools.
 //!
 //! No test against the land hides a place.
 
@@ -392,21 +392,19 @@ struct GrassKept {
     call: u64,
 }
 
-/// The records of one world space during one call.
+/// The records of one world space during one call. The world space enters the map with its
+/// first cell, so a call that makes no records (an interior with no grass) allocates nothing.
 struct GrassKeep<'a> {
-    cells: &'a mut HashMap<(i32, i32), CellRecords>,
+    worlds: &'a mut HashMap<Vec<u8>, HashMap<(i32, i32), CellRecords>>,
+    world: &'a [u8],
     call: u64,
 }
 
 impl GrassKept {
     /// Starts a call in the world space `world`.
-    fn begin(&mut self, world: &[u8]) -> GrassKeep<'_> {
+    fn begin<'a>(&'a mut self, world: &'a [u8]) -> GrassKeep<'a> {
         self.call += 1;
-        if !self.worlds.contains_key(world) {
-            self.worlds.insert(world.to_vec(), HashMap::new());
-        }
-        let cells = self.worlds.get_mut(world).expect("the world space is inserted above");
-        GrassKeep { cells, call: self.call }
+        GrassKeep { worlds: &mut self.worlds, world, call: self.call }
     }
 
     /// Ends a call: the cells that no call walked in the last [`GRASS_KEEP_CALLS`] calls go, and
@@ -429,7 +427,7 @@ impl GrassKept {
 impl GrassKeep<'_> {
     /// Marks the cell as walked by this call, when it has records.
     fn walk(&mut self, key: (i32, i32)) {
-        if let Some(cell) = self.cells.get_mut(&key) {
+        if let Some(cell) = self.worlds.get_mut(self.world).and_then(|cells| cells.get_mut(&key)) {
             cell.walked = self.call;
         }
     }
@@ -437,7 +435,11 @@ impl GrassKeep<'_> {
     /// The records of the cell, empty when it has none yet, for a cell of `places` places.
     fn cell(&mut self, key: (i32, i32), places: usize) -> &mut CellRecords {
         let call = self.call;
-        self.cells.entry(key).or_insert_with(|| CellRecords { records: vec![None; places], walked: call })
+        if !self.worlds.contains_key(self.world) {
+            self.worlds.insert(self.world.to_vec(), HashMap::new());
+        }
+        let cells = self.worlds.get_mut(self.world).expect("the world space is inserted above");
+        cells.entry(key).or_insert_with(|| CellRecords { records: vec![None; places], walked: call })
     }
 }
 
@@ -1197,6 +1199,51 @@ impl GrassOrder {
     }
 }
 
+/// The hash of the record list of a grass call, as two numbers: `ordered` hashes the records in
+/// the order of the draw, so a change of the order changes it; `unordered` adds the hashes of the
+/// records, so it holds the set of the records and not their order. A record is the 16 floats that
+/// go to the GPU, hashed by their bits. It is a proof that two builds draw the same grass: a
+/// picture does not show the order of the draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GrassHash {
+    ordered: u64,
+    unordered: u64,
+}
+
+impl GrassHash {
+    /// The floats of one record.
+    const RECORD_FLOATS: usize = 16;
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x100_0000_01b3;
+
+    /// The hash of `records`, the floats of whole records one after the other.
+    fn of(records: &[f32]) -> GrassHash {
+        let (whole, rest) = records.as_chunks::<{ Self::RECORD_FLOATS }>();
+        debug_assert!(rest.is_empty());
+        let mut hash = GrassHash { ordered: Self::FNV_OFFSET, unordered: 0 };
+        for record in whole {
+            let one = record.iter().fold(Self::FNV_OFFSET, |one, value| (one ^ value.to_bits() as u64).wrapping_mul(Self::FNV_PRIME));
+            hash.ordered = (hash.ordered ^ one).wrapping_mul(Self::FNV_PRIME);
+            hash.unordered = hash.unordered.wrapping_add(one);
+        }
+        hash
+    }
+
+    /// The report line of a call: the frame of the main view counted so far, the view it is for,
+    /// the records drawn and whether the limit of records cut the choice.
+    fn line(&self, frame: u64, main: bool, record_floats: usize, cut: bool) -> String {
+        format!(
+            "grass hash frame {} {}: {} records, cut {}, ordered {:016x}, unordered {:016x}",
+            frame,
+            if main { "main" } else { "view" },
+            record_floats / Self::RECORD_FLOATS,
+            cut,
+            self.ordered,
+            self.unordered
+        )
+    }
+}
+
 /// What the loader thread gives to the renderer: the catalog, and the bytes of the texture
 /// files in the order of the catalog ([`None`] for a file that is not there).
 struct Loaded {
@@ -1674,6 +1721,8 @@ pub struct Statics {
     /// The draws of the call in the order of the draw, and their records, kept from call to call.
     grass_order: GrassOrder,
     grass_records: Vec<f32>,
+    /// Each grass call reports the hash of its records (`MGE_XE_GRASS_HASH=1`), read once.
+    grass_hash: bool,
     /// The clock of the arrivals, and the time a subset takes to come in (0: no fade-in).
     clock: Instant,
     fade_seconds: f32,
@@ -1804,6 +1853,7 @@ impl Statics {
             grass_draws: Vec::new(),
             grass_order: GrassOrder::default(),
             grass_records: Vec::new(),
+            grass_hash: nirender_wgpu::switches::on("MGE_XE_GRASS_HASH") == Some(true),
             clock: Instant::now(),
             fade_seconds: 1.0,
             prefetching: false,
@@ -2638,6 +2688,9 @@ impl Statics {
             let draw = &draws[index as usize];
             draw.record.into_iter().chain([draw.fade, draw.bent, 0.0, 0.0])
         }));
+        if self.grass_hash {
+            println!("{}", GrassHash::of(&self.grass_records).line(self.grass_frames, main, self.grass_records.len(), cut));
+        }
         scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&self.grass_records));
         counts.records_seconds = records_started.elapsed().as_secs_f64();
         let setup_started = Instant::now();
@@ -3672,8 +3725,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         usage: wgpu::BufferUsages::VERTEX,
     });
     let pools = cull::Pools::new(catalog.textures.len(), device);
-    let forced_cpu = nirender_wgpu::switches::choice("MGE_XE_STATICS_CULL", &["cpu", "gpu"]) == Some("cpu");
-    let culling = if cull::supported(device) && !forced_cpu {
+    let culling = if cull::supported(device) {
         let places: Vec<cull::Place> = catalog
             .instances
             .iter()
@@ -3682,10 +3734,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         println!("distant statics: the places are chosen on the GPU");
         Some(cull::Culling::new(device, &places, catalog.subsets.len(), catalog.textures.len()))
     } else {
-        println!(
-            "distant statics: the places are chosen on the CPU ({})",
-            if forced_cpu { "MGE_XE_STATICS_CULL=cpu" } else { "the device has no first instance or count for indirect draws" }
-        );
+        println!("distant statics: the places are chosen on the CPU (the device has no first instance or count for indirect draws)");
         None
     };
 
@@ -3854,7 +3903,54 @@ mod shader_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{grass_record, world_matrix, GrassDraw, GrassKept, GrassOrder, GrassParts, GrassMiss, GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, CELL, GRASS_KEEP_CALLS, GRASS_RECORDS};
+    use super::{grass_record, world_matrix, GrassDraw, GrassHash, GrassKept, GrassOrder, GrassParts, GrassMiss, GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, CELL, GRASS_KEEP_CALLS, GRASS_RECORDS};
+
+    /// A record of 16 floats that starts at `first` and rises by one.
+    fn rising_record(first: f32) -> Vec<f32> {
+        (0..16).map(|index| first + index as f32).collect()
+    }
+
+    /// The hash of known records. The numbers come from a second implementation of the hash (FNV-1a
+    /// on the bits of the floats, written in Python), not from this one.
+    #[test]
+    fn the_record_hash_has_known_values() {
+        assert_eq!(GrassHash::of(&[]), GrassHash { ordered: 0xcbf29ce484222325, unordered: 0 });
+        assert_eq!(GrassHash::of(&[0.0; 16]), GrassHash { ordered: 0x1bfc788be40011c0, unordered: 0x88201fb960ff6465 });
+        assert_eq!(GrassHash::of(&rising_record(0.0)), GrassHash { ordered: 0xebffe88ca04011c0, unordered: 0x9b3cfa2d13bf6465 });
+        let two: Vec<f32> = [rising_record(0.0), rising_record(0.5)].concat();
+        assert_eq!(GrassHash::of(&two), GrassHash { ordered: 0xd97f375d8634e75f, unordered: 0xd9548e063fdec8ca });
+    }
+
+    /// Two records in the other order change the ordered hash and keep the unordered one: the
+    /// hash shows a fault of the order that a picture does not show. A changed value, or a zero of
+    /// the other sign, changes both.
+    #[test]
+    fn the_ordered_hash_sees_the_order_and_the_unordered_hash_does_not() {
+        let forward: Vec<f32> = [rising_record(0.0), rising_record(0.5)].concat();
+        let backward: Vec<f32> = [rising_record(0.5), rising_record(0.0)].concat();
+        let (a, b) = (GrassHash::of(&forward), GrassHash::of(&backward));
+        assert_ne!(a.ordered, b.ordered);
+        assert_eq!(a.unordered, b.unordered);
+        assert_eq!(b, GrassHash { ordered: 0x5e661f88f7f4e75f, unordered: 0xd9548e063fdec8ca });
+
+        let mut changed = forward.clone();
+        changed[31] += 0.25;
+        let c = GrassHash::of(&changed);
+        assert_ne!(c.ordered, a.ordered);
+        assert_ne!(c.unordered, a.unordered);
+
+        let (zero, negative_zero) = (GrassHash::of(&[0.0; 16]), GrassHash::of(&[-0.0; 16]));
+        assert_ne!(zero.ordered, negative_zero.ordered);
+    }
+
+    /// The report line keeps the form of the first measurement (the proof of the order of 2026-11-08),
+    /// so that old and new lines compare.
+    #[test]
+    fn the_hash_line_has_the_form_of_the_first_measurement() {
+        let hash = GrassHash::of(&rising_record(0.0));
+        assert_eq!(hash.line(7, true, 16 * 3, true), "grass hash frame 7 main: 3 records, cut true, ordered ebffe88ca04011c0, unordered 9b3cfa2d13bf6465");
+        assert!(hash.line(1, false, 0, false).starts_with("grass hash frame 1 view: 0 records, cut false, ordered "));
+    }
 
     /// A small generator of numbers for the tests: the same sequence on each run.
     fn lcg(state: &mut u64) -> f32 {
@@ -4212,6 +4308,28 @@ mod tests {
         kept_call(&world, &grass, &far, &mut kept);
         assert_eq!(kept.size(), (0, 0));
         assert_eq!(kept_call(&world, &grass, &near, &mut kept), (drawn, made));
+    }
+
+    /// A call in a world space with no grass in reach (an interior) keeps nothing, and allocates
+    /// no entry for its world space. A call with grass makes the entry with its first cell.
+    #[test]
+    fn a_call_with_no_grass_allocates_no_world_space() {
+        let mut state = 5;
+        let (interior, no_grass) = random_world(&mut state, 0);
+        let sight = open_sight(&mut state, [4000.0, 4000.0, 500.0]);
+        let mut kept = GrassKept::default();
+        for _ in 0..3 {
+            let (mut draws, mut counts) = (Vec::new(), GrassParts::default());
+            interior.choose_grass(&no_grass, &sight, hidden_group, on_gpu, &mut draws, &mut counts, kept.begin(b"Balmora, Eve's House"));
+            kept.end();
+            assert!(draws.is_empty());
+        }
+        assert_eq!(kept.worlds.capacity(), 0, "the map never held a world space");
+
+        let (world, grass) = random_world(&mut state, 8000);
+        let (drawn, _) = kept_call(&world, &grass, &sight, &mut kept);
+        assert!(drawn > 0);
+        assert_eq!(kept.worlds.len(), 1);
     }
 
     /// An eye that moves to and fro across the edge of a cell makes no matrix after its first two
