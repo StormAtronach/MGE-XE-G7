@@ -20,37 +20,37 @@ pub const MIRROR: usize = 1;
 pub const SHADOW: [usize; 2] = [2, 3];
 pub const GAME: usize = 4;
 
-/// The groups of the views of their own that get the full tier (`views.full_tier_max`, at most
-/// [`TIER_VIEWS`]): the groups from [`TIER_FIRST`] on, one for each view of a frame.
-pub const TIER_FIRST: usize = 5;
-pub const TIER_VIEWS: usize = 4;
-/// The spare sets for the later calls of a place in one frame (D82 section 3.4f, R2): the
-/// first call of a place uses the place's own set, and each later call takes a spare. A call
-/// above the spares is refused and counted.
-pub const TIER_SPARES: usize = 4;
-/// The sets of the calls of a frame: the places, then the spares.
-pub const TIER_SETS: usize = TIER_VIEWS + TIER_SPARES;
-/// The groups of the grass of the views of their own: the projection of the game, as [`GAME`]
-/// has it, one for each call at the end of the world (D82 section 3.4f, slice 2).
-pub const TIER_GAME_FIRST: usize = TIER_FIRST + TIER_SETS;
-pub const VIEWS: usize = TIER_GAME_FIRST + TIER_SETS;
+/// The most places that the helper takes: one for each view slot of the host. A place is held
+/// by a view slot, so a frame cannot use more (D82 caps, design B). The player's setting
+/// (`views.full_tier_max`) is at most this, and is the number of places of a session
+/// ([`TierViews::new`]).
+pub const MAX_PLACES: usize = nirender_wgpu::stream_format::VIEW_SLOTS;
 
-/// The group of the `k`th view of its own in a frame (0 to [`TIER_VIEWS`] less 1).
-pub const fn tier(k: usize) -> usize {
-    TIER_FIRST + k
+/// The groups of the views of their own that get the full tier start here. A SET is a place
+/// (the sets from 0 to the number of places less 1) or a spare for a later call of a place in
+/// one frame (D82 section 3.4f, R2; the sets from the number of places on). Each set has two
+/// groups, side by side: the one with the projection of the land, and the one with the
+/// projection of the game for the grass at the end of the world (D82 section 3.4f, slice 2).
+/// The numbers are arithmetic with no upper bound; a group is made at the first call that
+/// needs it ([`ViewBinding::ensure_set`]) and freed with its set.
+pub const TIER_FIRST: usize = 5;
+
+/// The group with the projection of the land of the set `set`.
+pub const fn tier(set: usize) -> usize {
+    TIER_FIRST + 2 * set
 }
 
-/// The group with the projection of the game for the `k`th call at the end of the world of a
-/// view of its own in a frame (0 to [`TIER_VIEWS`] less 1).
-pub const fn tier_game(k: usize) -> usize {
-    TIER_GAME_FIRST + k
+/// The group with the projection of the game, for the grass at the end of the world, of the
+/// set `set`.
+pub const fn tier_game(set: usize) -> usize {
+    TIER_FIRST + 2 * set + 1
 }
 
 /// The group of a set of the statics. The sets 0 to 3 have the groups of the same numbers (the
 /// game view between them has no set); the sets from 4 on are the views of their own, in the
 /// groups from [`TIER_FIRST`].
 pub const fn group_of_set(set: usize) -> usize {
-    if set < GAME { set } else { set + 1 }
+    if set < GAME { set } else { tier(set - GAME) }
 }
 
 /// The values of a view; the layout of [`View`] in [`wgsl()`].
@@ -142,25 +142,32 @@ pub fn wgsl() -> String {
     format!("{VIEW_WGSL}{}", distant_lights::baked_wgsl_at(0, 1))
 }
 
-/// The views of their own that drew the full tier ([`TIER_VIEWS`] places at most): which
+/// The views of their own that drew the full tier (the places that the player allows): which
 /// group and sets a call gets, and the counts for the report. What a view needs for its own
 /// draws (its view group, its cull sets) is keyed to the PLACE of the full tier that the host
 /// gives it (`ViewKey::place`), so a mirror that keeps its place keeps its group. The writes of
 /// the view's values and of the cull values land before all commands of the frame (the
 /// one-submit rule), so a place has one call at the start and one at the end of the world in
 /// a frame with its own set: a second call of the place in the same frame would show the last
-/// call's values in both, so it takes a spare set ([`TIER_SPARES`] of them), and it is refused
-/// and counted only when no spare is left.
-#[derive(Default)]
+/// call's values in both, so it takes a spare set. There is no count cap on the spares: each
+/// (place, repeat) of a frame has one, and the sets are made on demand within the memory
+/// that the views may use (the size rule and the scope of the caller). A spare that no call
+/// used for [`SPARE_IDLE_FRAMES`] frames is listed by [`TierViews::idle_spares`], and the
+/// caller frees all its sets.
 pub struct TierViews {
+    /// The places that the player allows (`views.full_tier_max`, at most [`MAX_PLACES`]): the
+    /// sets from this number on are spares. The number does not change in a session, so a set
+    /// keeps its number.
+    places: usize,
     /// The calls at the start and at the end of the world, and the post chains (the call at the
     /// end of the scene), of the frame in progress.
     started: Calls,
     ended: Calls,
     posted: Calls,
     spares: SpareTable,
-    /// The frame of the last post chain on each set (the places and the spares).
-    post_used: [u64; TIER_SETS],
+    /// The frame of the last call of any kind on each spare set (index: the set less the number
+    /// of places); `None` for a spare that has no sets, or whose sets were listed as idle.
+    spare_used: Vec<Option<u64>>,
     /// The calls (of all three kinds) that took a spare set, and the most spare sets that one
     /// kind used in a frame.
     pub spare_calls: u64,
@@ -172,9 +179,9 @@ pub struct TierViews {
     pub post_refused: u64,
     pub post_repeated: u64,
     pub post_unserved: u64,
-    /// The view slot that each place had in its last call, and the changes of it (a place that
-    /// a view keeps does not change).
-    holder: [Option<u32>; TIER_SETS],
+    /// The view slot that each set had in its last call (by the number of the set), and the
+    /// changes of it (a place that a view keeps does not change).
+    holder: Vec<Option<u32>>,
     pub holder_changes: u64,
     /// The calls at the end of the world (the grass) that were served, the ones refused (no
     /// place, or a place above the cap) and the ones refused because their place had a call in
@@ -199,8 +206,20 @@ pub struct TierViews {
     /// The draws of the land meshes and the draw calls of the statics, in all calls.
     pub land_draws: u64,
     pub static_calls: u64,
-    /// The bytes of GPU memory that the sets of the views of their own made.
+    /// The bytes of GPU memory that the sets of the views of their own made, in all (what
+    /// exists now is counted from the sets, not from this: [`TierViews::note_live`]).
     pub bytes: u64,
+    /// The most bytes that the sets of the views of their own had at one time.
+    pub peak_live: u64,
+    /// After an out-of-memory error at a creation, no new set is made until one is freed.
+    held: bool,
+    /// The sets (or growths) that the size rule refused, the ones refused while the views were
+    /// held, and the creations whose scope caught an out-of-memory error.
+    pub refused_budget: u64,
+    pub refused_held: u64,
+    pub creation_errors: u64,
+    /// The sets of spares and places that were freed (all their parts).
+    pub sets_freed: u64,
     /// The near plane of the last call that was logged, and how many lines were logged.
     last_near: f32,
     near_lines: u32,
@@ -210,10 +229,15 @@ pub struct TierViews {
 const NEAR_LINES: u32 = 12;
 
 /// The calls of one kind in the frame in progress.
-#[derive(Default)]
 struct Calls {
-    /// The frame of the last call of each place's own set.
-    placed: [Option<u64>; TIER_VIEWS],
+    /// The frame of the last call of each place's own set (by the number of the place).
+    placed: Vec<Option<u64>>,
+}
+
+impl Calls {
+    fn new(places: usize) -> Calls {
+        Calls { placed: vec![None; places] }
+    }
 }
 
 /// The spare sets of the frame in progress: which repeat of which place has which spare. All
@@ -224,59 +248,207 @@ struct SpareTable {
     /// The frame that `assigned` is for.
     frame: Option<u64>,
     /// The (place, repeat) of each spare, in the order of their first call.
-    assigned: [Option<(u8, u8)>; TIER_SPARES],
+    assigned: Vec<(u8, u8)>,
 }
 
 impl SpareTable {
-    /// The number of the spare (from [`TIER_VIEWS`] on) of the repeat `repeat` of `place` in
-    /// `frame`: the one that an earlier call of the frame assigned, or the next free one; `None`
-    /// when all are assigned to other repeats.
-    fn spare_for(&mut self, frame: u64, place: u8, repeat: u8) -> Option<usize> {
+    /// The index of the spare of the repeat `repeat` of `place` in `frame`: the one that an
+    /// earlier call of the frame assigned, or the next one. The set is the number of places
+    /// plus this index.
+    fn spare_for(&mut self, frame: u64, place: u8, repeat: u8) -> usize {
         if self.frame != Some(frame) {
             self.frame = Some(frame);
-            self.assigned = Default::default();
+            self.assigned.clear();
         }
-        let index = match self.assigned.iter().position(|assigned| *assigned == Some((place, repeat))) {
+        match self.assigned.iter().position(|assigned| *assigned == (place, repeat)) {
             Some(index) => index,
             None => {
-                let free = self.assigned.iter().position(Option::is_none)?;
-                self.assigned[free] = Some((place, repeat));
-                free
+                self.assigned.push((place, repeat));
+                self.assigned.len() - 1
             }
-        };
-        Some(TIER_VIEWS + index)
+        }
     }
 }
 
-/// The frames that a spare's post state may stay unused before it is freed (D82 section 3.4f, R2).
+/// The frames that a spare may stay unused before all its sets are freed (D82 section 3.4f, R2,
+/// and design B of the caps).
 pub const SPARE_IDLE_FRAMES: u64 = 60;
+
+/// What the views of their own may have on the GPU when the budget of the memory heap is not
+/// known (a backend other than Vulkan, or no `VK_EXT_memory_budget`).
+pub const FIXED_BUDGET: u64 = 256 << 20;
+
+/// The most bytes that the sets of the views of their own may have, those that exist now
+/// (`live`) included. `heap` is the budget and the use of the largest memory heap of the GPU
+/// when the driver tells them ([`super::statics::memory_budget`]): the views get what the
+/// budget leaves after the memory in use and the headroom, by the rule of the merged statics
+/// ([`super::statics::cap_from_budget`]; the use counts `live` already). Without it the
+/// budget is [`FIXED_BUDGET`].
+pub fn views_budget(heap: Option<(u64, u64)>, live: u64) -> u64 {
+    match heap {
+        Some((budget, used)) => super::statics::cap_from_budget(budget, used, live),
+        None => FIXED_BUDGET,
+    }
+}
+
+/// The size rule: bytes `wanted` for a new set, a growth of buffers or a larger post state are
+/// admitted when the bytes that exist (`live`) and these stay within `budget`.
+pub fn admits(live: u64, wanted: u64, budget: u64) -> bool {
+    live.saturating_add(wanted) <= budget
+}
+
+/// The bytes that a run makes for a state that must hold `estimate` bytes when it holds `current`
+/// now: nothing when its textures are of the right size already, else the difference (nothing
+/// when the new state is smaller). A new state, a state for another size of the picture and a
+/// remake of a pool all pass through the size rule with this number.
+pub fn bytes_needed(textures_fit: bool, estimate: u64, current: u64) -> u64 {
+    if textures_fit { 0 } else { estimate.saturating_sub(current) }
+}
+
+/// The parts that a set of the views of their own can have. Freeing a set frees all of them: the
+/// caller matches every part, so a new part is a compile error until it is freed too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetPart {
+    /// The two view groups ([`ViewBinding::ensure_set`]).
+    ViewGroups,
+    /// The cull buffers, the uniforms and the group of group 1 of the statics.
+    Statics,
+    /// The places, the uniforms and the group of the grass of the views.
+    Grass,
+    /// The buffers of the glows of the distant lights.
+    Glows,
+    /// The pool, the depth frame and the buffers of the post chain.
+    Post,
+}
+
+impl SetPart {
+    pub const ALL: [SetPart; 5] = [SetPart::ViewGroups, SetPart::Statics, SetPart::Grass, SetPart::Glows, SetPart::Post];
+}
+
+/// An error scope of the device with the filter out-of-memory, as [`within_scope`] sees it. The
+/// device's scope is [`DeviceScope`]; a test has its own, since a real out-of-memory error
+/// cannot be made in a test.
+pub trait OomScope {
+    fn push(&mut self);
+    /// Pops the scope; true when it caught an out-of-memory error.
+    fn pop_failed(&mut self) -> bool;
+}
+
+/// The error scope of a device, `ErrorFilter::OutOfMemory`. wgpu keeps error scopes for one
+/// thread, and a pop on another thread panics: every GPU object is made on the frame thread
+/// (`mgeHost64::main`, `live::run` of the host), and a scope is pushed and popped in one hook.
+pub struct DeviceScope<'a> {
+    device: &'a wgpu::Device,
+    scope: Option<wgpu::ErrorScopeGuard>,
+    thread: std::thread::ThreadId,
+}
+
+impl<'a> DeviceScope<'a> {
+    pub fn new(device: &'a wgpu::Device) -> DeviceScope<'a> {
+        DeviceScope { device, scope: None, thread: std::thread::current().id() }
+    }
+}
+
+impl OomScope for DeviceScope<'_> {
+    fn push(&mut self) {
+        debug_assert_eq!(self.thread, std::thread::current().id(), "an error scope is pushed on the thread that pops it");
+        self.scope = Some(self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory));
+    }
+
+    fn pop_failed(&mut self) -> bool {
+        debug_assert_eq!(self.thread, std::thread::current().id(), "an error scope is popped on the thread that pushed it");
+        self.scope.take().is_some_and(|scope| pollster::block_on(scope.pop()).is_some())
+    }
+}
+
+/// Runs `make` inside an out-of-memory scope. Gives what it made, or `None` when the scope caught
+/// an error: what was made is dropped, and the caller counts the refusal
+/// ([`TierViews::creation_failed`]) and frees the other parts of the set.
+pub fn within_scope<T>(scope: &mut impl OomScope, make: impl FnOnce() -> T) -> Option<T> {
+    scope.push();
+    let made = make();
+    if scope.pop_failed() {
+        drop(made);
+        return None;
+    }
+    Some(made)
+}
 
 /// The answer to a call that asks for its place.
 enum Claim {
     /// The place's own set: the number of the place.
     Served(usize),
-    /// A spare set, for a later call of the place in the same frame: its number, from
-    /// [`TIER_VIEWS`] on.
+    /// A spare set, for a later call of the place in the same frame: its number, from the
+    /// number of places on.
     Spare(usize),
-    /// The view has no place, or one above the cap of [`TIER_VIEWS`].
+    /// The view has no place, or one at or above the number of places.
     Refused,
-    /// The place had a call of this kind in the same frame already, and all spares were taken.
+    /// The place had a call of this kind in the same frame already.
     Repeated,
 }
 
 impl TierViews {
+    /// The views of their own for `places` places (`views.full_tier_max`); a number above
+    /// [`MAX_PLACES`] is clamped.
+    pub fn new(places: usize) -> TierViews {
+        let places = places.min(MAX_PLACES);
+        TierViews {
+            places,
+            started: Calls::new(places),
+            ended: Calls::new(places),
+            posted: Calls::new(places),
+            spares: SpareTable::default(),
+            spare_used: Vec::new(),
+            spare_calls: 0,
+            spare_peak: 0,
+            post_calls: 0,
+            post_refused: 0,
+            post_repeated: 0,
+            post_unserved: 0,
+            holder: Vec::new(),
+            holder_changes: 0,
+            calls_after: 0,
+            refused_after: 0,
+            repeated_after: 0,
+            grass_calls: 0,
+            grass_places: 0,
+            glow_calls: 0,
+            calls: 0,
+            refused: 0,
+            repeated: 0,
+            unserved: 0,
+            orthographic: 0,
+            land_draws: 0,
+            static_calls: 0,
+            bytes: 0,
+            peak_live: 0,
+            held: false,
+            refused_budget: 0,
+            refused_held: 0,
+            creation_errors: 0,
+            sets_freed: 0,
+            last_near: 0.0,
+            near_lines: 0,
+        }
+    }
+
+    /// The number of places; the sets from this number on are spares.
+    pub fn places(&self) -> usize {
+        self.places
+    }
+
     /// The number of the place for a call at the start of the world in `frame` (the place of the
-    /// view's key, 0 to [`TIER_VIEWS`] less 1); `None` when the view has no place or one above
-    /// the cap, or when the place had its call in this frame already.
+    /// view's key, below the number of places); `None` when the view has no place or one at or
+    /// above the number of places, or when the place had its call in this frame already.
     pub fn claim(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Option<usize> {
-        match Self::take(&mut self.started, &mut self.spares, frame, place, repeat) {
+        match Self::take(self.places, &mut self.started, &mut self.spares, frame, place, repeat) {
             Claim::Served(place) => {
                 self.calls += 1;
                 Some(place)
             }
             Claim::Spare(set) => {
                 self.calls += 1;
-                self.note_spare(set);
+                self.note_spare(set, frame);
                 Some(set)
             }
             Claim::Repeated => {
@@ -293,14 +465,14 @@ impl TierViews {
     /// The number of the place for a call at the end of the world, as [`claim`](Self::claim)
     /// does for the calls at the start.
     pub fn claim_after(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Option<usize> {
-        match Self::take(&mut self.ended, &mut self.spares, frame, place, repeat) {
+        match Self::take(self.places, &mut self.ended, &mut self.spares, frame, place, repeat) {
             Claim::Served(place) => {
                 self.calls_after += 1;
                 Some(place)
             }
             Claim::Spare(set) => {
                 self.calls_after += 1;
-                self.note_spare(set);
+                self.note_spare(set, frame);
                 Some(set)
             }
             Claim::Repeated => {
@@ -318,15 +490,14 @@ impl TierViews {
     /// [`claim`](Self::claim) does for the calls at the start. The post state of a place
     /// ([`super::post::PostView`]) is written once in a frame.
     pub fn claim_post(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Option<usize> {
-        match Self::take(&mut self.posted, &mut self.spares, frame, place, repeat) {
+        match Self::take(self.places, &mut self.posted, &mut self.spares, frame, place, repeat) {
             Claim::Served(place) => {
                 self.post_calls += 1;
                 Some(place)
             }
             Claim::Spare(set) => {
                 self.post_calls += 1;
-                self.note_spare(set);
-                self.post_used[set] = frame;
+                self.note_spare(set, frame);
                 Some(set)
             }
             Claim::Repeated => {
@@ -343,18 +514,18 @@ impl TierViews {
     /// The report line of the post chain of the views of their own.
     pub fn post_line(&self) -> String {
         format!(
-            "post chain of the views of their own: {} calls, {} refused (no place, or a place above {TIER_VIEWS}), {} refused for a second call of a place in a frame with no spare set left, {} could not run",
-            self.post_calls, self.post_refused, self.post_repeated, self.post_unserved
+            "post chain of the views of their own: {} calls, {} refused (no place, or a place at or above {}), {} refused for a second call of a place in a frame, {} could not run",
+            self.post_calls, self.post_refused, self.places, self.post_repeated, self.post_unserved
         )
     }
 
     /// The first scene of a place in a frame (`repeat` 0) takes the place's own set. A later
     /// scene of the place (`repeat` from 1, counted by the host) takes the spare of its (place,
     /// repeat), the one-submit rule: the writes of a set land before all commands of the frame,
-    /// so two calls cannot share one. With no spare left, or a second call of one set by one
-    /// kind, it is refused as a repeat.
-    fn take(calls: &mut Calls, spares: &mut SpareTable, frame: u64, place: Option<u8>, repeat: u8) -> Claim {
-        let Some(place) = place.filter(|&place| usize::from(place) < TIER_VIEWS) else { return Claim::Refused };
+    /// so two calls cannot share one. A second call of one set by one kind is refused as a
+    /// repeat.
+    fn take(places: usize, calls: &mut Calls, spares: &mut SpareTable, frame: u64, place: Option<u8>, repeat: u8) -> Claim {
+        let Some(place) = place.filter(|&place| usize::from(place) < places) else { return Claim::Refused };
         if repeat == 0 {
             if calls.placed[usize::from(place)] == Some(frame) {
                 return Claim::Repeated;
@@ -362,33 +533,92 @@ impl TierViews {
             calls.placed[usize::from(place)] = Some(frame);
             return Claim::Served(usize::from(place));
         }
-        match spares.spare_for(frame, place, repeat) {
-            Some(set) => Claim::Spare(set),
-            None => Claim::Repeated,
+        Claim::Spare(places + spares.spare_for(frame, place, repeat))
+    }
+
+    /// The numbers of the spares that no call used for more than [`SPARE_IDLE_FRAMES`] frames
+    /// before `frame`. Each is listed once: the caller frees all its sets (the view groups, the
+    /// statics, the glows, the grass and the post state), and the spare starts again at its next
+    /// call. A call of any kind on a spare counts as a use.
+    pub fn idle_spares(&mut self, frame: u64) -> Vec<usize> {
+        let places = self.places;
+        let mut idle = Vec::new();
+        for (index, used) in self.spare_used.iter_mut().enumerate() {
+            if used.is_some_and(|last| frame.saturating_sub(last) > SPARE_IDLE_FRAMES) {
+                *used = None;
+                idle.push(places + index);
+            }
         }
+        for &set in &idle {
+            if let Some(holder) = self.holder.get_mut(set) {
+                *holder = None;
+            }
+        }
+        idle
     }
 
-    /// The numbers of the spares whose post state is present and has had no run for more than
-    /// [`SPARE_IDLE_FRAMES`] frames before `frame`: the state of each is freed. A post claim of
-    /// a spare ([`claim_post`](Self::claim_post)) counts as a run.
-    pub fn idle_post_spares(&self, present: [bool; TIER_SETS], frame: u64) -> Vec<usize> {
-        (TIER_VIEWS..TIER_SETS).filter(|&set| present[set] && frame.saturating_sub(self.post_used[set]) > SPARE_IDLE_FRAMES).collect()
-    }
-
-    /// Counts a call on a spare set `set` (a number from [`TIER_VIEWS`] on) and the peak of the
-    /// spares of a frame.
-    fn note_spare(&mut self, set: usize) {
+    /// Counts a call on a spare set `set` (a number from the number of places on), marks it used
+    /// in `frame` and keeps the peak of the spares of a frame.
+    fn note_spare(&mut self, set: usize, frame: u64) {
+        let index = set - self.places;
         self.spare_calls += 1;
-        self.spare_peak = self.spare_peak.max(set - TIER_VIEWS + 1);
+        self.spare_peak = self.spare_peak.max(index + 1);
+        if self.spare_used.len() <= index {
+            self.spare_used.resize(index + 1, None);
+        }
+        self.spare_used[index] = Some(frame);
     }
 
-    /// Notes the view slot of a call of `place`; true when the place had another slot in its last
-    /// call, or none yet (the call then logs the change).
-    pub fn note_holder(&mut self, place: usize, slot: u32) -> bool {
-        if self.holder[place] == Some(slot) {
+    /// Asks to make something of `wanted` bytes when `live` bytes exist and `budget` is the most.
+    /// False (and counted) while the views are held after a creation error, or when the size
+    /// rule refuses: the call then draws without that part. The caller makes it inside an
+    /// out-of-memory scope ([`within_scope`]) and tells a failure ([`creation_failed`]).
+    ///
+    /// [`creation_failed`]: Self::creation_failed
+    pub fn admit(&mut self, live: u64, wanted: u64, budget: u64) -> bool {
+        if self.held {
+            self.refused_held += 1;
             return false;
         }
-        self.holder[place] = Some(slot);
+        if !admits(live, wanted, budget) {
+            self.refused_budget += 1;
+            return false;
+        }
+        true
+    }
+
+    /// The scope of a creation caught an out-of-memory error: the caller dropped the set. No new
+    /// set is made until one is freed ([`freed`](Self::freed)).
+    pub fn creation_failed(&mut self) {
+        self.creation_errors += 1;
+        self.held = true;
+    }
+
+    /// Something was freed (a set, or the post state of a place): the views are no longer held.
+    pub fn freed(&mut self) {
+        self.held = false;
+    }
+
+    /// True while no new set is made.
+    pub fn held(&self) -> bool {
+        self.held
+    }
+
+    /// Notes the bytes that the sets of the views of their own have now.
+    pub fn note_live(&mut self, live: u64) {
+        self.peak_live = self.peak_live.max(live);
+    }
+
+    /// Notes the view slot of a call of the set `set`; true when the set had another slot in its
+    /// last call, or none yet (the call then logs the change).
+    pub fn note_holder(&mut self, set: usize, slot: u32) -> bool {
+        if self.holder.len() <= set {
+            self.holder.resize(set + 1, None);
+        }
+        if self.holder[set] == Some(slot) {
+            return false;
+        }
+        self.holder[set] = Some(slot);
         self.holder_changes += 1;
         true
     }
@@ -407,9 +637,10 @@ impl TierViews {
     /// The report line, for the end of the session.
     pub fn line(&self) -> String {
         format!(
-            "views of their own: {} calls at the start of the world (land, statics, glows), {} refused (no place, or a place above {TIER_VIEWS}), {} refused for a second call of a place in a frame with no spare set left, {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls, {} calls drew glows; {} calls at the end of the world (grass), {} refused, {} refused for a second call of a place in a frame with no spare set left, {} drew {} grass places (the bound views.full_tier_max is the host's, in its full tier line); {} changes of the view that holds a place; {} calls took a spare set (at most {} spares in a frame, of {TIER_SPARES} for all places and kinds of call together); {:.1} MB made for their sets",
+            "views of their own: {} calls at the start of the world (land, statics, glows), {} refused (no place, or a place at or above {}), {} refused for a second call of a place in a frame, {} could not draw, {} had an orthographic projection; {} land mesh draws, {} statics draw calls, {} calls drew glows; {} calls at the end of the world (grass), {} refused, {} refused for a second call of a place in a frame, {} drew {} grass places (the bound views.full_tier_max is the host's, in its full tier line); {} changes of the view that holds a place; {} calls took a spare set (at most {} spares in a frame, for all places and kinds of call together); {:.1} MB made for their sets, {:.1} MB at most at one time; {} sets or growths refused by the size rule, {} refused while held after an out-of-memory error, {} creations caught an out-of-memory error, {} sets freed",
             self.calls,
             self.refused,
+            self.places,
             self.repeated,
             self.unserved,
             self.orthographic,
@@ -424,7 +655,12 @@ impl TierViews {
             self.holder_changes,
             self.spare_calls,
             self.spare_peak,
-            self.bytes as f64 / 1e6
+            self.bytes as f64 / 1e6,
+            self.peak_live as f64 / 1e6,
+            self.refused_budget,
+            self.refused_held,
+            self.creation_errors,
+            self.sets_freed
         )
     }
 }
@@ -486,10 +722,14 @@ impl EnvironmentWatch {
     }
 }
 
+/// The views of the frame by the number of their group: the fixed ones ([`MAIN`] to [`GAME`])
+/// from the start, and the two groups of each set of the views of their own ([`tier`],
+/// [`tier_game`]) when [`ViewBinding::ensure_set`] makes them. A slot that is not made is
+/// `None`.
 pub struct ViewBinding {
     pub layout: wgpu::BindGroupLayout,
-    buffers: [wgpu::Buffer; VIEWS],
-    groups: Vec<wgpu::BindGroup>,
+    buffers: Vec<Option<wgpu::Buffer>>,
+    groups: Vec<Option<wgpu::BindGroup>>,
     /// The [`LightBinding::generation`] of the groups.
     generation: Option<u64>,
 }
@@ -504,42 +744,87 @@ impl ViewBinding {
         }];
         entries.extend(LightBinding::layout_entries(1));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("view"), entries: &entries });
-        let buffers = core::array::from_fn(|_| {
-            device.create_buffer(&wgpu::BufferDescriptor { label: Some("view"), size: size_of::<View>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
-        });
+        let buffers = (0..TIER_FIRST).map(|_| Some(Self::make_buffer(device))).collect();
         ViewBinding { layout, buffers, groups: Vec::new(), generation: None }
     }
 
-    /// Makes the groups again when the baked light has changed since they were made.
+    fn make_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor { label: Some("view"), size: size_of::<View>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+    }
+
+    fn make_group(&self, device: &wgpu::Device, light: &LightBinding, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
+        let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }];
+        entries.extend(light.entries(1));
+        device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("view"), layout: &self.layout, entries: &entries })
+    }
+
+    /// Makes the groups again when the baked light has changed since they were made: the fixed
+    /// views and the sets that exist.
     pub fn refresh(&mut self, device: &wgpu::Device, light: &LightBinding) {
         if self.generation == Some(light.generation) {
             return;
         }
         self.generation = Some(light.generation);
-        self.groups = self
-            .buffers
-            .iter()
-            .map(|buffer| {
-                let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }];
-                entries.extend(light.entries(1));
-                device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("view"), layout: &self.layout, entries: &entries })
-            })
-            .collect();
+        let groups = self.buffers.iter().map(|buffer| buffer.as_ref().map(|buffer| self.make_group(device, light, buffer))).collect();
+        self.groups = groups;
+    }
+
+    /// True when `refresh` has made the groups of the fixed views.
+    pub fn is_ready(&self) -> bool {
+        self.generation.is_some()
+    }
+
+    /// Makes the two groups of the set `set` (and their buffers) when they are not there. Gives
+    /// false before `refresh` has made the groups of the fixed views: the light is not known.
+    pub fn ensure_set(&mut self, device: &wgpu::Device, light: &LightBinding, set: usize) -> bool {
+        if self.generation != Some(light.generation) {
+            return false;
+        }
+        let last = tier_game(set);
+        if self.buffers.len() <= last {
+            self.buffers.resize_with(last + 1, || None);
+        }
+        if self.groups.len() <= last {
+            self.groups.resize_with(last + 1, || None);
+        }
+        for number in [tier(set), tier_game(set)] {
+            if self.buffers[number].is_none() {
+                let buffer = Self::make_buffer(device);
+                self.groups[number] = Some(self.make_group(device, light, &buffer));
+                self.buffers[number] = Some(buffer);
+            }
+        }
+        true
+    }
+
+    /// Frees the two groups of the set `set`.
+    pub fn release_set(&mut self, set: usize) {
+        for number in [tier(set), tier_game(set)] {
+            if let Some(buffer) = self.buffers.get_mut(number) {
+                *buffer = None;
+            }
+            if let Some(group) = self.groups.get_mut(number) {
+                *group = None;
+            }
+        }
     }
 
     /// The values of a view for the frame. Each view has a buffer of its own: the writes come
-    /// before all commands of the frame.
+    /// before all commands of the frame. A view whose set is not made is not written.
     pub fn write(&self, queue: &wgpu::Queue, view: usize, values: &View) {
-        queue.write_buffer(&self.buffers[view], 0, bytemuck::bytes_of(values));
+        if let Some(buffer) = self.buffers.get(view).and_then(Option::as_ref) {
+            queue.write_buffer(buffer, 0, bytemuck::bytes_of(values));
+        }
     }
 
-    /// The group of a view; `refresh` makes the groups.
-    pub fn group(&self, view: usize) -> &wgpu::BindGroup {
-        &self.groups[view]
+    /// The group of a view; `None` before `refresh` has made the groups, and for a set that
+    /// is not made.
+    pub fn group(&self, view: usize) -> Option<&wgpu::BindGroup> {
+        self.groups.get(view).and_then(Option::as_ref)
     }
 
     /// The groups of all views, by their numbers; empty before `refresh`.
-    pub fn groups(&self) -> &[wgpu::BindGroup] {
+    pub fn groups(&self) -> &[Option<wgpu::BindGroup>] {
         &self.groups
     }
 }
@@ -547,6 +832,9 @@ impl ViewBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The places of the views of their own in these tests (the player's setting).
+    const PLACES: usize = 4;
 
     #[test]
     fn the_view_struct_has_the_size_of_its_wgsl() {
@@ -594,26 +882,31 @@ mod tests {
     /// numbers, the views of their own after the game view, and no two sets share a group.
     #[test]
     fn each_set_of_the_statics_has_a_group_of_its_own() {
-        let groups: Vec<usize> = (0..4 + TIER_SETS).map(group_of_set).collect();
+        // The places and the spares of a session with the most places, and many spares.
+        let sets = 4 + MAX_PLACES + 200;
+        let groups: Vec<usize> = (0..sets).map(group_of_set).collect();
         assert_eq!(&groups[..4], &[MAIN, MIRROR, SHADOW[0], SHADOW[1]]);
         assert!(!groups.contains(&GAME));
         assert_eq!(groups[4], tier(0));
-        assert_eq!(*groups.last().unwrap(), tier(TIER_SETS - 1));
-        let mut sorted = groups.clone();
-        sorted.dedup();
-        assert_eq!(sorted.len(), groups.len());
-        assert!(groups.iter().all(|&group| group < VIEWS));
-        // The groups with the game's projection for the grass of the views of their own come
-        // after the groups of the sets and are all different.
-        assert_eq!(tier_game(0), tier(TIER_SETS - 1) + 1);
-        assert_eq!(tier_game(TIER_SETS - 1) + 1, VIEWS);
+        assert_eq!(*groups.last().unwrap(), tier(sets - 5));
+        // The groups of the land and of the game's projection, of every set: all different,
+        // none of them a fixed view, and in the order of the sets.
+        let mut all: Vec<usize> = (0..sets - 4).flat_map(|set| [tier(set), tier_game(set)]).collect();
+        assert!(all.iter().all(|&group| group >= TIER_FIRST));
+        assert!(all.windows(2).all(|pair| pair[0] < pair[1]));
+        all.extend(groups[..4].iter().copied().chain([GAME]));
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 2 * (sets - 4) + 5);
+        // The groups of the sets are the land's, one for each set of the statics.
+        assert!((0..sets - 4).all(|set| group_of_set(4 + set) == tier(set)));
     }
 
     /// A call is keyed to the place of its view: the number it gets is the place, in any order of
     /// the calls, and the calls at the start and at the end of the world are counted apart.
     #[test]
     fn a_call_gets_the_number_of_its_place_in_any_order() {
-        let mut tier = TierViews::default();
+        let mut tier = TierViews::new(PLACES);
         assert_eq!(tier.claim(3, Some(2), 0), Some(2));
         assert_eq!(tier.claim_after(3, Some(0), 0), Some(0));
         assert_eq!(tier.claim(3, Some(0), 0), Some(0));
@@ -632,36 +925,58 @@ mod tests {
     /// call of the repeat took.
     #[test]
     fn a_call_without_a_place_is_refused_and_a_repeat_of_a_place_takes_a_spare() {
-        let mut tier = TierViews::default();
+        let mut tier = TierViews::new(PLACES);
         assert_eq!(tier.claim(7, None, 0), None);
-        assert_eq!(tier.claim(7, Some(TIER_VIEWS as u8), 0), None);
+        assert_eq!(tier.claim(7, Some(PLACES as u8), 0), None);
         assert_eq!(tier.claim(7, Some(1), 0), Some(1));
-        assert_eq!(tier.claim(7, Some(1), 1), Some(TIER_VIEWS));
-        assert_eq!(tier.claim(7, Some(1), 2), Some(TIER_VIEWS + 1));
+        assert_eq!(tier.claim(7, Some(1), 1), Some(PLACES));
+        assert_eq!(tier.claim(7, Some(1), 2), Some(PLACES + 1));
         // A repeat of another place takes the next spares.
         assert_eq!(tier.claim(7, Some(2), 0), Some(2));
-        assert_eq!(tier.claim(7, Some(2), 1), Some(TIER_VIEWS + 2));
-        assert_eq!(tier.claim(7, Some(2), 2), Some(TIER_VIEWS + 3));
-        // No spare is left in this frame.
-        assert_eq!(tier.claim(7, Some(1), 3), None);
+        assert_eq!(tier.claim(7, Some(2), 1), Some(PLACES + 2));
+        assert_eq!(tier.claim(7, Some(2), 2), Some(PLACES + 3));
+        // There is no count cap on the spares: the 5th to the 8th repeat of one place in a frame
+        // each have a spare of their own.
+        let later: Vec<Option<usize>> = (3..=6).map(|repeat| tier.claim(7, Some(1), repeat)).collect();
+        assert_eq!(later, vec![Some(PLACES + 4), Some(PLACES + 5), Some(PLACES + 6), Some(PLACES + 7)]);
         // The calls at the end of the world count apart and take the same spares.
         assert_eq!(tier.claim_after(7, Some(1), 0), Some(1));
-        assert_eq!(tier.claim_after(7, Some(1), 1), Some(TIER_VIEWS));
+        assert_eq!(tier.claim_after(7, Some(1), 1), Some(PLACES));
+        assert_eq!(tier.claim_after(7, Some(1), 6), Some(PLACES + 7));
         assert_eq!(tier.claim_after(7, None, 0), None);
-        assert_eq!((tier.calls, tier.refused, tier.repeated), (6, 2, 1));
-        assert_eq!((tier.calls_after, tier.refused_after, tier.repeated_after), (2, 1, 0));
-        assert_eq!((tier.spare_calls, tier.spare_peak), (5, TIER_SPARES));
-        // The next frame serves the place again, with its own set, and the spares are free.
+        assert_eq!((tier.calls, tier.refused, tier.repeated), (10, 2, 0));
+        assert_eq!((tier.calls_after, tier.refused_after, tier.repeated_after), (3, 1, 0));
+        assert_eq!((tier.spare_calls, tier.spare_peak), (10, 8));
+        // The next frame serves the place again, with its own set, and the spares start again.
         assert_eq!((tier.claim(8, Some(1), 0), tier.claim_after(8, Some(1), 0)), (Some(1), Some(1)));
-        assert_eq!(tier.claim(8, Some(1), 1), Some(TIER_VIEWS));
+        assert_eq!(tier.claim(8, Some(1), 1), Some(PLACES));
+        // A second call of the same kind on the place's own set is a repeat that was not counted by
+        // the host: refused apart.
+        assert_eq!(tier.claim(8, Some(1), 0), None);
+        assert_eq!(tier.repeated, 1);
         let line = tier.line();
-        assert!(line.contains("refused") && line.contains("no spare set left") && line.contains("6 calls took a spare set"), "{line}");
+        assert!(line.contains("refused") && line.contains("11 calls took a spare set"), "{line}");
+    }
+
+    /// A place at or above the number of places that the player allows is refused, and the number
+    /// of places is clamped to the bound of the code.
+    #[test]
+    fn the_number_of_places_bounds_the_claims() {
+        let mut tier = TierViews::new(2);
+        assert_eq!((tier.claim(1, Some(1), 0), tier.claim(1, Some(2), 0)), (Some(1), None));
+        // The spares start at the number of places.
+        assert_eq!(tier.claim(1, Some(1), 1), Some(2));
+        let mut wide = TierViews::new(1000);
+        assert_eq!(wide.places(), MAX_PLACES);
+        assert_eq!(wide.claim(1, Some(MAX_PLACES as u8 - 1), 0), Some(MAX_PLACES - 1));
+        assert_eq!(wide.claim(1, Some(MAX_PLACES as u8), 0), None);
+        assert_eq!(wide.claim(1, Some(0), 1), Some(MAX_PLACES));
     }
 
     /// The view slot of a place is noted once: the same slot again is no change, another slot is.
     #[test]
     fn a_change_of_the_view_that_holds_a_place_is_noted() {
-        let mut tier = TierViews::default();
+        let mut tier = TierViews::new(PLACES);
         assert!(tier.note_holder(0, 5));
         assert!(!tier.note_holder(0, 5));
         assert!(tier.note_holder(1, 5));
@@ -676,18 +991,18 @@ mod tests {
     /// world do not count against it.
     #[test]
     fn the_post_chain_of_a_place_goes_once_in_a_frame_on_its_own_state() {
-        let mut tier = TierViews::default();
+        let mut tier = TierViews::new(PLACES);
         assert_eq!(tier.claim_post(10, Some(2), 0), Some(2));
-        assert_eq!(tier.claim_post(10, Some(2), 1), Some(TIER_VIEWS));
+        assert_eq!(tier.claim_post(10, Some(2), 1), Some(PLACES));
         assert_eq!(tier.claim_post(10, Some(0), 0), Some(0));
         assert_eq!(tier.claim_post(10, None, 0), None);
-        assert_eq!(tier.claim_post(10, Some(TIER_VIEWS as u8), 0), None);
+        assert_eq!(tier.claim_post(10, Some(PLACES as u8), 0), None);
         assert_eq!(tier.claim_post(11, Some(2), 0), Some(2));
         assert_eq!((tier.post_calls, tier.post_repeated, tier.post_refused), (4, 0, 2));
         assert_eq!(tier.claim(10, Some(2), 0), Some(2));
         assert_eq!(tier.claim_after(10, Some(2), 0), Some(2));
         let line = tier.post_line();
-        assert!(line.contains("4 calls, 2 refused") && line.contains("no spare set left"), "{line}");
+        assert!(line.contains("4 calls, 2 refused") && line.contains("or above 4"), "{line}");
     }
 
     /// A repeat holds one spare for all three kinds of call, also when a kind skips some scenes
@@ -696,48 +1011,248 @@ mod tests {
     /// place 2's repeat is the same in every kind, whichever kind calls first.
     #[test]
     fn a_repeat_holds_one_spare_for_all_kinds_when_a_kind_skips_a_scene() {
-        let mut tier = TierViews::default();
+        let mut tier = TierViews::new(PLACES);
         // The world start: place 1's repeat gets the first spare, place 2's the second.
         assert_eq!(tier.claim(7, Some(1), 0), Some(1));
-        assert_eq!(tier.claim(7, Some(1), 1), Some(TIER_VIEWS));
+        assert_eq!(tier.claim(7, Some(1), 1), Some(PLACES));
         assert_eq!(tier.claim(7, Some(2), 0), Some(2));
-        assert_eq!(tier.claim(7, Some(2), 1), Some(TIER_VIEWS + 1));
+        assert_eq!(tier.claim(7, Some(2), 1), Some(PLACES + 1));
         // The post chain and the grass run on place 2 only: their repeat has the second spare
         // (counted by each kind alone it would be the first, place 1's).
         assert_eq!(tier.claim_post(7, Some(2), 0), Some(2));
-        assert_eq!(tier.claim_post(7, Some(2), 1), Some(TIER_VIEWS + 1));
+        assert_eq!(tier.claim_post(7, Some(2), 1), Some(PLACES + 1));
         assert_eq!(tier.claim_after(7, Some(2), 0), Some(2));
-        assert_eq!(tier.claim_after(7, Some(2), 1), Some(TIER_VIEWS + 1));
+        assert_eq!(tier.claim_after(7, Some(2), 1), Some(PLACES + 1));
         // The other way: the kind that skips place 1 comes first in the next frame.
-        assert_eq!(tier.claim_post(8, Some(2), 1), Some(TIER_VIEWS));
-        assert_eq!(tier.claim(8, Some(1), 1), Some(TIER_VIEWS + 1));
-        assert_eq!(tier.claim(8, Some(2), 1), Some(TIER_VIEWS));
-        assert_eq!(tier.claim_after(8, Some(1), 1), Some(TIER_VIEWS + 1));
+        assert_eq!(tier.claim_post(8, Some(2), 1), Some(PLACES));
+        assert_eq!(tier.claim(8, Some(1), 1), Some(PLACES + 1));
+        assert_eq!(tier.claim(8, Some(2), 1), Some(PLACES));
+        assert_eq!(tier.claim_after(8, Some(1), 1), Some(PLACES + 1));
     }
 
-    /// The post state of a spare is freed when no run used it for more than [`SPARE_IDLE_FRAMES`]
-    /// frames; a post claim marks it used, a place's own state is never listed, and a spare with
-    /// no state is not listed.
+    /// A spare is listed as idle when no call of any kind used it for more than
+    /// [`SPARE_IDLE_FRAMES`] frames, once; a call of any kind marks it used, a place's own set is
+    /// never listed, and a spare that was listed starts again at its next call.
     #[test]
     fn an_idle_spare_is_listed_after_the_idle_frames_and_a_used_one_is_not() {
-        let mut tier = TierViews::default();
-        let mut present = [false; TIER_SETS];
-        present[0] = true;
-        present[TIER_VIEWS] = true;
-        present[TIER_VIEWS + 1] = true;
-        assert_eq!(tier.claim_post(100, Some(1), 1), Some(TIER_VIEWS));
-        assert_eq!(tier.claim_post(100, Some(2), 1), Some(TIER_VIEWS + 1));
-        // At the limit it stays; one frame later it goes.
-        assert!(tier.idle_post_spares(present, 100 + SPARE_IDLE_FRAMES).is_empty());
-        assert_eq!(tier.idle_post_spares(present, 101 + SPARE_IDLE_FRAMES), vec![TIER_VIEWS, TIER_VIEWS + 1]);
-        // A later post claim of the first spare marks it used: it stays while the other goes.
-        assert_eq!(tier.claim_post(150, Some(1), 1), Some(TIER_VIEWS));
-        assert_eq!(tier.idle_post_spares(present, 101 + SPARE_IDLE_FRAMES), vec![TIER_VIEWS + 1]);
-        // A place's own state (set 0) is not listed however old it is, nor a spare with no state.
-        present[TIER_VIEWS + 1] = false;
-        assert_eq!(tier.idle_post_spares(present, 100_000), vec![TIER_VIEWS]);
-        // A frame before the last run (a restarted counter) lists nothing.
-        assert!(tier.idle_post_spares(present, 50).is_empty());
+        let mut tier = TierViews::new(PLACES);
+        // The first spare is used by the world start, the second by the grass only, a third by
+        // the post chain only; a place's own set is called too.
+        assert_eq!(tier.claim(100, Some(0), 0), Some(0));
+        assert_eq!(tier.claim(100, Some(1), 1), Some(PLACES));
+        assert_eq!(tier.claim_after(100, Some(2), 1), Some(PLACES + 1));
+        assert_eq!(tier.claim_post(100, Some(3), 1), Some(PLACES + 2));
+        // At the limit they stay; one frame later they go.
+        assert!(tier.idle_spares(100 + SPARE_IDLE_FRAMES).is_empty());
+        // A call of the grass marks the second spare used: it stays while the others go.
+        assert_eq!(tier.claim_after(130, Some(1), 1), Some(PLACES));
+        assert_eq!(tier.idle_spares(101 + SPARE_IDLE_FRAMES), vec![PLACES + 1, PLACES + 2]);
+        // They are listed once.
+        assert_eq!(tier.idle_spares(102 + SPARE_IDLE_FRAMES), Vec::<usize>::new());
+        assert_eq!(tier.idle_spares(131 + SPARE_IDLE_FRAMES), vec![PLACES]);
+        // A place's own set is not listed however old it is, and a spare starts again at its
+        // next call.
+        assert!(tier.idle_spares(100_000).is_empty());
+        assert_eq!(tier.claim(100_001, Some(1), 1), Some(PLACES));
+        assert!(tier.idle_spares(100_001 + SPARE_IDLE_FRAMES).is_empty());
+        assert_eq!(tier.idle_spares(100_002 + SPARE_IDLE_FRAMES), vec![PLACES]);
+        // A frame before the last call (a restarted counter) lists nothing.
+        assert_eq!(tier.claim(200, Some(2), 1), Some(PLACES));
+        assert!(tier.idle_spares(50).is_empty());
+    }
+
+    /// An idle spare forgets its holder, so that the next view that takes the number is noted as
+    /// a new holder.
+    #[test]
+    fn an_idle_spare_forgets_its_holder() {
+        let mut tier = TierViews::new(PLACES);
+        assert_eq!(tier.claim(10, Some(1), 1), Some(PLACES));
+        assert!(tier.note_holder(PLACES, 5));
+        assert!(!tier.note_holder(PLACES, 5));
+        assert_eq!(tier.idle_spares(11 + SPARE_IDLE_FRAMES + 10), vec![PLACES]);
+        assert!(tier.note_holder(PLACES, 5));
+    }
+
+    /// A test scope: `error` is what each pop reports.
+    struct FakeScope {
+        error: bool,
+        pushed: u32,
+        popped: u32,
+    }
+
+    impl OomScope for FakeScope {
+        fn push(&mut self) {
+            self.pushed += 1;
+        }
+
+        fn pop_failed(&mut self) -> bool {
+            self.popped += 1;
+            self.error
+        }
+    }
+
+    /// Counts its drops.
+    struct Probe(std::rc::Rc<std::cell::Cell<u32>>);
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    /// A creation in a scope that caught an out-of-memory error is dropped and gives `None`; a
+    /// creation in a clean scope is kept. A scope is pushed and popped once for each creation.
+    #[test]
+    fn a_creation_in_a_scope_that_caught_an_error_is_dropped() {
+        let drops = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut failing = FakeScope { error: true, pushed: 0, popped: 0 };
+        assert!(within_scope(&mut failing, || Probe(drops.clone())).is_none());
+        assert_eq!((failing.pushed, failing.popped, drops.get()), (1, 1, 1));
+        let mut clean = FakeScope { error: false, pushed: 0, popped: 0 };
+        let kept = within_scope(&mut clean, || Probe(drops.clone()));
+        assert!(kept.is_some());
+        assert_eq!((clean.pushed, clean.popped, drops.get()), (1, 1, 1));
+    }
+
+    /// The whole path of a creation: the size rule, the scope, and the hold. An error in the
+    /// scope drops the set, counts it, and holds the views: no new set is made, whatever the
+    /// bytes, until a set is freed. A set that the rule refuses is counted apart.
+    #[test]
+    fn an_error_in_the_scope_holds_the_views_until_a_set_is_freed() {
+        let mut tier = TierViews::new(PLACES);
+        let drops = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut made = 0u32;
+        // The steps of the caller (`DistantLand::make_for_set`), with a test scope.
+        let mut make = |tier: &mut TierViews, error: bool, live: u64, wanted: u64, budget: u64| {
+            if !tier.admit(live, wanted, budget) {
+                return false;
+            }
+            let mut scope = FakeScope { error, pushed: 0, popped: 0 };
+            match within_scope(&mut scope, || Probe(drops.clone())) {
+                Some(_probe) => {
+                    made += 1;
+                    true
+                }
+                None => {
+                    tier.creation_failed();
+                    false
+                }
+            }
+        };
+        assert!(make(&mut tier, false, 0, 10, 100));
+        // The size rule: 91 more bytes do not fit with 10 that exist.
+        assert!(!make(&mut tier, false, 10, 91, 100));
+        assert_eq!(tier.refused_budget, 1);
+        // The error: the set is dropped and counted, and the views are held.
+        assert!(!make(&mut tier, true, 10, 10, 100));
+        assert_eq!((tier.creation_errors, tier.held(), drops.get()), (1, true, 2));
+        // Held: a tiny set that fits is refused.
+        assert!(!make(&mut tier, false, 10, 1, 100));
+        assert_eq!(tier.refused_held, 1);
+        // A free lets the next set through.
+        tier.freed();
+        assert!(!tier.held());
+        assert!(make(&mut tier, false, 10, 1, 100));
+        assert_eq!(made, 2);
+        assert!(tier.line().contains("1 sets or growths refused by the size rule, 1 refused while held after an out-of-memory error, 1 creations caught an out-of-memory error"), "{}", tier.line());
+    }
+
+    /// The size rule: what exists plus what is wanted stays within the budget; no overflow.
+    #[test]
+    fn the_size_rule_admits_what_fits_within_the_budget() {
+        assert!(admits(100, 50, 150));
+        assert!(!admits(100, 51, 150));
+        assert!(admits(0, 0, 0));
+        // The sum saturates: it never wraps round to a small number.
+        assert!(!admits(u64::MAX, 1, u64::MAX - 1));
+    }
+
+    /// The budget of the views: what the heap leaves after its use and the headroom of an eighth
+    /// (at least 256 MB, at most 1 GB), counted from the bytes that the views have; a fixed
+    /// amount where the heap is not known.
+    #[test]
+    fn the_budget_of_the_views_follows_the_heap_or_is_fixed() {
+        let gb = 1u64 << 30;
+        let mb = 1u64 << 20;
+        assert_eq!(views_budget(None, 0), FIXED_BUDGET);
+        assert_eq!(views_budget(None, 900 * mb), FIXED_BUDGET);
+        // An 8 GB budget, 3 GB in use: the headroom is the most, 1 GB; 4 GB remain, and the 512 MB
+        // that the views have (the use counts them) are theirs too.
+        assert_eq!(views_budget(Some((8 * gb, 3 * gb)), 512 * mb), 4 * gb + 512 * mb);
+        // A 1 GB budget: the headroom is the least, 256 MB.
+        assert_eq!(views_budget(Some((gb, 200 * mb)), 0), gb - 200 * mb - 256 * mb);
+        // A heap in use above its budget leaves nothing: the views keep what they have.
+        assert_eq!(views_budget(Some((gb, 2 * gb)), 64 * mb), 64 * mb);
+    }
+
+    /// A new state, a state of another picture size and a remake of a pool pass through the rule
+    /// with the bytes they add; a state of the right size adds none; a smaller one adds none.
+    #[test]
+    fn a_growth_of_a_state_is_counted_by_what_it_adds() {
+        assert_eq!(bytes_needed(true, 14, 7), 0);
+        assert_eq!(bytes_needed(false, 14, 0), 14);
+        assert_eq!(bytes_needed(false, 14, 7), 7);
+        assert_eq!(bytes_needed(false, 7, 14), 0);
+        // At the limit, the resize is refused although the state exists.
+        let (live, budget) = (100, 107);
+        assert!(admits(live, bytes_needed(false, 14, 7), budget));
+        assert!(!admits(live + 1, bytes_needed(false, 14, 7), budget));
+    }
+
+    /// Freeing a set frees every part: the list has each part once, and the renderer matches all.
+    #[test]
+    fn a_set_has_five_parts_and_each_is_listed_once() {
+        let index = |part: SetPart| match part {
+            SetPart::ViewGroups => 0,
+            SetPart::Statics => 1,
+            SetPart::Grass => 2,
+            SetPart::Glows => 3,
+            SetPart::Post => 4,
+        };
+        let mut seen: Vec<usize> = SetPart::ALL.iter().map(|&part| index(part)).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, vec![0, 1, 2, 3, 4]);
+    }
+
+    /// Real objects: the view groups of a set are made on demand, side by side, in any order;
+    /// a freed set has none, the fixed views and the other sets stay, and a refresh for a new light
+    /// remakes the groups that exist.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_groups_of_a_set_are_made_on_demand_and_freed_whole() {
+        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let mut light = LightBinding::new(&device, &queue);
+        let mut views = ViewBinding::new(&device);
+        assert!(!views.is_ready());
+        // Before a refresh there is no light: no set is made.
+        assert!(!views.ensure_set(&device, &light, 3));
+        views.refresh(&device, &light);
+        assert!(views.is_ready() && (MAIN..=GAME).all(|number| views.group(number).is_some()));
+        assert!(views.group(tier(0)).is_none());
+        // A set far from the first is made alone.
+        assert!(views.ensure_set(&device, &light, 40));
+        assert!(views.group(tier(40)).is_some() && views.group(tier_game(40)).is_some());
+        assert!(views.group(tier(39)).is_none() && views.group(tier(41)).is_none());
+        assert!(views.ensure_set(&device, &light, 2));
+        // The values of a set go to its own buffer.
+        views.write(&queue, tier(40), &bytemuck::Zeroable::zeroed());
+        views.write(&queue, tier(41), &bytemuck::Zeroable::zeroed());
+        // A new light remakes the groups that exist, and only those.
+        light.generation += 1;
+        views.refresh(&device, &light);
+        assert!(views.group(tier(40)).is_some() && views.group(tier_game(2)).is_some());
+        assert!(views.group(tier(3)).is_none());
+        // Freed: both groups of the set go, and nothing else.
+        views.release_set(40);
+        assert!(views.group(tier(40)).is_none() && views.group(tier_game(40)).is_none());
+        assert!(views.group(tier(2)).is_some() && views.group(MAIN).is_some() && views.group(GAME).is_some());
+        // The set is made again with the same numbers.
+        assert!(views.ensure_set(&device, &light, 40));
+        assert!(views.group(tier(40)).is_some());
     }
 
     /// The first record of the environment and a step of the wind above a quarter are logged; a
@@ -763,7 +1278,7 @@ mod tests {
     /// lines of a session are few.
     #[test]
     fn a_change_of_the_near_plane_is_logged_once() {
-        let mut tier = TierViews::default();
+        let mut tier = TierViews::new(PLACES);
         assert!(tier.note_near(1.0));
         assert!(!tier.note_near(1.0));
         assert!(!tier.note_near(1.005));

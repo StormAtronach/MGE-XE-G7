@@ -4650,6 +4650,15 @@ impl PostView {
         PostView::new(device, false)
     }
 
+    /// A state of a place with its textures made for a picture of `size`: it has bytes, as one that
+    /// ran the chain has. For the tests of the bytes that the views count.
+    #[cfg(test)]
+    pub fn place_with_textures(device: &wgpu::Device, size: (u32, u32)) -> PostView {
+        let mut view = PostView::new(device, false);
+        view.size_textures(device, size);
+        view
+    }
+
     fn new(device: &wgpu::Device, owns_hdr: bool) -> PostView {
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post depth"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -4664,10 +4673,29 @@ impl PostView {
     /// The bytes of GPU memory of the textures of this view: the pool, the depth frame and the
     /// measure (a texture of 512 x 512 pixels with its levels).
     pub fn bytes(&self) -> u64 {
-        let pool: u64 = self.pool.iter().map(|pooled| u64::from(self.size.0.div_ceil(pooled.scale).max(1)) * u64::from(self.size.1.div_ceil(pooled.scale).max(1)) * if pooled.half_float { 8 } else { 4 }).sum();
-        let depth = self.depth.as_ref().map_or(0, |_| u64::from(self.size.0) * u64::from(self.size.1) * 4);
+        self.bytes_at(self.size)
+    }
+
+    /// The bytes of GPU memory that the textures of this view would take for a picture of `size`:
+    /// the pool classes it has, the depth frame if it has one, and the measure. The size rule of
+    /// the views of their own uses the main view's number at another view's size.
+    pub fn bytes_at(&self, size: (u32, u32)) -> u64 {
+        let pool: u64 = self.pool.iter().map(|pooled| u64::from(size.0.div_ceil(pooled.scale).max(1)) * u64::from(size.1.div_ceil(pooled.scale).max(1)) * if pooled.half_float { 8 } else { 4 }).sum();
+        let depth = self.depth.as_ref().map_or(0, |_| u64::from(size.0) * u64::from(size.1) * 4);
         let hdr = self.hdr.as_ref().map_or(0, |_| 512 * 512 * 4 * 4 / 3);
         pool + depth + hdr
+    }
+
+    /// A bound for the bytes of the textures of a view of `size` when no view has a pool to count
+    /// from: the depth frame, and three textures of the picture's size at half float.
+    pub fn bytes_bound(size: (u32, u32)) -> u64 {
+        u64::from(size.0) * u64::from(size.1) * (4 + 3 * 8)
+    }
+
+    /// True when the depth frame and the pool are made for a picture of `size`: a run of the post
+    /// chain makes no texture for the depth frame then.
+    pub fn has_textures_of(&self, size: (u32, u32)) -> bool {
+        self.size == size && self.depth.is_some()
     }
 
     /// The depth texture for the size of the picture; the pool starts again at a new size.

@@ -411,15 +411,21 @@ struct Glows {
     source_buffer: wgpu::Buffer,
     cull_layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
-    /// Set 0 is the main view's; the next ones are made at the first use of a view of its own.
-    sets: Vec<GlowSet>,
+    /// Set 0 is the main view's; the next ones are made at the first use of a view of its own,
+    /// and are `None` while they are not made (or after they were freed).
+    sets: Vec<Option<GlowSet>>,
     sources: u32,
+}
+
+/// The bytes of the buffers of one glow set for `sources` sources.
+fn set_bytes(sources: u32) -> u64 {
+    u64::from(sources.max(1)) * GLOW_WORDS * 4 + 16 + (size_of::<CullUniforms>() + size_of::<GlowUniforms>()) as u64
 }
 
 impl Glows {
     /// The buffers of one set for `sources` sources, with the groups that read them.
     fn make_set(&self, device: &wgpu::Device) -> GlowSet {
-        let list_bytes = self.sources.max(1) as u64 * GLOW_WORDS * 4;
+        let list_bytes = u64::from(self.sources.max(1)) * GLOW_WORDS * 4;
         let list = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("distant lights, the glows of a frame"),
             size: list_bytes,
@@ -452,8 +458,7 @@ impl Glows {
             layout: &self.draw_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: values.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: list.as_entire_binding() }],
         });
-        let bytes = list_bytes + 16 + (size_of::<CullUniforms>() + size_of::<GlowUniforms>()) as u64;
-        GlowSet { cull_group, cull_uniforms, args, draw_group, values, bytes }
+        GlowSet { cull_group, cull_uniforms, args, draw_group, values, bytes: set_bytes(self.sources) }
     }
 }
 
@@ -465,6 +470,14 @@ pub struct DistantLights {
 }
 
 impl DistantLights {
+    /// Lights with the glows of `sources` sources made as the first frame makes them, with the
+    /// main view's set: for the tests of the views of their own.
+    #[cfg(test)]
+    pub fn with_glows(scene: &SceneView, view_layout: &wgpu::BindGroupLayout, sources: u32) -> DistantLights {
+        let file = LightsFile { sources: vec![0; sources as usize * 32], source_count: sources, tiles: Vec::new(), texels: Vec::new() };
+        DistantLights { loading: None, glows: Some(make_glows(scene, &file, view_layout)), frames: 0 }
+    }
+
     /// Starts the read of `<folder>\lights.data`.
     pub fn start(folder: &Path) -> DistantLights {
         let path: PathBuf = folder.join("lights.data");
@@ -511,18 +524,43 @@ impl DistantLights {
         }
     }
 
-    /// Makes the buffers of the sets up to `count` sets (0 is the main view's, made with the
-    /// glows): the views of their own, which a frame without them does not pay for. Returns the
-    /// bytes that this call made, 0 when the sets were there or there are no glows.
-    pub fn ensure_sets(&mut self, device: &wgpu::Device, count: usize) -> u64 {
+    /// Makes the buffers of the set `set` (0 is the main view's, made with the glows): a view of
+    /// its own, which a frame without them does not pay for. Returns the bytes that this call
+    /// made, 0 when the set was there or there are no glows.
+    pub fn ensure_set(&mut self, device: &wgpu::Device, set: usize) -> u64 {
         let Some(glows) = self.glows.as_mut() else { return 0 };
-        let mut made = 0;
-        while glows.sets.len() < count {
-            let set = glows.make_set(device);
-            made += set.bytes;
-            glows.sets.push(set);
+        if glows.sets.len() <= set {
+            glows.sets.resize_with(set + 1, || None);
         }
-        made
+        if glows.sets[set].is_some() {
+            return 0;
+        }
+        let buffers = glows.make_set(device);
+        let bytes = buffers.bytes;
+        glows.sets[set] = Some(buffers);
+        bytes
+    }
+
+    /// Frees the buffers of the set `set` of a view of its own.
+    pub fn release_set(&mut self, set: usize) {
+        if let Some(buffers) = self.glows.as_mut().and_then(|glows| glows.sets.get_mut(set)) {
+            *buffers = None;
+        }
+    }
+
+    /// The bytes that a new set takes; 0 without glows.
+    pub fn next_set_bytes(&self) -> u64 {
+        self.glows.as_ref().map_or(0, |glows| set_bytes(glows.sources))
+    }
+
+    /// The bytes of the sets of the views of their own that exist (all sets but the main view's).
+    pub fn views_bytes(&self) -> u64 {
+        self.glows.as_ref().map_or(0, |glows| glows.sets.iter().skip(1).flatten().map(|set| set.bytes).sum())
+    }
+
+    /// True when the set `set` has its buffers.
+    pub fn has_set(&self, set: usize) -> bool {
+        self.glows.as_ref().is_some_and(|glows| glows.sets.get(set).is_some_and(Option::is_some))
     }
 
     /// True when the file has glows: a view of its own can have a set.
@@ -531,10 +569,10 @@ impl DistantLights {
     }
 
     /// Chooses the glows of the frame, in a command buffer of its own before the frame. `set` is
-    /// the main view's (0) or a view of its own's, which [`DistantLights::ensure_sets`] made.
+    /// the main view's (0) or a view of its own's, which [`DistantLights::ensure_set`] made.
     pub fn prepare(&mut self, scene: &SceneView, frame: &GlowFrame, set: usize) {
         let Some(glows) = self.glows.as_ref() else { return };
-        let Some(buffers) = glows.sets.get(set) else { return };
+        let Some(buffers) = glows.sets.get(set).and_then(Option::as_ref) else { return };
         let cull = CullUniforms {
             planes: frame.planes,
             eye: frame.eye,
@@ -570,7 +608,7 @@ impl DistantLights {
     /// buffers and `samples` the samples of the pass.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, set: usize, samples: u32) {
         let Some(glows) = self.glows.as_ref() else { return };
-        let Some(buffers) = glows.sets.get(set) else { return };
+        let Some(buffers) = glows.sets.get(set).and_then(Option::as_ref) else { return };
         pass.set_pipeline(if samples == glows.samples { &glows.draw } else { &glows.draw_picture });
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, &buffers.draw_group, &[]);
@@ -655,7 +693,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
     let draw_picture = make_draw(Default::default());
     let mut glows = Glows { cull, draw, samples: scene.samples, draw_picture, source_buffer, cull_layout, draw_layout, sets: Vec::new(), sources: file.source_count };
     let main = glows.make_set(device);
-    glows.sets.push(main);
+    glows.sets.push(Some(main));
     glows
 }
 
