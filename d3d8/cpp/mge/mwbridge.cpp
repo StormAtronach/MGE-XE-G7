@@ -399,7 +399,7 @@ float* MWBridge::getMouseSensitivityYX() {
 
 float MWBridge::GetViewDistance() {
     assert(m_loaded);
-    return worldController()->worldCamera.cameraData.farPlaneDistance;
+    return worldController()->worldCamera.cameraData.camera->viewFrustum.farPlane;
 }
 
 //-----------------------------------------------------------------------------
