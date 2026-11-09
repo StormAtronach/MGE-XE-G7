@@ -4162,7 +4162,7 @@ impl DistantLand {
             // as `renderGrassInst` of the Direct3D 9 path.
             shadow: self.shadow.as_ref().filter(|_| self.shadow_in_frame).map(|shadow| statics::GrassShadow {
                 atlas: shadow.atlas_view.clone(),
-                layers: shadow.viewproj,
+                layers: shadow.viewproj.map(|layer| view::relative_of_product(&layer, eye)),
                 rcp: 1.0 / shadow.resolution as f32,
                 sun_vis: environment.map_or(0.0, |e| e.sun_vis),
                 day: self.shadow_day,

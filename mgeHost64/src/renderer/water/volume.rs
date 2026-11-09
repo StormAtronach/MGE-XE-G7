@@ -318,7 +318,7 @@ struct Clusters {
     depth: vec4f,
 }
 struct Lighting {
-    // From the world to the two layers of the shadow map.
+    // From a position less the eye to the two layers of the shadow map (`clip_with`).
     shadow0: mat4x4f,
     shadow1: mat4x4f,
     // The constants of the shadow: c, the bias, the scale, and 1 over the resolution.
@@ -344,8 +344,8 @@ fn sunlight_at(place: vec3f) -> f32 {
     if (u32(lighting.origin.w) & 1u) == 0u {
         return 1.0;
     }
-    let s0 = lighting.shadow0 * vec4f(place, 1.0);
-    let s1 = lighting.shadow1 * vec4f(place, 1.0);
+    let s0 = clip_with(lighting.shadow0, place);
+    let s1 = clip_with(lighting.shadow1, place);
     let p0 = vec3f(s0.xy, s0.z / s0.w);
     let p1 = vec3f(s1.xy, s1.z / s1.w);
     let margin = vec3f(1.0 - 8.0 * lighting.esm.w, 1.0 - 8.0 * lighting.esm.w, 1.0);
@@ -1032,7 +1032,8 @@ impl Volumes {
         let mut values = <Lighting as bytemuck::Zeroable>::zeroed();
         let mut bits = 0;
         if let Some((_, layers, rcp)) = light.shadow {
-            values.shadow = layers;
+            let eye = scene.eye.map(|v| v as f32);
+            values.shadow = layers.map(|layer| super::super::view::relative_of_product(&layer, eye));
             values.esm = [super::super::shadow::ESM_C, super::super::shadow::ESM_BIAS, super::super::shadow::ESM_SCALE, rcp];
             bits |= 1;
         }

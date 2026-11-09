@@ -1412,7 +1412,8 @@ pub struct GrassFrame {
 #[derive(Clone)]
 pub struct GrassShadow {
     pub atlas: std::rc::Rc<wgpu::TextureView>,
-    /// The matrices from the world to the two layers, with the layout of Direct3D.
+    /// The matrices from a position less the eye to the two layers, with the layout of Direct3D
+    /// (made as `view::relative_of_product` makes them): the grass takes them with `clip_with`.
     pub layers: [[f32; 16]; 2],
     /// 1 over the resolution of a layer.
     pub rcp: f32,

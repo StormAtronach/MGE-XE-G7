@@ -179,8 +179,8 @@ fn bnoise(x: f32) -> f32 {
     out.fog = clamp((u.fog.w - length(to_vertex)) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
     out.fade = in.fade.x;
     out.bent = in.fade.y;
-    let s0 = g.shadow_layer0 * vec4f(world, 1.0);
-    let s1 = g.shadow_layer1 * vec4f(world, 1.0);
+    let s0 = clip_with(g.shadow_layer0, world);
+    let s1 = clip_with(g.shadow_layer1, world);
     out.shadow0 = vec3f(s0.xy, s0.z / s0.w);
     out.shadow1 = vec3f(s1.xy, s1.z / s1.w);
     return out;
