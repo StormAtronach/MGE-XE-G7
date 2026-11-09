@@ -201,7 +201,7 @@ const HELLO_ID: u32 = 11;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
-const EXTENSION_FORMAT: u32 = 2;
+const EXTENSION_FORMAT: u32 = 3;
 /// The bytes of a hello record: the version, the format, then the build id.
 const HELLO_BUILD_ID_AT: usize = 8;
 const HELLO_BUILD_ID_BYTES: usize = 64;
@@ -594,8 +594,9 @@ fn generate_at_start() -> bool {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Environment {
     version: u32,
-    /// 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior that
-    /// is like one (`IntLikeExterior` of MGE XE). 16: the camera is in a water volume; the
+    /// 1: exponential fog. 2: the camera is under water. 4: not used since version 10: the
+    /// scene says if the cell is like an exterior ([`SceneView::like_exterior`](nirender_wgpu::SceneView::like_exterior)).
+    /// 16: the camera is in a water volume; the
     /// level of the water is the top of the volume. 32: the camera is in a dry space. 64:
     /// the game is in a menu. 128: a mouse click in this frame.
     flags: u32,
@@ -657,7 +658,7 @@ struct Environment {
 impl Environment {
     /// The version of the record that this build reads, the one `Deviceless::sendEnvironment`
     /// writes.
-    const VERSION: u32 = 9;
+    const VERSION: u32 = 10;
 
     /// The range of x and y of the cells that the game has loaded, `[min x, min y, max x, max
     /// y]`: the player's cell and the eight around it, as `loadedCells` of the Direct3D 9
@@ -694,6 +695,33 @@ impl Environment {
     /// the surface.
     fn mirror_level(&self) -> f32 {
         self.surface_level()
+    }
+
+    /// The values of the sky of MGE XE, when the record has the scattering (the flag 8). The
+    /// record does not say if the cell is like an exterior (the scene says it): the caller
+    /// checks that.
+    fn sky(&self) -> Option<[[f32; 4]; 8]> {
+        if self.flags & 8 == 0 {
+            return None;
+        }
+        let far = self.sky_scatter_far;
+        let sky: [f32; 3] = core::array::from_fn(|i| self.sky_col[i] + (far[i] - self.sky_col[i]) * far[3]);
+        let altitude = (1.0 + self.sun_pos[2]).powi(10);
+        Some([
+            [self.fog_col_far[0], self.fog_col_far[1], self.fog_col_far[2], 0.0],
+            [self.sky_col[0], self.sky_col[1], self.sky_col[2], self.nice_weather],
+            [sky[0], sky[1], sky[2], if self.eye[2] > self.sea_plane() { 1.0 } else { 0.0 }],
+            [self.sun_pos[0], self.sun_pos[1], self.sun_pos[2], 0.0],
+            [self.outscatter[0], self.outscatter[1], self.outscatter[2], 0.0],
+            [self.inscatter[0], self.inscatter[1], self.inscatter[2], 0.0],
+            [
+                2.8 + 4.3 / altitude.max(1e-6),
+                (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
+                (-4.0 * self.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
+                0.0,
+            ],
+            [0.0; 4],
+        ])
     }
 }
 
@@ -2551,7 +2579,7 @@ impl Extension for DistantLand {
                     scene,
                     &ripples::Inputs {
                         time: e.time,
-                        like_exterior: e.flags & 4 != 0,
+                        like_exterior: scene.like_exterior,
                         precipitation: e.precipitation,
                         foot: (e.foot_valid != 0).then_some(e.foot_pos),
                         water_level: e.surface_level(),
@@ -3653,9 +3681,9 @@ impl DistantLand {
         let exponential = e.flags & 1 != 0;
         let underwater = e.flags & 2 != 0;
         // An exterior, or an interior cell with the flag "behaves like exterior" of the game
-        // (`Cell::isExteriorInterior`): `IntLikeExterior(true)` of MGE XE. `isInterior` of
-        // a shader is its opposite.
-        let like_exterior = e.flags & 4 != 0;
+        // (`Cell::isExteriorInterior`), from the plugin's scene record: `IntLikeExterior(true)`
+        // of MGE XE. `isInterior` of a shader is its opposite.
+        let like_exterior = scene.like_exterior;
         let sunvis = e.sun_vis + (1.0 - e.sun_vis) * 0.333 * e.nice_weather;
         let fov = 2.0 * (1.0 / scene.projection[0].max(1e-6)).atan().to_degrees();
         let variables = Variables {
@@ -3698,7 +3726,7 @@ impl DistantLand {
     fn cell_facts(&mut self, scene: &SceneView) {
         self.interior = scene.interior;
         let environment = self.environment;
-        self.like_exterior = environment.map_or(!scene.interior, |e| e.flags & 4 != 0);
+        self.like_exterior = scene.like_exterior;
         let name: &[u8] = match environment.as_ref() {
             Some(e) if scene.interior => statics::unpadded(&e.interior_name),
             _ => &[],
@@ -3815,7 +3843,7 @@ impl DistantLand {
         // one: MGE XE changes it for the scattering.
         let mut fog_color = scene.fog_color;
         let mut scattering = [[0.0f32; 4]; 5];
-        if let Some(e) = self.environment.filter(|e| e.flags & 4 != 0) {
+        if let Some(e) = self.environment.filter(|_| scene.like_exterior) {
             fog_color = [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 1.0];
             // The record's flag needs distant land; the water of a state without it scatters as
             // the shaders of Direct3D 9 do.
@@ -3874,7 +3902,7 @@ impl DistantLand {
         } else {
             None
         };
-        if e.flags & 4 == 0 {
+        if !scene.like_exterior {
             // A plain interior cell: no sun on the water (`sunPos` is straight down and
             // `sunVis` 0 on Direct3D 9), the sky colour and the far fog colour are the
             // colour of the horizon of the game (its fog colour), no scattering.
@@ -3940,25 +3968,7 @@ impl DistantLand {
         if !self.enabled || !self.distant_cell || !self.like_exterior || self.gpu.is_none() {
             return None;
         }
-        let e = self.environment.filter(|e| e.flags & 12 == 12)?;
-        let far = e.sky_scatter_far;
-        let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
-        let altitude = (1.0 + e.sun_pos[2]).powi(10);
-        Some([
-            [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 0.0],
-            [e.sky_col[0], e.sky_col[1], e.sky_col[2], e.nice_weather],
-            [sky[0], sky[1], sky[2], if e.eye[2] > e.sea_plane() { 1.0 } else { 0.0 }],
-            [e.sun_pos[0], e.sun_pos[1], e.sun_pos[2], 0.0],
-            [e.outscatter[0], e.outscatter[1], e.outscatter[2], 0.0],
-            [e.inscatter[0], e.inscatter[1], e.inscatter[2], 0.0],
-            [
-                2.8 + 4.3 / altitude.max(1e-6),
-                (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
-                (-4.0 * e.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
-                0.0,
-            ],
-            [0.0; 4],
-        ])
+        self.environment.as_ref()?.sky()
     }
 
     /// The light for each pixel, by the setting `distant_land.per_pixel_lighting` and its
@@ -4626,6 +4636,20 @@ mod environment_tests {
         e.water_plane = f32::MIN;
         assert_eq!((e.surface_level(), e.mirror_level()), (0.0, 0.0));
     }
+
+    /// The sky needs the scattering (the flag 8) only. Since version 10 the record has no flag
+    /// for "like an exterior" (W84): a gate on the flags 4 and 8 together lost the sky.
+    #[test]
+    fn the_sky_needs_the_scattering_flag_only() {
+        let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.version = Environment::VERSION;
+        e.flags = 8;
+        e.fog_col_far = [0.5, 0.6, 0.7];
+        let sky = e.sky().expect("a sky with the scattering");
+        assert_eq!(sky[0], [0.5, 0.6, 0.7, 0.0]);
+        e.flags = 0;
+        assert!(e.sky().is_none(), "no sky without the scattering");
+    }
 }
 
 #[cfg(test)]
@@ -5132,6 +5156,7 @@ mod set_free_tests {
             projection: [0.0; 16],
             eye: [0.0; 3],
             interior: false,
+            like_exterior: true,
             wireframe: false,
             fog_on: false,
             fog_color: [0.0; 4],
@@ -5224,6 +5249,7 @@ mod interior_start_tests {
             projection: [0.0; 16],
             eye: [0.0; 3],
             interior: true,
+            like_exterior: false,
             wireframe: false,
             fog_on: false,
             fog_color: [0.0; 4],
@@ -5247,7 +5273,6 @@ mod interior_start_tests {
         land.statics = Some(statics);
         let mut environment: Environment = bytemuck::Zeroable::zeroed();
         environment.version = Environment::VERSION;
-        environment.flags = 4;
         environment.interior_name[..INTERIOR.len()].copy_from_slice(INTERIOR);
         land.environment = Some(environment);
 
