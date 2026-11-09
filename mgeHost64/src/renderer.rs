@@ -3584,7 +3584,7 @@ impl DistantLand {
         let look = water::VolumeLook {
             reflect_range: self.volume_reflect_cells * CELL,
             sky,
-            land_view_projection: multiply(&scene.view, &nirender_wgpu::depth::gpu_projection(&self.land_projection(scene))),
+            land_clip: view::relative(&scene.view, &nirender_wgpu::depth::gpu_projection(&self.land_projection(scene)), scene.eye.map(|v| v as f32)),
             view_range: self.environment.map_or(0.0, |e| e.near_view_range),
         };
         // The light of the frame on the surfaces, each part as its setting says.
@@ -4170,7 +4170,7 @@ impl DistantLand {
             // as `renderGrassInst` of the Direct3D 9 path.
             shadow: self.shadow.as_ref().filter(|_| self.shadow_in_frame).map(|shadow| statics::GrassShadow {
                 atlas: shadow.atlas_view.clone(),
-                layers: shadow.viewproj,
+                layers: shadow.viewproj.map(|layer| view::relative_of_product(&layer, eye)),
                 rcp: 1.0 / shadow.resolution as f32,
                 sun_vis: environment.map_or(0.0, |e| e.sun_vis),
                 day: self.shadow_day,
