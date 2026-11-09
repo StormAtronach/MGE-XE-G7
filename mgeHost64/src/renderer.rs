@@ -3394,8 +3394,12 @@ impl Extension for DistantLand {
         // The caustics under the sea first, on the picture of the game: the surfaces of volumes
         // then go over them.
         if self.sea_caustics() {
-            let caustics_frame = self.water_frame(scene).map(|w| caustics::CausticsFrame {
-                water_level: w.water_level,
+            // The caustics of the sea are under the sea: in a water volume the level of the
+            // frame is the top of the volume, and the ground below it outside the volume
+            // would take them. The volume's own caustics are on its surface.
+            let sea = self.environment.map(|e| e.sea_plane());
+            let caustics_frame = self.water_frame(scene).zip(sea).map(|(w, sea)| caustics::CausticsFrame {
+                water_level: sea,
                 time: w.time,
                 sun_vis: w.sun_vis,
                 fog_color_far: w.fog_color_far,
@@ -4569,10 +4573,12 @@ mod environment_tests {
         e.water_plane = -1.0;
         e.has_water = 1;
         assert_eq!((e.surface_level(), e.mirror_level()), (-1.0, -1.0));
-        // In a water volume: its top.
+        // In a water volume: its top. The sea stays at the engine's plane: the sea caustics
+        // take that level, so the ground below the volume's top gets none (W69).
         e.flags = 16;
         e.water_level = 300.0;
         assert_eq!((e.surface_level(), e.mirror_level()), (300.0, 300.0));
+        assert_eq!(e.sea_plane(), -1.0);
         // A cell without water: the record's level, never the plane's lowest float.
         e.flags = 0;
         e.has_water = 0;
