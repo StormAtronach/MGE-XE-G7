@@ -1167,9 +1167,11 @@ namespace Deviceless {
     static UINT waitSerial = 0;
     // The frames that the game showed: a wait counts the frames of its loading bar.
     static unsigned presentCount = 0;
-    // The views of the player: the world camera's scenes and the first-person arms, as the
-    // plugin's scene packet names them from the camera object (MGE_StreamSceneBegin). They
-    // take the camera effects and the zoom.
+    // The views of the player: the world camera's scenes, the first-person arms and the
+    // shadow camera's scenes (the game draws the actors that it shadows through the shadow
+    // camera, in colour), as the plugin's scene packet names them from the camera object
+    // (MGE_StreamSceneBegin). They take the camera effects and the zoom, as every view of the
+    // Direct3D 9 path that is not the menu.
     static bool mainView = false;
     // The world position of the world camera and the direction it looks in, from the camera
     // object at the world scene's Click.
@@ -1907,7 +1909,8 @@ namespace Deviceless {
     // (nirender src/gen/layouts.rs).
     void sceneBegin(const MgeLinkSceneV1* scene) {
         const unsigned kind = scene->kind;
-        mainView = kind == MGE_LINK_SCENE_WORLD || kind == MGE_LINK_SCENE_SORTED_ALPHA || kind == MGE_LINK_SCENE_WATER || kind == MGE_LINK_SCENE_FIRST_PERSON;
+        mainView = kind == MGE_LINK_SCENE_WORLD || kind == MGE_LINK_SCENE_SORTED_ALPHA || kind == MGE_LINK_SCENE_WATER || kind == MGE_LINK_SCENE_FIRST_PERSON ||
+                   kind == MGE_LINK_SCENE_SHADOW_VOLUME || kind == MGE_LINK_SCENE_SHADOW_CASTERS;
         if (kind != MGE_LINK_SCENE_WORLD || !scene->camera) {
             return;
         }

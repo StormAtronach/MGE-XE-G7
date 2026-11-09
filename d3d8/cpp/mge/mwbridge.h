@@ -30,7 +30,6 @@ public:
 
     DWORD GetShadowToggleAddr();
     DWORD GetShadowRealAddr();
-    DWORD GetShadowFovAddr();
     DWORD GetCrosshair2();
     void SetCrosshairEnabled(bool enabled);
     void ToggleCrosshair();
@@ -207,11 +206,6 @@ protected:
     bool m_inWaterVolume = false;
     bool m_cameraDry = false;
     float m_waterVolumeSurface = 0.0f;
-
-    // Cached shadow-camera frustum. Resolved lazily because the shadow manager
-    // does not exist until shadows are first enabled, and MGE writes FOV into it
-    // every time the player FOV changes.
-    DWORD eShadowFOV;
 };
 
 //-----------------------------------------------------------------------------
