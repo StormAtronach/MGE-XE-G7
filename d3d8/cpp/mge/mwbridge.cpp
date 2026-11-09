@@ -366,13 +366,6 @@ bool MWBridge::IsUnderwater(float eyeZ) {
 
 //-----------------------------------------------------------------------------
 
-bool MWBridge::WaterReflects(float eyeZ) {
-    assert(m_loaded);
-    return (CellHasWater() && (eyeZ > WaterLevel() - 1.0f));
-}
-
-//-----------------------------------------------------------------------------
-
 // simulationTime - Total real time elapsed this session, does not advance in menus
 float MWBridge::simulationTime() {
     assert(m_loaded);

@@ -57,7 +57,6 @@ public:
     void SetWthrString(int wthr, int offset, char str[]);
     bool CellHasWater();
     bool IsUnderwater(float eyeZ);
-    bool WaterReflects(float eyeZ);
     float simulationTime();
     float frameTime();
 
