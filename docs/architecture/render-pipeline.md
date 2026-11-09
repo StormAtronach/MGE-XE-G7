@@ -480,7 +480,10 @@ Patterns to preserve when touching this code:
 whose header comment describes the mechanism; this section records what the rest of the
 pipeline relies on.
 
-- **Installation.** The engine hooks install at device creation only when the option is on.
+- **Installation.** The `SetCameraData` hook installs at device creation whatever the setting,
+  because `CameraFov` (`d3d8/cpp/mge/camerafov.{h,cpp}`) runs in it at each Click; camera-relative
+  rendering is installed only when the option is on, and `CameraRelative::installed()` reports
+  that, not the hook. The other engine hooks install at device creation only when the option is on.
   Turning it on at runtime takes effect after a restart; turning it off applies from the next
   scene. A hook group (camera pose, rigid draws, skinned draws, first-person eye) that cannot
   claim all of its sites restores the ones it took and reports itself uninstalled, so a conflict
@@ -517,3 +520,24 @@ pipeline relies on.
   camera noise, body inertia) stores a float at world magnitude, so far out its offset lands on
   the float grid (0.125 units at 135 cells) and the exact eye or arms step with it. Such mods
   need their own distance cutoffs, or an exact offset passed through MWSE separately.
+
+## 11. Field of view of the cameras
+
+`CameraFov` (`d3d8/cpp/mge/camerafov.{h,cpp}`) gives each camera a rule. A camera that
+follows gets MGE XE's horizontal field of view (`Configuration.ScreenFOV`) and the aspect of the
+world camera. Any other camera keeps what the game or a mod gave it. The world, arm and shadow
+cameras follow. The game draws the actors that it shadows through the shadow camera, so its
+projection must equal the world camera's.
+
+- **Where.** At each Click, where the camera goes to the renderer (`NiDX8Renderer::SetCameraData`):
+  on Direct3D 9 in the hook of that slot (`CameraRelative::installHooks`), on the render link in
+  `Deviceless::sceneBegin`, which the plugin calls from its own hook of the same slot. Both run
+  before the renderer reads the frustum. `MWBridge::SetFOV` (at `Present` and at the first
+  scene) writes the same frustum outside a Click, for code that reads the world frustum there.
+- **Culling planes.** The engine makes them at the camera's last Update, before the Click. When
+  the write changes the frustum, `CameraFov` calls `NI::Camera::updateWorldData`
+  (`NiCamera::UpdateWorldData`, 0x6CC940) to make them again, and logs a line when that call
+  moved the camera's world transform or axes. In the steady state `SetFOV` has written the
+  frustum before the Update, and no rebuild happens.
+- **Main view.** `isMainView` (Direct3D 9) and `mainView` (render link) are true for a view of a
+  camera that follows. This gives the camera effects and the zoom to those views only.

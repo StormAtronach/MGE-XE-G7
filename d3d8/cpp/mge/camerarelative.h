@@ -38,8 +38,9 @@
 
 namespace CameraRelative {
 
-// Installs the engine hooks when render.camera_relative is on: the
-// NiDX8Renderer::SetCameraData vtable slot (camera pose), the
+// Installs the hook of the NiDX8Renderer::SetCameraData vtable slot whatever the setting
+// (CameraFov::atClick runs in it at each Click). With render.camera_relative on it also
+// installs: the camera pose (in the same hook), the
 // RenderShape/RenderTriStrips slots (which node is being drawn), the
 // SetModelTransform / SetSkinnedModelTransforms call sites (exact per-draw and
 // per-bone positions), and the PlayerAnimController camera update call sites
@@ -51,9 +52,10 @@ namespace CameraRelative {
 // only fail if VirtualProtect refuses a page this module already wrote.
 void installHooks();
 
-// Whether those hooks are in place. False for the lifetime of the process
-// when the option was off at startup, in which case no scene can ever become
-// active and the proxy can skip its light bookkeeping entirely.
+// Whether camera-relative rendering is installed. False for the lifetime of the
+// process when the option was off at startup, in which case no scene can ever
+// become active and the proxy can skip its light bookkeeping entirely. The
+// SetCameraData hook of CameraFov does not count: it is in either way.
 bool installed();
 
 // Called by the proxy for every D3DTS_VIEW it receives, before the recorder

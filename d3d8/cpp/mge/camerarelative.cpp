@@ -10,6 +10,7 @@
 #include <new>
 #include <unordered_map>
 
+#include "camerafov.h"
 #include "configuration.h"
 #include "mwpatches.h"
 #include "support/log.h"
@@ -209,7 +210,8 @@ const UpdateCameraTransformsFn engineUpdateCameraTransforms =
 
 bool installAttempted = false;
 bool installSkippedByConfig = false;
-bool cameraHookInstalled = false;
+// Camera-relative rendering is installed: the setting was on at start and the hook is in.
+bool cameraRelativeInstalled = false;
 bool rigidHooksInstalled = false;
 bool skinnedHooksInstalled = false;
 bool eyeHooksInstalled = false;
@@ -685,6 +687,15 @@ Pose pose;
 void __fastcall hookSetCameraData(
     void* renderer, void* /*edx*/, const float* worldLocation, const float* worldDirection,
     const float* worldUp, const float* worldRight, const void* frustum, const void* viewport) {
+    // First, before anything reads the camera: the field of view of a camera that follows MGE XE,
+    // and its culling planes, are made for this Click. The frustum argument is the camera's own.
+    CameraFov::atClickOfLocation(worldLocation);
+
+    if (!cameraRelativeInstalled) {
+        originalSetCameraData(renderer, worldLocation, worldDirection, worldUp, worldRight, frustum, viewport);
+        return;
+    }
+
     if (worldLocation && worldDirection && worldUp && worldRight) {
         std::memcpy(pose.location, worldLocation, sizeof(pose.location));
         std::memcpy(pose.direction, worldDirection, sizeof(pose.direction));
@@ -1022,20 +1033,24 @@ void installHooks() {
     }
     installAttempted = true;
 
-    if (!Configuration.EnableCameraRelativeRendering) {
-        installSkippedByConfig = true;
-        LOG::logline("-- Camera-relative rendering off (render.camera_relative); no engine hooks installed.");
-        return;
-    }
-
+    // The hook of the camera comes first and whatever the setting: CameraFov needs it at each
+    // Click. The rest is camera-relative rendering.
     void* original = nullptr;
-    cameraHookInstalled = patchVtableSlotEnforced(SET_CAMERA_DATA_SLOT, SET_CAMERA_DATA_ADDRESS,
+    const bool cameraHookInstalled = patchVtableSlotEnforced(SET_CAMERA_DATA_SLOT, SET_CAMERA_DATA_ADDRESS,
         reinterpret_cast<const void*>(&hookSetCameraData), "NiDX8Renderer::SetCameraData", &original);
     if (!cameraHookInstalled) {
-        LOG::logline("!! Camera-relative rendering: feature disabled.");
+        LOG::logline("!! The SetCameraData hook was refused: the field of view of the cameras follows SetFOV only, "
+            "and camera-relative rendering is off.");
         return;
     }
     originalSetCameraData = reinterpret_cast<SetCameraDataFn>(original);
+
+    if (!Configuration.EnableCameraRelativeRendering) {
+        installSkippedByConfig = true;
+        LOG::logline("-- Camera-relative rendering off (render.camera_relative); its draw hooks are not installed.");
+        return;
+    }
+    cameraRelativeInstalled = true;
 
     // Value-initialized, so every slot starts at a generation the first scene
     // cannot match. A failed allocation is not fatal: cacheSlot then misses
@@ -1065,7 +1080,7 @@ void installHooks() {
 void onViewTransform(const D3DMATRIX* engineView, bool renderTargetNormal) {
     isActive = false;
 
-    if (!cameraHookInstalled) {
+    if (!cameraRelativeInstalled) {
         if (installSkippedByConfig && Configuration.EnableCameraRelativeRendering && !loggedLateEnable) {
             LOG::logline("-- Camera-relative rendering was enabled at runtime; its engine hooks install at startup, "
                 "so it takes effect after a restart.");
@@ -1088,7 +1103,7 @@ void onViewTransform(const D3DMATRIX* engineView, bool renderTargetNormal) {
 }
 
 bool installed() {
-    return cameraHookInstalled;
+    return cameraRelativeInstalled;
 }
 
 bool active() {
