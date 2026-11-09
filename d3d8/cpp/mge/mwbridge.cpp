@@ -48,11 +48,19 @@ void writeFrustumFOV(NI::Frustum& frustum, float fovtan, float fovtanaspect) {
     frustum.bottom = -fovtanaspect;
 }
 
+// True when the frustum does not have the field of view yet. Every camera has its own test:
+// the game makes some cameras later than the world camera (the shadow camera, when shadows
+// are first enabled), and they must not keep the game's field of view because the world
+// camera is done.
+bool needsFOV(const NI::Frustum& frustum, float fovtan) {
+    return std::fabs(frustum.left + fovtan) > 0.001f;
+}
+
 }  // namespace
 
 //-----------------------------------------------------------------------------
 
-MWBridge::MWBridge() : m_loaded(false), eShadowFOV(0) {
+MWBridge::MWBridge() : m_loaded(false) {
 }
 
 //-----------------------------------------------------------------------------
@@ -97,19 +105,6 @@ DWORD MWBridge::GetShadowRealAddr() {
     assert(m_loaded);
     auto shadowManager = worldController()->shadowManager;
     return shadowManager ? reinterpret_cast<DWORD>(&shadowManager->maxShadows) : 0;
-}
-
-//-----------------------------------------------------------------------------
-
-DWORD MWBridge::GetShadowFovAddr() {
-    assert(m_loaded);
-
-    eShadowFOV = 0;
-    auto shadowManager = worldController()->shadowManager;
-    if (shadowManager && shadowManager->sgShadowCamera) {
-        eShadowFOV = reinterpret_cast<DWORD>(&shadowManager->sgShadowCamera->viewFrustum);
-    }
-    return eShadowFOV;
 }
 
 //-----------------------------------------------------------------------------
@@ -458,22 +453,27 @@ void MWBridge::SetFOV(float screenFOV) {
     auto wc = worldController();
     NI::Frustum& worldFrustum = wc->worldCamera.cameraData.camera->viewFrustum;
 
-    // Recalculate FOV values
+    // Recalculate FOV values. The aspect ratio is that of the world camera, which holds it
+    // before and after its own write.
     float fovtan = std::tan(screenFOV * D3DX_PI / 360.0f);
+    float aspect = worldFrustum.right / worldFrustum.top;
+    float fovtanaspect = fovtan / aspect;
 
-    if (std::fabs(worldFrustum.left + fovtan) > 0.001f) {
-        float aspect = worldFrustum.right / worldFrustum.top;
-        float fovtanaspect = fovtan / aspect;
-
-        writeFrustumFOV(worldFrustum, fovtan, fovtanaspect);
-        // The first person arms camera, which MGE historically called eSkyFOV.
-        writeFrustumFOV(wc->armCamera.cameraData.camera->viewFrustum, fovtan, fovtanaspect);
-
-        if (!eShadowFOV) {
-            GetShadowFovAddr();
-        }
-        if (eShadowFOV) {
-            writeFrustumFOV(*reinterpret_cast<NI::Frustum*>(eShadowFOV), fovtan, fovtanaspect);
+    // The cameras that draw the world: the world camera, the first person arms camera (which
+    // MGE historically called eSkyFOV) and the shadow camera, which draws the actors that
+    // cast shadows. The shadow camera and the shadow manager's camera are read at each call:
+    // the shadow manager does not exist until shadows are first enabled, and the game can
+    // make its cameras again.
+    auto shadowManager = wc->shadowManager;
+    NI::Camera* const cameras[] = {
+        wc->worldCamera.cameraData.camera,
+        wc->armCamera.cameraData.camera,
+        wc->shadowCamera.cameraData.camera,
+        shadowManager ? shadowManager->sgShadowCamera : nullptr,
+    };
+    for (NI::Camera* camera : cameras) {
+        if (camera && needsFOV(camera->viewFrustum, fovtan)) {
+            writeFrustumFOV(camera->viewFrustum, fovtan, fovtanaspect);
         }
     }
 }
