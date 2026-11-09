@@ -1267,6 +1267,21 @@ struct Loaded {
     textures: Vec<Option<Vec<u8>>>,
 }
 
+/// The answer of a loader thread that a test sends when it wants: [`Statics::with_late_catalog`].
+#[cfg(test)]
+pub struct LateCatalog {
+    sender: Sender<Result<Loaded, CatalogError>>,
+    loaded: Loaded,
+}
+
+#[cfg(test)]
+impl LateCatalog {
+    /// Sends the catalog, as the loader thread does when it is done.
+    pub fn arrive(self) {
+        self.sender.send(Ok(self.loaded)).expect("the statics take the answer");
+    }
+}
+
 /// The buffers of one draw of the statics in a frame: the main view, and the reflection in
 /// the water. A write of a buffer is before all commands of the frame, so each draw of a
 /// frame has its own.
@@ -1852,6 +1867,22 @@ pub struct Statics {
 impl Statics {
     /// Reads the settings and starts the load of the catalog and of the textures.
     pub fn start(document: &ConfigDocument, folder: PathBuf) -> Statics {
+        let (statics, sender) = Statics::waiting(document);
+        let settings = statics.settings;
+        thread::spawn(move || {
+            let result = read_catalog(&folder, &settings).map(|catalog| {
+                let mut textures: Vec<Option<Vec<u8>>> = catalog.textures.iter().map(|name| read_texture(&folder, name)).collect();
+                archive_textures(&folder, &catalog.textures, &mut textures);
+                Loaded { catalog: Arc::new(catalog), textures }
+            });
+            let _ = sender.send(result);
+        });
+        statics
+    }
+
+    /// The statics with the settings of `document`, before the catalog: it comes through the
+    /// sender.
+    fn waiting(document: &ConfigDocument) -> (Statics, Sender<Result<Loaded, CatalogError>>) {
         let land = &document.settings().distant_land;
         let settings = Settings {
             statics: land.statics,
@@ -1862,15 +1893,7 @@ impl Statics {
             draw_distance: land.draw_distance * CELL,
         };
         let (sender, receiver) = channel();
-        thread::spawn(move || {
-            let result = read_catalog(&folder, &settings).map(|catalog| {
-                let mut textures: Vec<Option<Vec<u8>>> = catalog.textures.iter().map(|name| read_texture(&folder, name)).collect();
-                archive_textures(&folder, &catalog.textures, &mut textures);
-                Loaded { catalog: Arc::new(catalog), textures }
-            });
-            let _ = sender.send(result);
-        });
-        Statics {
+        let statics = Statics {
             settings,
             alpha_to_coverage: document.settings().graphics.transparency_antialiasing,
             loading: Some(receiver),
@@ -1958,7 +1981,51 @@ impl Statics {
             play_again: 0,
             ever_arrived: HashSet::new(),
             wait: None,
-        }
+        };
+        (statics, sender)
+    }
+
+    /// The statics with a catalog that comes when the test calls [`LateCatalog::arrive`]: one
+    /// place of one subset in the interior cell `interior`, and the exterior with no place.
+    #[cfg(test)]
+    pub fn with_late_catalog(document: &ConfigDocument, interior: &[u8]) -> (Statics, LateCatalog) {
+        let (statics, sender) = Statics::waiting(document);
+        let subset = Subset {
+            shard: 7,
+            vertex_offset: 0,
+            index_offset: 0,
+            vertex_count: 3,
+            triangle_count: 1,
+            has_alpha: false,
+            animate_uv: false,
+            water: 0,
+            look: None,
+            sphere: [0.0, 0.0, 0.0, 64.0],
+            texture: 0,
+            palette: 0,
+            components: Vec::new(),
+            grass: false,
+        };
+        let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let place = Instance { subset: 0, world: identity, center: [0.0; 3], radius: 64.0, tier: 0, group: 0 };
+        let mut cell = World::default();
+        cell.cells.insert((0, 0), vec![0]);
+        let worlds = HashMap::from([(Vec::new(), World::default()), (interior.to_vec(), cell)]);
+        let catalog = Catalog {
+            folder: std::env::temp_dir().join("mge-xe-late-catalog-no-shards"),
+            subsets: vec![subset],
+            instances: vec![place],
+            worlds,
+            textures: vec!["late-catalog-missing.dds".to_string()],
+            palettes: vec![[1.0; 4]],
+            merged_place: HashMap::new(),
+            grass: Vec::new(),
+            groups: 1,
+            ordinary_bytes: 0,
+            merged_bytes: 0,
+        };
+        let loaded = Loaded { catalog: Arc::new(catalog), textures: vec![None] };
+        (statics, LateCatalog { sender, loaded })
     }
 
     /// Prints the grass places of the world space of the frame within `radius` of (x, y),
@@ -2451,7 +2518,11 @@ impl Statics {
         }
     }
 
-    fn finish_load(&mut self, scene: &SceneView) {
+    /// Takes the catalog when the loader thread is done, and makes its GPU objects. Once a
+    /// frame in any cell ([`DistantLand::frame`](super::DistantLand)), and in the statics' own
+    /// frame work and wait; a call after the catalog is taken does nothing. Needs the view
+    /// layout of [`Statics::set_views`] first.
+    pub fn finish_load(&mut self, scene: &SceneView) {
         let Some(view_layout) = self.view_layout.clone() else { return };
         let Some(result) = self.take_catalog() else { return };
         let loaded = match result {

@@ -2353,6 +2353,12 @@ impl Extension for DistantLand {
         self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
         self.finish_load(scene);
+        // The statics' catalog is taken in any cell, as the terrain is: an interior cell is a
+        // world space of its own only once the catalog is there (`cell_facts`).
+        self.poll_lights(scene);
+        if let Some(statics) = self.statics.as_mut() {
+            statics.finish_load(scene);
+        }
         self.apply_settings();
         self.cell_facts(scene);
         self.free_idle_spares(scene.frame);
@@ -4924,7 +4930,7 @@ mod set_free_tests {
     use super::*;
 
     /// A distant land with distant land off, in a folder of this process, and that folder.
-    fn land_with_no_data(tag: &str) -> (DistantLand, PathBuf) {
+    pub(super) fn land_with_no_data(tag: &str) -> (DistantLand, PathBuf) {
         let root = std::env::temp_dir().join(format!("mge-set-free-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
@@ -5028,6 +5034,91 @@ mod set_free_tests {
         assert!(views.group(view::MAIN).is_some(), "the main view's group stays");
         assert_eq!(land.views_live_bytes(), before, "the bytes are back to what they were before the spare");
         assert!(!land.tier_views.held(), "a free of a set ends the hold");
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod interior_start_tests {
+    use super::*;
+
+    /// An interior cell of the distant land data, by the name the game has for it.
+    const INTERIOR: &[u8] = b"Mournhold, Godsreach";
+
+    /// A session that starts in an interior cell with statics, whose catalog comes after the
+    /// first world frame (W234): the frame takes the catalog, and the cell is a distant cell from
+    /// then on. With the catalog taken only in the distant path (behind the `distant_cell` gate
+    /// of `before_world`) or in a wait on the loading screen, the cell never became one.
+    /// `cargo test -p mgeHost64 -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn an_interior_start_takes_a_late_catalog_and_becomes_a_distant_cell() {
+        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        // The features and the limits that the helper asks for: the frame makes the post chain too.
+        let descriptor = wgpu::DeviceDescriptor {
+            required_features: nirender_wgpu::required_features(),
+            required_limits: nirender_wgpu::fixed_limits(),
+            ..Default::default()
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).expect("a device with the helper's features and limits");
+        let commands = nirender_wgpu::FrameCommands::default();
+        let scene = nirender_wgpu::SceneView {
+            device: &device,
+            queue: &queue,
+            commands: &commands,
+            target_format: wgpu::TextureFormat::Bgra8Unorm,
+            depth_format: wgpu::TextureFormat::Depth32Float,
+            target_size: (64, 64),
+            frame: 0,
+            view_key: nirender_wgpu::ViewKey::MAIN,
+            samples: 1,
+            view: [0.0; 16],
+            projection: [0.0; 16],
+            eye: [0.0; 3],
+            interior: true,
+            wireframe: false,
+            fog_on: false,
+            fog_color: [0.0; 4],
+            fog_start: 0.0,
+            fog_end: 0.0,
+            sun_direction: None,
+            sun_color: [0.0; 3],
+            sun_ambient: [0.0; 3],
+            ambient: [0.0; 3],
+            picture: None,
+            depth: None,
+            before_depth: None,
+            lights: None,
+        };
+
+        let (mut land, root) = super::set_free_tests::land_with_no_data("late-catalog");
+        // The game side has said hello: a frame without one stops the helper.
+        land.hello = Some("test".to_string());
+        let document = ConfigDocument::open(root.join(FILE_NAME));
+        let (statics, late) = statics::Statics::with_late_catalog(&document, INTERIOR);
+        land.statics = Some(statics);
+        let mut environment: Environment = bytemuck::Zeroable::zeroed();
+        environment.version = Environment::VERSION;
+        environment.flags = 4;
+        environment.interior_name[..INTERIOR.len()].copy_from_slice(INTERIOR);
+        land.environment = Some(environment);
+
+        land.frame(&scene);
+        assert!(!land.distant_cell, "before the catalog the interior cell is not a distant cell");
+
+        late.arrive();
+        land.frame(&scene);
+        assert!(land.distant_cell, "the frame after the catalog came takes it, and the interior cell is a distant cell");
+
+        // Another interior cell, not in the data, is not one.
+        environment.interior_name = [0; 64];
+        environment.interior_name[..4].copy_from_slice(b"Cell");
+        land.environment = Some(environment);
+        land.frame(&scene);
+        assert!(!land.distant_cell, "an interior cell that the data does not have is not a distant cell");
         std::fs::remove_dir_all(&root).ok();
     }
 }
