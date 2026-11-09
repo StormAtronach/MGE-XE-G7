@@ -251,9 +251,11 @@ others when the shader is made), so a retained draw gets the values of its view.
 The records of the retained instances come from `nirender-plugin/src/instance_stream.rs`
 (the tags are in `src/capture.rs`): 23 INSTANCE, the geometry, material, class, flags,
 rotation, translation and colours of a shape; 24 INSTANCE_DRAW, a draw of it in the place
-of a SHAPE; 25 INSTANCE_DELETE; 26 INSTANCE_LIGHTS, the keys of its lights; 27
-INSTANCE_STATE, hidden or visible; 28 RETAINED_SCENE, the ambient light and the fog of the
-scene; 35 INSTANCE_PARTICLES, the particles of a particle instance for one draw. An
+of a SHAPE; 25 INSTANCE_DELETE; 26 INSTANCE_LIGHTS, the keys of its lights;
+28 RETAINED_SCENE, the ambient light and the fog of the
+scene; 35 INSTANCE_PARTICLES, the particles of a particle instance for one draw; 49
+INSTANCE_SHOWN, the instances that the engine displayed in the main view since the last such
+record (form D). An
 INSTANCE_DRAW can carry the engine's effect stages of that draw (flag 16: the environment
 map and the fog map of the dynamic effect state, when it has one) and the fog (flag 32). Tags 29 to 34 (bones, tile copies,
 the sorted queue, the walk, the lights) are in `src/capture.rs`. The plugin sends a record
