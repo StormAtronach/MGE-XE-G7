@@ -1999,8 +1999,8 @@ impl PerPixel {
 /// `ambient.x` is a part that does not depend on the normal, `attenuation.z` and
 /// `attenuation.x` are the two numbers of the falloff. In both, `cone.w` is 1 over the
 /// distance where the light ends (0: no end), the fade of MGE XE, a spot light (`position.w`
-/// 2) has the cone of Direct3D 8 (`cone.x` and `cone.y`, `attenuation.w`), and a
-/// directional light is the sun.
+/// 2) has the cone of Direct3D 8 (`spot_cone` of [`nirender_wgpu::spot`], which the world
+/// shader has), and a directional light is the sun.
 /// Bit 2 of `counts.w`: the fog makes the colour darker and adds no fog colour (a draw that
 /// adds to the picture). Bit 256 with it: the camera is under water, and the light of the
 /// draw goes to the colour of the water with the distance.
@@ -2034,23 +2034,6 @@ fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
     }
     shadow_layer = 0.0;
     return 1e-6;
-}
-
-// The cone of a spot light for a pixel in `direction` (from the pixel to the light), as the
-// vertex light of `nirender_wgpu` has it: all of the light inside the inner angle, none
-// outside the outer angle, and a curve between them. 1 for each other light.
-fn spot_cone(light: Light, direction: vec3f) -> f32 {
-    if light.position.w != 2.0 {
-        return 1.0;
-    }
-    let rho = dot(normalize(light.direction.xyz), -direction);
-    if rho <= light.cone.y {
-        return 0.0;
-    }
-    if rho < light.cone.x {
-        return pow((rho - light.cone.y) / max(light.cone.x - light.cone.y, 0.0001), light.attenuation.w);
-    }
-    return 1.0;
 }
 
 // The diffuse and the ambient light that one light gives a pixel at `p` with `normal`.
@@ -4306,6 +4289,16 @@ mod shader_tests {
         let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
         shader_check::check_with("shader.wgsl with the extension, tier a", &source, tier_a).unwrap();
         shader_check::check("shader.wgsl with the extension, tier c", &nirender_wgpu::tier_c_shader_source(&source)).unwrap();
+    }
+
+    /// The cone of a spot light has one home, `nirender_wgpu::spot`: the draw part calls it and
+    /// has no cone of its own, and the world shader with the draw part has the crate's text once.
+    #[test]
+    fn the_draw_shader_takes_the_cone_of_the_crate() {
+        assert!(DRAW_SHADER.contains("spot_cone(light, ") && !DRAW_SHADER.contains("fn spot_cone") && !DRAW_SHADER.contains("light.cone.x"));
+        let source = nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{DRAW_SHADER}\n"));
+        assert_eq!(source.matches(nirender_wgpu::spot::WGSL).count(), 1);
+        assert_eq!(source.matches("fn spot_cone").count(), 1);
     }
 }
 
