@@ -4478,6 +4478,10 @@ full_tier_max = 3
         let land = DistantLand::start(&root, false);
         assert_eq!((land.full_tier_max, land.tier_views.places()), (3, 3));
         std::fs::write(root.join(FILE_NAME), "[views]
+full_tier_max = 8
+").unwrap();
+        assert_eq!(DistantLand::start(&root, false).full_tier_max, 8);
+        std::fs::write(root.join(FILE_NAME), "[views]
 full_tier_max = 9
 ").unwrap();
         assert_eq!(DistantLand::start(&root, false).full_tier_max, 1);

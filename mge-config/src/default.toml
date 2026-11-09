@@ -335,7 +335,7 @@ ambient = 1.0
 [views]
 # How many views of a frame may get the parts of MGE XE that a mod asks for with
 # mge.camera.setViewOptions (distant land, distant statics, grass, water, shaders, glows).
-# 0 refuses every request. The range is 0 to 4. Each view costs about the main view's
+# 0 refuses every request. The range is 0 to 8. Each view costs about the main view's
 # extension time again.
 full_tier_max = 1
 

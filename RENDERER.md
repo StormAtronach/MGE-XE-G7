@@ -346,7 +346,7 @@ change. That start can take some minutes. With an older file, set it below
   this build): `distantLand`, `distantStatics`, `grass`, `distantWater`, `shaders` and `glows`.
   With `{ intoTextures = true }` as the flags, the options of a camera are its default for
   each texture it draws into. `full_tier_max` under `[views]` in `mgeXE.toml` (default 1,
-  0 to 4) limits how many such views of a frame get the parts; 0 refuses every request. With
+  0 to 8) limits how many such views of a frame get the parts; 0 refuses every request. With
   the Direct3D 9 renderer the call stores the options and draws nothing more.
 - MGE XE's menu background video (`Data Files\video\menu_background.bik`) plays on the wgpu
   renderer too, drawn as the game draws its films.
@@ -458,7 +458,7 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   7 the normal, 8 the view depth, 9 the heights of the waves.
 - `MGE_XE_POST_DEBUG=<n>`: 1 tints the result of the post chain, 2 shows its linear depth
   over 10000 units as grey.
-- `MGE_XE_FULL_TIER_MAX=<n>` (0 to 4): how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`, in place of `views.full_tier_max` of `mgeXE.toml` (default 1; 0 refuses every request).
+- `MGE_XE_FULL_TIER_MAX=<n>` (0 to 32, the view slots of the plugin; the setting of the file takes 0 to 8): how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`, in place of `views.full_tier_max` of `mgeXE.toml` (default 1; 0 refuses every request).
 - `MGE_XE_SHADOW_DEBUG=1`: the atlas of the shadow map in the lower left of the picture.
 - `MGE_XE_SHADOW_LAYERS=1`: each pixel coloured by the layer of the shadow map that serves
   it: red the first, green the second, blue outside both, grey a draw without the shadow

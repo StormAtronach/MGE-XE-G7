@@ -26,7 +26,7 @@ pub const HORIZON_MAX_RANGE_RANGE: (f32, f32) = (1.0, 1_048_576.0);
 pub const HORIZON_BINS_RANGE: (u32, u32) = (64, 4096);
 pub const HORIZON_SAMPLE_SPACING_RANGE: (f32, f32) = (1.0, 8192.0);
 pub const HORIZON_REBUILD_EYE_THRESHOLD_RANGE: (f32, f32) = (0.0, 8192.0);
-pub const FULL_TIER_MAX_RANGE: (u8, u8) = (0, 4);
+pub const FULL_TIER_MAX_RANGE: (u8, u8) = (0, 8);
 
 // Bounds shared with the GUI controls that edit these fields. Validation and
 // the widgets must agree, or a value the user just picked is clamped on save.

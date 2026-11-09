@@ -537,7 +537,7 @@ impl GuiApp {
                 ui,
                 t!("distant.full_tier_max").as_ref(),
                 true,
-                egui::DragValue::new(&mut self.settings.mge.views.full_tier_max).range(0..=4),
+                egui::DragValue::new(&mut self.settings.mge.views.full_tier_max).range(mge_config::FULL_TIER_MAX_RANGE.0..=mge_config::FULL_TIER_MAX_RANGE.1),
             ),
             t!("distant.full_tier_max_tip"),
         );
