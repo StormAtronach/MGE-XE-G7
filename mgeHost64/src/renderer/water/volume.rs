@@ -363,13 +363,14 @@ fn sunlight_at(place: vec3f) -> f32 {
     return 1.0 - (1.0 - clamp(exp(lighting.esm.x * dz + lighting.esm.y), 0.0, 1.0)) * fade.x * fade.y;
 }
 
-// The light of a point or spot light at a distance: the sum of its falloff (the numbers of
-// the game, or those of the light for each pixel, whose middle number is 0), going to zero
-// over the last quarter of its reach (`nirender_wgpu::light_reach`), where its clusters end.
-fn light_strength(light: Light, distance: f32) -> f32 {
+// The light of a point or spot light at a distance, for a place in `direction` (from the place
+// to the light): the sum of its falloff (the numbers of the game, or those of the light for
+// each pixel, whose middle number is 0), going to zero over the last quarter of its reach
+// (`nirender_wgpu::light_reach`), where its clusters end, and the cone of a spot light.
+fn light_strength(light: Light, distance: f32, direction: vec3f) -> f32 {
     var reach = light.direction.w;
-    if light.cone.x > 0.0 {
-        reach = 1.0 / light.cone.x;
+    if light.cone.w > 0.0 {
+        reach = 1.0 / light.cone.w;
     } else if light.cone.z > 0.0 {
         reach = light.cone.z;
     }
@@ -380,7 +381,7 @@ fn light_strength(light: Light, distance: f32) -> f32 {
     let a = light.attenuation;
     var fade = clamp(4.0 * distance / reach - 3.0, 0.0, 1.0);
     fade = 1.0 - fade * fade;
-    return fade * fade / max(a.x + a.y * distance + a.z * distance * distance, 1e-4);
+    return spot_cone(light, direction) * fade * fade / max(a.x + a.y * distance + a.z * distance * distance, 1e-4);
 }
 
 // The lamps and fires of the frame on the surface at a pixel: in `glint` the mirror image of
@@ -408,7 +409,7 @@ fn point_lights(place: vec3f, eye_vec: vec3f, normal: vec3f, face: vec3f, pixel:
         let to_light = light.position.xyz + lighting.origin.xyz - place;
         let distance = length(to_light);
         let direction = to_light / max(distance, 1e-3);
-        let color = light.diffuse.rgb * light_strength(light, distance);
+        let color = light.diffuse.rgb * light_strength(light, distance, direction);
         let mirrored = clamp(dot(-eye_vec, reflect(-direction, normal)), 0.0, 1.0);
         lit.glint += color * (pow(mirrored, 90.0) + 0.06 * pow(mirrored, 6.0));
         lit.glow += color * clamp(dot(direction, face), 0.0, 1.0);
@@ -731,7 +732,8 @@ fn water_shader(surface: WaterSurface) -> vec4f {
 /// The shader of the surfaces with the water shader of the look: the shared shading, the
 /// entry points of a surface, and the function `water_shader`.
 fn shader_with(water: &str) -> String {
-    format!("{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, shading::CAUSTICS, VOLUME, water).replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
+    format!("{}{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, shading::CAUSTICS, VOLUME, nirender_wgpu::spot::WGSL, water)
+        .replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
 }
 
 /// The shader of the surfaces with the standard look.
@@ -1502,6 +1504,84 @@ mod tests {
         for entry in ["vs", "vs_far", "fs", "fs_depth"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
+    }
+
+    /// The cone of a spot light has one home, `nirender_wgpu::spot`: the shader of the surfaces
+    /// has the crate's text once, and the part of this file calls it and has no cone of its own.
+    #[test]
+    fn the_surfaces_take_the_cone_of_the_crate() {
+        let source = shader();
+        assert_eq!(source.matches(nirender_wgpu::spot::WGSL).count(), 1);
+        assert_eq!(source.matches("fn spot_cone").count(), 1);
+        assert!(VOLUME.contains("spot_cone(light, direction)") && !VOLUME.contains("fn spot_cone") && !VOLUME.contains("light.cone.x"));
+    }
+
+    /// The light that the surface takes from a spot light (`light_strength` of the surface
+    /// shader, run on the GPU): all of it on the axis of the cone, none at 90 degrees from the
+    /// axis or behind the light; a point light at the same place lights the place at 90 degrees.
+    /// Needs a GPU: `cargo test -p mgeHost64 -- --ignored a_spot_light_gives`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_spot_light_gives_the_surface_no_light_outside_its_cone() {
+        // A spot light at the origin along +x: inner half angle about 5 degrees, outer about 10,
+        // exponent 1, constant falloff 1, radius 300. Each place is 100 from the light.
+        const PROBE: &str = "
+@group(0) @binding(90) var<storage, read_write> strengths: array<f32, 4>;
+@compute @workgroup_size(1) fn probe_light_strength() {
+    let spot = Light(vec4f(1.0), vec4f(0.0), vec4f(0.0, 0.0, 0.0, 2.0), vec4f(1.0, 0.0, 0.0, 1000.0),
+        vec4f(1.0, 0.0, 0.0, 1.0), vec4f(0.996, 0.985, 300.0, 0.0));
+    var point = spot;
+    point.position.w = 1.0;
+    // The direction goes from the place to the light: a place on the axis, at 90 degrees, behind.
+    strengths[0] = light_strength(spot, 100.0, vec3f(-1.0, 0.0, 0.0));
+    strengths[1] = light_strength(spot, 100.0, vec3f(0.0, -1.0, 0.0));
+    strengths[2] = light_strength(spot, 100.0, vec3f(1.0, 0.0, 0.0));
+    strengths[3] = light_strength(point, 100.0, vec3f(0.0, -1.0, 0.0));
+}
+";
+        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+
+        let source = format!("{}{PROBE}", shader());
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water light probe"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("water light probe"),
+            layout: None,
+            module: &module,
+            entry_point: Some("probe_light_strength"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let size = 4 * 4;
+        let strengths = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water light probe"), size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let read = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water light probe, read"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("water light probe"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry { binding: 90, resource: strengths.as_entire_binding() }],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water light probe") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("water light probe"), timestamp_writes: None });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&strengths, 0, &read, 0, size);
+        queue.submit([encoder.finish()]);
+        read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let data = read.slice(..).get_mapped_range().expect("the read buffer is mapped");
+        let values: [f32; 4] = bytemuck::cast_slice::<u8, f32>(&data).try_into().expect("four values");
+
+        assert!((values[0] - 1.0).abs() < 1e-4, "on the axis: {values:?}");
+        assert_eq!(values[1], 0.0, "at 90 degrees from the axis: {values:?}");
+        assert_eq!(values[2], 0.0, "behind the light: {values:?}");
+        assert!((values[3] - 1.0).abs() < 1e-4, "a point light at 90 degrees: {values:?}");
     }
 
     /// A water shader of a mod: the interface line, the functions it may call, the textures

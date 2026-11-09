@@ -1941,11 +1941,14 @@ impl PerPixel {
                 light.direction = [direction[0] / length, direction[1] / length, direction[2] / length, 0.0];
             } else if !self.original {
                 // The light of the game as it is: only the fade of MGE XE at a multiple of
-                // its radius. The engine's light has no range and no fade (0x6BAAF0).
+                // its radius. The engine's light has no range and no fade (0x6BAAF0). A spot
+                // light keeps its type and its cone.
                 let radius = light.cone[2];
                 let cutoff = if self.fade > 0.0 && radius > 0.0 { (self.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
-                light.position[3] = 1.0;
-                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
+                if light.position[3] != 2.0 {
+                    light.position[3] = 1.0;
+                }
+                light.cone[3] = if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 };
             } else {
                 let falloff = light.attenuation;
                 let mut color = [light.diffuse[0], light.diffuse[1], light.diffuse[2]];
@@ -1968,13 +1971,15 @@ impl PerPixel {
                 let radius = light.cone[2];
                 let cutoff = if self.fade > 0.0 && radius > 0.0 { (self.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
                 let position = light.position;
+                let kind = if position[3] == 2.0 { 2.0 } else { 1.0 };
                 light.diffuse = [color[0], color[1], color[2], 0.0];
                 light.ambient = [wrap, 0.0, 0.0, 0.0];
-                light.position = [position[0] + bias * camera_z[0], position[1] + bias * camera_z[1], position[2] + bias * camera_z[2], 1.0];
-                light.attenuation = [0.0, 0.0, quadratic, 0.0];
-                // The radius stays: the reach of the light in the clusters of the frame
-                // without a cut-off (`nirender_wgpu::FrameLights`).
-                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, radius, 0.0];
+                light.position = [position[0] + bias * camera_z[0], position[1] + bias * camera_z[1], position[2] + bias * camera_z[2], kind];
+                // `w` stays: the falloff exponent of a spot light.
+                light.attenuation = [0.0, 0.0, quadratic, falloff[3]];
+                // The cosines of a spot light stay, and the radius: the reach of the light in
+                // the clusters of the frame without a cut-off (`nirender_wgpu::FrameLights`).
+                light.cone[3] = if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 };
             }
         }
         // One constant for all the lights of the draw, as the one register of Direct3D 9.
@@ -1992,9 +1997,10 @@ impl PerPixel {
 /// vertex, at the pixel. Without bit 512 it is packed as MGE XE on Direct3D 9 has it
 /// (`PerPixelPS` of `XE FixedFuncEmu.fx`, `distant_land.per_pixel_original_lights`):
 /// `ambient.x` is a part that does not depend on the normal, `attenuation.z` and
-/// `attenuation.x` are the two numbers of the falloff. In both, `cone.x` is 1 over the
-/// distance where the light ends (0: no end), the fade of MGE XE, and a directional light
-/// is the sun.
+/// `attenuation.x` are the two numbers of the falloff. In both, `cone.w` is 1 over the
+/// distance where the light ends (0: no end), the fade of MGE XE, a spot light (`position.w`
+/// 2) has the cone of Direct3D 8 (`spot_cone` of [`nirender_wgpu::spot`], which the world
+/// shader has), and a directional light is the sun.
 /// Bit 2 of `counts.w`: the fog makes the colour darker and adds no fog colour (a draw that
 /// adds to the picture). Bit 256 with it: the camera is under water, and the light of the
 /// draw goes to the colour of the water with the distance.
@@ -2050,7 +2056,8 @@ fn light_terms(light: Light, normal: vec3f, p: vec3f) -> LightTerms {
             let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
             let f = light.attenuation;
             var strength = 1.0 / max(f.x + f.y * distance + f.z * distance2, 0.0001);
-            var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
+            strength *= spot_cone(light, to_light / max(distance, 0.0001));
+            var fade = clamp(4.0 * distance * light.cone.w - 3.0, 0.0, 1.0);
             fade = 1.0 - fade * fade;
             strength *= fade * fade;
             terms.d = lambert * strength * light.diffuse.rgb;
@@ -2062,8 +2069,9 @@ fn light_terms(light: Light, normal: vec3f, p: vec3f) -> LightTerms {
         let distance = sqrt(distance2);
         let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
         var strength = 1.0 / max(light.attenuation.z * distance2 + light.attenuation.x, 0.0001);
+        strength *= spot_cone(light, to_light / max(distance, 0.0001));
         // The light goes to zero over the last quarter of its distance.
-        var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
+        var fade = clamp(4.0 * distance * light.cone.w - 3.0, 0.0, 1.0);
         fade = 1.0 - fade * fade;
         strength *= fade * fade;
         terms.d = (lambert + light.ambient.x) * strength * light.diffuse.rgb;
@@ -4281,6 +4289,52 @@ mod shader_tests {
         let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
         shader_check::check_with("shader.wgsl with the extension, tier a", &source, tier_a).unwrap();
         shader_check::check("shader.wgsl with the extension, tier c", &nirender_wgpu::tier_c_shader_source(&source)).unwrap();
+    }
+
+    /// The cone of a spot light has one home, `nirender_wgpu::spot`: the draw part calls it and
+    /// has no cone of its own, and the world shader with the draw part has the crate's text once.
+    #[test]
+    fn the_draw_shader_takes_the_cone_of_the_crate() {
+        assert!(DRAW_SHADER.contains("spot_cone(light, ") && !DRAW_SHADER.contains("fn spot_cone") && !DRAW_SHADER.contains("light.cone.x"));
+        let source = nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{DRAW_SHADER}\n"));
+        assert_eq!(source.matches(nirender_wgpu::spot::WGSL).count(), 1);
+        assert_eq!(source.matches("fn spot_cone").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod per_pixel_tests {
+    use super::*;
+
+    /// A spot light of the game with the radius 300 and the falloff exponent 2.
+    fn spot_light() -> LightData {
+        LightData {
+            diffuse: [1.0, 0.5, 0.25, 0.0],
+            ambient: [0.0; 4],
+            position: [10.0, 20.0, 30.0, 2.0],
+            direction: [0.0, 0.0, -1.0, 1000.0],
+            attenuation: [0.0, 0.0, 1e-4, 2.0],
+            cone: [0.88, 0.5, 300.0, 0.0],
+        }
+    }
+
+    /// The light for each pixel keeps a spot light a spot light in both forms: its type, the
+    /// cosines of its cone and its falloff exponent. The cut-off of the fade (2 times the
+    /// radius) goes into `cone[3]`, and a point light stays a point light.
+    #[test]
+    fn a_spot_light_keeps_its_cone() {
+        for original in [false, true] {
+            let per_pixel = PerPixel { sun: 1.0, ambient: 1.0, fade: 2.0, original };
+            let mut lights = [spot_light(), LightData { position: [0.0, 0.0, 0.0, 1.0], ..spot_light() }];
+            per_pixel.shade_lights(&mut lights, [0.0, 0.0, 1.0], false);
+
+            let [spot, point] = lights;
+            assert_eq!(spot.position[3], 2.0, "original {original}");
+            assert_eq!(spot.cone, [0.88, 0.5, 300.0, 1.0 / 600.0], "original {original}");
+            assert_eq!(spot.attenuation[3], 2.0, "original {original}");
+            assert_eq!(point.position[3], 1.0, "original {original}");
+            assert_eq!(point.cone[3], 1.0 / 600.0, "original {original}");
+        }
     }
 }
 
