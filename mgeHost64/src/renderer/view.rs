@@ -130,10 +130,17 @@ struct View {
 }
 @group(0) @binding(0) var<uniform> u: View;
 
-// The clip position of a position in the space of the world: relative to the eye (see
-// `View::relative`).
+// The clip position of a position in the space of the world, by a matrix that is relative to
+// the eye (made as `View::relative` makes it, for the projection that the caller needs): the
+// position less the eye goes through the matrix, never the absolute position.
+fn clip_with(relative: mat4x4f, world: vec3f) -> vec4f {
+    return relative * vec4f(world - u.eye.xyz, 1.0);
+}
+
+// The clip position of a position in the space of the world, for the projection of this view
+// (see `View::relative`).
 fn clip_of(world: vec3f) -> vec4f {
-    return u.relative * vec4f(world - u.eye.xyz, 1.0);
+    return clip_with(u.relative, world);
 }
 ";
 
@@ -841,7 +848,8 @@ mod tests {
         // A matrix, twelve vectors of four numbers, and the relative matrix.
         assert_eq!(size_of::<View>(), 4 * (16 + 12 * 4 + 16));
         assert_eq!(VIEW_WGSL.matches(": vec4f,").count(), 12);
-        assert_eq!(VIEW_WGSL.matches(": mat4x4f,").count(), 2);
+        // The two matrices of the struct and the parameter of `clip_with`.
+        assert_eq!(VIEW_WGSL.matches(": mat4x4f,").count(), 3);
     }
 
     /// The relative matrix gives the clip position of the absolute one, computed in f64.

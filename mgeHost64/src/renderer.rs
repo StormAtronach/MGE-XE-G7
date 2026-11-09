@@ -3576,7 +3576,7 @@ impl DistantLand {
         let look = water::VolumeLook {
             reflect_range: self.volume_reflect_cells * CELL,
             sky,
-            land_view_projection: multiply(&scene.view, &nirender_wgpu::depth::gpu_projection(&self.land_projection(scene))),
+            land_clip: view::relative(&scene.view, &nirender_wgpu::depth::gpu_projection(&self.land_projection(scene)), scene.eye.map(|v| v as f32)),
             view_range: self.environment.map_or(0.0, |e| e.near_view_range),
         };
         // The light of the frame on the surfaces, each part as its setting says.

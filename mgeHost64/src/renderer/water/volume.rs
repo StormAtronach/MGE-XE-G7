@@ -213,9 +213,9 @@ pub struct VolumeLook {
     /// A colour in place of the sky, and how much of it: the light of the room in an
     /// interior, as the water of the cell has it.
     pub sky: [f32; 4],
-    /// The view and the projection of the distant land, for the water among the distant
-    /// statics, and the view range of the game.
-    pub land_view_projection: [f32; 16],
+    /// The view and the projection of the distant land, relative to the eye (`view::relative`),
+    /// for the water among the distant statics, and the view range of the game.
+    pub land_clip: [f32; 16],
     pub view_range: f32,
 }
 
@@ -287,6 +287,8 @@ struct Surface {
     flow: vec4f,
     look: vec3f,
     flags: u32,
+    // The view and the projection of the surface, relative to the eye (`clip_with`): the
+    // projection of the game for the near surfaces, that of the land for the far water.
     clip: mat4x4f,
     far: vec4f,
     params: array<vec4f, 4>,
@@ -441,7 +443,7 @@ struct Out {
     out.color = select(vec4f(1.0), color.zyxw, (bits & 2u) != 0u);
     out.tint = s.tint.rgb;
     out.uv = vec4f(uv0, uv1);
-    out.position = s.clip * vec4f(out.world, 1.0);
+    out.position = clip_with(s.clip, out.world);
     out.clip_w = out.position.w;
     return out;
 }
@@ -456,7 +458,7 @@ struct Out {
     out.color = vec4f(1.0, 1.0, 1.0, color.w);
     out.tint = color.zyx;
     out.uv = vec4f(uv, uv);
-    out.position = s.clip * vec4f(out.world, 1.0);
+    out.position = clip_with(s.clip, out.world);
     out.clip_w = out.position.w;
     return out;
 }
@@ -1256,7 +1258,9 @@ impl Volumes {
         let base = self.used;
         self.used += count;
         let mut bytes = vec![0u8; (count * SLOT) as usize];
-        let game_view_projection = crate::renderer::multiply(&scene.view, &nirender_wgpu::depth::gpu_projection(&scene.projection));
+        // The clip matrices are relative to the eye and made in f64: the product of an absolute position with a matrix of
+        // the world rounds the rows of the clip position apart far from the origin (the grass of the statics had it).
+        let game_clip = crate::renderer::view::relative(&scene.view, &nirender_wgpu::depth::gpu_projection(&scene.projection), scene.eye.map(|v| v as f32));
         for (index, water) in far.iter().enumerate() {
             let look = &water.look;
             let world = water.world;
@@ -1272,7 +1276,7 @@ impl Volumes {
                 flow: [drift[0], drift[1], look.speed, look.scale],
                 look: [look.glow, look.opacity, look.clarity],
                 flags: bits,
-                clip: frame_look.land_view_projection,
+                clip: frame_look.land_clip,
                 far: [1.0, if water.loaded { frame_look.view_range } else { 0.0 }, frame_look.reflect_range, 0.0],
                 params: look.params,
             };
@@ -1308,7 +1312,7 @@ impl Volumes {
                 flow: [drift[0], drift[1], look.speed, look.scale],
                 look: [look.glow, look.opacity, look.clarity],
                 flags: bits,
-                clip: game_view_projection,
+                clip: game_clip,
                 far: [0.0; 4],
                 params: look.params,
             };
