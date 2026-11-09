@@ -610,6 +610,13 @@ float MWBridge::WaterLevel() {
     if (m_inWaterVolume) {
         return m_waterVolumeSurface;
     }
+    return CellWaterLevel();
+}
+
+//-----------------------------------------------------------------------------
+
+float MWBridge::CellWaterLevel() {
+    assert(m_loaded);
     auto cell = getInteriorCell();
     if (cell != nullptr && cell->getIsInterior() && cell->getHasWater() && !cell->getBehavesAsExterior()) {
         return cell->waterLevelOrRegion.waterLevel;

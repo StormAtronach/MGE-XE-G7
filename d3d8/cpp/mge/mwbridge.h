@@ -84,6 +84,9 @@ public:
     bool IntIllegSleep();
     bool IntHasWater();
     float WaterLevel();
+    // The level of the cell's own water, whatever water volume the eye is in: the sea, or
+    // the water of an interior.
+    float CellWaterLevel();
     // The height of the engine's water plane, whatever water volume the eye is in; the
     // lowest float in a cell without water.
     float WaterPlaneHeight();

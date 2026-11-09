@@ -575,7 +575,10 @@ void DistantLand::renderStageBlend() {
     if (mwBridge->IsExterior() && Configuration.DL.WaterCaustics > 0) {
         D3DXMATRIX m;
         IDirect3DTexture9* tex = PostShaders::borrowBuffer(0);
-        D3DXMatrixTranslation(&m, eyePos.x, eyePos.y, mwBridge->WaterLevel());
+        // The caustics of the sea are under the sea: in a water volume WaterLevel is the top of
+        // the volume, and the ground below it outside the volume would take them. The
+        // volume's own caustics are on its surface.
+        D3DXMatrixTranslation(&m, eyePos.x, eyePos.y, mwBridge->CellWaterLevel());
 
         effect->SetTexture(ehTex0, tex);
         effect->SetTexture(ehTex1, texWater);
