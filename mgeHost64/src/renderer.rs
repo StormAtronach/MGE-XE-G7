@@ -851,6 +851,8 @@ pub struct DistantLand {
     /// The ids whose first refused record is in the log, and the refused records counted.
     refused_ids: Vec<u32>,
     extension_refused: u32,
+    /// True when an environment record of another version came and is in the log.
+    environment_version_logged: bool,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -1258,6 +1260,7 @@ impl DistantLand {
             unknown_ids: Vec::new(),
             refused_ids: Vec::new(),
             extension_refused: 0,
+            environment_version_logged: false,
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -2936,6 +2939,12 @@ impl Extension for DistantLand {
                 println!("environment: simulation time {:.1} s, wind ({:.2}, {:.2})", environment.time, environment.wind[0], environment.wind[1]);
             }
             self.environment = Some(environment);
+        } else if id == ENVIRONMENT_ID && !self.environment_version_logged {
+            // A record of another version: the frame keeps the last environment of this
+            // version, or none. The first such record is in the log.
+            self.environment_version_logged = true;
+            let seen = bytes.get(..4).map_or(0, |word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+            println!("environment record of version {seen} refused: this build reads version {}; d3d8.dll or the capture is of another build", Environment::VERSION);
         }
         if id != ENVIRONMENT_ID && first_time(&mut self.unknown_ids, id) {
             println!("extension id {id}: no reader in this build; d3d8.dll is another build");
