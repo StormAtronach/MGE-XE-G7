@@ -11,7 +11,7 @@
 // The format of the extension records that d3d8.dll sends to the helper. The twin is
 // EXTENSION_FORMAT in mgeHost64/src/renderer.rs (a unit test compares the two). Bump both
 // with any change of a record's layout or of an id's meaning.
-#define MGE_EXTENSION_FORMAT 2
+#define MGE_EXTENSION_FORMAT 3
 // The exit codes of `numidium.exe --probe` that d3d8.dll reads: 0 a usable GPU, 20 none.
 // The twin of 20 is EXIT_GPU in nirender-plugin's src/stream_format.rs (a unit test of
 // mgeHost64 compares the two); any other code of the probe counts as none.
