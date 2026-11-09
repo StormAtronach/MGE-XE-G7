@@ -68,7 +68,8 @@ namespace WaterLooks {
     const WaterLook& standard();
 
     // Sends the looks of all slots to the wgpu renderer in the helper when a slot changed
-    // since the last send; nothing without the renderer. The frame calls it on the main thread.
+    // since the last send; nothing without the renderer. Main thread only: the frame calls it,
+    // and MGE_WaterLookSet when a mod sets a look on the main thread.
     void sendToRenderer();
 
     // Reads a look line, the text of the string data of a mesh after "wv:", for example

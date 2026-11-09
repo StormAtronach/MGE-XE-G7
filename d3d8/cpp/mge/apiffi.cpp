@@ -11,6 +11,7 @@
 // three in sync (docs/architecture/horizon-culling.md §10.2). The names are exported undecorated via
 // cpp\exports.def so ffi.load("d3d8") can resolve them.
 
+#include "mged3d8device.h"
 #include "configuration.h"
 #include "distantland.h"
 #include "distantlandready.h"
@@ -93,9 +94,13 @@ extern "C" {
 
     // Sets the look of a slot, which a surface names in the specular power of its material
     // (100000 + slot). A null look clears the slot. Called by the mod that owns the volumes, on
-    // any thread. The next frame sends the looks to the wgpu renderer.
+    // any thread. On the main thread the looks go to the wgpu renderer at once, so a picture
+    // asked in the same call has the look; from another thread the next frame sends them.
     void MGE_WaterLookSet(unsigned int slot, const WaterLook* look) {
         WaterLooks::set(slot, look);
+        if (Deviceless::onMainThread()) {
+            WaterLooks::sendToRenderer();
+        }
     }
 
     // Replaces the dry spaces: closed meshes inside which there is no water. `corners` is

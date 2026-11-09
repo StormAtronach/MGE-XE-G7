@@ -1526,6 +1526,14 @@ namespace Deviceless {
         }
     }
 
+    // The thread of the game's Present; 0 before the first Present.
+    static std::atomic<DWORD> mainThreadId{ 0 };
+
+    bool onMainThread() {
+        const DWORD id = mainThreadId.load(std::memory_order_relaxed);
+        return id != 0 && id == GetCurrentThreadId();
+    }
+
     static void sendPictureRequests() {
         static const UINT PictureId = 3;
         std::vector<std::pair<std::string, bool>> requests;
@@ -1850,6 +1858,7 @@ namespace Deviceless {
     // The game showed a frame. The size is that of its back buffer.
     void present(unsigned width, unsigned height) {
         ++presentCount;
+        mainThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
         prepare();
         MGEhud::setScreenSize(width, height);
 
