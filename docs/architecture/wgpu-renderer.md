@@ -262,11 +262,10 @@ the sorted queue, the walk, the lights) are in `src/capture.rs`. The plugin send
 only when the shape changed; a particle instance sends its particles at each draw.
 
 Switches for diagnostics and tests, never for a player (the A/B switches of finished
-steps retired at the review of checkpoint 4, nirender 6c8586d): `MGE_XE_RETAINED=0` (the
-helper ignores the instance records), `MGE_XE_CLUSTERS=0/1` (overrides
+steps retired at the review of checkpoint 4, nirender 6c8586d): `MGE_XE_CLUSTERS=0/1` (overrides
 `distant_land.clustered_lights`), `MGE_XE_INDIRECT=0`, `MGE_XE_ARRAY_CAP` and
 `MGE_XE_RECORD_LIMIT` (test limits). In the plugin:
-`NIRENDER_RETAINED=off|dual|gpu` (default gpu), `NIRENDER_PORT_TIMING=1` (times each
+`NIRENDER_RETAINED=off|gpu` (default gpu), `NIRENDER_PORT_TIMING=1` (times each
 live port call). MSOC is not
 supported with this renderer (RENDERER.md).
 
