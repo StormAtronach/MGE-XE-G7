@@ -648,12 +648,28 @@ struct Environment {
     /// in an exterior, the cell's water level in an interior, the lowest float in a cell
     /// without water. The camera is above the sea above it.
     water_plane: f32,
+    /// Version 9: the grid of the player's exterior cell (`MWBridge::getExteriorGrid`), and 1
+    /// when the player is in an exterior. The game has that cell and the eight around it.
+    exterior_grid: [i32; 2],
+    exterior_grid_valid: u32,
 }
 
 impl Environment {
     /// The version of the record that this build reads, the one `Deviceless::sendEnvironment`
     /// writes.
-    const VERSION: u32 = 8;
+    const VERSION: u32 = 9;
+
+    /// The range of x and y of the cells that the game has loaded, `[min x, min y, max x, max
+    /// y]`: the player's cell and the eight around it, as `loadedCells` of the Direct3D 9
+    /// path has them. Not the cells of the camera, which a free camera or a long third-person
+    /// offset puts elsewhere. Empty when the player is in no exterior.
+    fn loaded_cells(&self) -> [f32; 4] {
+        if self.exterior_grid_valid == 0 {
+            return [0.0; 4];
+        }
+        let [x, y] = self.exterior_grid.map(|grid| grid as f32);
+        [(x - 1.0) * CELL, (y - 1.0) * CELL, (x + 2.0) * CELL, (y + 2.0) * CELL]
+    }
 
     /// Reads the record; [`None`] for a short record or another version.
     fn read(bytes: &[u8]) -> Option<Environment> {
@@ -3153,10 +3169,9 @@ impl Extension for DistantLand {
             pass.pop_debug_group();
             // The water among the distant statics, for `draw_held`: in an exterior, above the
             // water, as `flushWaterVolumes` of the Direct3D 9 path has it. The game has the
-            // cell of the camera and the eight around it.
+            // cells around the player (`Environment::loaded_cells`).
             if far_water_wanted {
-                let (x, y) = ((eye[0] / CELL).floor(), (eye[1] / CELL).floor());
-                let loaded = [(x - 1.0) * CELL, (y - 1.0) * CELL, (x + 2.0) * CELL, (y + 2.0) * CELL];
+                let loaded = self.environment.map_or([0.0; 4], |e| e.loaded_cells());
                 self.far_water = statics.far_water(eye, &planes, loaded);
             }
         }
@@ -4554,11 +4569,26 @@ mod environment_tests {
         let bytes = bytemuck::bytes_of(&e).to_vec();
         assert_eq!(Environment::read(&bytes).map(|e| e.sea_plane()), Some(512.0));
         assert!(Environment::read(&bytes[..bytes.len() - 4]).is_none());
-        for version in [0, 7, Environment::VERSION + 1] {
+        for version in [0, 8, Environment::VERSION + 1] {
             let mut other = bytes.clone();
             other[..4].copy_from_slice(&version.to_le_bytes());
             assert!(Environment::read(&other).is_none(), "version {version}");
         }
+    }
+
+    /// The loaded cells are the player's cell and the eight around it, from the grid that the
+    /// game sends; none without that grid (an interior).
+    #[test]
+    fn the_loaded_cells_are_around_the_players_grid() {
+        let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.version = Environment::VERSION;
+        e.exterior_grid = [6, -14];
+        e.exterior_grid_valid = 1;
+        // The eye is not read: a camera in cell 4 leaves the cells of the player.
+        e.eye = [38000.0, -107400.0, 1624.0];
+        assert_eq!(e.loaded_cells(), [5.0 * CELL, -15.0 * CELL, 8.0 * CELL, -12.0 * CELL]);
+        e.exterior_grid_valid = 0;
+        assert_eq!(e.loaded_cells(), [0.0; 4]);
     }
 
     #[test]

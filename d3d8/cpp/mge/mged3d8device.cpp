@@ -1242,6 +1242,12 @@ namespace Deviceless {
         // Version 8: the height of the engine's water plane (MWBridge::WaterPlaneHeight):
         // the camera is above the sea above it. The lowest float in a cell without water.
         float waterPlane;
+        // Version 9: the grid of the player's exterior cell (MWBridge::getExteriorGrid), and
+        // 1 when the player is in an exterior. The game has that cell and the eight around
+        // it; the far water of the distant statics is left to the game there, as
+        // DistantLand::loadedCells of the Direct3D 9 path has it.
+        int exteriorGrid[2];
+        UINT exteriorGridValid;
     };
     static const UINT EnvironmentId = 1;
 
@@ -1253,7 +1259,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 8;
+        e.version = 9;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1462,6 +1468,9 @@ namespace Deviceless {
         e.waterLevel = mwBridge->WaterLevel();
         e.hasWater = mwBridge->CellHasWater() ? 1u : 0u;
         e.waterPlane = mwBridge->WaterPlaneHeight();
+        if (mwBridge->getExteriorGrid(e.exteriorGrid[0], e.exteriorGrid[1])) {
+            e.exteriorGridValid = 1;
+        }
         if (exterior) {
             // As DistantLand::simulateDynamicWaves: rain = 4; thunderstorm = 5; snow = 8;
             // blizzard = 9. A thunderstorm has 50% more drops.
