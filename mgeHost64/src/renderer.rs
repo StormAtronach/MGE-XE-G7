@@ -4291,11 +4291,13 @@ mod shader_tests {
         shader_check::check("shader.wgsl with the extension, tier c", &nirender_wgpu::tier_c_shader_source(&source)).unwrap();
     }
 
-    /// The cone of a spot light has one home, `nirender_wgpu::spot`: the draw part calls it and
-    /// has no cone of its own, and the world shader with the draw part has the crate's text once.
+    /// The cone of a spot light has one home, `nirender_wgpu::spot`: the draw part calls it in
+    /// both forms of `light_terms` (the game's lights and the original lights) and has no cone of
+    /// its own, and the world shader with the draw part has the crate's text once.
     #[test]
     fn the_draw_shader_takes_the_cone_of_the_crate() {
-        assert!(DRAW_SHADER.contains("spot_cone(light, ") && !DRAW_SHADER.contains("fn spot_cone") && !DRAW_SHADER.contains("light.cone.x"));
+        assert_eq!(DRAW_SHADER.matches("spot_cone(light, ").count(), 2, "one call in each form of light_terms");
+        assert!(!DRAW_SHADER.contains("fn spot_cone") && !DRAW_SHADER.contains("light.cone.x"));
         let source = nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{DRAW_SHADER}\n"));
         assert_eq!(source.matches(nirender_wgpu::spot::WGSL).count(), 1);
         assert_eq!(source.matches("fn spot_cone").count(), 1);
