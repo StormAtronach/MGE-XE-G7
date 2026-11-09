@@ -250,7 +250,9 @@ change. That start can take some minutes. With an older file, set it below
   settings (`graphics.anti_aliasing`) gives the samples of each pixel of the world, and
   "Transparency anti-aliasing" (`graphics.transparency_antialiasing`) gives the grass and the
   distant statics alpha to coverage. The post shaders read the resolved picture and the
-  nearest depth of each pixel. With "none", every pixel has one sample.
+  nearest depth of each pixel. With "none", every pixel has one sample. On a card without the
+  adapter's own format features, 8 samples run as 4 and 2 as 1 (the log line
+  `samples: asked 8, using 4`).
 - A setting that a mod or the MGE XE options change while the game runs (the draw distance,
   the ends of the static tiers, the water options, the caustics, the lighting mode, the speed
   of the HDR) reaches the renderer at once.
