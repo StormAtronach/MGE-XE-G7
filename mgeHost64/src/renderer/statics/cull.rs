@@ -475,8 +475,15 @@ struct SetBuffers {
 }
 
 /// The sets that a list has from the start: the main view, the mirror and the two layers of
-/// the shadow map. The sets of the views of their own come with [`Culling::ensure_sets`].
+/// the shadow map. The sets of the views of their own come with [`Culling::ensure_set`].
 const FIXED_SETS: usize = 4;
+
+/// The bytes of the buffers of one set of a list of `length` places and `textures` textures:
+/// the flags and the draws have a slot for each place (24 bytes), and the counts have a word for
+/// each texture and the work counts.
+pub fn set_bytes(length: u32, textures: usize) -> u64 {
+    u64::from(length.max(1)) * 24 + (textures + STATS) as u64 * 4
+}
 
 /// The list of the places of a world space, by texture.
 struct WorldList {
@@ -486,7 +493,9 @@ struct WorldList {
     /// Start and length in the list for each texture.
     ranges: Vec<(u32, u32)>,
     length: u32,
-    sets: Vec<SetBuffers>,
+    /// By the number of the set; `None` for a set of the views of their own that is not made
+    /// (a place that no view holds yet, a spare that was freed).
+    sets: Vec<Option<SetBuffers>>,
 }
 
 /// The compute passes and their buffers.
@@ -617,14 +626,14 @@ impl Culling {
             });
             (list, buckets, ranges, indexes.len() as u32)
         });
-        let sets = (0..FIXED_SETS).map(|_| self.make_set(device, &list, &buckets, ranges.len(), length)).collect();
+        let sets = (0..FIXED_SETS).map(|_| Some(self.make_set(device, &list, &buckets, ranges.len(), length))).collect();
         WorldList { name, list, buckets, ranges, length, sets }
     }
 
     /// The buffers of one set of a world list: the values, the flags of the places, the draws
     /// and the counts. The flags and the draws have a slot for each place (24 bytes).
     fn make_set(&self, device: &wgpu::Device, list: &wgpu::Buffer, buckets: &wgpu::Buffer, textures: usize, length: u32) -> SetBuffers {
-        let slots = length.max(1) as u64;
+        let slots = u64::from(length.max(1));
         let make = |label: &str, size: u64, usage: wgpu::BufferUsages| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
         let uniforms = make("distant statics, cull values", size_of::<CullUniforms>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
         let flags = make("distant statics, the triangles of each place", slots * 4, wgpu::BufferUsages::STORAGE);
@@ -649,22 +658,49 @@ impl Culling {
                 wgpu::BindGroupEntry { binding: 8, resource: counts.as_entire_binding() },
             ],
         });
-        SetBuffers { uniforms, draws, counts, group, bytes: slots * 24 + (textures + STATS) as u64 * 4 }
+        SetBuffers { uniforms, draws, counts, group, bytes: set_bytes(length, textures) }
     }
 
-    /// Makes the buffers of the sets up to `count` sets in the list of the world space, when it
-    /// has fewer: the views of their own, which the frames with few of them do not pay for.
-    /// Returns the bytes that this call made, 0 when the sets were there.
-    pub fn ensure_sets(&mut self, device: &wgpu::Device, count: usize) -> u64 {
+    /// Makes the buffers of the set `set` in the list of the world space, when it has none: a
+    /// view of its own, which the frames with few of them do not pay for. Returns the bytes
+    /// that this call made, 0 when the set was there or there is no world.
+    pub fn ensure_set(&mut self, device: &wgpu::Device, set: usize) -> u64 {
         let Some(mut world) = self.world.take() else { return 0 };
+        if world.sets.len() <= set {
+            world.sets.resize_with(set + 1, || None);
+        }
         let mut made = 0;
-        while world.sets.len() < count {
-            let set = self.make_set(device, &world.list, &world.buckets, world.ranges.len(), world.length);
-            made += set.bytes;
-            world.sets.push(set);
+        if world.sets[set].is_none() {
+            let buffers = self.make_set(device, &world.list, &world.buckets, world.ranges.len(), world.length);
+            made = buffers.bytes;
+            world.sets[set] = Some(buffers);
         }
         self.world = Some(world);
         made
+    }
+
+    /// Frees the buffers of the set `set` of a view of its own.
+    pub fn release_set(&mut self, set: usize) {
+        if let Some(buffers) = self.world.as_mut().and_then(|world| world.sets.get_mut(set)) {
+            *buffers = None;
+        }
+    }
+
+    /// True when the set `set` has its buffers in the list of the world space.
+    pub fn has_set(&self, set: usize) -> bool {
+        self.world.as_ref().is_some_and(|world| world.sets.get(set).is_some_and(Option::is_some))
+    }
+
+    /// The bytes that a new set would take in the list of the world space now; 0 without a
+    /// world.
+    pub fn next_set_bytes(&self) -> u64 {
+        self.world.as_ref().map_or(0, |world| set_bytes(world.length, world.ranges.len()))
+    }
+
+    /// The bytes of the sets of the views of their own that exist (all sets from
+    /// [`FIXED_SETS`] on).
+    pub fn views_bytes(&self) -> u64 {
+        self.world.as_ref().map_or(0, |world| world.sets.iter().skip(FIXED_SETS).flatten().map(|set| set.bytes).sum())
     }
 
     /// Runs the compute passes of a set in a command buffer of their own, before the commands
@@ -686,7 +722,7 @@ impl Culling {
     /// commands that draw the set.
     pub fn encode(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, set: usize, uniforms: &CullUniforms) {
         let Some(world) = self.world.as_ref() else { return };
-        let Some(buffers) = world.sets.get(set) else { return };
+        let Some(buffers) = world.sets.get(set).and_then(Option::as_ref) else { return };
         let mut values = *uniforms;
         values.counts[0] = world.length;
         values.counts[1] = world.ranges.len() as u32;
@@ -705,7 +741,7 @@ impl Culling {
     /// sets the texture of a texture and gives false when it has no pool.
     pub fn draw(&self, set: usize, pass: &mut wgpu::RenderPass<'static>, mut bind: impl FnMut(&mut wgpu::RenderPass<'static>, u32) -> bool) -> u32 {
         let Some(world) = self.world.as_ref() else { return 0 };
-        let Some(buffers) = world.sets.get(set) else { return 0 };
+        let Some(buffers) = world.sets.get(set).and_then(Option::as_ref) else { return 0 };
         let mut calls = 0;
         for (texture, &(start, length)) in world.ranges.iter().enumerate() {
             if length == 0 || !bind(pass, texture as u32) {
@@ -718,6 +754,7 @@ impl Culling {
     }
 
     /// Reads the counts of the sets since the last call, and sets them to 0. Waits for the GPU.
+    /// A set with no buffers reads as zeros.
     pub fn take_stats(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<[u32; STATS]> {
         let Some(world) = self.world.as_ref() else { return Vec::new() };
         let size = STATS as u64 * 4;
@@ -729,6 +766,7 @@ impl Culling {
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull counts") });
         for (at, buffers) in world.sets.iter().enumerate() {
+            let Some(buffers) = buffers else { continue };
             let start = world.ranges.len() as u64 * 4;
             encoder.copy_buffer_to_buffer(&buffers.counts, start, &read, at as u64 * size, size);
             encoder.clear_buffer(&buffers.counts, start, Some(size));

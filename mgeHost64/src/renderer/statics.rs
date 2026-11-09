@@ -913,16 +913,32 @@ struct WaitStats {
     again: u32,
 }
 
-/// The sets of a frame: the main view, the mirror, the two layers of the shadow map, and the
-/// views of their own with the full tier ([`tier_set`]).
-pub const SETS: usize = 4 + super::view::TIER_SETS;
+/// The sets of a frame that exist from the start: the main view, the mirror and the two layers
+/// of the shadow map. The sets of the views of their own ([`tier_set`]) follow, a list that
+/// grows with the places and the spares (D82 caps, design B).
+pub const FIXED_SETS: usize = 4;
 
-/// The set of the `k`th view of its own in a frame.
+/// The set of the view of its own in the set `k` of the views of their own (a place, or a
+/// spare: [`super::view::TierViews`]).
 pub const fn tier_set(k: usize) -> usize {
-    4 + k
+    FIXED_SETS + k
 }
 
-const SET_NAMES: [&str; SETS] = ["view", "mirror", "shadow 1", "shadow 2", "view of its own 1", "view of its own 2", "view of its own 3", "view of its own 4", "spare 1", "spare 2", "spare 3", "spare 4"];
+/// The names of the fixed sets, for the report.
+const SET_NAMES: [&str; FIXED_SETS] = ["view", "mirror", "shadow 1", "shadow 2"];
+
+/// The view group of the set `set` of the statics, when it is made.
+fn group_of(view_groups: &[Option<wgpu::BindGroup>], set: usize) -> Option<&wgpu::BindGroup> {
+    view_groups.get(super::view::group_of_set(set)).and_then(Option::as_ref)
+}
+
+/// Marks the set `set` as chosen by `prepare` for the frame.
+fn mark_prepared(prepared: &mut Vec<bool>, set: usize) {
+    if prepared.len() <= set {
+        prepared.resize(set + 1, false);
+    }
+    prepared[set] = true;
+}
 
 /// True when the place of a group is hidden: `shown` has a byte for each group, 0 for a hidden
 /// one. A place without a group (0) is always shown, and so is each place before the first
@@ -1034,7 +1050,7 @@ fn flat_distance(instance: &Instance, eye: [f32; 3]) -> f32 {
 /// The budget and the use of this process of the largest memory heap of the GPU, from
 /// `VK_EXT_memory_budget`, which wgpu turns on when the driver has it. [`None`] on another
 /// backend than Vulkan, or without the extension.
-fn memory_budget(device: &wgpu::Device) -> Option<(u64, u64)> {
+pub(super) fn memory_budget(device: &wgpu::Device) -> Option<(u64, u64)> {
     // SAFETY: the guard keeps the device alive, and the calls only read the properties of its
     // physical device.
     let hal = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }?;
@@ -1059,7 +1075,7 @@ fn memory_budget(device: &wgpu::Device) -> Option<(u64, u64)> {
 /// host mode: what the budget leaves after the memory in use and a margin, and the merged
 /// bytes on the GPU, which the memory in use counts already. Without them the merged subsets
 /// would make their own cap smaller.
-fn cap_from_budget(budget: u64, used: u64, merged: u64) -> u64 {
+pub(super) fn cap_from_budget(budget: u64, used: u64, merged: u64) -> u64 {
     let headroom = (budget / 8).clamp(HEADROOM_LEAST, HEADROOM_MOST);
     merged.saturating_add(budget.saturating_sub(used).saturating_sub(headroom))
 }
@@ -1270,9 +1286,15 @@ struct Gpu {
     mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
     /// The depth from the sun into the shadow map.
     shadow_pipeline: wgpu::RenderPipeline,
-    /// The main view, the reflection, the two layers of the shadow map, and the views of
-    /// their own ([`SETS`]).
-    sets: [BufferSet; SETS],
+    /// The main view, the reflection, the two layers of the shadow map ([`FIXED_SETS`]), and the
+    /// views of their own, by the number of the set; `None` for a set not made yet or freed.
+    sets: Vec<Option<BufferSet>>,
+    /// What a set of the views of their own needs to make its uniforms and its group
+    /// ([`Gpu::make_buffer_set`]): the layout of group 1, the palettes, the sampler and the
+    /// arrivals.
+    set_layout: wgpu::BindGroupLayout,
+    palettes: wgpu::Buffer,
+    set_sampler: wgpu::Sampler,
     /// The samples of `pipeline`: a draw into a pass with another count (a rendered texture
     /// has one) takes `picture_pipeline`.
     samples: u32,
@@ -1297,8 +1319,10 @@ struct Gpu {
     /// alpha to coverage.
     grass_picture_pipeline: wgpu::RenderPipeline,
     /// The values of the grass of the views of their own, one set for each call at the end of
-    /// the world in a frame, made when a call first needs it.
-    grass_sets: Vec<GrassSet>,
+    /// the world in a frame (by the number of the set of the views of their own, as
+    /// [`tier_set`] less [`FIXED_SETS`]), made when a call first needs it; `None` while it is
+    /// not made, or after it was freed.
+    grass_sets: Vec<Option<GrassSet>>,
     /// The texture of one texel that stands for the shadow map in the group of a view of its own.
     grass_no_shadow: std::rc::Rc<wgpu::TextureView>,
     grass_group: wgpu::BindGroup,
@@ -1321,6 +1345,32 @@ struct GrassSet {
     group: wgpu::BindGroup,
 }
 
+/// The bytes of the buffers of one grass set: the places of a call and the uniforms.
+const GRASS_SET_BYTES: u64 = (GRASS_RECORDS * GRASS_RECORD) as u64 + size_of::<GrassUniforms>() as u64;
+
+impl Gpu {
+    /// The uniforms and the group of one set of the statics (group 1 of its pipelines).
+    fn make_buffer_set(&self, device: &wgpu::Device) -> BufferSet {
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("distant statics"),
+            size: size_of::<SetUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("distant statics"),
+            layout: &self.set_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.palettes.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.set_sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: self.arrivals.as_entire_binding() },
+            ],
+        });
+        BufferSet { group, uniforms }
+    }
+}
+
 /// Where the grass of a call goes: the main view at the end of the world of the game, or a
 /// view of its own (the `k`th call at the end of the world in the frame, D82 section 3.4f).
 #[derive(Clone, Copy)]
@@ -1332,8 +1382,6 @@ pub enum GrassTarget {
 /// What a call of the grass of a view of its own did.
 #[derive(Default, Clone, Copy)]
 pub struct GrassView {
-    /// The bytes of GPU memory that the call made for its set.
-    pub made: u64,
     /// The places drawn.
     pub drawn: usize,
 }
@@ -1708,12 +1756,17 @@ pub struct Statics {
     /// goes free.
     refused: HashSet<u32>,
     refused_count: u64,
-    /// The sets that `prepare` chose for this frame.
-    prepared: [bool; SETS],
-    /// The view groups of the frame, one for each set, and their layout (group 0 of the
-    /// pipelines of the statics). The catalog loads when the layout is there.
+    /// The sets that `prepare` chose for this frame, by the number of the set (a set past the
+    /// end is not chosen).
+    prepared: Vec<bool>,
+    /// The view groups of the frame by their numbers (`None` for a group not made), and their
+    /// layout (group 0 of the pipelines of the statics). The catalog loads when the layout is
+    /// there.
     view_layout: Option<wgpu::BindGroupLayout>,
-    view_groups: Vec<wgpu::BindGroup>,
+    view_groups: Vec<Option<wgpu::BindGroup>>,
+    /// The places that the player allows for the views of their own: the sets of the views of
+    /// their own from this number on are spares, for the names of the report.
+    tier_places: usize,
     prepare_calls: u64,
     prepare_seconds: f64,
     /// The grass of the frame: texture, subset, record, the fade-in, 1 for bent normals.
@@ -1752,8 +1805,9 @@ pub struct Statics {
     groups_record: Vec<u8>,
     /// The places of hidden groups that a frame did not draw, for the report.
     hidden_skipped: u64,
-    /// The work of each set since the last `report`, and of the grass.
-    set_stats: [SetStats; SETS],
+    /// The work of each set since the last `report` (by the number of the set; it grows to the
+    /// last set that drew), and of the grass.
+    set_stats: Vec<SetStats>,
     grass_stats: SetStats,
     grass_parts: GrassParts,
     grass_kept: GrassKept,
@@ -1845,9 +1899,10 @@ impl Statics {
             unreadable: HashSet::new(),
             refused: HashSet::new(),
             refused_count: 0,
-            prepared: [false; SETS],
+            prepared: Vec::new(),
             view_layout: None,
             view_groups: Vec::new(),
+            tier_places: 0,
             prepare_calls: 0,
             prepare_seconds: 0.0,
             grass_draws: Vec::new(),
@@ -1872,7 +1927,7 @@ impl Statics {
             shown: Vec::new(),
             groups_record: Vec::new(),
             hidden_skipped: 0,
-            set_stats: [SetStats::default(); SETS],
+            set_stats: Vec::new(),
             grass_stats: SetStats::default(),
             grass_parts: GrassParts::default(),
             grass_kept: GrassKept::default(),
@@ -1945,7 +2000,8 @@ impl Statics {
     /// Prints the work of the draws for each call of each set since the last report, and
     /// starts again: the command `statics report <label>` of `nirender.tune`.
     pub fn report(&mut self, label: &str) {
-        for (name, stats) in SET_NAMES.iter().zip(self.set_stats.iter()).chain(core::iter::once((&"grass", &self.grass_stats))) {
+        let names: Vec<String> = (0..self.set_stats.len()).map(|set| self.set_name(set)).collect();
+        for (name, stats) in names.iter().map(String::as_str).zip(self.set_stats.iter()).chain(core::iter::once(("grass", &self.grass_stats))) {
             if stats.calls == 0 {
                 continue;
             }
@@ -2004,7 +2060,7 @@ impl Statics {
         self.prepare_seconds = 0.0;
         if let (Some(gpu), Some(device), Some(queue)) = (self.gpu.as_ref(), self.device.as_ref(), self.queue.as_ref()) {
             if let Some(culling) = gpu.culling.as_ref() {
-                for ((name, stats), counts) in SET_NAMES.iter().zip(self.set_stats.iter()).zip(culling.take_stats(device, queue)) {
+                for ((name, stats), counts) in names.iter().zip(self.set_stats.iter()).zip(culling.take_stats(device, queue)) {
                     if stats.calls == 0 {
                         continue;
                     }
@@ -2044,7 +2100,7 @@ impl Statics {
         self.late_arrivals = 0;
         self.late_shown = 0;
         self.late_nearest = f32::MAX;
-        self.set_stats = [SetStats::default(); SETS];
+        self.set_stats.fill(SetStats::default());
         self.grass_stats = SetStats::default();
         self.grass_parts = GrassParts::default();
     }
@@ -2592,17 +2648,19 @@ impl Statics {
         if self.failed || !self.settings.grass {
             return GrassView::default();
         }
-        let made = self.ensure_grass_sets(scene.device, k);
         let drawn = self.draw_grass_timed(scene, pass, frame, GrassTarget::View(k));
-        GrassView { made, drawn }
+        GrassView { drawn }
     }
 
-    /// Makes the sets of the grass of the views of their own up to the `k`th; returns the bytes
-    /// of the sets made.
-    fn ensure_grass_sets(&mut self, device: &wgpu::Device, k: usize) -> u64 {
+    /// Makes the grass set `k` of the views of their own when it is not made; returns the bytes
+    /// of the set made, 0 when it was there or the statics have no GPU objects yet.
+    pub fn ensure_grass_set(&mut self, device: &wgpu::Device, k: usize) -> u64 {
         let Some(gpu) = self.gpu.as_mut() else { return 0 };
+        if gpu.grass_sets.len() <= k {
+            gpu.grass_sets.resize_with(k + 1, || None);
+        }
         let mut made = 0;
-        while gpu.grass_sets.len() <= k {
+        if gpu.grass_sets[k].is_none() {
             let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("grass, a view of its own"),
                 size: size_of::<GrassUniforms>() as u64,
@@ -2617,7 +2675,7 @@ impl Statics {
             });
             let group = make_grass_group(device, &gpu.grass_layout, &uniforms, &gpu.grass_sampler, &gpu.grass_no_shadow, &gpu.grass_shadow_sampler);
             made += uniforms.size() + records.size();
-            gpu.grass_sets.push(GrassSet { records, uniforms, group });
+            gpu.grass_sets[k] = Some(GrassSet { records, uniforms, group });
         }
         made
     }
@@ -2637,10 +2695,10 @@ impl Statics {
             GrassTarget::Main => super::view::GAME,
             GrassTarget::View(k) => super::view::tier_game(k),
         };
-        let Some(view) = self.view_groups.get(view_index) else { return 0 };
+        let Some(view) = self.view_groups.get(view_index).and_then(Option::as_ref) else { return 0 };
         let (records_buffer, uniforms_buffer, group) = match target {
             GrassTarget::Main => (&gpu.grass_records, &gpu.grass_uniforms, &gpu.grass_group),
-            GrassTarget::View(k) => match gpu.grass_sets.get(k) {
+            GrassTarget::View(k) => match gpu.grass_sets.get(k).and_then(Option::as_ref) {
                 Some(set) => (&set.records, &set.uniforms, &set.group),
                 None => return 0,
             },
@@ -2890,13 +2948,104 @@ impl Statics {
         self.view_groups.extend_from_slice(views.groups());
     }
 
+    /// Takes the view groups of the set `set` of the views of their own from `views`, after
+    /// [`ViewBinding::ensure_set`](super::view::ViewBinding::ensure_set) made them. The groups
+    /// of the frame come with [`set_views`](Self::set_views); a set made later in the frame
+    /// comes here.
+    pub fn set_view_set(&mut self, views: &super::view::ViewBinding, set: usize) {
+        for number in [super::view::tier(set), super::view::tier_game(set)] {
+            if self.view_groups.len() <= number {
+                self.view_groups.resize_with(number + 1, || None);
+            }
+            self.view_groups[number] = views.group(number).cloned();
+        }
+    }
+
+    /// Tells the statics how many of the sets of the views of their own are places (the rest
+    /// are spares), for the names of the report.
+    pub fn set_places(&mut self, places: usize) {
+        self.tier_places = places;
+    }
+
+    /// The name of the set `set` in the report.
+    fn set_name(&self, set: usize) -> String {
+        match set.checked_sub(FIXED_SETS) {
+            None => SET_NAMES[set].to_string(),
+            Some(k) if k < self.tier_places => format!("view of its own {}", k + 1),
+            Some(k) => format!("spare {}", k + 1 - self.tier_places),
+        }
+    }
+
+    /// The bytes that the cull buffers of the set `set` of the views of their own would take
+    /// now, 0 when they exist or the statics cannot draw (no GPU culling, no world space).
+    pub fn view_set_bytes_needed(&self, set: usize) -> u64 {
+        let (Some(gpu), Some(catalog)) = (self.gpu.as_ref(), self.catalog.as_ref()) else { return 0 };
+        let Some(culling) = gpu.culling.as_ref() else { return 0 };
+        match (culling.has_world(&self.world), culling.has_set(tier_set(set))) {
+            (true, true) => 0,
+            (true, false) => culling.next_set_bytes(),
+            // The list of the world space is not made yet: all the places of the catalog are
+            // an upper bound of its length.
+            (false, _) => cull::set_bytes(catalog.instances.len() as u32, catalog.textures.len()),
+        }
+    }
+
+    /// The bytes of the statics sets of the views of their own that exist: the cull buffers and
+    /// the grass sets.
+    pub fn views_bytes(&self) -> u64 {
+        let Some(gpu) = self.gpu.as_ref() else { return 0 };
+        gpu.culling.as_ref().map_or(0, cull::Culling::views_bytes) + gpu.grass_sets.iter().flatten().count() as u64 * GRASS_SET_BYTES
+    }
+
+    /// The bytes that the grass set `k` would take now, 0 when it exists.
+    pub fn grass_set_bytes_needed(&self, k: usize) -> u64 {
+        match self.gpu.as_ref() {
+            Some(gpu) if gpu.grass_sets.get(k).is_none_or(Option::is_none) => GRASS_SET_BYTES,
+            _ => 0,
+        }
+    }
+
+    /// Frees the statics set `k` of the views of their own: the uniforms and the group of group 1,
+    /// and the cull buffers.
+    pub fn release_view_set(&mut self, k: usize) {
+        let statics_set = tier_set(k);
+        if let Some(gpu) = self.gpu.as_mut() {
+            if let Some(buffers) = gpu.sets.get_mut(statics_set) {
+                *buffers = None;
+            }
+            if let Some(culling) = gpu.culling.as_mut() {
+                culling.release_set(statics_set);
+            }
+        }
+        if let Some(prepared) = self.prepared.get_mut(statics_set) {
+            *prepared = false;
+        }
+    }
+
+    /// Frees the grass set `k` of the views of their own.
+    pub fn release_grass_set(&mut self, k: usize) {
+        if let Some(grass) = self.gpu.as_mut().and_then(|gpu| gpu.grass_sets.get_mut(k)) {
+            *grass = None;
+        }
+    }
+
+    /// Forgets the two view groups of the set `k` of the views of their own, which the view
+    /// binding freed ([`ViewBinding::release_set`](super::view::ViewBinding::release_set)).
+    pub fn release_view_groups(&mut self, k: usize) {
+        for number in [super::view::tier(k), super::view::tier_game(k)] {
+            if let Some(group) = self.view_groups.get_mut(number) {
+                *group = None;
+            }
+        }
+    }
+
     /// Chooses the places of the sets of a frame on the GPU, in one command buffer before the
     /// passes that draw them, and does the work of the frame for the statics once: the main
     /// view first. A set chosen here is only drawn by `draw`; a set that is not here is chosen
     /// in its `draw`, as without this call.
     pub fn prepare(&mut self, scene: &SceneView, sets: &[CullSet]) {
         self.frame = scene.frame;
-        self.prepared = [false; SETS];
+        self.prepared.fill(false);
         let Some(first) = sets.first() else { return };
         if self.failed || !self.settings.statics {
             return;
@@ -2918,9 +3067,7 @@ impl Statics {
                     for cull_set in sets {
                         let values = cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end);
                         culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
-                        if let Some(prepared) = self.prepared.get_mut(cull_set.set) {
-                            *prepared = true;
-                        }
+                        mark_prepared(&mut self.prepared, cull_set.set);
                     }
                     scene.commands.stamps().end(&mut encoder, at);
                     scene.commands.defer(encoder.finish());
@@ -2935,30 +3082,57 @@ impl Statics {
     /// in a command buffer of its own before the commands of the frame. It does no work of the
     /// frame (the arrivals, the residency, the budget): that is the main view's, and keyed to
     /// its eye, so a view far from the main eye draws only the subsets that are resident for
-    /// that eye. The report line of the set counts these places as "not on the GPU". The buffers of the set are made at the first use. Returns the bytes that this
-    /// call made on the GPU, or `None` when the statics cannot draw the set (off, failed, no
-    /// world space, no GPU culling).
-    pub fn prepare_view(&mut self, scene: &SceneView, cull_set: &CullSet) -> Option<u64> {
-        if self.failed || !self.settings.statics || cull_set.set < tier_set(0) || cull_set.set >= SETS {
+    /// that eye. The report line of the set counts these places as "not on the GPU". The buffers
+    /// of the set are made by [`ensure_view_set`](Self::ensure_view_set) first. Gives `None`
+    /// when the statics cannot draw the set (off, failed, no world space, no GPU culling, no
+    /// buffers or view group of the set).
+    pub fn prepare_view(&mut self, scene: &SceneView, cull_set: &CullSet) -> Option<()> {
+        if self.failed || !self.settings.statics || cull_set.set < tier_set(0) {
             return None;
         }
-        // The view groups come with the main view's call; before it the draw has no group 0.
-        if self.view_groups.len() <= super::view::group_of_set(cull_set.set) {
+        // The view groups come with the main view's call, and the group of a set with its first
+        // call (`set_view_set`); before them the draw has no group 0.
+        group_of(&self.view_groups, cull_set.set)?;
+        let gpu = self.gpu.as_mut()?;
+        gpu.sets.get(cull_set.set)?.as_ref()?;
+        let culling = gpu.culling.as_mut()?;
+        if !culling.has_set(cull_set.set) {
             return None;
         }
-        let catalog = self.catalog.clone()?;
-        let world = catalog.worlds.get(&self.world)?;
-        let culling = self.gpu.as_mut()?.culling.as_mut()?;
-        if !culling.has_world(&self.world) {
-            culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
-        }
-        let made = culling.ensure_sets(scene.device, cull_set.set + 1);
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull of a view of its own") });
         let at = scene.commands.stamps().begin(&mut encoder, "distant statics: the GPU cull of a view of its own", nirender_wgpu::stamps::StampKind::Detail);
         culling.encode(scene.queue, &mut encoder, cull_set.set, &cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end));
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
-        self.prepared[cull_set.set] = true;
+        mark_prepared(&mut self.prepared, cull_set.set);
+        Some(())
+    }
+
+    /// Makes what the statics need for the set `k` of the views of their own (its statics set is
+    /// [`tier_set`]`(k)`): the list of the places of the world space when it is not there, the
+    /// cull buffers, and the uniforms and the group of group 1. Returns the bytes of the cull
+    /// buffers that this call made, or `None` when the statics cannot draw the set (off, failed,
+    /// no catalog, no world space, no GPU culling). The caller makes it inside an out-of-memory
+    /// scope and after the size rule (see [`view_set_bytes_needed`](Self::view_set_bytes_needed)).
+    pub fn ensure_view_set(&mut self, device: &wgpu::Device, k: usize) -> Option<u64> {
+        if self.failed || !self.settings.statics {
+            return None;
+        }
+        let set = tier_set(k);
+        let catalog = self.catalog.clone()?;
+        let world = catalog.worlds.get(&self.world)?;
+        let gpu = self.gpu.as_mut()?;
+        let culling = gpu.culling.as_mut()?;
+        if !culling.has_world(&self.world) {
+            culling.set_world(device, &self.world, &world_places(&catalog, world));
+        }
+        let made = culling.ensure_set(device, set);
+        if gpu.sets.len() <= set {
+            gpu.sets.resize_with(set + 1, || None);
+        }
+        if gpu.sets[set].is_none() {
+            gpu.sets[set] = Some(gpu.make_buffer_set(device));
+        }
         Some(made)
     }
 
@@ -2966,10 +3140,12 @@ impl Statics {
     pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
         let started = Instant::now();
         let draws = self.draw_timed(scene, pass, frame, set);
-        if let Some(stats) = self.set_stats.get_mut(set) {
-            stats.calls += 1;
-            stats.seconds += started.elapsed().as_secs_f64();
+        if self.set_stats.len() <= set {
+            self.set_stats.resize(set + 1, SetStats::default());
         }
+        let stats = &mut self.set_stats[set];
+        stats.calls += 1;
+        stats.seconds += started.elapsed().as_secs_f64();
         draws
     }
 
@@ -3199,9 +3375,11 @@ impl Statics {
         true
     }
 
-    /// Binds what the draws of a set read: its pipeline, its uniforms and the places.
-    fn bind_set(gpu: &Gpu, view_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) {
-        let buffers = &gpu.sets[set];
+    /// Binds what the draws of a set read: its pipeline, its uniforms and the places. Gives false
+    /// when the set has no uniforms (a set of the views of their own that is not made): nothing
+    /// is bound then.
+    fn bind_set(gpu: &Gpu, view_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) -> bool {
+        let Some(buffers) = gpu.sets.get(set).and_then(Option::as_ref) else { return false };
         if let Some(view_group) = view_group {
             pass.set_bind_group(0, view_group, &[]);
         }
@@ -3220,12 +3398,15 @@ impl Statics {
         pass.set_pipeline(if shadow { &gpu.shadow_pipeline } else if scene.wireframe { lines.as_ref().unwrap_or(fill) } else { fill });
         pass.set_bind_group(1, &buffers.group, &[]);
         pass.set_vertex_buffer(1, gpu.instances.slice(..));
+        true
     }
 
     /// The indirect draws of a set that the GPU chose.
     fn draw_chosen(gpu: &Gpu, view_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) -> u32 {
         let Some(culling) = gpu.culling.as_ref() else { return 0 };
-        Self::bind_set(gpu, view_group, scene, pass, frame, set, fade);
+        if !Self::bind_set(gpu, view_group, scene, pass, frame, set, fade) {
+            return 0;
+        }
         let (pools, textures) = (&gpu.pools, &gpu.textures);
         culling.draw(set, pass, |pass, texture| {
             let Some((vertices, indexes)) = pools.buffers(texture) else { return false };
@@ -3245,7 +3426,7 @@ impl Statics {
         if self.prepared.get(set).copied().unwrap_or(false) {
             self.prepared[set] = false;
             let Some(gpu) = self.gpu.as_ref() else { return 0 };
-            return Self::draw_chosen(gpu, self.view_groups.get(super::view::group_of_set(set)), scene, pass, frame, set, fade);
+            return Self::draw_chosen(gpu, group_of(&self.view_groups, set), scene, pass, frame, set, fade);
         }
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         if set == 0 {
@@ -3265,7 +3446,7 @@ impl Statics {
                     culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
                 }
                 culling.run(scene, set, &cull_values(&settings, frame.planes, frame.eye, frame.fog_end));
-                return Self::draw_chosen(gpu, self.view_groups.get(super::view::group_of_set(set)), scene, pass, frame, set, fade);
+                return Self::draw_chosen(gpu, group_of(&self.view_groups, set), scene, pass, frame, set, fade);
             }
         }
 
@@ -3339,7 +3520,9 @@ impl Statics {
             return 0;
         }
         let Some(gpu) = self.gpu.as_ref() else { return 0 };
-        Self::bind_set(gpu, self.view_groups.get(super::view::group_of_set(set)), scene, pass, frame, set, fade);
+        if !Self::bind_set(gpu, group_of(&self.view_groups, set), scene, pass, frame, set, fade) {
+            return 0;
+        }
         let mut texture = u32::MAX;
         for &(draw_texture, subset, instance, faces) in &self.draws {
             let Some(Resident { geometry: Geometry::Pool(slot), .. }) = self.resident.get(&subset) else { continue };
@@ -3496,7 +3679,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             mapped_at_creation: false,
         })
     };
-    let uniform_buffers: [wgpu::Buffer; SETS] = core::array::from_fn(|_| make_uniforms());
+    let uniform_buffers: [wgpu::Buffer; FIXED_SETS] = core::array::from_fn(|_| make_uniforms());
     let palettes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant statics, the palettes"),
         contents: bytemuck::cast_slice(&catalog.palettes),
@@ -3705,8 +3888,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         multiview_mask: None,
         cache: None,
     });
-    let mut buffer_sets = groups.into_iter().zip(uniform_buffers).map(|(group, uniforms)| BufferSet { group, uniforms });
-    let sets: [BufferSet; SETS] = core::array::from_fn(|_| buffer_sets.next().expect("a group and uniforms for each set"));
+    let sets: Vec<Option<BufferSet>> = groups.into_iter().zip(uniform_buffers).map(|(group, uniforms)| Some(BufferSet { group, uniforms })).collect();
 
     // The values of every place for the draws, once: the world matrix and the values of the
     // subset. A draw names its place by its first instance.
@@ -3847,6 +4029,9 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         mirror_pipeline_lines,
         shadow_pipeline,
         sets,
+        set_layout: layout,
+        palettes,
+        set_sampler: sampler.clone(),
         samples: scene.samples,
         picture_pipeline,
         textures,

@@ -80,6 +80,9 @@ fn skipped(part: &str) -> bool {
 /// The adaptation point of the main view is logged at every this many runs of its post chain,
 /// for the first this many lines.
 const MAIN_POINT_EVERY: u64 = 60;
+/// How long a sample of the budget of the memory heap serves the size rule of the views of their
+/// own, unless a set was made or freed since.
+const VIEWS_BUDGET_PERIOD: Duration = Duration::from_millis(500);
 const MAIN_POINT_LINES: u64 = 400;
 const ENVIRONMENT_ID: u32 = 1;
 /// The state of a post shader that a mod loaded: see [`post::ShaderState`].
@@ -635,7 +638,9 @@ pub struct DistantLand {
     /// for the water of a start without it.
     scatter_shaders: bool,
     /// `views.full_tier_max`: how many views of a frame get the parts that a mod asks for with
-    /// `mge.camera.setViewOptions`. `MGE_XE_FULL_TIER_MAX` (0 to 4) overrides the file for a test.
+    /// `mge.camera.setViewOptions`. `MGE_XE_FULL_TIER_MAX` (0 to 32, the view slots) overrides
+    /// the file for a test. The number is the helper's places for the session
+    /// ([`view::TierViews::new`]).
     full_tier_max: usize,
     /// The distances of the settings of MGE XE, in the units of the game.
     draw_distance: f32,
@@ -850,13 +855,19 @@ pub struct DistantLand {
     /// the full tier (without it). A place's state lives as long as the view that holds the place
     /// (`note_place_holder`).
     post_main: Option<post::PostView>,
-    /// The sets from [`view::TIER_VIEWS`] on are the spares of the later calls of a place in a
+    /// By the number of the set: the places, then the spares of the later calls of a place in a
     /// frame (D82 section 3.4f, R2); a spare that no call used for [`view::SPARE_IDLE_FRAMES`]
-    /// frames is freed ([`view::TierViews::idle_post_spares`]).
-    post_places: [Option<post::PostView>; view::TIER_SETS],
+    /// frames loses all its sets ([`view::TierViews::idle_spares`], [`DistantLand::free_sets`]).
+    /// The list grows to the last set that made a state.
+    post_places: Vec<Option<post::PostView>>,
+    /// The last sample of the budget of the memory heap, for the size rule of the views of their
+    /// own: when it was read, and the budget and the use ([`statics::memory_budget`]).
+    views_budget_sample: Option<(Instant, Option<(u64, u64)>)>,
     post_spares_freed: u64,
     /// The lines logged for a new state of a place.
     post_view_lines: u32,
+    /// The lines logged for a refused set of the views of their own.
+    views_refusal_lines: u32,
     /// The runs of the post chain on the main view's picture.
     main_post_runs: u64,
 }
@@ -1070,15 +1081,18 @@ impl DistantLand {
     pub fn start(root: &Path, live: bool) -> DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
+        // The places of the full tier: the player's setting, or the environment variable for a
+        // test, which may go up to the code's bound (one place for each view slot).
+        let full_tier_max = std::env::var("MGE_XE_FULL_TIER_MAX")
+            .ok()
+            .and_then(|text| text.trim().parse::<usize>().ok())
+            .map_or(document.settings().views.full_tier_max as usize, |value| value.min(view::MAX_PLACES));
         let mut land = DistantLand {
             enabled: settings.enabled,
             water_on: settings.enabled,
             // As the shaders start with the settings of the file, before a settings record.
             scatter_shaders: settings.enabled && settings.fog.exponential && settings.fog.atmosphere_scattering,
-            full_tier_max: std::env::var("MGE_XE_FULL_TIER_MAX")
-                .ok()
-                .and_then(|text| text.trim().parse::<usize>().ok())
-                .map_or(document.settings().views.full_tier_max as usize, |value| value.min(4)),
+            full_tier_max,
             draw_distance: settings.draw_distance * CELL,
             settings_fog: (settings.fog.above_water_start * CELL, settings.fog.above_water_end * CELL),
             environment: None,
@@ -1180,12 +1194,14 @@ impl DistantLand {
             started: Instant::now(),
             meshes_drawn: 0,
             frames: 0,
-            tier_views: view::TierViews::default(),
+            tier_views: view::TierViews::new(full_tier_max),
             environment_watch: view::EnvironmentWatch::default(),
             post_main: None,
-            post_places: Default::default(),
+            post_places: Vec::new(),
+            views_budget_sample: None,
             post_spares_freed: 0,
             post_view_lines: 0,
+            views_refusal_lines: 0,
             main_post_runs: 0,
         };
         println!(
@@ -1256,6 +1272,7 @@ impl DistantLand {
             self.lights = Some(distant_lights::DistantLights::start(&folder));
             let mut statics = statics::Statics::start(&document, folder);
             statics.set_groups(&self.vis_groups);
+            statics.set_places(self.tier_views.places());
             self.statics = Some(statics);
         }
     }
@@ -1329,16 +1346,19 @@ impl Drop for DistantLand {
         println!("distant land: {}", self.tier_views.line());
         println!("distant land: {}", self.environment_watch.line());
         println!("distant land: {}", self.tier_views.post_line());
+        let places = self.tier_views.places().min(self.post_places.len());
+        let (own, spares) = self.post_places.split_at(places);
         println!(
             "post state: main view {:.2} MB; places in use: {} ({:.2} MB); spares in use: {} ({:.2} MB), {} spares freed after {} idle frames",
             self.post_main.as_ref().map_or(0, post::PostView::bytes) as f64 / 1e6,
-            self.post_places[..view::TIER_VIEWS].iter().flatten().count(),
-            self.post_places[..view::TIER_VIEWS].iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6,
-            self.post_places[view::TIER_VIEWS..].iter().flatten().count(),
-            self.post_places[view::TIER_VIEWS..].iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6,
+            own.iter().flatten().count(),
+            own.iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6,
+            spares.iter().flatten().count(),
+            spares.iter().flatten().map(post::PostView::bytes).sum::<u64>() as f64 / 1e6,
             self.post_spares_freed,
             view::SPARE_IDLE_FRAMES
         );
+        println!("distant land: the sets of the views of their own have {:.2} MB now ({:.2} MB at most at one time)", self.views_live_bytes() as f64 / 1e6, self.tier_views.peak_live as f64 / 1e6);
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("distant lights: {} frames with glows", self.lights.as_ref().map_or(0, |lights| lights.frames));
         println!(
@@ -2321,6 +2341,7 @@ impl Extension for DistantLand {
         self.finish_load(scene);
         self.apply_settings();
         self.cell_facts(scene);
+        self.free_idle_spares(scene.frame);
         if let Some(statics) = self.statics.as_mut() {
             statics.set_fade(self.tunables.get(tunables::STATICS_FADE));
         }
@@ -2842,6 +2863,7 @@ impl Extension for DistantLand {
         let Some(binding) = self.light_binding.as_mut() else { return false };
         binding.set_strength(scene.queue, if scene.interior { 0.0 } else { self.tunables.get(tunables::BAKED_STRENGTH) * night });
         let Some(views) = self.view_binding.as_ref() else { return false };
+        let Some(main_group) = views.group(view::MAIN) else { return false };
         views.write(scene.queue, view::MAIN, &main_view);
 
         let planes = nirender_wgpu::view_planes(&scene.view, &projection);
@@ -2850,7 +2872,7 @@ impl Extension for DistantLand {
         // space over the clear colour.
         if !scene.interior && !skipped("terrain") {
             pass.push_debug_group("distant land");
-            drawn = gpu.draw_meshes(scene, pass, views.group(view::MAIN), &planes);
+            drawn = gpu.draw_meshes(scene, pass, main_group, &planes);
             pass.pop_debug_group();
         }
         self.meshes_drawn += drawn;
@@ -3019,7 +3041,7 @@ impl Extension for DistantLand {
         }
         if let Some(lights) = self.lights.as_mut().filter(|_| glows) {
             pass.push_debug_group("distant lights");
-            lights.draw(pass, views.group(view::MAIN), 0, scene.samples);
+            lights.draw(pass, main_group, 0, scene.samples);
             pass.pop_debug_group();
         }
         true
@@ -3043,14 +3065,24 @@ impl Extension for DistantLand {
             self.tier_views.orthographic += 1;
             return false;
         }
-        let ready = self.gpu.is_some() && self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
+        let ready = self.gpu.is_some() && self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready);
         let Some(k) = ready.then(|| self.tier_views.claim(scene.frame, scene.view_key.place, scene.view_key.repeat)).flatten() else {
             self.tier_views.unserved += u64::from(!ready);
             return false;
         };
         self.note_place_holder(k, scene.view_key.slot);
+        if !self.ensure_view_groups(scene, k) {
+            self.tier_views.unserved += 1;
+            return false;
+        }
+        // What this call makes for its set is made before the draws, within the size rule and an
+        // out-of-memory scope: a part that is refused leaves the call without it.
+        let statics_ready = parts.contains(Additions::STATICS) && !skipped("statics") && self.ensure_statics_set(scene, k);
+        let night = self.night(scene);
+        let glows_ready = parts.contains(Additions::GLOWS) && night > 0.0 && !scene.interior && self.ensure_glow_set(scene, k);
         let (Some(gpu), Some(views)) = (self.gpu.as_ref(), self.view_binding.as_ref()) else { return false };
         let group = view::tier(k);
+        let Some(view_group) = views.group(group) else { return false };
         let projection = self.land_projection(scene);
         let own = -scene.projection[14] / scene.projection[10];
         if self.tier_views.note_near(own) {
@@ -3065,22 +3097,18 @@ impl Extension for DistantLand {
         // The terrain is for an exterior, as in the main view.
         if parts.contains(Additions::LAND) && !scene.interior && !skipped("terrain") {
             pass.push_debug_group("distant land (view of its own)");
-            let drawn = gpu.draw_meshes(scene, pass, views.group(group), &planes);
+            let drawn = gpu.draw_meshes(scene, pass, view_group, &planes);
             pass.pop_debug_group();
             self.tier_views.land_draws += drawn;
             drew |= drawn > 0;
         }
-        if parts.contains(Additions::STATICS) && !skipped("statics") {
+        if statics_ready {
             let fog_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end);
             let time = game_time(self.environment, self.started);
             if let Some(statics) = self.statics.as_mut() {
                 let set = statics::tier_set(k);
                 match statics.prepare_view(scene, &statics::CullSet { set, planes, eye: eye_range, fog_end }) {
-                    Some(made) => {
-                        if made > 0 {
-                            println!("distant land: the statics set of place {} is made: {:.2} MB for its cull buffers ({} MB in all for the views of their own)", k, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
-                        }
-                        self.tier_views.bytes += made;
+                    Some(()) => {
                         pass.push_debug_group("distant statics (view of its own)");
                         let calls = statics.draw(scene, pass, &statics::Frame { eye: eye_range, planes, fog_end, time }, set);
                         pass.pop_debug_group();
@@ -3093,18 +3121,12 @@ impl Extension for DistantLand {
         }
         // The glows of the distant lights at night, as the main view has them, from the set of
         // the call (set 0 is the main view's).
-        let night = self.night(scene);
-        if parts.contains(Additions::GLOWS) && night > 0.0 && !scene.interior {
+        if glows_ready {
             let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
             if let Some(lights) = self.lights.as_mut().filter(|lights| lights.has_glows()) {
-                let made = lights.ensure_sets(scene.device, k + 2);
-                if made > 0 {
-                    println!("distant land: the glow set of place {} is made: {:.2} MB ({} MB in all for the views of their own)", k, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
-                }
-                self.tier_views.bytes += made;
                 lights.prepare(scene, &frame, k + 1);
                 pass.push_debug_group("distant lights (view of its own)");
-                lights.draw(pass, views.group(group), k + 1, scene.samples);
+                lights.draw(pass, view_group, k + 1, scene.samples);
                 pass.pop_debug_group();
                 self.tier_views.glow_calls += 1;
                 drew = true;
@@ -3125,9 +3147,12 @@ impl Extension for DistantLand {
         if !is_perspective(&scene.projection) || self.statics.is_none() {
             return;
         }
-        let ready = self.view_binding.as_ref().is_some_and(|views| views.groups().len() == view::VIEWS);
+        let ready = self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready);
         let Some(k) = ready.then(|| self.tier_views.claim_after(scene.frame, scene.view_key.place, scene.view_key.repeat)).flatten() else { return };
         self.note_place_holder(k, scene.view_key.slot);
+        if !self.ensure_view_groups(scene, k) || !self.ensure_grass_set(scene, k) {
+            return;
+        }
         let Some(views) = self.view_binding.as_ref() else { return };
         views.write(scene.queue, view::tier_game(k), &self.frame_view(scene, &scene.projection));
         let mut frame = self.grass_frame(scene);
@@ -3136,10 +3161,6 @@ impl Extension for DistantLand {
         pass.push_debug_group("grass (view of its own)");
         let did = statics.draw_grass_view(scene, pass, &frame, k);
         pass.pop_debug_group();
-        if did.made > 0 {
-            println!("distant land: the grass set of place {} is made: {:.2} MB ({} MB in all for the views of their own)", k, did.made as f64 / 1e6, (self.tier_views.bytes + did.made) as f64 / 1e6);
-        }
-        self.tier_views.bytes += did.made;
         self.tier_views.grass_calls += u64::from(did.drawn > 0);
         self.tier_views.grass_places += did.drawn as u64;
     }
@@ -3153,7 +3174,6 @@ impl Extension for DistantLand {
         if self.menu_reuse || !parts.contains(Additions::POST_COVER) || !self.chain_wanted() || scene.picture.is_none() || scene.depth.is_none() {
             return;
         }
-        self.free_idle_spares(scene.frame);
         let Some(k) = self.tier_views.claim_post(scene.frame, scene.view_key.place, scene.view_key.repeat) else { return };
         self.note_place_holder(k, scene.view_key.slot);
         if !self.run_view_post(k, scene, encoder, target) {
@@ -3265,7 +3285,7 @@ impl Extension for DistantLand {
                 let intensity = self.caustics_intensity;
                 let caustics = self.caustics.get_or_insert_with(|| timed("the caustics' pipeline", || caustics::Caustics::new(scene, intensity, Water::dry_cut(), &views.layout)));
                 caustics.intensity = intensity;
-                if let Some(game_view) = views.groups().get(view::GAME) {
+                if let Some(game_view) = views.group(view::GAME) {
                     water.draw_sea_caustics(scene, pass, game_view, &frame, self.ripples.as_ref(), caustics, &caustics_frame);
                 }
             }
@@ -3311,7 +3331,7 @@ impl Extension for DistantLand {
         // the top of the volume is not drawn.
         let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
         let frame = self.water_frame(scene).filter(|_| !(in_volume && self.volumes_drawn));
-        let game_view = self.view_binding.as_ref().and_then(|views| views.groups().get(view::GAME));
+        let game_view = self.view_binding.as_ref().and_then(|views| views.group(view::GAME));
         if let (Some(water), Some(frame), Some(game_view)) = (self.water.as_mut(), frame.as_ref(), game_view) {
             water.draw(scene, pass, game_view, frame, self.ripples.as_ref());
         }
@@ -3420,15 +3440,48 @@ impl DistantLand {
     fn run_view_post(&mut self, place: usize, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
         let Some((variables, flags, distant)) = self.post_inputs(scene) else { return false };
         let main_point = self.post_main.as_ref().map_or([1.0; 4], post::PostView::hdr_point);
+        // A new state, or one for another size of the picture, makes textures: the size rule
+        // first, then the run inside an out-of-memory scope. A state of the size of the picture
+        // makes nothing.
+        let wanted = self.post_bytes_needed(place, scene.target_size);
+        if wanted > 0 && !self.admit_views(scene.device, wanted) {
+            return false;
+        }
+        if self.post_places.len() <= place {
+            self.post_places.resize_with(place + 1, || None);
+        }
         let Some(post) = self.post.as_mut() else { return false };
         let made = self.post_places[place].is_none();
         let view = self.post_places[place].get_or_insert_with(|| post::PostView::place(scene.device));
-        post.run(view, scene, encoder, target, &variables, flags, distant, main_point);
+        if wanted > 0 {
+            let ran = view::within_scope(&mut view::DeviceScope::new(scene.device), || post.run(view, scene, encoder, target, &variables, flags, distant, main_point));
+            self.views_budget_sample = None;
+            if ran.is_none() {
+                self.tier_views.creation_failed();
+                self.post_places[place] = None;
+                println!("distant land: the post state of place {place} could not be made: out of memory ({:.2} MB wanted); no new set of the views of their own is made until one is freed", wanted as f64 / 1e6);
+                return false;
+            }
+        } else {
+            post.run(view, scene, encoder, target, &variables, flags, distant, main_point);
+        }
         if made && self.post_view_lines < 12 {
             self.post_view_lines += 1;
-            println!("distant land: the post state of place {place} is made: {:.2} MB for its pool and its depth frame", view.bytes() as f64 / 1e6);
+            let bytes = self.post_places[place].as_ref().map_or(0, post::PostView::bytes);
+            println!("distant land: the post state of place {place} is made: {:.2} MB for its pool and its depth frame", bytes as f64 / 1e6);
         }
         true
+    }
+
+    /// The bytes that a run of the post chain of the set `place` makes for a picture of `size`:
+    /// 0 when its state has the textures of that size already. Else the bytes of the main view's
+    /// state at that size (the same chain, so the same pool), or a bound by the size alone when
+    /// the main view has no state yet, less what the state holds now.
+    fn post_bytes_needed(&self, place: usize, size: (u32, u32)) -> u64 {
+        let current = self.post_places.get(place).and_then(Option::as_ref);
+        let fit = current.is_some_and(|state| state.has_textures_of(size));
+        let estimate = self.post_main.as_ref().map_or_else(|| post::PostView::bytes_bound(size), |main| main.bytes_at(size));
+        view::bytes_needed(fit, estimate, current.map_or(0, post::PostView::bytes))
     }
 
     /// The values of the post chain for a scene: its variables, the flags of the environment and the
@@ -3550,7 +3603,7 @@ impl DistantLand {
                 Err(problem) => println!("water shader {name}: the standard look in its place: {problem}"),
             }
         }
-        let Some(game_view) = self.view_binding.as_ref().and_then(|views| views.groups().get(view::GAME)) else { return 0 };
+        let Some(game_view) = self.view_binding.as_ref().and_then(|views| views.group(view::GAME)) else { return 0 };
         water.draw_volumes(scene, pass, game_view, frame, self.ripples.as_ref(), held, far, &look, &self.water_looks, &light, before_plane)
     }
 
@@ -3853,12 +3906,194 @@ impl DistantLand {
         self.environment.is_some_and(|e| e.flags & 2 != 0)
     }
 
-    /// Frees the post state of a spare that no call has used for [`view::SPARE_IDLE_FRAMES`] frames.
+    /// Frees all the sets of a spare that no call has used for [`view::SPARE_IDLE_FRAMES`] frames:
+    /// the view groups, the statics, the glows, the grass and the post state (D82 caps, design B).
+    /// Once in a frame, from the first world draw.
     fn free_idle_spares(&mut self, frame: u64) {
-        let present = core::array::from_fn(|set| self.post_places[set].is_some());
-        for set in self.tier_views.idle_post_spares(present, frame) {
-            self.post_places[set] = None;
+        for set in self.tier_views.idle_spares(frame) {
+            self.free_sets(set);
             self.post_spares_freed += 1;
+        }
+    }
+
+    /// Drops every part that the set `set` of the views of their own has: the two view groups, the
+    /// statics set with its cull buffers and its grass set, the glow set (index `set` + 1; 0 is
+    /// the main view's) and the post state.
+    fn release_parts(&mut self, set: usize) {
+        for part in view::SetPart::ALL {
+            match part {
+                view::SetPart::ViewGroups => {
+                    if let Some(views) = self.view_binding.as_mut() {
+                        views.release_set(set);
+                    }
+                    if let Some(statics) = self.statics.as_mut() {
+                        statics.release_view_groups(set);
+                    }
+                }
+                view::SetPart::Statics => {
+                    if let Some(statics) = self.statics.as_mut() {
+                        statics.release_view_set(set);
+                    }
+                }
+                view::SetPart::Grass => {
+                    if let Some(statics) = self.statics.as_mut() {
+                        statics.release_grass_set(set);
+                    }
+                }
+                view::SetPart::Glows => {
+                    if let Some(lights) = self.lights.as_mut() {
+                        lights.release_set(set + 1);
+                    }
+                }
+                view::SetPart::Post => {
+                    if let Some(state) = self.post_places.get_mut(set) {
+                        *state = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Frees the set `set` whole, and lets the views make new sets again if an out-of-memory
+    /// error held them.
+    fn free_sets(&mut self, set: usize) {
+        self.release_parts(set);
+        self.views_budget_sample = None;
+        self.tier_views.sets_freed += 1;
+        self.tier_views.freed();
+    }
+
+    /// The bytes of GPU memory that the sets of the views of their own have now: the cull
+    /// buffers and the grass sets of the statics, the glow sets, and the post states. Counted
+    /// from the sets that exist, so a free, a drop at a change of the holder, a remake of a post
+    /// pool at a new size and a remake of the cull buffers for another world space all show.
+    fn views_live_bytes(&self) -> u64 {
+        self.statics.as_ref().map_or(0, statics::Statics::views_bytes)
+            + self.lights.as_ref().map_or(0, distant_lights::DistantLights::views_bytes)
+            + self.post_places.iter().flatten().map(post::PostView::bytes).sum::<u64>()
+    }
+
+    /// The size rule for `wanted` more bytes for the views of their own: false (and counted)
+    /// while the views are held after an out-of-memory error, or when the bytes that exist plus
+    /// these are above the budget of the views. The budget is sampled from the memory heap
+    /// every half second.
+    fn admit_views(&mut self, device: &wgpu::Device, wanted: u64) -> bool {
+        let live = self.views_live_bytes();
+        self.tier_views.note_live(live);
+        let heap = match self.views_budget_sample {
+            Some((at, heap)) if at.elapsed() < VIEWS_BUDGET_PERIOD => heap,
+            _ => {
+                let heap = statics::memory_budget(device);
+                self.views_budget_sample = Some((Instant::now(), heap));
+                heap
+            }
+        };
+        let budget = view::views_budget(heap, live);
+        let admitted = self.tier_views.admit(live, wanted, budget);
+        if !admitted && self.views_refusal_lines < 12 {
+            self.views_refusal_lines += 1;
+            println!(
+                "distant land: a set of the views of their own is refused: {:.2} MB wanted, {:.2} MB exist, the budget is {:.2} MB{}",
+                wanted as f64 / 1e6,
+                live as f64 / 1e6,
+                budget as f64 / 1e6,
+                if self.tier_views.held() { " (held after an out-of-memory error)" } else { "" }
+            );
+        }
+        admitted
+    }
+
+    /// Makes something of the views of their own (a part of the set `set`): the size rule for
+    /// `wanted` bytes, then `make` inside an out-of-memory scope. `None` when the rule refuses, or
+    /// when the scope caught an error: the parts of the set are then dropped, the creation is
+    /// counted, and no new set is made until one is freed.
+    fn make_for_set<T>(&mut self, device: &wgpu::Device, set: usize, wanted: u64, make: impl FnOnce(&mut DistantLand) -> T) -> Option<T> {
+        if !self.admit_views(device, wanted) {
+            return None;
+        }
+        let made = view::within_scope(&mut view::DeviceScope::new(device), || make(self));
+        // The heap's use has changed: the next sample is a new one.
+        self.views_budget_sample = None;
+        if made.is_none() {
+            self.tier_views.creation_failed();
+            self.release_parts(set);
+            println!("distant land: a part of the set {set} of the views of their own could not be made: out of memory ({:.2} MB wanted); no new set is made until one is freed", wanted as f64 / 1e6);
+        }
+        made
+    }
+
+    /// Makes the two view groups of the set `k` when they are not there. False when the call must
+    /// draw without them.
+    fn ensure_view_groups(&mut self, scene: &SceneView, k: usize) -> bool {
+        let present = self.view_binding.as_ref().is_some_and(|views| views.group(view::tier(k)).is_some() && views.group(view::tier_game(k)).is_some());
+        if present {
+            return true;
+        }
+        let device = scene.device;
+        let made = self.make_for_set(device, k, 2 * size_of::<view::View>() as u64, |land| {
+            let (Some(views), Some(light)) = (land.view_binding.as_mut(), land.light_binding.as_ref()) else { return false };
+            if !views.ensure_set(device, light, k) {
+                return false;
+            }
+            if let Some(statics) = land.statics.as_mut() {
+                statics.set_view_set(views, k);
+            }
+            true
+        });
+        made.unwrap_or(false)
+    }
+
+    /// Makes the statics sets of the set `k` (the cull buffers, the uniforms and the group of
+    /// group 1) when they are not there. False when the call must draw without them.
+    fn ensure_statics_set(&mut self, scene: &SceneView, k: usize) -> bool {
+        let Some(wanted) = self.statics.as_ref().map(|statics| statics.view_set_bytes_needed(k)) else { return false };
+        if wanted == 0 {
+            return true;
+        }
+        let device = scene.device;
+        match self.make_for_set(device, k, wanted, |land| land.statics.as_mut().and_then(|statics| statics.ensure_view_set(device, k))) {
+            Some(Some(made)) => {
+                println!("distant land: the statics set of place {} is made: {:.2} MB for its cull buffers ({:.2} MB in all for the views of their own)", k, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
+                self.tier_views.bytes += made;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Makes the glow set of the set `k` when it is not there. False when the call must draw
+    /// without glows.
+    fn ensure_glow_set(&mut self, scene: &SceneView, k: usize) -> bool {
+        let Some(lights) = self.lights.as_ref().filter(|lights| lights.has_glows()) else { return false };
+        if lights.has_set(k + 1) {
+            return true;
+        }
+        let (wanted, device) = (lights.next_set_bytes(), scene.device);
+        match self.make_for_set(device, k, wanted, |land| land.lights.as_mut().map_or(0, |lights| lights.ensure_set(device, k + 1))) {
+            Some(made) => {
+                println!("distant land: the glow set of place {} is made: {:.2} MB ({:.2} MB in all for the views of their own)", k, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
+                self.tier_views.bytes += made;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Makes the grass set of the set `k` when it is not there. False when the call must draw
+    /// without grass.
+    fn ensure_grass_set(&mut self, scene: &SceneView, k: usize) -> bool {
+        let Some(wanted) = self.statics.as_ref().map(|statics| statics.grass_set_bytes_needed(k)) else { return false };
+        if wanted == 0 {
+            return true;
+        }
+        let device = scene.device;
+        match self.make_for_set(device, k, wanted, |land| land.statics.as_mut().map_or(0, |statics| statics.ensure_grass_set(device, k))) {
+            Some(made) => {
+                println!("distant land: the grass set of place {} is made: {:.2} MB ({:.2} MB in all for the views of their own)", k, made as f64 / 1e6, (self.tier_views.bytes + made) as f64 / 1e6);
+                self.tier_views.bytes += made;
+                true
+            }
+            None => false,
         }
     }
 
@@ -3866,7 +4101,9 @@ impl DistantLand {
     fn note_place_holder(&mut self, place: usize, slot: u32) {
         if self.tier_views.note_holder(place, slot) {
             // A new holder starts with a new pool: the old one holds the last picture's output.
-            self.post_places[place] = None;
+            if self.post_places.get_mut(place).and_then(Option::take).is_some() {
+                self.tier_views.freed();
+            }
             if self.tier_views.holder_changes <= 12 {
                 println!("distant land: place {place} is held by view slot {slot} (change {})", self.tier_views.holder_changes);
             }
@@ -4224,8 +4461,9 @@ mod settings_tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// `views.full_tier_max` is read from the file (default 1). A value outside 0 to 4 is replaced by
-    /// the default when the document is read, as for every key with a range.
+    /// `views.full_tier_max` is read from the file (default 1) and is the number of places of the
+    /// views of their own. A value outside `FULL_TIER_MAX_RANGE` is replaced by the default when the
+    /// document is read, as for every key with a range.
     #[test]
     fn the_full_tier_number_comes_from_the_file() {
         let root = std::env::temp_dir().join(format!("mge-full-tier-{}", std::process::id()));
@@ -4237,7 +4475,8 @@ enabled = false
         std::fs::write(root.join(FILE_NAME), "[views]
 full_tier_max = 3
 ").unwrap();
-        assert_eq!(DistantLand::start(&root, false).full_tier_max, 3);
+        let land = DistantLand::start(&root, false);
+        assert_eq!((land.full_tier_max, land.tier_views.places()), (3, 3));
         std::fs::write(root.join(FILE_NAME), "[views]
 full_tier_max = 9
 ").unwrap();
