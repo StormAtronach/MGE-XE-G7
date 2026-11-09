@@ -253,18 +253,24 @@ fn mismatch_text(writer: &str, writes: &str) -> String {
     )
 }
 
-/// Ends this program for a d3d8.dll of another build: the lines in the log, then the refusal
-/// of the host crate (one message box, the exit code that the plugin reads; it shows no
-/// second box). A replay (`replay`) has no game and shows no box: it ends with the exit code.
+/// Ends this program for a d3d8.dll of another build: the refusal of the host crate writes
+/// the lines into the log, then shows one message box and ends with the exit code that the
+/// plugin reads (the plugin shows no second box). The refusal writes its lines without the
+/// lock of stdout: another thread can hold that lock in a full log pipe. A replay (`replay`)
+/// has no game, no log pipe and no box: it prints the lines and ends with the exit code.
 fn stop_mismatch(message: &str, replay: bool) -> ! {
-    for line in message.lines() {
-        println!("{line}");
-    }
     if replay {
+        for line in message.lines() {
+            println!("{line}");
+        }
         println!("make the capture again with this build");
         std::process::exit(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT as i32);
     }
-    nirender_wgpu::gpu::refuse(nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."))
+    nirender_wgpu::gpu::refuse(
+        nirender_wgpu::stream_format::EXIT_EXTENSION_FORMAT,
+        message,
+        &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."),
+    )
 }
 
 /// True the first time `id` is seen: the log names an extension id without a reader once.
