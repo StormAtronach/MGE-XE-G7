@@ -886,6 +886,63 @@ mod tests {
         assert!((depth(&clip) - depth(&exact)).abs() < 0.01 * slope, "{} {}", depth(&clip), depth(&exact));
     }
 
+    /// A view of a camera at `eye`, turned 30 degrees about z and tilted 25 degrees about x, with the rotation that made it
+    /// (row `r`, column `k` at `r * 3 + k`). The tilt puts the position of the world into the depth row and the w row; a view
+    /// that only turns about z has no x or y in them, so far from the origin it cannot round them apart.
+    fn tilted_view(eye: [f64; 3]) -> ([f32; 16], [f64; 9]) {
+        let (s, c) = (0.5f64, 0.75f64.sqrt());
+        let (sp, cp) = 25f64.to_radians().sin_cos();
+        let rot = [c, -s * cp, s * sp, s, c * cp, -c * sp, 0.0, sp, cp];
+        let mut view = [0.0f32; 16];
+        for r in 0..3 {
+            for k in 0..3 {
+                view[r * 4 + k] = rot[r * 3 + k] as f32;
+            }
+        }
+        for k in 0..3 {
+            view[12 + k] = -(0..3).map(|r| eye[r] * rot[r * 3 + k]).sum::<f64>() as f32;
+        }
+        view[15] = 1.0;
+        (view, rot)
+    }
+
+    /// Far from the origin the relative matrix keeps the depth, and the absolute product in f32 loses it. The second half is the
+    /// planted fault of the far-origin fix (the product put back): the test must be able to fail, so it asserts the failure. The
+    /// eyes are at 74000 units from the origin (the grass flicker, records entry 45) and at 368000 units.
+    #[test]
+    fn the_relative_matrix_keeps_the_depth_far_from_the_origin_and_the_absolute_product_does_not() {
+        let projection = [0.9774, 0.0, 0.0, 0.0, 0.0, 1.7376, 0.0, 0.0, 0.0, 0.0, 1.0001, 1.0, 0.0, 0.0, -1.0001, 0.0];
+        for eye in [[19724.25f64, -74050.5, 353.75], [-6500.25, -368500.5, 353.75]] {
+            let (view, rot) = tilted_view(eye);
+            let eye32 = eye.map(|e| e as f32);
+            let m = relative(&view, &projection, eye32);
+            // The old shader: `view_projection` made in f32, times the absolute position in f32.
+            let view_projection: [f32; 16] = core::array::from_fn(|i| (0..4).map(|k| view[i / 4 * 4 + k] as f64 * projection[k * 4 + i % 4] as f64).sum::<f64>() as f32);
+            for offset in [[36.0f64, 120.0, -123.75], [-60.0, 90.0, -30.0]] {
+                let world: [f64; 3] = core::array::from_fn(|i| eye[i] + offset[i]);
+                let vs: [f64; 3] = core::array::from_fn(|k| (0..3).map(|r| (world[r] - eye[r]) * rot[r * 3 + k]).sum());
+                let exact = [vs[0] * 0.9774, vs[1] * 1.7376, vs[2] * 1.0001 - 1.0001, vs[2]];
+                let depth = exact[2] / exact[3];
+                let tolerance = 0.01 * 1.0001 / (vs[2] * vs[2]);
+
+                let d: [f32; 3] = core::array::from_fn(|i| world[i] as f32 - eye32[i]);
+                let clip: [f64; 4] = core::array::from_fn(|i| (0..3).map(|k| d[k] as f64 * m[k * 4 + i] as f64).sum::<f64>() + m[12 + i] as f64);
+                let relative_error = (clip[2] / clip[3] - depth).abs();
+                assert!(relative_error < tolerance, "eye {eye:?} offset {offset:?}: the relative matrix is off by {relative_error}, the limit is {tolerance}");
+
+                let absolute: [f32; 4] = core::array::from_fn(|i| {
+                    let mut sum = 0.0f32;
+                    for k in 0..3 {
+                        sum += world[k] as f32 * view_projection[k * 4 + i];
+                    }
+                    sum + view_projection[12 + i]
+                });
+                let absolute_error = (absolute[2] as f64 / absolute[3] as f64 - depth).abs();
+                assert!(absolute_error > tolerance, "eye {eye:?} offset {offset:?}: the absolute product is off by only {absolute_error}, so this test cannot see the fault");
+            }
+        }
+    }
+
     /// The sets of the statics take the groups of their views: the four fixed ones by their own
     /// numbers, the views of their own after the game view, and no two sets share a group.
     #[test]
