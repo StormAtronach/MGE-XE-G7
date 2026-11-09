@@ -1192,9 +1192,10 @@ namespace Deviceless {
     // mgeHost64/src/renderer.rs has the same layout: 4 bytes for each member.
     struct Environment {
         UINT version;
-        // 1: exponential fog. 2: the camera is under water. 4: an exterior, or an interior
-        // that is like one. 16: in a water volume. 32: in a dry space. 64: in a menu. 128:
-        // a mouse click in this frame. 256: a game was loaded.
+        // 1: exponential fog. 2: the camera is under water. 4: not used since version 10 (the
+        // plugin's scene record says if the cell is like an exterior). 16: in a water volume.
+        // 32: in a dry space. 64: in a menu. 128: a mouse click in this frame. 256: a game
+        // was loaded.
         UINT flags;
         float nearViewRange;
         float fogStart, fogEnd;
@@ -1248,6 +1249,7 @@ namespace Deviceless {
         // DistantLand::loadedCells of the Direct3D 9 path has it.
         int exteriorGrid[2];
         UINT exteriorGridValid;
+        // Version 10: no new member; the flag 4 is not set (W84).
     };
     static const UINT EnvironmentId = 1;
 
@@ -1259,7 +1261,7 @@ namespace Deviceless {
     // them for the Direct3D 9 path, without its device calls.
     static void sendEnvironment(MWBridge* mwBridge) {
         Environment e = {};
-        e.version = 9;
+        e.version = 10;
         e.nearViewRange = mwBridge->GetViewDistance();
         e.lightSunMult = 1.0f;
         e.lightAmbMult = 1.0f;
@@ -1340,7 +1342,7 @@ namespace Deviceless {
                 e.fogNearEnd = 1280.0f + (farIntercept - 1280.0f) * -expFogNear / (expFogFar - expFogNear);
             }
         }
-        e.flags = (expFog ? 1u : 0u) | (underwater ? 2u : 0u) | (exterior ? 4u : 0u);
+        e.flags = (expFog ? 1u : 0u) | (underwater ? 2u : 0u);
         // The camera is in a water volume: the level of the water is the top of the volume.
         if (mwBridge->InWaterVolume()) {
             e.flags |= 16u;
