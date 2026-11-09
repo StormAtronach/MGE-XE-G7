@@ -4903,7 +4903,7 @@ mod set_free_tests {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
-        let views = view::ViewBinding::new(&device);
+        let mut views = view::ViewBinding::new(&device);
         let commands = nirender_wgpu::FrameCommands::default();
         let scene = nirender_wgpu::SceneView {
             device: &device,
@@ -4936,6 +4936,8 @@ mod set_free_tests {
 
         let (mut land, root) = land_with_no_data("gpu");
         land.lights = Some(distant_lights::DistantLights::with_glows(&scene, &views.layout, 4));
+        let light = distant_lights::LightBinding::new(&device, &queue);
+        views.refresh(&device, &light);
         let before = land.views_live_bytes();
         assert_eq!(before, 0, "no spare: the main view's own sets are not counted");
 
@@ -4944,6 +4946,10 @@ mod set_free_tests {
         assert!(land.lights.as_mut().unwrap().ensure_set(&device, spare + 1) > 0);
         land.post_places.resize_with(spare + 1, || None);
         land.post_places[spare] = Some(post::PostView::place_with_textures(&device, (64, 64)));
+        // The view binding of the land holds the two view groups of the spare, as the first frame of a view of its own makes them.
+        assert!(views.ensure_set(&device, &light, spare));
+        assert!(views.group(view::tier(spare)).is_some() && views.group(view::tier_game(spare)).is_some());
+        land.view_binding = Some(views);
         let glow_bytes = land.lights.as_ref().unwrap().views_bytes();
         let post_bytes = land.post_places[spare].as_ref().unwrap().bytes();
         assert!(glow_bytes > 0 && post_bytes > 0, "both parts have bytes: {glow_bytes} and {post_bytes}");
@@ -4955,6 +4961,9 @@ mod set_free_tests {
 
         assert!(!land.lights.as_ref().unwrap().has_set(spare + 1), "the glow set of the spare is gone");
         assert!(land.post_places[spare].is_none(), "the post state of the spare is gone");
+        let views = land.view_binding.as_ref().unwrap();
+        assert!(views.group(view::tier(spare)).is_none() && views.group(view::tier_game(spare)).is_none(), "the view groups of the spare are gone");
+        assert!(views.group(view::MAIN).is_some(), "the main view's group stays");
         assert_eq!(land.views_live_bytes(), before, "the bytes are back to what they were before the spare");
         assert!(!land.tier_views.held(), "a free of a set ends the hold");
         std::fs::remove_dir_all(&root).ok();
