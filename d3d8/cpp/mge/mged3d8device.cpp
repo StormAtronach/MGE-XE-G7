@@ -5,8 +5,10 @@
 #include "dxvk_morrowind_interop.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include "mgeversion.h"
 #include "camerafov.h"
 #include "camerarelative.h"
@@ -1495,7 +1497,10 @@ namespace Deviceless {
         return ready;
     }
 
-    // The pictures that a mod asked for since the last frame.
+    // The pictures that a mod asked for since the last frame. A mod asks from Lua, which can
+    // run on the cell worker; the frame sends them on the main thread. The mutex is a leaf: no
+    // call into the engine, Lua, the plugin or sendToRenderer while it is held.
+    static std::mutex pictureRequestsMutex;
     static std::vector<std::pair<std::string, bool>> pictureRequests;
 
     void requestPicture(const char* path, bool withUI) {
@@ -1505,27 +1510,36 @@ namespace Deviceless {
             return;
         }
         // The requests wait for a frame. When the plugin refused to draw, no frame comes.
-        if (pictureRequests.size() >= 16) {
-            static bool told = false;
-            if (!told) {
-                LOG::logline("!! wgpu renderer: no frame took the last 16 picture requests; no more are taken: %s", full);
-                told = true;
+        bool refused = false;
+        {
+            std::lock_guard<std::mutex> lock(pictureRequestsMutex);
+            refused = pictureRequests.size() >= 16;
+            if (!refused) {
+                pictureRequests.emplace_back(full, withUI);
             }
-            return;
         }
-        pictureRequests.emplace_back(full, withUI);
+        if (refused) {
+            static std::atomic<bool> told{ false };
+            if (!told.exchange(true)) {
+                LOG::logline("!! wgpu renderer: no frame took the last 16 picture requests; no more are taken: %s", full);
+            }
+        }
     }
 
     static void sendPictureRequests() {
         static const UINT PictureId = 3;
-        for (const auto& request : pictureRequests) {
+        std::vector<std::pair<std::string, bool>> requests;
+        {
+            std::lock_guard<std::mutex> lock(pictureRequestsMutex);
+            requests.swap(pictureRequests);
+        }
+        for (const auto& request : requests) {
             std::vector<unsigned char> record(8 + request.first.size() + 1, 0);
             const UINT head[2] = { 1, request.second ? 1u : 0u };
             std::memcpy(record.data(), head, sizeof(head));
             std::memcpy(record.data() + 8, request.first.data(), request.first.size());
             sendToRenderer(PictureId, record.data(), static_cast<UINT>(record.size()));
         }
-        pictureRequests.clear();
     }
 
     static void prepare() {
@@ -1883,6 +1897,7 @@ namespace Deviceless {
         environmentSent = false;
         sendSettings();
         sendPictureRequests();
+        WaterLooks::sendToRenderer();
         StatusOverlay::sendToRenderer();
     }
 

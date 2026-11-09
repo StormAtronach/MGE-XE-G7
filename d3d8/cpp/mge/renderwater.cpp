@@ -990,7 +990,7 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
             if (depthOnly && pending.tests.stencil) {
                 continue;
             }
-            const WaterLook& look = WaterLooks::get(pending.lookSlot);
+            const WaterLook look = WaterLooks::get(pending.lookSlot);
             int pass = PASS_RENDERUNDERWATER;
             if (!underwater) {
                 pass = waterShaderPass(look.shader);

@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -23,7 +24,15 @@ namespace {
         800.0f,
     };
 
+    // A mod sets the looks from Lua, which can run on the cell worker; the frame reads them on
+    // the main thread. The mutex is a leaf: no call into the engine, Lua, the plugin or
+    // sendToRenderer while it is held.
+    std::mutex looksMutex;
     std::vector<WaterLook> looks;
+    // A slot changed since the last send to the renderer
+    bool looksChanged = false;
+
+    // Only the main thread fills these, in the statics phases.
     std::vector<WaterLook> distantLooks;
 
     // Up to count numbers with commas between them.
@@ -135,24 +144,27 @@ void WaterLooks::set(unsigned int slot, const WaterLook* look) {
     if (slot == 0 || slot >= maxSlots) {
         return;
     }
-    if (look == nullptr) {
-        if (slot < looks.size()) {
-            looks[slot] = standardLook;
-        }
+    WaterLook stored = standardLook;
+    if (look != nullptr) {
+        const auto bytes = look->size < sizeof(WaterLook) ? look->size : sizeof(WaterLook);
+        std::memcpy(&stored, look, bytes);
+        stored.size = sizeof(WaterLook);
+        stored.shader[sizeof(stored.shader) - 1] = '\0';
+    }
+
+    std::lock_guard<std::mutex> lock(looksMutex);
+    if (look == nullptr && slot >= looks.size()) {
         return;
     }
     if (slot >= looks.size()) {
         looks.resize(slot + 1, standardLook);
     }
-    WaterLook& stored = looks[slot];
-    stored = standardLook;
-    const auto bytes = look->size < sizeof(WaterLook) ? look->size : sizeof(WaterLook);
-    std::memcpy(&stored, look, bytes);
-    stored.size = sizeof(WaterLook);
-    stored.shader[sizeof(stored.shader) - 1] = '\0';
+    looks[slot] = stored;
+    looksChanged = true;
 }
 
-const WaterLook& WaterLooks::get(unsigned int slot) {
+WaterLook WaterLooks::get(unsigned int slot) {
+    std::lock_guard<std::mutex> lock(looksMutex);
     if (slot == 0 || slot >= looks.size()) {
         return standardLook;
     }
@@ -177,15 +189,22 @@ void WaterLooks::sendToRenderer() {
     };
     std::vector<unsigned char> record(sizeof(Head));
     std::uint32_t count = 0;
-    for (std::uint32_t slot = 1; slot < looks.size(); ++slot) {
-        if (std::memcmp(&looks[slot], &standardLook, sizeof(WaterLook)) == 0) {
-            continue;
+    {
+        std::lock_guard<std::mutex> lock(looksMutex);
+        if (!looksChanged) {
+            return;
         }
-        const auto at = record.size();
-        record.resize(at + sizeof(slot) + sizeof(WaterLook));
-        std::memcpy(&record[at], &slot, sizeof(slot));
-        std::memcpy(&record[at + sizeof(slot)], &looks[slot], sizeof(WaterLook));
-        ++count;
+        looksChanged = false;
+        for (std::uint32_t slot = 1; slot < looks.size(); ++slot) {
+            if (std::memcmp(&looks[slot], &standardLook, sizeof(WaterLook)) == 0) {
+                continue;
+            }
+            const auto at = record.size();
+            record.resize(at + sizeof(slot) + sizeof(WaterLook));
+            std::memcpy(&record[at], &slot, sizeof(slot));
+            std::memcpy(&record[at + sizeof(slot)], &looks[slot], sizeof(WaterLook));
+            ++count;
+        }
     }
     const Head head = { 1, count };
     std::memcpy(record.data(), &head, sizeof(head));

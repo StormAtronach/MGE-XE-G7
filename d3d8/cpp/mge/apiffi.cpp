@@ -92,11 +92,10 @@ extern "C" {
     }
 
     // Sets the look of a slot, which a surface names in the specular power of its material
-    // (100000 + slot). A null look clears the slot. Called on the main thread by the mod that
-    // owns the volumes.
+    // (100000 + slot). A null look clears the slot. Called by the mod that owns the volumes, on
+    // any thread. The next frame sends the looks to the wgpu renderer.
     void MGE_WaterLookSet(unsigned int slot, const WaterLook* look) {
         WaterLooks::set(slot, look);
-        WaterLooks::sendToRenderer();
     }
 
     // Replaces the dry spaces: closed meshes inside which there is no water. `corners` is
