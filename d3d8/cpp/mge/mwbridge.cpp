@@ -404,14 +404,23 @@ float MWBridge::GetViewDistance() {
 
 //-----------------------------------------------------------------------------
 
+float TES3::WorldControllerRenderCamera::CameraData::nearPlaneFor(float farPlane) const {
+    const float derived = farPlane / globalAt<float>(TES3::Address::frustumFarPerNear);
+    return std::max(std::max(nearPlaneDistance, derived), globalAt<float>(TES3::Address::frustumNearFloor));
+}
+
+void TES3::WorldControllerRenderCamera::CameraData::setFarPlane(float farPlane) {
+    farPlaneDistance = farPlane;
+    camera->viewFrustum.farPlane = farPlane;
+    camera->viewFrustum.nearPlane = nearPlaneFor(farPlane);
+}
+
 void MWBridge::SetViewDistance(float dist) {
     assert(m_loaded);
     auto wc = worldController();
 
-    wc->worldCamera.cameraData.farPlaneDistance = dist;
-    wc->shadowCamera.cameraData.farPlaneDistance = dist;
-    wc->worldCamera.cameraData.camera->viewFrustum.farPlane = dist;
-    wc->shadowCamera.cameraData.camera->viewFrustum.farPlane = dist;
+    wc->worldCamera.cameraData.setFarPlane(dist);
+    wc->shadowCamera.cameraData.setFarPlane(dist);
     TES3::Game::get()->renderDistance = dist;
 }
 
