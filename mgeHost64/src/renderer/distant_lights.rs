@@ -470,6 +470,14 @@ pub struct DistantLights {
 }
 
 impl DistantLights {
+    /// Lights with the glows of `sources` sources made as the first frame makes them, with the
+    /// main view's set: for the tests of the views of their own.
+    #[cfg(test)]
+    pub fn with_glows(scene: &SceneView, view_layout: &wgpu::BindGroupLayout, sources: u32) -> DistantLights {
+        let file = LightsFile { sources: vec![0; sources as usize * 32], source_count: sources, tiles: Vec::new(), texels: Vec::new() };
+        DistantLights { loading: None, glows: Some(make_glows(scene, &file, view_layout)), frames: 0 }
+    }
+
     /// Starts the read of `<folder>\lights.data`.
     pub fn start(folder: &Path) -> DistantLights {
         let path: PathBuf = folder.join("lights.data");

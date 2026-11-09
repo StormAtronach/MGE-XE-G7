@@ -4650,6 +4650,15 @@ impl PostView {
         PostView::new(device, false)
     }
 
+    /// A state of a place with its textures made for a picture of `size`: it has bytes, as one that
+    /// ran the chain has. For the tests of the bytes that the views count.
+    #[cfg(test)]
+    pub fn place_with_textures(device: &wgpu::Device, size: (u32, u32)) -> PostView {
+        let mut view = PostView::new(device, false);
+        view.size_textures(device, size);
+        view
+    }
+
     fn new(device: &wgpu::Device, owns_hdr: bool) -> PostView {
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post depth"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });

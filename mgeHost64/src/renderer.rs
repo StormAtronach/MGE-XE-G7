@@ -4851,3 +4851,112 @@ mod hello_stop_tests {
         panic!("the replay played on with a hello of the extension format 2");
     }
 }
+
+/// The sets of the views of their own are freed whole (D82 caps, design B): every part of a set goes
+/// at one free, the bytes that the views count include every part, and a free lets the views make
+/// sets again after an out-of-memory error. The Reviewer planted four faults that the other tests
+/// did not catch: a free without the grass, the bytes without the post states, a free that leaves
+/// the views held, and the glows freed at the wrong number.
+#[cfg(test)]
+mod set_free_tests {
+    use super::*;
+
+    /// A distant land with distant land off, in a folder of this process, and that folder.
+    fn land_with_no_data(tag: &str) -> (DistantLand, PathBuf) {
+        let root = std::env::temp_dir().join(format!("mge-set-free-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        land.offline();
+        (land, root)
+    }
+
+    /// The free of a set calls the free of each part of it, and each call counts itself (a count of
+    /// the calls to the statics: a free that leaves one out leaves its count at 0), and the views
+    /// that an out-of-memory error held make sets again. No GPU: the statics have no GPU part, so
+    /// what the test sees is the calls, not the memory.
+    #[test]
+    fn a_free_of_a_set_calls_the_free_of_every_part_and_ends_the_hold() {
+        let (mut land, root) = land_with_no_data("calls");
+        let document = ConfigDocument::open(root.join(FILE_NAME));
+        land.statics = Some(statics::Statics::start(&document, root.join("no-statics")));
+        land.tier_views.creation_failed();
+        assert!(land.tier_views.held(), "an out-of-memory error holds the views");
+
+        land.free_sets(3);
+
+        let counts = land.statics.as_ref().unwrap().releases();
+        assert_eq!(counts, statics::ReleaseCounts { view_groups: 1, view_set: 1, grass_set: 1 }, "each part of the set was freed once");
+        assert!(!land.tier_views.held(), "a free of a set ends the hold");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Real GPU objects: the glows and the post state of a spare. The bytes that the views count are
+    /// the sum of the two; a free of the set takes both away (the glow set has the number of the set
+    /// plus 1, since 0 is the main view's) and gives back the bytes before the spare; and the hold of
+    /// an error ends. `cargo test -p mgeHost64 -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_free_of_a_set_takes_its_glows_and_post_state_and_their_bytes() {
+        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let views = view::ViewBinding::new(&device);
+        let commands = nirender_wgpu::FrameCommands::default();
+        let scene = nirender_wgpu::SceneView {
+            device: &device,
+            queue: &queue,
+            commands: &commands,
+            target_format: wgpu::TextureFormat::Bgra8Unorm,
+            depth_format: wgpu::TextureFormat::Depth32Float,
+            target_size: (64, 64),
+            frame: 0,
+            view_key: nirender_wgpu::ViewKey::MAIN,
+            samples: 1,
+            view: [0.0; 16],
+            projection: [0.0; 16],
+            eye: [0.0; 3],
+            interior: false,
+            wireframe: false,
+            fog_on: false,
+            fog_color: [0.0; 4],
+            fog_start: 0.0,
+            fog_end: 0.0,
+            sun_direction: None,
+            sun_color: [0.0; 3],
+            sun_ambient: [0.0; 3],
+            ambient: [0.0; 3],
+            picture: None,
+            depth: None,
+            before_depth: None,
+            lights: None,
+        };
+
+        let (mut land, root) = land_with_no_data("gpu");
+        land.lights = Some(distant_lights::DistantLights::with_glows(&scene, &views.layout, 4));
+        let before = land.views_live_bytes();
+        assert_eq!(before, 0, "no spare: the main view's own sets are not counted");
+
+        // Every part that this land can have for the spare 2: its glow set (number 3) and its post state.
+        let spare = 2;
+        assert!(land.lights.as_mut().unwrap().ensure_set(&device, spare + 1) > 0);
+        land.post_places.resize_with(spare + 1, || None);
+        land.post_places[spare] = Some(post::PostView::place_with_textures(&device, (64, 64)));
+        let glow_bytes = land.lights.as_ref().unwrap().views_bytes();
+        let post_bytes = land.post_places[spare].as_ref().unwrap().bytes();
+        assert!(glow_bytes > 0 && post_bytes > 0, "both parts have bytes: {glow_bytes} and {post_bytes}");
+        assert_eq!(land.views_live_bytes(), glow_bytes + post_bytes, "the bytes of the views count the glows and the post states");
+
+        land.tier_views.creation_failed();
+        assert!(land.tier_views.held());
+        land.free_sets(spare);
+
+        assert!(!land.lights.as_ref().unwrap().has_set(spare + 1), "the glow set of the spare is gone");
+        assert!(land.post_places[spare].is_none(), "the post state of the spare is gone");
+        assert_eq!(land.views_live_bytes(), before, "the bytes are back to what they were before the spare");
+        assert!(!land.tier_views.held(), "a free of a set ends the hold");
+        std::fs::remove_dir_all(&root).ok();
+    }
+}

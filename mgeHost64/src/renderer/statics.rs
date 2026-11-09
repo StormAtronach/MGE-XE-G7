@@ -1685,6 +1685,16 @@ override ALPHA_TO_COVERAGE: bool = false;
 }
 ";
 
+/// How many times each part of a view's set was freed: for the test that a free of a set frees
+/// every part ([`Statics::releases`]). Test builds only.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseCounts {
+    pub view_groups: u32,
+    pub view_set: u32,
+    pub grass_set: u32,
+}
+
 pub struct Statics {
     settings: Settings,
     /// The alpha of a static with an alpha test and of a blade of grass becomes the coverage
@@ -1834,6 +1844,8 @@ pub struct Statics {
     ever_arrived: HashSet<u32>,
     /// The work of the wait on the loading screen, from its first frame to `take_wait`.
     wait: Option<WaitStats>,
+    #[cfg(test)]
+    releases: ReleaseCounts,
 }
 
 impl Statics {
@@ -1863,6 +1875,8 @@ impl Statics {
             loading: Some(receiver),
             catalog: None,
             gpu: None,
+            #[cfg(test)]
+            releases: ReleaseCounts::default(),
             requests: None,
             arrivals: None,
             resident: HashMap::new(),
@@ -3005,9 +3019,19 @@ impl Statics {
         }
     }
 
+    /// The frees of the parts of a set so far, counted by the freeing calls themselves.
+    #[cfg(test)]
+    pub fn releases(&self) -> ReleaseCounts {
+        self.releases
+    }
+
     /// Frees the statics set `k` of the views of their own: the uniforms and the group of group 1,
     /// and the cull buffers.
     pub fn release_view_set(&mut self, k: usize) {
+        #[cfg(test)]
+        {
+            self.releases.view_set += 1;
+        }
         let statics_set = tier_set(k);
         if let Some(gpu) = self.gpu.as_mut() {
             if let Some(buffers) = gpu.sets.get_mut(statics_set) {
@@ -3024,6 +3048,10 @@ impl Statics {
 
     /// Frees the grass set `k` of the views of their own.
     pub fn release_grass_set(&mut self, k: usize) {
+        #[cfg(test)]
+        {
+            self.releases.grass_set += 1;
+        }
         if let Some(grass) = self.gpu.as_mut().and_then(|gpu| gpu.grass_sets.get_mut(k)) {
             *grass = None;
         }
@@ -3032,6 +3060,10 @@ impl Statics {
     /// Forgets the two view groups of the set `k` of the views of their own, which the view
     /// binding freed ([`ViewBinding::release_set`](super::view::ViewBinding::release_set)).
     pub fn release_view_groups(&mut self, k: usize) {
+        #[cfg(test)]
+        {
+            self.releases.view_groups += 1;
+        }
         for number in [super::view::tier(k), super::view::tier_game(k)] {
             if let Some(group) = self.view_groups.get_mut(number) {
                 *group = None;
