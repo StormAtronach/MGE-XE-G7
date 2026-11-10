@@ -485,6 +485,7 @@ public:
     static IDirect3DSurface9* nativeDepthSourceSurface();
     static bool projectionIsCanonical(const D3DXMATRIX& projection);
 
+    static bool hasSunLight();
     static void renderShadowMap();
     static void renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, const D3DXMATRIX* viewproj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set);
     static void renderShadowLayer(int layer, float radius, const D3DXMATRIX* inverseCameraProj);
