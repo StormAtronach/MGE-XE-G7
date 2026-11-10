@@ -1941,9 +1941,8 @@ namespace Deviceless {
     // The Click of a camera starts (the plugin, at the renderer's SetCameraData, before the
     // view of the camera goes to the device), with the plugin's scene packet. The main view
     // and the eye come from it and from the camera object it names, not from a pattern of
-    // the view matrix. NiCamera: the world translation at +0x64, kWorldDir at +0xDC
-    // (nirender src/gen/layouts.rs).
-    void sceneBegin(const MgeLinkSceneV1* scene) {
+    // the view matrix. NiCamera: kWorldDir at +0xDC (nirender src/gen/layouts.rs).
+    void sceneBegin(const MgeLinkSceneV2* scene) {
         const unsigned kind = scene->kind;
         // The plugin calls this from its own hook of SetCameraData, so the frustum is written
         // here before the renderer reads it, as the hook of the Direct3D 9 path does.
@@ -1953,12 +1952,11 @@ namespace Deviceless {
         if (kind != MGE_LINK_SCENE_WORLD || !scene->camera) {
             return;
         }
+        // The packet has the camera's position for every camera (MgeLinkSceneV2).
         const auto camera = reinterpret_cast<const unsigned char*>(uintptr_t(scene->camera));
-        const auto translation = reinterpret_cast<const float*>(camera + 0x64);
         const auto direction = reinterpret_cast<const float*>(camera + 0xDC);
-        const bool exact = (scene->flags & MGE_LINK_SCENE_HAS_CAMERA_ORIGIN) != 0;
         for (int i = 0; i < 3; ++i) {
-            eye[i] = exact ? float(scene->cameraOrigin[i]) : translation[i];
+            eye[i] = float(scene->cameraOrigin[i]);
             look[i] = direction[i];
         }
         // The environment of this frame, before its world draws: from Present it reached the
