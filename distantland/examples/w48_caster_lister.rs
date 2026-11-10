@@ -13,6 +13,11 @@
 //! component of a merged subset, the placement and the distance along s. It also prints the
 //! water flags of the True Water tier meshes (`vp_tier`).
 //!
+//! The shadow map keeps the surface nearest the sun, which is the farthest hit along s from P.
+//! So each subset's line also gives the farthest exact hit of a grid of parallel rays in the
+//! disc, and each point ends with the farthest caster hit (water left out) in the disc and on
+//! the ray through P itself.
+//!
 //! Run: `cargo run --release -p distantland --example w48_caster_lister -- <distantland dir>`
 //! with optional `--sun x,y,z`, `--radius r` and one or more `--point x,y,z`.
 
@@ -51,6 +56,11 @@ const DEFAULT_RADIUS: f32 = 16.0 * std::f32::consts::SQRT_2;
 
 /// A hit nearer than this along s is the water surface itself or below it.
 const MIN_ALONG: f32 = 1.0;
+
+/// The spacing of the parallel rays in the disc. The shadow map keeps the surface nearest the sun
+/// in each texel, which is the farthest hit along s from P, so the farthest hit of these rays is
+/// what the map can hold over the kernel.
+const GRID_STEP: f32 = 2.0;
 
 struct Options {
     folder: PathBuf,
@@ -122,6 +132,12 @@ struct Hit {
     point: usize,
     along: f32,
     lateral: f32,
+    /// The farthest exact hit along s of the grid rays that pass through the triangle, with the
+    /// count of those rays; None when no grid ray passes through it.
+    farthest: Option<f32>,
+    rays: usize,
+    /// The exact hit along s of the ray through P itself, when it passes through the triangle.
+    centre: Option<f32>,
     static_index: usize,
     subset_index: usize,
     triangle: usize,
@@ -172,8 +188,37 @@ fn main() -> Result<()> {
             point_hits.len()
         );
         print_point_hits(&point_hits, &usage.exterior, &statics, &keys, &merge_members);
+        print_point_farthest(&point_hits, &statics, &keys);
     }
     Ok(())
+}
+
+/// The farthest exact hit along s of the non-water subsets: over all grid rays in the disc, and
+/// on the ray through P alone.
+fn print_point_farthest(hits: &[&Hit], statics: &[PackedDistantStatic], keys: &[StaticRecordKey]) {
+    let casters = || {
+        hits.iter()
+            .filter(|hit| statics[hit.static_index].subsets[hit.subset_index].water == 0)
+    };
+    let describe = |found: Option<(f32, &&Hit)>| match found {
+        Some((along, hit)) => format!(
+            "{along:.1} ({}, ref {})",
+            keys[hit.static_index].render(),
+            hit.reference_index
+        ),
+        None => "none".to_string(),
+    };
+    let disc = casters()
+        .filter_map(|hit| hit.farthest.map(|along| (along, hit)))
+        .max_by(|a, b| a.0.total_cmp(&b.0));
+    let centre = casters()
+        .filter_map(|hit| hit.centre.map(|along| (along, hit)))
+        .max_by(|a, b| a.0.total_cmp(&b.0));
+    println!(
+        "  farthest caster hit along s: in the disc {}; on the ray through P {}",
+        describe(disc),
+        describe(centre)
+    );
 }
 
 fn parse_options() -> Result<Options> {
@@ -279,6 +324,7 @@ fn find_hits(
     statics: &[PackedDistantStatic],
     radius: f32,
 ) -> (Vec<Hit>, usize) {
+    let grid = disc_grid(radius);
     let mut hits = Vec::new();
     let mut sphere_misses = 0;
     for (reference_index, reference) in placements.iter().enumerate() {
@@ -314,14 +360,23 @@ fn find_hits(
                 let projected: Vec<(Vec2, f32)> = world.iter().map(|&vertex| probe.project(vertex)).collect();
                 for (triangle, corners) in subset.triangles.iter().enumerate() {
                     let [a, b, c] = corners.map(|corner| projected[corner as usize]);
-                    let Some((lateral, along)) = nearest_to_ray([a.0, b.0, c.0], [a.1, b.1, c.1]) else {
+                    let corners = [a.0, b.0, c.0];
+                    let depths = [a.1, b.1, c.1];
+                    let Some((lateral, along)) = nearest_to_ray(corners, depths) else {
                         continue;
                     };
                     if lateral <= radius && along > MIN_ALONG && along <= LAYER_DEPTH {
+                        let exact_hit = |offset: Vec2| {
+                            depth_at(corners, depths, offset).filter(|&depth| depth > MIN_ALONG && depth <= LAYER_DEPTH)
+                        };
+                        let grid_hits: Vec<f32> = grid.iter().filter_map(|&offset| exact_hit(offset)).collect();
                         hits.push(Hit {
                             point,
                             along,
                             lateral,
+                            farthest: grid_hits.iter().copied().reduce(f32::max),
+                            rays: grid_hits.len(),
+                            centre: exact_hit(Vec2::ZERO),
                             static_index,
                             subset_index,
                             triangle,
@@ -335,22 +390,47 @@ fn find_hits(
     (hits, sphere_misses)
 }
 
+/// The offsets of the parallel rays in the plane across s: a square grid of [`GRID_STEP`] cut to
+/// the disc, the centre included.
+fn disc_grid(radius: f32) -> Vec<Vec2> {
+    let steps = (radius / GRID_STEP).floor() as i32;
+    let mut grid = Vec::new();
+    for row in -steps..=steps {
+        for column in -steps..=steps {
+            let offset = Vec2::new(column as f32, row as f32) * GRID_STEP;
+            if offset.length() <= radius {
+                grid.push(offset);
+            }
+        }
+    }
+    grid
+}
+
+/// The exact distance along s at which the ray at `offset` passes through the projected
+/// triangle. The projection is along s, so the depth is linear in the barycentric weights. None
+/// when the ray misses, or for a triangle seen edge-on.
+fn depth_at(corners: [Vec2; 3], along: [f32; 3], offset: Vec2) -> Option<f32> {
+    let [a, b, c] = corners.map(|corner| corner - offset);
+    let area = (b - a).perp_dot(c - a);
+    if area.abs() < 1e-6 {
+        return None;
+    }
+    let weight_a = b.perp_dot(c) / area;
+    let weight_b = c.perp_dot(a) / area;
+    let weight_c = a.perp_dot(b) / area;
+    (weight_a >= 0.0 && weight_b >= 0.0 && weight_c >= 0.0)
+        .then(|| weight_a * along[0] + weight_b * along[1] + weight_c * along[2])
+}
+
 /// The distance of a projected triangle from the ray (0 when the ray passes through it) and
 /// the distance along the ray of the triangle's point nearest to the ray. None for a triangle
 /// seen edge-on.
 fn nearest_to_ray(corners: [Vec2; 3], along: [f32; 3]) -> Option<(f32, f32)> {
     let [a, b, c] = corners;
-    let area = (b - a).perp_dot(c - a);
-    if area.abs() < 1e-6 {
+    if (b - a).perp_dot(c - a).abs() < 1e-6 {
         return None;
     }
-
-    // Barycentric weights of the ray's point (the origin of the plane).
-    let weight_a = b.perp_dot(c) / area;
-    let weight_b = c.perp_dot(a) / area;
-    let weight_c = a.perp_dot(b) / area;
-    if weight_a >= 0.0 && weight_b >= 0.0 && weight_c >= 0.0 {
-        let depth = weight_a * along[0] + weight_b * along[1] + weight_c * along[2];
+    if let Some(depth) = depth_at(corners, along, Vec2::ZERO) {
         return Some((0.0, depth));
     }
 
@@ -376,7 +456,8 @@ fn print_point_hits(
     keys: &[StaticRecordKey],
     merge_members: &HashMap<(i32, i32), Vec<String>>,
 ) {
-    // One line per placed subset: its nearest triangle along s, and the count of its triangles.
+    // One line per placed subset: its nearest triangle along s, its farthest exact hit of the grid
+    // rays, and the count of its triangles.
     let mut seen: Vec<(usize, usize)> = Vec::new();
     for hit in hits {
         let place = (hit.reference_index, hit.subset_index);
@@ -384,10 +465,14 @@ fn print_point_hits(
             continue;
         }
         seen.push(place);
-        let count = hits
+        let same_place: Vec<&&Hit> = hits
             .iter()
             .filter(|other| (other.reference_index, other.subset_index) == place)
-            .count();
+            .collect();
+        let count = same_place.len();
+        let farthest = same_place.iter().filter_map(|other| other.farthest).reduce(f32::max);
+        let rays: usize = same_place.iter().map(|other| other.rays).sum();
+        let farthest_text = farthest.map_or("none".to_string(), |along| format!("{along:.1}"));
 
         let reference = &placements[hit.reference_index];
         let mesh = &statics[hit.static_index];
@@ -399,9 +484,11 @@ fn print_point_hits(
         });
 
         println!(
-            "  along {:7.1}  lateral {:5.1}  {}  {:?}  subset {} water {} alpha {} texture {}  triangles {}  ref {} at ({:.0}, {:.0}, {:.0}) scale {:.2} vis {}",
+            "  along {:7.1}  lateral {:5.1}  farthest {} ({} rays)  {}  {:?}  subset {} water {} alpha {} texture {}  triangles {}  ref {} at ({:.0}, {:.0}, {:.0}) scale {:.2} vis {}",
             hit.along,
             hit.lateral,
+            farthest_text,
+            rays,
             key.render(),
             mesh.static_type,
             hit.subset_index,
