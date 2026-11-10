@@ -62,8 +62,8 @@ namespace Deviceless {
     bool onMainThread();
     void transform(unsigned state, D3DMATRIX* matrix, bool targetIsBackBuffer);
     // The Click of a camera starts: the plugin's scene packet (its contract,
-    // mge_render_link.h).
-    void sceneBegin(const MgeLinkSceneV1* scene);
+    // mge_render_link.h). Writes the fog colour that MGE XE gives the scene into the packet.
+    void sceneBegin(MgeLinkSceneV2* scene);
     // A message of the extension in the helper (Extension::messages of the crate).
     void message(unsigned id, const void* data, unsigned length);
     // The build of this d3d8.dll and the format of its records, for the helper's check.

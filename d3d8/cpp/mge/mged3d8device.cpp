@@ -1189,6 +1189,9 @@ namespace Deviceless {
     // sets the view of the world: after that write and before the draws.
     static DWORD scatterFogColour = 0;
     static bool scatterFogValid = false;
+    // The scene in progress gets the fog colour of the scattering (sceneBegin, the scene
+    // packet's MGE_LINK_SCENE_MGE_FOG_COLOR).
+    static bool sceneFogColour = false;
 
     // The state of the game that the features of MGE XE in the helper need for a frame.
     // mgeHost64/src/renderer.rs has the same layout: 4 bytes for each member.
@@ -1917,6 +1920,11 @@ namespace Deviceless {
     // and the zoom on the projection of the world.
     void transform(unsigned state, D3DMATRIX* matrix, bool targetIsBackBuffer) {
         prepare();
+        // The fog colour of the scattering for the draws of this scene (sceneBegin), as
+        // DistantLand::adjustFog gives it to the game at the start of a scene.
+        if (state == D3DTS_VIEW && sceneFogColour) {
+            MWBridge::get()->setScenegraphFogCol(scatterFogColour);
+        }
         if (!targetIsBackBuffer || !matrix) {
             return;
         }
@@ -1925,12 +1933,6 @@ namespace Deviceless {
                 D3DXMATRIX view = *matrix;
                 view *= camEffectsMatrix;
                 *matrix = view;
-                // The fog colour of the scattering for the draws of this view, as
-                // DistantLand::adjustFog gives it to the game at the start of a scene.
-                auto mwBridge = MWBridge::get();
-                if (scatterFogValid && mwBridge->IsLoaded()) {
-                    mwBridge->setScenegraphFogCol(scatterFogColour);
-                }
             }
         } else if (state == D3DTS_PROJECTION && mainView && (Configuration.MGEFlags & ZOOM_ASPECT)) {
             matrix->_11 *= Configuration.CameraEffects.zoom;
@@ -1941,32 +1943,38 @@ namespace Deviceless {
     // The Click of a camera starts (the plugin, at the renderer's SetCameraData, before the
     // view of the camera goes to the device), with the plugin's scene packet. The main view
     // and the eye come from it and from the camera object it names, not from a pattern of
-    // the view matrix. NiCamera: the world translation at +0x64, kWorldDir at +0xDC
-    // (nirender src/gen/layouts.rs).
-    void sceneBegin(const MgeLinkSceneV1* scene) {
+    // the view matrix. NiCamera: kWorldDir at +0xDC (nirender src/gen/layouts.rs).
+    void sceneBegin(MgeLinkSceneV2* scene) {
         const unsigned kind = scene->kind;
         // The plugin calls this from its own hook of SetCameraData, so the frustum is written
         // here before the renderer reads it, as the hook of the Direct3D 9 path does.
         const auto niCamera = reinterpret_cast<NI::Camera*>(uintptr_t(scene->camera));
         CameraFov::atClick(niCamera);
         mainView = niCamera && CameraFov::lastClickFollows();
-        if (kind != MGE_LINK_SCENE_WORLD || !scene->camera) {
-            return;
-        }
-        const auto camera = reinterpret_cast<const unsigned char*>(uintptr_t(scene->camera));
-        const auto translation = reinterpret_cast<const float*>(camera + 0x64);
-        const auto direction = reinterpret_cast<const float*>(camera + 0xDC);
-        const bool exact = (scene->flags & MGE_LINK_SCENE_HAS_CAMERA_ORIGIN) != 0;
-        for (int i = 0; i < 3; ++i) {
-            eye[i] = exact ? float(scene->cameraOrigin[i]) : translation[i];
-            look[i] = direction[i];
-        }
-        // The environment of this frame, before its world draws: from Present it reached the
-        // helper one frame late.
         auto mwBridge = MWBridge::get();
-        if (mwBridge->IsLoaded()) {
-            sendEnvironment(mwBridge);
-            environmentSent = true;
+        if (kind == MGE_LINK_SCENE_WORLD && scene->camera) {
+            // The packet has the camera's position for every camera (MgeLinkSceneV2).
+            const auto camera = reinterpret_cast<const unsigned char*>(uintptr_t(scene->camera));
+            const auto direction = reinterpret_cast<const float*>(camera + 0xDC);
+            for (int i = 0; i < 3; ++i) {
+                eye[i] = float(scene->cameraOrigin[i]);
+                look[i] = direction[i];
+            }
+            // The environment of this frame, before its world draws: from Present it reached
+            // the helper one frame late.
+            if (mwBridge->IsLoaded()) {
+                sendEnvironment(mwBridge);
+                environmentSent = true;
+            }
+        }
+        // The fog colour of the scattering for the draws of the main view in the back buffer.
+        // transform() writes it into the game's fog property at the scene's view; the plugin
+        // and the helper take it from the packet.
+        const bool backBuffer = (scene->flags & MGE_LINK_SCENE_BACK_BUFFER) != 0;
+        sceneFogColour = mainView && backBuffer && scatterFogValid && mwBridge->IsLoaded();
+        if (sceneFogColour) {
+            scene->mgeFogColor = scatterFogColour;
+            scene->mgeFlags |= MGE_LINK_SCENE_MGE_FOG_COLOR;
         }
     }
 }
