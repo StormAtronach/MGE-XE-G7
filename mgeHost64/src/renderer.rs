@@ -2630,13 +2630,10 @@ impl Extension for DistantLand {
             if self.shadow.is_none() {
                 self.shadow = Some(timed("the shadow map's pipelines", || Shadow::new(scene, self.shadow_resolution)));
             }
-            if let (Some(shadow), Some(e)) = (self.shadow.as_mut(), self.environment) {
+            let light_vec = shadow::light_vector(scene.sun_direction);
+            if let (Some(shadow), Some(e), Some(light_vec)) = (self.shadow.as_mut(), self.environment, light_vec) {
                 let eye = scene.eye.map(|v| v as f32);
                 let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
-                // lightVec: against the sun when it is up; the sun light of the game when
-                // it is not.
-                let sun_pos = e.sun_pos;
-                let light_vec = if sun_pos[2] > 0.0 { sun_pos.map(|v| -v) } else { scene.sun_direction.unwrap_or(sun_pos.map(|v| -v)) };
                 shadow.set_frame(eye, eye_vec, light_vec);
                 values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > e.sea_plane());
                 texture = Some(shadow.atlas_view.clone());

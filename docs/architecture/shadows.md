@@ -100,15 +100,21 @@ at the cost of expanding silhouettes by roughly a pixel.
 it separates the projection centre into a stable translation and a quantized rotation
 remainder, which is what keeps the map from shimmering.
 
-Light direction comes from `sunPos` during the day and `sunVec` at night:
+Light direction is the sun light at every hour:
 
 ```cpp
-D3DXVECTOR4 lightVec = (sunPos.z > 0) ? -sunPos : sunVec;
+D3DXVECTOR4 lightVec = sunVec;
 ```
 
-`sunPos` is the normalized sun disc direction from `MWBridge::GetSunDir`, flipped in z when
-`sunVis` is zero so it sets instead of bouncing at the horizon. `sunVec` is the D3D sun
-light direction captured in `setSunLight`, which Morrowind also uses for interiors.
+`sunVec` is the D3D sun light direction captured in `setSunLight`, which Morrowind also uses
+for interiors. The receivers take their light from the same vector (`shadowSunEstimate` in
+`XE Mod Shadow.fx`), so the map shows where that light is blocked. The engine gives the sun
+two vectors with the same azimuth: this light, and the sun disc (`sunPos`, from
+`MWBridge::GetSunDir`), which is higher by day (79 degrees against 53 at noon) and sits on the
+horizon at sunrise and sunset. Before 2026-11-10 the camera used the disc by day and the light
+at night, so the shadows by day did not match the shading. The disc keeps its own uses: the
+sky's scattering and the sun's glint on the water. On wgpu (`shadow::light_vector`) a frame
+with no sun light makes no shadow map.
 
 The projection centre sits one radius ahead of the player, at half that in z on the
 assumption the player is looking at ground rather than straight down:

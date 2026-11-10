@@ -239,8 +239,9 @@ void DistantLand::renderShadowLayer(int layer, float radius, const D3DXMATRIX* i
     D3DXVECTOR3 lookAt, lookAtEye, shadowCameraPos, up(0, 0, 1);
     D3DXMATRIX* view = &smView[layer], *proj = &smProj[layer], *viewproj = &smViewproj[layer];
 
-    // Select light vector, sunPos during daytime, sunVec during night
-    D3DXVECTOR4 lightVec = (sunPos.z > 0) ? -sunPos : sunVec;
+    // The light vector is the sun light (sunVec) at every hour: the receivers take their light
+    // from the same vector, so the map shows where that light is blocked.
+    D3DXVECTOR4 lightVec = sunVec;
 
     // Centre of projection is one radius ahead of the player
     // Not as far in z direction as player is likely looking at the ground plane rather than below
