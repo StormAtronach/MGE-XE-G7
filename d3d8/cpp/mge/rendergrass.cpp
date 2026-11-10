@@ -104,11 +104,12 @@ void DistantLand::renderGrassInst() {
         return;
     }
 
-    // The shadow atlas is only rendered for cells with weather. Elsewhere, interiors with
+    // The shadow atlas is only rendered for cells with weather, while the sun light has a
+    // direction. Elsewhere, interiors with
     // generated grass in particular, it and smViewproj are whatever the last such cell left
     // behind, so map every receiver outside both cascades and the shader takes its unshadowed
     // path (shadowDeltaZ). A translation of 2 in light clip space lands past the atlas margin.
-    if ((Configuration.MGEFlags & USE_SHADOWS) && MWBridge::get()->IntLikeExterior(true)) {
+    if ((Configuration.MGEFlags & USE_SHADOWS) && MWBridge::get()->IntLikeExterior(true) && hasSunLight()) {
         effect->SetMatrixArray(ehShadowViewproj, smViewproj, 2);
         effect->SetTexture(ehTex3, texSoftShadow);
     } else {
