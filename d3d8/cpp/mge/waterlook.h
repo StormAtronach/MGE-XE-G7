@@ -57,17 +57,19 @@ namespace WaterLooks {
     constexpr float slotMarkerBase = 100000.0f;
 
     // Keeps a copy of the look for the slot; a null look clears the slot. Fields past the
-    // caller's size keep their standard values.
+    // caller's size keep their standard values. Any thread can call it.
     void set(unsigned int slot, const WaterLook* look);
 
-    // The look of a slot: the standard look for slot 0, for a slot never set, and for a slot
-    // out of range.
-    const WaterLook& get(unsigned int slot);
+    // A copy of the look of a slot: the standard look for slot 0, for a slot never set, and
+    // for a slot out of range. Any thread can call it.
+    WaterLook get(unsigned int slot);
 
     // The standard look
     const WaterLook& standard();
 
-    // Sends the looks of all slots to the wgpu renderer in the helper; nothing without it.
+    // Sends the looks of all slots to the wgpu renderer in the helper when a slot changed
+    // since the last send; nothing without the renderer. Main thread only: the frame calls it,
+    // and MGE_WaterLookSet when a mod sets a look on the main thread.
     void sendToRenderer();
 
     // Reads a look line, the text of the string data of a mesh after "wv:", for example
