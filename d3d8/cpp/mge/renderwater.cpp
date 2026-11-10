@@ -955,13 +955,14 @@ void DistantLand::flushWaterVolumes(bool withDistant) {
     };
 
     // The options for light on the water. The shadow map is that of the distant land, and is
-    // there only in a cell with weather and with shadows on: elsewhere the matrices put every
+    // there only in a cell with weather, with shadows on and while the sun light has a direction:
+    // elsewhere the matrices put every
     // place outside it, which the shading takes as full sun. The surfaces do not use the
     // reflection of the water plane, so the shadow map has its texture place. Caustics are
     // from the sun, so they have a strength only where the sky is.
     const bool outdoors = mwBridge->IntLikeExterior(true);
     if (Configuration.WaterVolume.Shadows && !underwater) {
-        if ((Configuration.MGEFlags & USE_SHADOWS) && outdoors) {
+        if ((Configuration.MGEFlags & USE_SHADOWS) && outdoors && hasSunLight()) {
             effect->SetMatrixArray(ehShadowViewproj, smViewproj, kShadowCascades);
             effect->SetTexture(ehTex0, texSoftShadow);
         } else {

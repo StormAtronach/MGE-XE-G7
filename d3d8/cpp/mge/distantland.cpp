@@ -319,7 +319,7 @@ void DistantLand::renderStage0() {
 
             // Shadow map early render
             if (Configuration.MGEFlags & USE_SHADOWS) {
-                if (mwBridge->IntLikeExterior(true) && !mwBridge->IsMenu()) {
+                if (mwBridge->IntLikeExterior(true) && !mwBridge->IsMenu() && hasSunLight()) {
                     effectShadow->Begin(&passes, D3DXFX_DONOTSAVESTATE);
                     renderShadowMap();
                     effectShadow->End();
@@ -464,7 +464,7 @@ void DistantLand::renderStage1() {
             }
 
             // Overlay shadow onto Morrowind objects
-            if ((Configuration.MGEFlags & USE_SHADOWS) && mwBridge->IntLikeExterior(true)) {
+            if ((Configuration.MGEFlags & USE_SHADOWS) && mwBridge->IntLikeExterior(true) && hasSunLight()) {
                 renderShadow();
             }
 
@@ -517,7 +517,7 @@ void DistantLand::renderStage2() {
 
         if (isDistantCell()) {
             // Shadowing onto recorded renders
-            if ((Configuration.MGEFlags & USE_SHADOWS) && mwBridge->IntLikeExterior(true)) {
+            if ((Configuration.MGEFlags & USE_SHADOWS) && mwBridge->IntLikeExterior(true) && hasSunLight()) {
                 effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
                 renderShadow();
                 effect->End();

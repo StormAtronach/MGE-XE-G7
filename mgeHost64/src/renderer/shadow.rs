@@ -32,6 +32,15 @@ pub fn sun_light(color: [f32; 3], sun_vis: f32, day: f32) -> f32 {
     luminance * (0.25 + 0.75 * sun_vis) * day
 }
 
+/// The direction of the shadow camera: the sun light of the game, normalized, at every hour. The
+/// receivers take their light from the same vector (`shadowSunEstimate`), so the map shows where
+/// that light is blocked. None without a sun light: then the frame makes no shadow map.
+pub fn light_vector(sun_direction: Option<[f32; 3]>) -> Option<[f32; 3]> {
+    let [x, y, z] = sun_direction?;
+    let length = (x * x + y * y + z * z).sqrt();
+    (length > 1e-6).then(|| [x / length, y / length, z / length])
+}
+
 /// The radii of the two layers, and the depth range of a layer in units.
 pub const RADII: [f32; 2] = [1000.0, 4000.0];
 const ZRANGE: f32 = 8192.0;
@@ -426,8 +435,45 @@ impl Shadow {
 
 #[cfg(test)]
 mod tests {
-    use super::{sun_light, Shadow, BLUR_SHADER, DEBUG_SHADER};
+    use super::{layer_matrix, light_vector, sun_light, Shadow, BLUR_SHADER, DEBUG_SHADER, RADII};
     use nirender_wgpu::wgpu::TextureFormat;
+
+    /// The shadow camera follows the sun light of the game, normalized, by day and at night
+    /// alike: the light's direction is the only input. A frame without a sun light, or with a
+    /// light of no length, makes no map.
+    #[test]
+    fn the_shadow_camera_follows_the_sun_light() {
+        // The light of W48's noon frame (toward the sun 0.416 -0.546 0.728), scaled; and a
+        // night light, from below the horizon.
+        for direction in [[-0.832, 1.092, -1.456], [0.3, -0.2, 0.5]] {
+            let unit = light_vector(Some(direction)).unwrap();
+            let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt();
+            for axis in 0..3 {
+                assert!((unit[axis] - direction[axis] / length).abs() < 1e-6, "{direction:?}");
+            }
+        }
+        assert_eq!(light_vector(None), None);
+        assert_eq!(light_vector(Some([0.0, 0.0, 0.0])), None);
+    }
+
+    /// The camera of each layer looks along the light vector it is given: a point moved along
+    /// that vector keeps its place in the map and only goes deeper.
+    #[test]
+    fn a_layer_looks_along_the_light_vector() {
+        let light = light_vector(Some([-0.416, 0.546, -0.728])).unwrap();
+        let eye = [32864.0, -107932.0, 1835.0];
+        let project = |m: &[f32; 16], p: [f32; 3]| {
+            let w = p[0] * m[3] + p[1] * m[7] + p[2] * m[11] + m[15];
+            [0, 1, 2].map(|c| (p[0] * m[c] + p[1] * m[4 + c] + p[2] * m[8 + c] + m[12 + c]) / w)
+        };
+        for radius in RADII {
+            let matrix = layer_matrix(eye, [0.0, 1.0, 0.0], light, radius, 2048);
+            let near = project(&matrix, eye);
+            let far = project(&matrix, [0, 1, 2].map(|c| eye[c] + 500.0 * light[c]));
+            assert!((near[0] - far[0]).abs() < 1e-4 && (near[1] - far[1]).abs() < 1e-4, "radius {radius}: {near:?} {far:?}");
+            assert!(far[2] > near[2], "radius {radius}: {near:?} {far:?}");
+        }
+    }
 
     /// The shaders of the shadow map compile as the device checks them: the blur of the map,
     /// and the debug view of its atlas.

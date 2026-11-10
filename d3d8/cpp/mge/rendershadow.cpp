@@ -117,6 +117,13 @@ size_t buildStencilHull(const D3DXMATRIX& clipToLight, float margin, D3DXVECTOR3
 
 
 
+// The sun light (sunVec) has a direction: setSunLight has run. Before that it is zero, and there
+// is no light to cast shadows along, so neither the shadow map nor the shadows on the scene are
+// drawn (as on wgpu, where a frame without a sun light makes no map).
+bool DistantLand::hasSunLight() {
+    return sunVec.x != 0 || sunVec.y != 0 || sunVec.z != 0;
+}
+
 // Renders multiple shadow map layers to channels in one texture with soft edges.
 // Restores render state on return.
 void DistantLand::renderShadowMap() {
@@ -239,8 +246,9 @@ void DistantLand::renderShadowLayer(int layer, float radius, const D3DXMATRIX* i
     D3DXVECTOR3 lookAt, lookAtEye, shadowCameraPos, up(0, 0, 1);
     D3DXMATRIX* view = &smView[layer], *proj = &smProj[layer], *viewproj = &smViewproj[layer];
 
-    // Select light vector, sunPos during daytime, sunVec during night
-    D3DXVECTOR4 lightVec = (sunPos.z > 0) ? -sunPos : sunVec;
+    // The light vector is the sun light (sunVec) at every hour: the receivers take their light
+    // from the same vector, so the map shows where that light is blocked.
+    D3DXVECTOR4 lightVec = sunVec;
 
     // Centre of projection is one radius ahead of the player
     // Not as far in z direction as player is likely looking at the ground plane rather than below
