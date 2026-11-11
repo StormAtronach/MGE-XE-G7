@@ -9,6 +9,7 @@
 //! reflected ray finds in the picture over it: the mirror picture of the sea is at the level
 //! of the sea, so it cannot serve a pond on a hill or a sloped face.
 
+use nirender_wgpu::objects::{Create, CreateView};
 use std::collections::HashMap;
 
 use nirender_wgpu::{FrameLights, HeldDraw, SceneView, wgpu};
@@ -957,11 +958,11 @@ impl Volumes {
     ) -> Volumes {
         let device = scene.device;
         let source = standard_source(shadow_hooks);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water volume"),
             source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
         });
-        let mesh_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let mesh_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water volume mesh"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -992,7 +993,7 @@ impl Volumes {
                 },
             ],
         });
-        let mesh_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let mesh_sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             label: Some("water volume mesh"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -1001,7 +1002,7 @@ impl Volumes {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        let surface_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let surface_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water volume"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -1014,7 +1015,7 @@ impl Volumes {
                 count: None,
             }],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water volume"),
             bind_group_layouts: &[
                 Some(view_layout),
@@ -1024,15 +1025,14 @@ impl Volumes {
             ],
             immediate_size: 0,
         });
-        let lighting = device.create_buffer(&wgpu::BufferDescriptor {
+        let lighting = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("water volume light"),
             size: size_of::<Lighting>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        use wgpu::util::DeviceExt;
         let no_shadow = device
-            .create_texture_with_data(
+            .counted_texture_with_data(
                 scene.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("water volume no shadow"),
@@ -1051,10 +1051,10 @@ impl Volumes {
                 wgpu::util::TextureDataOrder::MipMajor,
                 &[0u8; 2],
             )
-            .create_view(&Default::default());
+            .counted_view(&Default::default());
         // A light of zeros, clusters that are off, one empty cluster and one index.
         let zeros = |label, size: usize, usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents: &vec![0u8; size],
                 usage,
@@ -1072,7 +1072,7 @@ impl Volumes {
         ];
         let one_texel = |label, texel: [u8; 4]| {
             device
-                .create_texture_with_data(
+                .counted_texture_with_data(
                     scene.queue,
                     &wgpu::TextureDescriptor {
                         label: Some(label),
@@ -1091,13 +1091,13 @@ impl Volumes {
                     wgpu::util::TextureDataOrder::MipMajor,
                     &texel,
                 )
-                .create_view(&Default::default())
+                .counted_view(&Default::default())
         };
         let white = one_texel("water volume white", [255; 4]);
         let clear = one_texel("water volume clear", [0; 4]);
         let plain_mesh = Self::mesh_group_of(device, &mesh_layout, &mesh_sampler, &white, &clear);
         let (surfaces, group) = Self::slots(device, &surface_layout, 16);
-        let defaults = device.create_buffer(&wgpu::BufferDescriptor {
+        let defaults = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("water volume defaults"),
             size: 32,
             usage: wgpu::BufferUsages::VERTEX,
@@ -1256,7 +1256,7 @@ impl Volumes {
         let index = match &result {
             Ok(source) => {
                 let label = format!("water shader {name}");
-                self.modules.push(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                self.modules.push(device.counted_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some(&label),
                     source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
                 }));
@@ -1341,13 +1341,13 @@ impl Volumes {
 
     /// A buffer of `count` slots and its group.
     fn slots(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, count: u64) -> (wgpu::Buffer, wgpu::BindGroup) {
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let buffer = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("water volume surfaces"),
             size: count * SLOT,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("water volume surfaces"),
             layout,
             entries: &[wgpu::BindGroupEntry {
@@ -1379,7 +1379,7 @@ impl Volumes {
         if key.debug && !self.debug_modules.contains_key(&key.shader) {
             let text = shading::debug_source(&self.sources[key.shader as usize]);
             let module = text.map(|text| {
-                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                device.counted_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("water volume, debug view"),
                     source: wgpu::ShaderSource::Wgsl(text.into()),
                 })
@@ -1404,7 +1404,7 @@ impl Volumes {
                 // A distant static: the position with the palette entry, the normal with the
                 // light of the material, the colour, the coordinate (statics.rs).
                 let attributes = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4, 3 => Float16x2];
-                return device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                return device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("water volume, far"),
                     layout: Some(layout),
                     vertex: wgpu::VertexState {
@@ -1492,7 +1492,7 @@ impl Volumes {
                     }),
                 }
             }
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("water volume"),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
@@ -2051,11 +2051,11 @@ mod tests {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
 
         let source = format!("{}{PROBE}", shader());
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water light probe"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.counted_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("water light probe"),
             layout: None,
             module: &module,
@@ -2064,19 +2064,19 @@ mod tests {
             cache: None,
         });
         let size = 4 * 4;
-        let strengths = device.create_buffer(&wgpu::BufferDescriptor {
+        let strengths = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("water light probe"),
             size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let read = device.create_buffer(&wgpu::BufferDescriptor {
+        let read = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("water light probe, read"),
             size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("water light probe"),
             layout: &pipeline.get_bind_group_layout(0),
             entries: &[wgpu::BindGroupEntry {

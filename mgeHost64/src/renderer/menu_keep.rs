@@ -10,6 +10,7 @@
 //! cell with distant land only (its keep is a part of the distant land stages); here it is
 //! kept in each cell.
 
+use nirender_wgpu::objects::{Create, CreateView};
 use nirender_wgpu::{SceneView, wgpu};
 
 use super::post::{BLIT_SHADER, full_screen_pass, full_screen_pipeline};
@@ -24,7 +25,7 @@ pub struct MenuKeep {
 impl MenuKeep {
     pub fn new(scene: &SceneView) -> MenuKeep {
         let device = scene.device;
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("menu keep"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -46,7 +47,7 @@ impl MenuKeep {
             ],
         });
         let pipeline = full_screen_pipeline(device, "menu keep", BLIT_SHADER, &layout, scene.target_format);
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             label: Some("menu keep"),
             ..Default::default()
         });
@@ -67,7 +68,7 @@ impl MenuKeep {
             .as_ref()
             .is_some_and(|texture| texture.width() == width && texture.height() == height);
         if !fits {
-            self.texture = Some(scene.device.create_texture(&wgpu::TextureDescriptor {
+            self.texture = Some(scene.device.counted_texture(&wgpu::TextureDescriptor {
                 label: Some("menu keep"),
                 size: wgpu::Extent3d {
                     width: width.max(1),
@@ -82,7 +83,7 @@ impl MenuKeep {
                 view_formats: &[],
             }));
         }
-        self.texture.as_ref().unwrap().create_view(&Default::default())
+        self.texture.as_ref().unwrap().counted_view(&Default::default())
     }
 
     /// Draws `source` into `target`, the whole picture.
@@ -93,7 +94,7 @@ impl MenuKeep {
         source: &wgpu::TextureView,
         target: &wgpu::TextureView,
     ) {
-        let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = scene.device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("menu keep"),
             layout: &self.layout,
             entries: &[
@@ -116,7 +117,7 @@ impl MenuKeep {
     /// Draws the kept picture into `target`. Nothing before a picture is kept.
     pub fn show(&self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         if let Some(texture) = self.texture.as_ref() {
-            self.copy(scene, encoder, &texture.create_view(&Default::default()), target);
+            self.copy(scene, encoder, &texture.counted_view(&Default::default()), target);
         }
     }
 }

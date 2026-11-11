@@ -7,6 +7,8 @@
 //! normal. The shading that each surface of water shares is in `water/shading.rs`; this file
 //! has the frame's resources (the reflection, the waves) and the plane.
 
+use nirender_wgpu::gpu::KeptGroup;
+use nirender_wgpu::objects::{Create, CreateView};
 use nirender_wgpu::{Replay, ReplayView, SceneView, wgpu};
 
 use super::multiply;
@@ -393,6 +395,18 @@ fn fine_disc() -> (Vec<[f32; 3]>, Vec<u16>) {
     })
 }
 
+/// The callers of `Water::frame_group`, each with a kept group of its own: they bind other
+/// uniforms or another picture or depth, and one slot for all would make a group at each call.
+/// The volumes before the sea plane and those at the end of the world read the picture and
+/// the depth at two points of the frame.
+#[derive(Clone, Copy)]
+enum GroupSlot {
+    Plane = 0,
+    VolumesBeforePlane = 1,
+    VolumesAfterPlane = 2,
+    DryCut = 3,
+}
+
 /// The pipelines of the plane from one shader text.
 struct PlanePipelines {
     fill: wgpu::RenderPipeline,
@@ -406,13 +420,13 @@ struct PlanePipelines {
 impl PlanePipelines {
     fn new(scene: &SceneView, layout: &wgpu::PipelineLayout, label: &str, source: &str) -> PlanePipelines {
         let device = scene.device;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
         let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
@@ -513,6 +527,9 @@ pub struct Water {
     /// The term of the debug view `water` (0: off), set for each frame ([`Water::set_debug`]):
     /// a look at one term of the shader.
     debug: f32,
+    /// The groups of `frame_group`, one for each [`GroupSlot`], kept while what they bind stays
+    /// the same. A cell: the callers hold other fields of the water while they ask.
+    groups: std::cell::RefCell<[KeptGroup; 4]>,
 }
 
 impl Water {
@@ -531,29 +548,28 @@ impl Water {
         let waves = wave_texture(scene, waves)?;
         let (vertices, indexes) = coarse_disc();
         let (fine_vertices, fine_indexes) = fine_disc();
-        use wgpu::util::DeviceExt;
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("water"),
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let index_buffer = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("water"),
             contents: bytemuck::cast_slice(&indexes),
             usage: wgpu::BufferUsages::INDEX,
         });
-        let fine_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let fine_vertex_buffer = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("water fine"),
             contents: bytemuck::cast_slice(&fine_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let fine_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let fine_index_buffer = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("water fine"),
             contents: bytemuck::cast_slice(&fine_indexes),
             usage: wgpu::BufferUsages::INDEX,
         });
         let flat = device
-            .create_texture_with_data(
+            .counted_texture_with_data(
                 scene.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("water flat ripples"),
@@ -572,7 +588,7 @@ impl Water {
                 wgpu::util::TextureDataOrder::MipMajor,
                 &[0u8; 8],
             )
-            .create_view(&Default::default());
+            .counted_view(&Default::default());
 
         let texture = |binding, sample_type, dimension| wgpu::BindGroupLayoutEntry {
             binding,
@@ -641,24 +657,24 @@ impl Water {
         ];
         // The light of the frame, for the surfaces of water volumes.
         entries.extend(volume::Volumes::light_layout_entries());
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water"),
             entries: &entries,
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water"),
             bind_group_layouts: &[Some(view_layout), Some(&layout)],
             immediate_size: 0,
         });
         let plane = PlanePipelines::new(scene, &pipeline_layout, "water", &plane_source(core_mods.water_hooks()));
         let debug_source = shading::debug_source(&plane_source(core_mods.water_debug_hooks()));
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("water"),
             size: size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let volume_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        let volume_uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("water volume"),
             size: size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -668,7 +684,7 @@ impl Water {
         let dry = dry::Dry::new(scene, view_layout, &layout);
         // Between two levels too: the blur that is sharp at the waterline reads the levels
         // of the reflection. Each other read names the first level.
-        let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let clamp_sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
@@ -676,7 +692,7 @@ impl Water {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        let wave_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let wave_sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::Repeat,
@@ -685,7 +701,7 @@ impl Water {
             ..Default::default()
         });
         let target = |format, levels| {
-            device.create_texture(&wgpu::TextureDescriptor {
+            device.counted_texture(&wgpu::TextureDescriptor {
                 label: Some("water reflection"),
                 size: wgpu::Extent3d {
                     width: REFLECTION_SIZE,
@@ -701,10 +717,10 @@ impl Water {
             })
         };
         let reflection = target(scene.target_format, REFLECTION_LEVELS);
-        let reflection_view = reflection.create_view(&Default::default());
+        let reflection_view = reflection.counted_view(&Default::default());
         let reflection_levels: Vec<wgpu::TextureView> = (0..REFLECTION_LEVELS)
             .map(|level| {
-                reflection.create_view(&wgpu::TextureViewDescriptor {
+                reflection.counted_view(&wgpu::TextureViewDescriptor {
                     base_mip_level: level,
                     mip_level_count: Some(1),
                     ..Default::default()
@@ -712,14 +728,14 @@ impl Water {
             })
             .collect();
         let depth_texture = target(scene.depth_format, 1);
-        let reflection_depth = depth_texture.create_view(&Default::default());
-        let reflection_depth_read = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+        let reflection_depth = depth_texture.counted_view(&Default::default());
+        let reflection_depth_read = depth_texture.counted_view(&wgpu::TextureViewDescriptor {
             aspect: wgpu::TextureAspect::DepthOnly,
             ..Default::default()
         });
         // A depth texture takes no write of the queue: a pass clears it to 1.
         let no_land = device
-            .create_texture(&wgpu::TextureDescriptor {
+            .counted_texture(&wgpu::TextureDescriptor {
                 label: Some("water no land"),
                 size: wgpu::Extent3d {
                     width: 1,
@@ -733,7 +749,7 @@ impl Water {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             })
-            .create_view(&Default::default());
+            .counted_view(&Default::default());
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("water no land"),
         });
@@ -755,7 +771,7 @@ impl Water {
         });
         scene.commands.defer(encoder.finish());
         // The levels of the reflection: each from the level before.
-        let level_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let level_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water reflection level"),
             entries: &[
                 texture(
@@ -769,7 +785,7 @@ impl Water {
         let level_groups: Vec<wgpu::BindGroup> = reflection_levels[..reflection_levels.len() - 1]
             .iter()
             .map(|source| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                device.counted_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("water reflection level"),
                     layout: &level_layout,
                     entries: &[
@@ -785,16 +801,16 @@ impl Water {
                 })
             })
             .collect();
-        let level_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let level_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water reflection level"),
             source: wgpu::ShaderSource::Wgsl(LEVEL_SHADER.into()),
         });
-        let level_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let level_pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water reflection level"),
             bind_group_layouts: &[Some(&level_layout)],
             immediate_size: 0,
         });
-        let level_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let level_pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water reflection level"),
             layout: Some(&level_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -823,6 +839,7 @@ impl Water {
             cache: None,
         });
         Ok(Water {
+            groups: std::cell::RefCell::new(Default::default()),
             plane,
             debug_plane: None,
             debug_source,
@@ -1122,7 +1139,8 @@ impl Water {
     /// `ripples` has the textures of the dynamic waves; they count when the frame has a wave
     /// height. The values go into `uniforms`. [`None`] without the depth, or without the
     /// picture unless `picture` is false (a draw that does not read it: the count of the dry
-    /// spaces).
+    /// spaces). `slot`: the caller's kept group.
+    #[allow(clippy::too_many_arguments)]
     fn frame_group(
         &self,
         scene: &SceneView,
@@ -1131,6 +1149,7 @@ impl Water {
         uniforms_buffer: &wgpu::Buffer,
         picture: bool,
         light: Option<&VolumeLight>,
+        slot: GroupSlot,
     ) -> Result<wgpu::BindGroup, nirender_wgpu::pass_report::Skip> {
         let depth = scene.depth.ok_or("no copy of the depth")?;
         let picture = if picture {
@@ -1199,7 +1218,7 @@ impl Water {
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
         let light_entries = self.volumes.light_entries(scene, light);
-        let group = nirender_wgpu::gpu::frame_group(
+        let group = self.groups.borrow_mut()[slot as usize].get(
             scene.device,
             &wgpu::BindGroupDescriptor {
                 label: Some("water"),
@@ -1276,7 +1295,7 @@ impl Water {
         frame: &WaterFrame,
         ripples: Option<&super::ripples::Ripples>,
     ) -> Result<(), nirender_wgpu::pass_report::Skip> {
-        let group = self.frame_group(scene, frame, ripples, &self.uniforms, true, None)?;
+        let group = self.frame_group(scene, frame, ripples, &self.uniforms, true, None, GroupSlot::Plane)?;
         let dynamic = frame.wave_height.zip(ripples);
         // The dry spaces cut the plane, but not from under the water (`renderStageWater`).
         let cut = self.dry.any() && !frame.underwater;
@@ -1348,7 +1367,12 @@ impl Water {
             nirender_wgpu::pass_report::note_skipped(super::part::VOLUMES, "no surface of a water volume");
             return 0;
         }
-        let group = match self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light)) {
+        let slot = if before_plane {
+            GroupSlot::VolumesBeforePlane
+        } else {
+            GroupSlot::VolumesAfterPlane
+        };
+        let group = match self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light), slot) {
             Ok(group) => group,
             Err(reason) => {
                 nirender_wgpu::pass_report::note_skipped(super::part::VOLUMES, reason);
@@ -1388,7 +1412,7 @@ impl Water {
             .dry
             .any()
             .then(|| {
-                self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None)
+                self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None, GroupSlot::DryCut)
                     .ok()
             })
             .flatten();
@@ -1465,8 +1489,7 @@ pub(super) fn wave_texture(scene: &SceneView, dds: &[u8]) -> Result<wgpu::Textur
     if dds.len() < 128 + bytes {
         return Err("the wave texture is too short".into());
     }
-    use wgpu::util::DeviceExt;
-    let texture = scene.device.create_texture_with_data(
+    let texture = scene.device.counted_texture_with_data(
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some("water waves"),
@@ -1485,14 +1508,13 @@ pub(super) fn wave_texture(scene: &SceneView, dds: &[u8]) -> Result<wgpu::Textur
         wgpu::util::TextureDataOrder::MipMajor,
         &dds[128..128 + bytes],
     );
-    Ok(texture.create_view(&Default::default()))
+    Ok(texture.counted_view(&Default::default()))
 }
 
 /// A wave texture of one flat normal (0, 0, 1), for the post shaders when water_NRM.dds is
 /// missing or not readable.
 pub(super) fn flat_wave_texture(scene: &SceneView) -> wgpu::TextureView {
-    use wgpu::util::DeviceExt;
-    let texture = scene.device.create_texture_with_data(
+    let texture = scene.device.counted_texture_with_data(
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some("water waves, flat"),
@@ -1512,7 +1534,7 @@ pub(super) fn flat_wave_texture(scene: &SceneView) -> wgpu::TextureView {
         // B, G, R, A: the normal (0.5, 0.5, 1) of a texel.
         &[255, 128, 128, 255],
     );
-    texture.create_view(&Default::default())
+    texture.counted_view(&Default::default())
 }
 
 /// The one colour of the reflection, as `clearReflection` of the Direct3D 9 path has it. With

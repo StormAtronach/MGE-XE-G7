@@ -19,8 +19,8 @@
 //! The draws are `multi_draw_indexed_indirect_count` calls, one for each texture.
 
 use bytemuck::{Pod, Zeroable};
+use nirender_wgpu::objects::Create;
 use nirender_wgpu::wgpu;
-use nirender_wgpu::wgpu::util::DeviceExt;
 
 /// The bytes of a vertex of a statics file.
 const VERTEX: u64 = 20;
@@ -301,7 +301,7 @@ impl Pools {
 }
 
 fn pool_buffer(device: &wgpu::Device, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("distant statics, a pool"),
         size,
         usage: usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
@@ -616,7 +616,7 @@ impl Culling {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("distant statics, cull"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -639,17 +639,17 @@ impl Culling {
                 storage(8, false),
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("distant statics, cull"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("distant statics, cull"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let make = |entry: &str| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            device.counted_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("distant statics, cull"),
                 layout: Some(&pipeline_layout),
                 module: &module,
@@ -658,7 +658,7 @@ impl Culling {
                 cache: None,
             })
         };
-        let places_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let places_buffer = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant statics, the places"),
             contents: if places.is_empty() {
                 bytemuck::bytes_of(&[0u32; 8])
@@ -667,13 +667,13 @@ impl Culling {
             },
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let subsets = device.create_buffer(&wgpu::BufferDescriptor {
+        let subsets = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("distant statics, the subsets"),
             size: (subset_count.max(1) * size_of::<Subset>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let groups = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let groups = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant statics, the vis groups"),
             contents: bytemuck::bytes_of(&[1u32; 4]),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -698,7 +698,7 @@ impl Culling {
         } else {
             shown.iter().map(|&s| s as u32).collect()
         };
-        self.groups = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        self.groups = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant statics, the vis groups"),
             contents: bytemuck::cast_slice(&values),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -745,7 +745,7 @@ impl Culling {
                 range.1 += 1;
             }
             let indexes: Vec<u32> = places.iter().map(|&(_, place)| place).collect();
-            let list = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let list = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("distant statics, the places of a world space"),
                 contents: if indexes.is_empty() {
                     bytemuck::bytes_of(&[0u32; 4])
@@ -755,7 +755,7 @@ impl Culling {
                 usage: wgpu::BufferUsages::STORAGE,
             });
             let pairs: Vec<[u32; 2]> = ranges.iter().map(|&(start, length)| [start, length]).collect();
-            let buckets = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let buckets = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("distant statics, the textures of a world space"),
                 contents: bytemuck::cast_slice(&pairs),
                 usage: wgpu::BufferUsages::STORAGE,
@@ -787,7 +787,7 @@ impl Culling {
     ) -> SetBuffers {
         let slots = u64::from(length.max(1));
         let make = |label: &str, size: u64, usage: wgpu::BufferUsages| {
-            device.create_buffer(&wgpu::BufferDescriptor {
+            device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size,
                 usage,
@@ -817,7 +817,7 @@ impl Culling {
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
         );
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant statics, cull of a world"),
             layout: &self.layout,
             entries: &[
@@ -994,7 +994,7 @@ impl Culling {
     pub fn take_stats(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<[u32; STATS]> {
         let Some(world) = self.world.as_ref() else { return Vec::new() };
         let size = STATS as u64 * 4;
-        let read = device.create_buffer(&wgpu::BufferDescriptor {
+        let read = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("distant statics, cull counts read"),
             size: size * world.sets.len() as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,

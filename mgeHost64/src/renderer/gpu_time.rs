@@ -3,6 +3,7 @@
 //! the time stamps of the frame (nirender) do not have it. The renderer waits for the stamps
 //! of each part, so only a replay (the extension offline) reads them.
 
+use nirender_wgpu::objects::Create;
 use nirender_wgpu::wgpu;
 
 /// The parts, by their index.
@@ -28,7 +29,7 @@ impl GpuTime {
             return None;
         }
         let buffer = |usage| {
-            device.create_buffer(&wgpu::BufferDescriptor {
+            device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some("gpu time"),
                 size: 16,
                 usage,
@@ -36,7 +37,7 @@ impl GpuTime {
             })
         };
         Some(GpuTime {
-            set: device.create_query_set(&wgpu::QuerySetDescriptor {
+            set: device.counted_query_set(&wgpu::QuerySetDescriptor {
                 label: Some("gpu time"),
                 ty: wgpu::QueryType::Timestamp,
                 count: 2,

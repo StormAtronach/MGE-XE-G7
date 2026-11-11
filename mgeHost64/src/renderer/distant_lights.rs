@@ -12,6 +12,7 @@
 //!   with a texture of the tile of each cell. The shaders of the land and of the statics add it
 //!   to their light at night (`baked_light`, in the view group, from [`LightBinding`]).
 
+use nirender_wgpu::objects::{Create, CreateView};
 use std::path::{Path, PathBuf};
 
 use nirender_wgpu::pass_report::Skip;
@@ -21,7 +22,6 @@ use std::thread;
 use distantland::mge_xe::lights::{LIGHT_TEXEL_SIZE, LIGHT_TILE, parse_lights};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
-use nirender_wgpu::wgpu::util::DeviceExt;
 
 /// The values on a side of a tile (the file's layout: `distantland_formats::lights`).
 const TILE: u32 = LIGHT_TILE as u32;
@@ -161,12 +161,12 @@ impl LightBinding {
             origin: [0.0, 0.0, 1.0, 1.0],
             values: [0.0, TILES_IN_ROW as f32, 0.0, 0.0],
         };
-        let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniforms = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant lights, baked"),
             contents: bytemuck::bytes_of(&map),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             label: Some("distant lights, baked"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -275,7 +275,7 @@ fn texture(
     data: &[u8],
 ) -> wgpu::TextureView {
     device
-        .create_texture_with_data(
+        .counted_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
                 label: Some(label),
@@ -294,7 +294,7 @@ fn texture(
             wgpu::util::TextureDataOrder::LayerMajor,
             data,
         )
-        .create_view(&Default::default())
+        .counted_view(&Default::default())
 }
 
 /// What the file has.
@@ -520,20 +520,20 @@ impl Glows {
     /// The buffers of one set for `sources` sources, with the groups that read them.
     fn make_set(&self, device: &wgpu::Device) -> GlowSet {
         let list_bytes = u64::from(self.sources.max(1)) * GLOW_WORDS * 4;
-        let list = device.create_buffer(&wgpu::BufferDescriptor {
+        let list = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("distant lights, the glows of a frame"),
             size: list_bytes,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
-        let args = device.create_buffer(&wgpu::BufferDescriptor {
+        let args = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("distant lights, the draw"),
             size: 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let uniform_buffer = |label: &str, size: usize| {
-            device.create_buffer(&wgpu::BufferDescriptor {
+            device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size: size as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -542,7 +542,7 @@ impl Glows {
         };
         let cull_uniforms = uniform_buffer("distant lights, cull", size_of::<CullUniforms>());
         let values = uniform_buffer("distant lights, glows", size_of::<GlowUniforms>());
-        let cull_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let cull_group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant lights, cull"),
             layout: &self.cull_layout,
             entries: &[
@@ -564,7 +564,7 @@ impl Glows {
                 },
             ],
         });
-        let draw_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let draw_group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant lights, glows"),
             layout: &self.draw_layout,
             entries: &[
@@ -800,7 +800,7 @@ const NO_SET: Skip = "no buffers for the set of the view";
 
 fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGroupLayout) -> Glows {
     let device = scene.device;
-    let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let source_buffer = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant lights, the sources"),
         contents: &file.sources,
         usage: wgpu::BufferUsages::STORAGE,
@@ -816,7 +816,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
         count: None,
     };
     let compute = wgpu::ShaderStages::COMPUTE;
-    let cull_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let cull_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("distant lights, cull"),
         entries: &[
             entry(0, compute, wgpu::BufferBindingType::Uniform),
@@ -825,16 +825,16 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
             entry(3, compute, wgpu::BufferBindingType::Storage { read_only: false }),
         ],
     });
-    let cull_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let cull_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant lights, cull"),
         source: wgpu::ShaderSource::Wgsl(CULL_SHADER.into()),
     });
-    let cull_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let cull_pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant lights, cull"),
         bind_group_layouts: &[Some(&cull_layout)],
         immediate_size: 0,
     });
-    let cull = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    let cull = device.counted_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("distant lights, cull"),
         layout: Some(&cull_pipeline_layout),
         module: &cull_module,
@@ -843,7 +843,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
         cache: None,
     });
     let draw_stages = wgpu::ShaderStages::VERTEX_FRAGMENT;
-    let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let draw_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("distant lights, glows"),
         entries: &[
             entry(0, draw_stages, wgpu::BufferBindingType::Uniform),
@@ -855,12 +855,12 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
         ],
     });
     let source = format!("{}{GLOW_SHADER}", super::view::wgsl());
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant lights, glows"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     // Group 0: the view group of the view; group 1: the glows.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant lights, glows"),
         bind_group_layouts: &[Some(view_layout), Some(&draw_layout)],
         immediate_size: 0,
@@ -873,7 +873,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
     // The glows of the frame go into the pass of the game (its samples); a view of its own into
     // a rendered texture has one sample.
     let make_draw = |multisample: wgpu::MultisampleState| {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("distant lights, glows"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {

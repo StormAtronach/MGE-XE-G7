@@ -29,6 +29,7 @@
 // A link in a doc comment of the renderer that rustdoc cannot resolve fails the doc build.
 #![deny(rustdoc::broken_intra_doc_links)]
 
+use nirender_wgpu::objects::{Create, CreateView};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
@@ -64,7 +65,6 @@ use distantland::mge_xe::distant_terrain::{
 use mge_config::{ConfigDocument, FILE_NAME};
 use nirender_wgpu::pass_report::{self, Skip};
 use nirender_wgpu::wgpu;
-use nirender_wgpu::wgpu::util::DeviceExt;
 
 /// The skips of the post chain and of the views of their own that more than one place gives.
 const NO_POST: Skip = "no post state";
@@ -255,6 +255,23 @@ const EXTENSION_FORMAT: u32 = 3;
 /// The bytes of a hello record: the version, the format, then the build id.
 const HELLO_BUILD_ID_AT: usize = 8;
 const HELLO_BUILD_ID_BYTES: usize = 64;
+
+/// The name of an extension record that changes what this extension draws, for the count of
+/// the GPU objects; [`None`] for the environment, a picture request and the status text, and
+/// for the shader state, which `data` judges by its content.
+fn changing_record_name(id: u32) -> Option<&'static str> {
+    match id {
+        ENVIRONMENT_ID | PICTURE_ID | STATUS_ID | SHADER_STATE_ID => None,
+        SETTINGS_ID => Some("extension record settings"),
+        TUNE_ID => Some("extension record tune"),
+        WATER_LOOKS_ID => Some("extension record water looks"),
+        WATER_MASKS_ID => Some("extension record water masks"),
+        VIS_GROUPS_ID => Some("extension record vis groups"),
+        PREFETCH_ID => Some("extension record prefetch"),
+        HELLO_ID => Some("extension record hello"),
+        _ => Some("extension record of an unknown id"),
+    }
+}
 
 /// The build id of this program: its name, its version and its commit (`build.rs` puts the
 /// commit into MGE_COMMIT).
@@ -999,6 +1016,10 @@ pub struct DistantLand {
     extension_refused: u32,
     /// True when an environment record of another version came and is in the log.
     environment_version_logged: bool,
+    /// The first record of the frame that changed what this extension draws (all but the
+    /// environment, the status text and a picture request), by its name: `frame_changed`
+    /// gives it to the count of the GPU objects, with the loads.
+    changed: Option<&'static str>,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -1563,6 +1584,7 @@ impl DistantLand {
             refused_ids: Vec::new(),
             extension_refused: 0,
             environment_version_logged: false,
+            changed: Some("the first frame"),
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -1985,7 +2007,7 @@ fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::Textur
             layout.width, layout.height, layout.skipped
         );
     }
-    let texture = scene.device.create_texture_with_data(
+    let texture = scene.device.counted_texture_with_data(
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some(name),
@@ -2004,7 +2026,7 @@ fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::Textur
         wgpu::util::TextureDataOrder::MipMajor,
         &dds[layout.offset..],
     );
-    Ok(texture.create_view(&Default::default()))
+    Ok(texture.counted_view(&Default::default()))
 }
 
 /// The pixels of a TGA file as red, green, blue, alpha, the top row first: a true-colour
@@ -2072,7 +2094,7 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
         return dds_texture(scene, name, bytes);
     }
     let (width, height, pixels) = tga_pixels(name, bytes)?;
-    let texture = scene.device.create_texture_with_data(
+    let texture = scene.device.counted_texture_with_data(
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some(name),
@@ -2091,7 +2113,7 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
         wgpu::util::TextureDataOrder::MipMajor,
         &pixels,
     );
-    Ok(texture.create_view(&Default::default()))
+    Ok(texture.counted_view(&Default::default()))
 }
 
 /// The frames without a load before the slow step of [`SlowStep`]: the watchdog's flag of the
@@ -2137,13 +2159,13 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         dds_texture(scene, TERRAIN_PATCH_ALBEDO_FILE_NAME, &loaded.patch_albedo)?,
         dds_texture(scene, TERRAIN_BLEND_PATTERNS_FILE_NAME, &loaded.blend_patterns)?,
     ];
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+    let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
         mipmap_filter: wgpu::MipmapFilterMode::Linear,
         ..Default::default()
     });
-    let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+    let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("distant land"),
         size: size_of::<LandUniforms>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -2159,7 +2181,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         },
         count: None,
     };
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("distant land"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
@@ -2199,24 +2221,24 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         binding: 6,
         resource: wgpu::BindingResource::Sampler(&sampler),
     });
-    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("distant land"),
         layout: &layout,
         entries: &entries,
     });
     let source = format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl());
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     // Group 0: the view group (the view of the pass and the baked light); group 1: the values
     // and the textures of the land. The shadow map has the view group only.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant land"),
         bind_group_layouts: &[Some(view_layout), Some(&layout)],
         immediate_size: 0,
     });
-    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let shadow_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant land shadow"),
         bind_group_layouts: &[Some(view_layout)],
         immediate_size: 0,
@@ -2227,7 +2249,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     // water is a texture of this program, with one sample.
     let make_pipeline =
         |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("distant land"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -2288,11 +2310,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
 
     // The casters of the shadow map: the land with the depth from the sun.
     let shadow_source = format!("{}{LAND_SHADOW_SHADER}", view::wgsl());
-    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let shadow_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land shadow"),
         source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
     });
-    let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let shadow_pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant land shadow"),
         layout: Some(&shadow_layout),
         vertex: wgpu::VertexState {
@@ -2338,12 +2360,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         if mesh.vertices.is_empty() || mesh.triangles.is_empty() {
             continue;
         }
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertices = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant land, vertices"),
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let indexes = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant land, indexes"),
             contents: bytemuck::cast_slice(&mesh.triangles),
             usage: wgpu::BufferUsages::INDEX,
@@ -3356,7 +3378,15 @@ impl Extension for DistantLand {
         std::mem::take(&mut self.pictures)
     }
 
+    fn frame_changed(&mut self) -> Option<&'static str> {
+        let load = self.loading.is_some().then_some("a load of distant land");
+        self.changed.take().or(load)
+    }
+
     fn data(&mut self, id: u32, bytes: &[u8]) {
+        if let Some(name) = changing_record_name(id) {
+            self.changed.get_or_insert(name);
+        }
         if id == HELLO_ID {
             match hello_check(bytes) {
                 Ok(build) => {
@@ -3556,6 +3586,11 @@ impl Extension for DistantLand {
         }
         if id == SHADER_STATE_ID {
             if let Some(state) = post::ShaderState::read(bytes) {
+                // New values of the variables of a known shader are no change of what this
+                // extension draws for the count of the GPU objects.
+                if !self.shader_states.iter().any(|known| known.same_but_values(&state)) {
+                    self.changed.get_or_insert("extension record shader state");
+                }
                 if !self.shader_states_new.contains(&state.name) {
                     self.shader_states_new.push(state.name.clone());
                 }
