@@ -4,6 +4,7 @@
 //! a pixel of the game goes into the picture of the distant land that was there before the
 //! game drew.
 
+use nirender_wgpu::gpu::KeptGroup;
 use nirender_wgpu::objects::Create;
 use nirender_wgpu::{SceneView, wgpu};
 
@@ -85,6 +86,8 @@ pub struct Blend {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// The group of the draw, kept while what it binds stays the same.
+    group: KeptGroup,
     /// The frames with a blend, for the report.
     pub frames: u64,
 }
@@ -167,6 +170,7 @@ impl Blend {
             pipeline,
             layout,
             uniforms,
+            group: KeptGroup::default(),
             frames: 0,
         }
     }
@@ -192,7 +196,7 @@ impl Blend {
             scene.target_size.1 as f32,
         ];
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
-        let group = nirender_wgpu::gpu::frame_group(
+        let group = self.group.get(
             scene.device,
             &wgpu::BindGroupDescriptor {
                 label: Some("blend"),

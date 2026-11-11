@@ -12,6 +12,7 @@
 //! draw multiplies by at most 2: a larger factor takes more draws (`draws`), each with the
 //! part of the factor between 2^n and 2^(n+1).
 
+use nirender_wgpu::gpu::KeptGroup;
 use nirender_wgpu::objects::Create;
 use nirender_wgpu::{SceneView, wgpu};
 
@@ -125,6 +126,8 @@ pub struct Caustics {
     /// The strength setting, `distant_land.water.caustics_intensity` (0 to 100). A mod can
     /// change it while the game runs: the renderer sets it before each draw.
     pub intensity: f32,
+    /// The group of the draw, kept while what it binds stays the same.
+    group: KeptGroup,
     /// The frames with caustics, for the report.
     pub frames: u64,
 }
@@ -251,6 +254,7 @@ impl Caustics {
             uniforms,
             wave_sampler,
             intensity,
+            group: KeptGroup::default(),
             frames: 0,
         }
     }
@@ -281,7 +285,7 @@ impl Caustics {
         values[24..28].copy_from_slice(&[frame.water_level, frame.time, 0.0, 0.0]);
         values[28..32].copy_from_slice(&[strength, frame.near_view_range, 0.0, 0.0]);
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
-        let group = nirender_wgpu::gpu::frame_group(
+        let group = self.group.get(
             scene.device,
             &wgpu::BindGroupDescriptor {
                 label: Some("caustics"),

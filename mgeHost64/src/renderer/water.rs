@@ -7,6 +7,7 @@
 //! normal. The shading that each surface of water shares is in `water/shading.rs`; this file
 //! has the frame's resources (the reflection, the waves) and the plane.
 
+use nirender_wgpu::gpu::KeptGroup;
 use nirender_wgpu::objects::{Create, CreateView};
 use nirender_wgpu::{Replay, ReplayView, SceneView, wgpu};
 
@@ -390,6 +391,18 @@ fn fine_disc() -> (Vec<[f32; 3]>, Vec<u16>) {
     })
 }
 
+/// The callers of `Water::frame_group`, each with a kept group of its own: they bind other
+/// uniforms or another picture or depth, and one slot for all would make a group at each call.
+/// The volumes before the sea plane and those at the end of the world read the picture and
+/// the depth at two points of the frame.
+#[derive(Clone, Copy)]
+enum GroupSlot {
+    Plane = 0,
+    VolumesBeforePlane = 1,
+    VolumesAfterPlane = 2,
+    DryCut = 3,
+}
+
 pub struct Water {
     pipeline: wgpu::RenderPipeline,
     /// The same as lines, when the device has the line mode: for a frame in which the game
@@ -442,6 +455,9 @@ pub struct Water {
     /// The frames whose reflection was not drawn: [`Water::plane_in_view`] false, and no
     /// reader of the reflection in the frame.
     pub reflections_skipped: u64,
+    /// The groups of `frame_group`, one for each [`GroupSlot`], kept while what they bind stays
+    /// the same. A cell: the callers hold other fields of the water while they ask.
+    groups: std::cell::RefCell<[KeptGroup; 4]>,
 }
 
 impl Water {
@@ -802,6 +818,7 @@ impl Water {
             cache: None,
         });
         Ok(Water {
+            groups: std::cell::RefCell::new(Default::default()),
             pipeline,
             pipeline_lines,
             pipeline_cut,
@@ -1095,7 +1112,8 @@ impl Water {
     /// `ripples` has the textures of the dynamic waves; they count when the frame has a wave
     /// height. The values go into `uniforms`. [`None`] without the depth, or without the
     /// picture unless `picture` is false (a draw that does not read it: the count of the dry
-    /// spaces).
+    /// spaces). `slot`: the caller's kept group.
+    #[allow(clippy::too_many_arguments)]
     fn frame_group(
         &self,
         scene: &SceneView,
@@ -1104,6 +1122,7 @@ impl Water {
         uniforms_buffer: &wgpu::Buffer,
         picture: bool,
         light: Option<&VolumeLight>,
+        slot: GroupSlot,
     ) -> Option<wgpu::BindGroup> {
         let depth = scene.depth?;
         let picture = if picture { scene.picture? } else { &self.flat };
@@ -1168,7 +1187,7 @@ impl Water {
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
         let light_entries = self.volumes.light_entries(scene, light);
-        let group = nirender_wgpu::gpu::frame_group(
+        let group = self.groups.borrow_mut()[slot as usize].get(
             scene.device,
             &wgpu::BindGroupDescriptor {
                 label: Some("water"),
@@ -1245,7 +1264,7 @@ impl Water {
         frame: &WaterFrame,
         ripples: Option<&super::ripples::Ripples>,
     ) {
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms, true, None) else {
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms, true, None, GroupSlot::Plane) else {
             return;
         };
         let dynamic = frame.wave_height.zip(ripples);
@@ -1317,7 +1336,19 @@ impl Water {
         if far.is_empty() && !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
             return 0;
         }
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light)) else {
+        let Some(group) = self.frame_group(
+            scene,
+            frame,
+            ripples,
+            &self.volume_uniforms,
+            true,
+            Some(light),
+            if before_plane {
+                GroupSlot::VolumesBeforePlane
+            } else {
+                GroupSlot::VolumesAfterPlane
+            },
+        ) else {
             return 0;
         };
         // The dry spaces cut the surfaces near the camera, but not from under the water.
@@ -1351,7 +1382,7 @@ impl Water {
         let group = self
             .dry
             .any()
-            .then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None))
+            .then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None, GroupSlot::DryCut))
             .flatten();
         pass.set_bind_group(0, view, &[]);
         if let Some(group) = group.as_ref() {
