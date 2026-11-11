@@ -502,13 +502,16 @@ pub fn run(mut arguments: Vec<String>) {
     // A replay draws the files that are there. A game session makes them again first when
     // they do not match the job of mgeXE.toml, as the IPC host mode does.
     let live = arguments.iter().any(|argument| argument == "--live");
-    // A replay's view comes only from its arguments, which the crate does not take.
-    let debug_view = DebugView::from_arguments(&mut arguments, !live).unwrap_or_else(|problem| {
-        eprintln!("debug view: {problem}");
-        std::process::exit(2);
-    });
+    // A replay's view comes only from its arguments, which the crate does not take: they go
+    // out of the list here, and a wrong one ends the program in the closure below, after the
+    // log is set up, so that its line is in the log.
+    let debug_view = DebugView::from_arguments(&mut arguments, !live);
     // The distant land starts after the log of the helper is set up: its lines are in it.
     nirender_wgpu::run_with(arguments, move || -> Option<Box<dyn Extension>> {
+        let debug_view = debug_view.unwrap_or_else(|problem| {
+            eprintln!("debug view: {problem}");
+            std::process::exit(2);
+        });
         let mut land = DistantLand::start(Path::new("."), live);
         if let Some(line) = debug_view::retired_switches_line(|name| nirender_wgpu::switches::text(name).is_some()) {
             println!("{line}");
@@ -889,7 +892,7 @@ pub struct DistantLand {
     /// The tune `lights world` or `lights engine`: [`FrameParameters::world_lights`].
     world_lights: bool,
     /// The debug view of the frame. Its lights view: a draw lit for each pixel shows only the
-    /// light it takes (`frame.values[12].x`), without its material, its textures and the fog:
+    /// light it takes (the world variant `VIEW_LIGHTS`), without its material, its textures and the fog:
     /// a seam of the lights is a step at the edge of a shape.
     debug_view: DebugView,
     /// The world of the frame is in an interior cell.
@@ -1434,12 +1437,12 @@ impl DistantLand {
         kept
     }
 
-    /// The frame draws the reflection (or its one colour): the frame is under water (the
-    /// surfaces of water volumes read it from below), or a shader of the session reads it
-    /// ([`DistantLand::reflection_kept`]), or the plane can be in the main view
-    /// ([`Water::plane_in_view`], to the end of the plane in the frame).
+    /// The frame draws the reflection (or its one colour): [`Water::reflection_kept_everywhere`], or
+    /// the plane can be in the main view ([`Water::plane_in_view`], to the end of the plane in
+    /// the frame).
     fn reflection_needed(&self, scene: &SceneView, frame: &WaterFrame) -> bool {
-        if frame.underwater || self.reflection_kept.is_some() {
+        let water_view = self.debug_view.water_term() != 0.0;
+        if Water::reflection_kept_everywhere(frame.underwater, self.reflection_kept.is_some(), water_view) {
             return true;
         }
         let far = frame.view_end.unwrap_or(self.draw_distance);
@@ -2591,12 +2594,14 @@ const DRAW_SHADER: &str = "
 // The shadow of the draw at the pixel: `RenderShadowsPS` of `XE Mod Shadow.fx`. From
 // `extension_shade` for `extension_finish`.
 var<private> shadow_v: f32;
-// The debug view of the layers (frame.values[10].z): the layer that served the pixel (1 or
-// 2, 0 outside both, -1 for a draw without the shadow test), and 1 where the map shadows it.
+// The debug view of the layers (the variant VIEW_SHADOW_LAYERS): the layer that served the
+// pixel (1 or 2, 0 outside both, -1 for a draw without the shadow test), and 1 where the map
+// shadows it. Only that variant writes them.
 var<private> shadow_layer: f32;
 var<private> shadow_hit: f32;
 // The light that the pixel takes (`d + a` of `extension_shade`), for the debug view of the
-// lights (frame.values[12].x); `light_term_set` when the draw is lit for each pixel.
+// lights (the variant VIEW_LIGHTS); `light_term_set` when the draw is lit for each pixel.
+// Only that variant writes them.
 var<private> light_term: vec3f;
 var<private> light_term_set: bool;
 
@@ -2677,8 +2682,10 @@ fn light_terms(light: Light, normal: vec3f, p: vec3f) -> LightTerms {
 
 fn extension_shade(in: VertexOut) -> vec4f {
     shadow_v = 0.0;
-    shadow_layer = -1.0;
-    shadow_hit = 0.0;
+    if DEBUG_VIEW == VIEW_SHADOW_LAYERS {
+        shadow_layer = -1.0;
+        shadow_hit = 0.0;
+    }
     if (draw.counts.w & 32u) != 0u {
         // The light that the sun gives the pixel, as shadowSunEstimate: the sun of the draw
         // is in draw.extension[5] (its direction) and [7].x (its colour and visibility). A
@@ -2699,11 +2706,13 @@ fn extension_shade(in: VertexOut) -> vec4f {
         s0 = vec4f(s0.xy, s0.z / s0.w, s0.w);
         s1 = vec4f(s1.xy, s1.z / s1.w, s1.w);
         let dz = shadow_delta(s0.xyz, s1.xyz);
-        if frame.values[10].z > 0.5 {
+        if DEBUG_VIEW == VIEW_SHADOW_LAYERS {
             shadow_layer = shadow_layer_of(s0.xyz, s1.xyz);
         }
         if dz < 0.0 {
-            shadow_hit = 1.0;
+            if DEBUG_VIEW == VIEW_SHADOW_LAYERS {
+                shadow_hit = 1.0;
+            }
             // shadowESM, and the fade at the edge of the outer layer.
             var v = shadow_esm(dz) * light;
             let fade = clamp(25.0 * (1.0 - abs(s1.xy)), vec2f(0.0), vec2f(1.0));
@@ -2774,8 +2783,10 @@ fn extension_shade(in: VertexOut) -> vec4f {
             a += terms.a;
         }
     }
-    light_term = d + a;
-    light_term_set = true;
+    if DEBUG_VIEW == VIEW_LIGHTS {
+        light_term = d + a;
+        light_term_set = true;
+    }
     // The three ways of a material with a vertex colour.
     if draw.more.x == 1u {
         return vec4f(in.vertex_color.rgb * (d + a) + draw.material_emissive.rgb, in.vertex_color.a);
@@ -2835,11 +2846,11 @@ fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
             out = vec4f(out.rgb * (1.0 - v * frame.values[9].xyz), out.a);
         }
     }
-    if frame.values[12].x > 0.5 && light_term_set {
+    if DEBUG_VIEW == VIEW_LIGHTS && light_term_set {
         // The debug view of the lights (the debug view `lights`).
         return vec4f(light_term, alpha);
     }
-    if frame.values[10].z > 0.5 {
+    if DEBUG_VIEW == VIEW_SHADOW_LAYERS {
         // The debug view of the shadow layers (the debug view `shadow-layers`).
         if shadow_layer < -0.5 {
             return vec4f(0.3, 0.3, 0.3, out.a);
@@ -3023,7 +3034,7 @@ impl Extension for DistantLand {
         let near_volumes = std::mem::replace(&mut self.volumes_drawn, false);
         if let Some(water) = self.water.as_mut() {
             water.start_frame();
-            water.debug = self.debug_view.water_term();
+            water.set_debug(scene, self.debug_view.water_term());
         }
         self.far_water.clear();
         self.volumes_ready =
@@ -3126,7 +3137,6 @@ impl Extension for DistantLand {
             }
         }
         self.shade = self.per_pixel();
-        values[12][0] = if self.debug_view.lights() { 1.0 } else { 0.0 };
         values[11][0] = self.tunables.get(tunables::WATER_LIGHT_COLOUR);
         FrameParameters {
             fog_range: distant.then(|| {
@@ -3162,7 +3172,7 @@ impl Extension for DistantLand {
             // The far cascade of the shadow map: what it reaches animates in the game.
             shadow_reach: if self.shadow_in_frame { shadow::RADII[1] } else { 0.0 },
             full_tier_max: Some(self.full_tier_max),
-            debug_view: self.debug_view.view.id(),
+            debug_view: self.debug_view.frame_id(self.shadow_in_frame),
         }
     }
 
@@ -5511,6 +5521,36 @@ mod shader_tests {
         assert_eq!(DRAW_SHADER.matches(bit.as_str()).count(), 1);
         let own = 1 | 2 | 16 | 32 | 64 | 128 | 256 | 512;
         assert_eq!(own & nirender_wgpu::NO_LIGHTS_BIT, 0);
+    }
+
+    /// The draw part tests a debug view if and only if the crate makes a world variant of it
+    /// (`world_variant`), and it has no other test of `DEBUG_VIEW`. The world shader with the
+    /// extension compiles in each variant, in both texture tiers.
+    #[test]
+    fn the_draw_shader_tests_the_views_of_the_world_variants() {
+        use nirender_wgpu::debug_lines::{view_id, world_variant};
+        let mut tests = 0;
+        for (id, name) in [
+            (view_id::LIGHTS, "VIEW_LIGHTS"),
+            (view_id::SHADOW_LAYERS, "VIEW_SHADOW_LAYERS"),
+            (view_id::SHADOW_MAP, "VIEW_SHADOW_MAP"),
+            (view_id::WATER, "VIEW_WATER"),
+            (view_id::POST, "VIEW_POST"),
+        ] {
+            let count = DRAW_SHADER.matches(&format!("DEBUG_VIEW == {name}")).count();
+            assert_eq!(count != 0, world_variant(id) != view_id::NONE, "{name}");
+            tests += count;
+        }
+        assert_eq!(DRAW_SHADER.matches("DEBUG_VIEW").count(), tests);
+
+        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks());
+        let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
+        for id in [view_id::LIGHTS, view_id::SHADOW_LAYERS] {
+            let variant = nirender_wgpu::world_variant_source(&source, id).expect("the DEBUG_VIEW line");
+            shader_check::check_with(&format!("world variant {id}, tier a"), &variant, tier_a).unwrap();
+            let tier_c = nirender_wgpu::tier_c_shader_source(&variant);
+            shader_check::check(&format!("world variant {id}, tier c"), &tier_c).unwrap();
+        }
     }
 }
 

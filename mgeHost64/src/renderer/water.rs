@@ -93,7 +93,9 @@ struct Out {
         let add = water.wave.z * (mix(height, height2, clamp(dist / 8000.0, 0.0, 1.0)) - 0.5) * clamp(1.0 - dist / 6400.0, 0.0, 1.0) * clamp(dist / 200.0, 0.0, 1.0);
         world.z += add;
         lowered = abs(add);
-        out.probe = height;
+        if WATER_DEBUG {
+            out.probe = height;
+        }
     } else {
         // The plane lies at the water level less 1, a little under the ripples of the game.
         world.z -= 0.1;
@@ -156,7 +158,7 @@ fn plane_color(in: Out) -> vec4f {
     if water.modes.y > 0.5 {
         return underwater_color(p);
     }
-    if water.modes.x == 9.0 {
+    if WATER_DEBUG && water.modes.x == 9.0 {
         // A look at the waves, for a test (the debug view `water 9`). Red: the height that the
         // vertices read. Green: the same read for the pixel.
         let here = textureSampleLevel(waves, wave_sampler, vec3f(in.world.xy / 1104.0, 0.4 * water.time.x), 0.0).a;
@@ -239,22 +241,24 @@ fn water_color(p: WaterPixel) -> vec4f {
     result += sun_glint(eye_vec, normal, fog.a);
     result = mix(result, refracted, below.shore * fog.a);
     // A look at one term, for a test: the debug view `water`.
-    if water.modes.x == 1.0 {
-        return vec4f(reflected, 1.0);
-    } else if water.modes.x == 2.0 {
-        return vec4f(refracted, 1.0);
-    } else if water.modes.x == 3.0 {
-        return vec4f(vec3f(below.depth_first / 1000.0), 1.0);
-    } else if water.modes.x == 4.0 {
-        return vec4f(vec3f(fresnel), 1.0);
-    } else if water.modes.x == 5.0 {
-        return vec4f(vec3f(fog.a), 1.0);
-    } else if water.modes.x == 6.0 {
-        return vec4f(vec3f(dist / 10000.0), 1.0);
-    } else if water.modes.x == 7.0 {
-        return vec4f(normal * 0.5 + 0.5, 1.0);
-    } else if water.modes.x == 8.0 {
-        return vec4f(vec3f(w / 10000.0), 1.0);
+    if WATER_DEBUG {
+        if water.modes.x == 1.0 {
+            return vec4f(reflected, 1.0);
+        } else if water.modes.x == 2.0 {
+            return vec4f(refracted, 1.0);
+        } else if water.modes.x == 3.0 {
+            return vec4f(vec3f(below.depth_first / 1000.0), 1.0);
+        } else if water.modes.x == 4.0 {
+            return vec4f(vec3f(fresnel), 1.0);
+        } else if water.modes.x == 5.0 {
+            return vec4f(vec3f(fog.a), 1.0);
+        } else if water.modes.x == 6.0 {
+            return vec4f(vec3f(dist / 10000.0), 1.0);
+        } else if water.modes.x == 7.0 {
+            return vec4f(normal * 0.5 + 0.5, 1.0);
+        } else if water.modes.x == 8.0 {
+            return vec4f(vec3f(w / 10000.0), 1.0);
+        }
     }
     return vec4f(result, 1.0);
 }
@@ -389,13 +393,86 @@ fn fine_disc() -> (Vec<[f32; 3]>, Vec<u16>) {
     })
 }
 
-pub struct Water {
-    pipeline: wgpu::RenderPipeline,
+/// The pipelines of the plane from one shader text.
+struct PlanePipelines {
+    fill: wgpu::RenderPipeline,
     /// The same as lines, when the device has the line mode: for a frame in which the game
     /// draws in wireframe ([`SceneView::wireframe`]).
-    pipeline_lines: Option<wgpu::RenderPipeline>,
+    lines: Option<wgpu::RenderPipeline>,
     /// The plane outside the dry spaces.
-    pipeline_cut: wgpu::RenderPipeline,
+    cut: wgpu::RenderPipeline,
+}
+
+impl PlanePipelines {
+    fn new(scene: &SceneView, layout: &wgpu::PipelineLayout, label: &str, source: &str) -> PlanePipelines {
+        let device = scene.device;
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(label),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let attributes = wgpu::vertex_attr_array![0 => Float32x3];
+        let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 12,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    polygon_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: scene.depth_format,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
+                    stencil,
+                    bias: Default::default(),
+                }),
+                multisample: scene.multisample(false),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: scene.target_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::COLOR,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        PlanePipelines {
+            fill: make_pipeline(wgpu::PolygonMode::Fill, Default::default()),
+            lines: device
+                .features()
+                .contains(wgpu::Features::POLYGON_MODE_LINE)
+                .then(|| make_pipeline(wgpu::PolygonMode::Line, Default::default())),
+            // Drawn only outside the dry spaces.
+            cut: make_pipeline(wgpu::PolygonMode::Fill, dry::outside()),
+        }
+    }
+}
+
+pub struct Water {
+    plane: PlanePipelines,
+    /// The plane's pipelines of the debug view `water`, while the view is on
+    /// ([`Water::set_debug`]).
+    debug_plane: Option<PlanePipelines>,
+    /// The plane's text for the debug view: the hooks of the view (`CoreMods::water_debug_hooks`)
+    /// and `WATER_DEBUG` true; None when the text has no one `WATER_DEBUG` line.
+    debug_source: Option<String>,
+    plane_layout: wgpu::PipelineLayout,
     /// The dry spaces, and the count of their faces.
     dry: dry::Dry,
     layout: wgpu::BindGroupLayout,
@@ -433,9 +510,9 @@ pub struct Water {
     no_land: wgpu::TextureView,
     /// True when the reflection of this frame is made.
     reflected: bool,
-    /// The term of the debug view `water` (0: off), set for each frame: a look at one term
-    /// of the shader.
-    pub debug: f32,
+    /// The term of the debug view `water` (0: off), set for each frame ([`Water::set_debug`]):
+    /// a look at one term of the shader.
+    debug: f32,
     pub frames: u64,
     pub reflections: u64,
     /// The frames whose reflection was not drawn: [`Water::plane_in_view`] false, and no
@@ -573,64 +650,13 @@ impl Water {
             label: Some("water"),
             entries: &entries,
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("water"),
-            source: wgpu::ShaderSource::Wgsl(plane_source(core_mods.water_hooks()).into()),
-        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water"),
             bind_group_layouts: &[Some(view_layout), Some(&layout)],
             immediate_size: 0,
         });
-        let attributes = wgpu::vertex_attr_array![0 => Float32x3];
-        let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("water"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: 12,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attributes,
-                    })],
-                },
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: None,
-                    polygon_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: scene.depth_format,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
-                    stencil,
-                    bias: Default::default(),
-                }),
-                multisample: scene.multisample(false),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("fs"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: scene.target_format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::COLOR,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let pipeline = make_pipeline(wgpu::PolygonMode::Fill, Default::default());
-        let pipeline_lines = device
-            .features()
-            .contains(wgpu::Features::POLYGON_MODE_LINE)
-            .then(|| make_pipeline(wgpu::PolygonMode::Line, Default::default()));
-        // Drawn only outside the dry spaces.
-        let pipeline_cut = make_pipeline(wgpu::PolygonMode::Fill, dry::outside());
+        let plane = PlanePipelines::new(scene, &pipeline_layout, "water", &plane_source(core_mods.water_hooks()));
+        let debug_source = shading::debug_source(&plane_source(core_mods.water_debug_hooks()));
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("water"),
             size: size_of::<Uniforms>() as u64,
@@ -802,9 +828,10 @@ impl Water {
             cache: None,
         });
         Ok(Water {
-            pipeline,
-            pipeline_lines,
-            pipeline_cut,
+            plane,
+            debug_plane: None,
+            debug_source,
+            plane_layout: pipeline_layout,
             dry,
             layout,
             uniforms,
@@ -840,6 +867,13 @@ impl Water {
     /// ([`shading::REFLECTION_READERS`]).
     pub fn shader_reads_reflection(wgsl: &str) -> bool {
         shading::reads_reflection(wgsl)
+    }
+
+    /// True when the frame draws the reflection wherever the plane is: the frame is under water
+    /// (the surfaces of water volumes read it from below), a shader of the session reads it
+    /// (`readers`), or the debug view `water` is on (`water_view`: term 1 shows the reflection).
+    pub fn reflection_kept_everywhere(underwater: bool, readers: bool, water_view: bool) -> bool {
+        underwater || readers || water_view
     }
 
     /// True when a pixel of the plane can be in the view: the view's frustum, cut at `far`,
@@ -1260,16 +1294,17 @@ impl Water {
         }
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, &group, &[]);
+        let plane = self.debug_plane.as_ref().unwrap_or(&self.plane);
         if cut {
             self.dry.zero(pass);
             self.dry.count_plane(pass);
-            pass.set_pipeline(&self.pipeline_cut);
+            pass.set_pipeline(&plane.cut);
             pass.set_stencil_reference(0);
         } else {
             pass.set_pipeline(if scene.wireframe {
-                self.pipeline_lines.as_ref().unwrap_or(&self.pipeline)
+                plane.lines.as_ref().unwrap_or(&plane.fill)
             } else {
-                &self.pipeline
+                &plane.fill
             });
         }
         // The finer disc with the dynamic waves: the waves move its vertices.
@@ -1369,6 +1404,23 @@ impl Water {
     /// The start of a frame, for the surfaces of water volumes.
     pub fn start_frame(&mut self) {
         self.volumes.start_frame();
+    }
+
+    /// The term of the debug view `water` for this frame (0: off). The first frame with the
+    /// view makes the plane's pipelines of the view, and a frame without it drops them; the
+    /// volumes do the same with theirs.
+    pub fn set_debug(&mut self, scene: &SceneView, term: f32) {
+        self.debug = term;
+        let on = term != 0.0;
+        if !on {
+            self.debug_plane = None;
+        } else if self.debug_plane.is_none()
+            && let Some(source) = &self.debug_source
+        {
+            let _long = nirender_wgpu::LongStep::begin();
+            self.debug_plane = Some(PlanePipelines::new(scene, &self.plane_layout, "water, debug view", source));
+        }
+        self.volumes.set_debug(on);
     }
 
     /// True when the water shader of a mod of this name has been asked for before.
@@ -1631,6 +1683,35 @@ mod tests {
             volume::standard_source(mods.shadow_hooks()),
             volume::standard_source(built_in.shadow_hooks())
         );
+
+        // The debug view of the plane: the built-in colour on the mod's text, and it compiles.
+        let debug = shading::debug_source(&plane_source(mods.water_debug_hooks())).expect("the WATER_DEBUG line");
+        assert!(debug.contains(WATER_COLOR) && debug.contains("fn mod_replaced_water_color("));
+        crate::renderer::shader_check::check("water plane with the marker, debug view", &debug).unwrap();
+    }
+
+    /// The texts of the debug view `water` compile: the plane and the standard surface of a
+    /// volume, with true on the one `WATER_DEBUG` line; the texts of normal play have false.
+    #[test]
+    fn the_debug_texts_of_the_water_are_valid() {
+        let hooks = CoreMods::built_in();
+        for (name, source) in [
+            ("water plane", plane_source(hooks.water_debug_hooks())),
+            ("water volume", volume::standard_source(hooks.shadow_hooks())),
+        ] {
+            assert_eq!(source.matches("const WATER_DEBUG: bool = false;").count(), 1, "{name}");
+            let debug = shading::debug_source(&source).expect("the WATER_DEBUG line");
+            crate::renderer::shader_check::check(&format!("{name}, debug view"), &debug).unwrap();
+        }
+    }
+
+    /// The debug view `water` keeps the reflection wherever the plane is: term 1 shows it.
+    #[test]
+    fn the_water_view_keeps_the_reflection() {
+        assert!(Water::reflection_kept_everywhere(false, false, true));
+        assert!(Water::reflection_kept_everywhere(true, false, false));
+        assert!(Water::reflection_kept_everywhere(false, true, false));
+        assert!(!Water::reflection_kept_everywhere(false, false, false));
     }
 
     #[test]

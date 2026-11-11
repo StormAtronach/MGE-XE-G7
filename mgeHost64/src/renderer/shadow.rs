@@ -117,8 +117,6 @@ pub struct Shadow {
     debug_group: wgpu::BindGroup,
     /// The debug view `shadow-map`: the map drawn small over the frame.
     pub debug: bool,
-    /// The debug view `shadow-layers` ([`super::debug_view::View::ShadowLayers`]).
-    pub layers_debug: bool,
     /// The matrices of the two layers for this frame, with the layout of Direct3D.
     pub viewproj: [[f32; 16]; 2],
     pub frames: u64,
@@ -443,7 +441,6 @@ impl Shadow {
             debug_samples: scene.samples,
             debug_group,
             debug: false,
-            layers_debug: false,
             viewproj: [[0.0; 16]; 2],
             frames: 0,
         }
@@ -529,10 +526,10 @@ impl Shadow {
         }
     }
 
-    /// The shadow map's debug views as the frame's view has them.
+    /// The shadow map's debug view as the frame's view has it. The view of the layers is a
+    /// variant of the world shader (`DebugView::frame_id`).
     pub fn set_debug(&mut self, view: &DebugView) {
         self.debug = view.shadow_map();
-        self.layers_debug = view.shadow_layers();
     }
 
     /// The atlas in the lower left of the picture, for a test. `samples`: the sample count of
@@ -575,12 +572,7 @@ impl Shadow {
         }
         values[8] = shadow_values.esm(1.0 / self.resolution as f32);
         values[9] = shadow_values.shade();
-        values[10] = [
-            sun_vis,
-            if above_sea { 1.0 } else { 0.0 },
-            if self.layers_debug { 1.0 } else { 0.0 },
-            0.0,
-        ];
+        values[10] = [sun_vis, if above_sea { 1.0 } else { 0.0 }, 0.0, 0.0];
         values
     }
 }
