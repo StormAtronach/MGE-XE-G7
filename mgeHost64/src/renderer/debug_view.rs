@@ -183,12 +183,32 @@ impl DebugView {
 /// `FixedFunctionShader::lightDebug`).
 pub const SETTINGS_DEBUG_LIGHT: u32 = 1;
 
+/// The start-time switches that set the debug views before this carrier. The helper reads
+/// none of them.
+pub const RETIRED_SWITCHES: [&str; 4] = ["MGE_XE_SHADOW_LAYERS", "MGE_XE_SHADOW_DEBUG", "MGE_XE_WATER_DEBUG", "MGE_XE_POST_DEBUG"];
+
+/// The log line for the retired switches that are set (`is_set` answers for one name), so that
+/// a variable left from an old test does not look like a view that failed. [`None`] when none
+/// is set.
+pub fn retired_switches_line(is_set: impl Fn(&str) -> bool) -> Option<String> {
+    let set: Vec<&str> = RETIRED_SWITCHES.into_iter().filter(|name| is_set(name)).collect();
+    (!set.is_empty()).then(|| format!("debug view: {} set, but retired: use the tune `debug view <name>`, nirender.debug.view or --debug-view", set.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn arguments(text: &str) -> Vec<String> {
         text.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn a_retired_switch_gets_one_line() {
+        assert_eq!(retired_switches_line(|_| false), None);
+        let line = retired_switches_line(|name| name == "MGE_XE_SHADOW_DEBUG" || name == "MGE_XE_POST_DEBUG").unwrap();
+        assert!(line.contains("MGE_XE_SHADOW_DEBUG, MGE_XE_POST_DEBUG set"), "{line}");
+        assert!(!line.contains("MGE_XE_WATER_DEBUG"), "{line}");
     }
 
     #[test]
