@@ -441,7 +441,7 @@ pub fn run(mut arguments: Vec<String>) {
     }
     // The probe asks the backends and nothing else: no distant land.
     if arguments.iter().any(|argument| argument == "--probe") {
-        nirender_wgpu::run_with(arguments, None);
+        nirender_wgpu::run_with(arguments, || None);
         return;
     }
     // A replay draws the files that are there. A game session makes them again first when
@@ -452,9 +452,12 @@ pub fn run(mut arguments: Vec<String>) {
         eprintln!("debug view: {problem}");
         std::process::exit(2);
     });
-    let mut land = DistantLand::start(Path::new("."), live);
-    land.debug_view = debug_view;
-    nirender_wgpu::run_with(arguments, Some(Box::new(land)));
+    // The distant land starts after the log of the helper is set up: its lines are in it.
+    nirender_wgpu::run_with(arguments, move || -> Option<Box<dyn Extension>> {
+        let mut land = DistantLand::start(Path::new("."), live);
+        land.debug_view = debug_view;
+        Some(Box::new(land))
+    });
 }
 
 /// The fog distances of a frame ([`DistantLand::fog_ranges`]).
