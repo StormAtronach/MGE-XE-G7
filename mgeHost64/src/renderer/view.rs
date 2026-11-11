@@ -9,7 +9,12 @@
 //! is the number of a set of the statics.
 
 use nirender_wgpu::objects::Create;
+use nirender_wgpu::pass_report::Skip;
 use nirender_wgpu::wgpu;
+
+/// The skips of a claim of a place.
+const REPEATED: Skip = "the place had its call in this frame";
+const REFUSED: Skip = "no place for the view (none in its key, or one past the places)";
 
 use super::distant_lights::{self, LightBinding};
 
@@ -470,48 +475,48 @@ impl TierViews {
     /// The number of the place for a call at the start of the world in `frame` (the place of the
     /// view's key, below the number of places); `None` when the view has no place or one at or
     /// above the number of places, or when the place had its call in this frame already.
-    pub fn claim(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Option<usize> {
+    pub fn claim(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Result<usize, Skip> {
         match Self::take(self.places, &mut self.started, &mut self.spares, frame, place, repeat) {
             Claim::Served(place) => {
                 self.calls += 1;
-                Some(place)
+                Ok(place)
             }
             Claim::Spare(set) => {
                 self.calls += 1;
                 self.note_spare(set, frame);
-                Some(set)
+                Ok(set)
             }
             Claim::Repeated => {
                 self.repeated += 1;
-                None
+                Err(REPEATED)
             }
             Claim::Refused => {
                 self.refused += 1;
-                None
+                Err(REFUSED)
             }
         }
     }
 
     /// The number of the place for a call at the end of the world, as [`claim`](Self::claim)
     /// does for the calls at the start.
-    pub fn claim_after(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Option<usize> {
+    pub fn claim_after(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Result<usize, Skip> {
         match Self::take(self.places, &mut self.ended, &mut self.spares, frame, place, repeat) {
             Claim::Served(place) => {
                 self.calls_after += 1;
-                Some(place)
+                Ok(place)
             }
             Claim::Spare(set) => {
                 self.calls_after += 1;
                 self.note_spare(set, frame);
-                Some(set)
+                Ok(set)
             }
             Claim::Repeated => {
                 self.repeated_after += 1;
-                None
+                Err(REPEATED)
             }
             Claim::Refused => {
                 self.refused_after += 1;
-                None
+                Err(REFUSED)
             }
         }
     }
@@ -519,24 +524,24 @@ impl TierViews {
     /// The number of the place for a call of the post chain at the end of the scene, as
     /// [`claim`](Self::claim) does for the calls at the start. The post state of a place
     /// ([`super::post::PostView`]) is written once in a frame.
-    pub fn claim_post(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Option<usize> {
+    pub fn claim_post(&mut self, frame: u64, place: Option<u8>, repeat: u8) -> Result<usize, Skip> {
         match Self::take(self.places, &mut self.posted, &mut self.spares, frame, place, repeat) {
             Claim::Served(place) => {
                 self.post_calls += 1;
-                Some(place)
+                Ok(place)
             }
             Claim::Spare(set) => {
                 self.post_calls += 1;
                 self.note_spare(set, frame);
-                Some(set)
+                Ok(set)
             }
             Claim::Repeated => {
                 self.post_repeated += 1;
-                None
+                Err(REPEATED)
             }
             Claim::Refused => {
                 self.post_refused += 1;
-                None
+                Err(REFUSED)
             }
         }
     }
@@ -1057,13 +1062,13 @@ mod tests {
     #[test]
     fn a_call_gets_the_number_of_its_place_in_any_order() {
         let mut tier = TierViews::new(PLACES);
-        assert_eq!(tier.claim(3, Some(2), 0), Some(2));
-        assert_eq!(tier.claim_after(3, Some(0), 0), Some(0));
-        assert_eq!(tier.claim(3, Some(0), 0), Some(0));
-        assert_eq!(tier.claim_after(3, Some(2), 0), Some(2));
+        assert_eq!(tier.claim(3, Some(2), 0).ok(), Some(2));
+        assert_eq!(tier.claim_after(3, Some(0), 0).ok(), Some(0));
+        assert_eq!(tier.claim(3, Some(0), 0).ok(), Some(0));
+        assert_eq!(tier.claim_after(3, Some(2), 0).ok(), Some(2));
         // The next frame gives the same places the same numbers.
-        assert_eq!(tier.claim(4, Some(0), 0), Some(0));
-        assert_eq!(tier.claim(4, Some(2), 0), Some(2));
+        assert_eq!(tier.claim(4, Some(0), 0).ok(), Some(0));
+        assert_eq!(tier.claim(4, Some(2), 0).ok(), Some(2));
         assert_eq!((tier.calls, tier.calls_after), (4, 2));
         assert_eq!(
             (tier.refused, tier.repeated, tier.refused_after, tier.repeated_after),
@@ -1079,39 +1084,39 @@ mod tests {
     #[test]
     fn a_call_without_a_place_is_refused_and_a_repeat_of_a_place_takes_a_spare() {
         let mut tier = TierViews::new(PLACES);
-        assert_eq!(tier.claim(7, None, 0), None);
-        assert_eq!(tier.claim(7, Some(PLACES as u8), 0), None);
-        assert_eq!(tier.claim(7, Some(1), 0), Some(1));
-        assert_eq!(tier.claim(7, Some(1), 1), Some(PLACES));
-        assert_eq!(tier.claim(7, Some(1), 2), Some(PLACES + 1));
+        assert_eq!(tier.claim(7, None, 0).ok(), None);
+        assert_eq!(tier.claim(7, Some(PLACES as u8), 0).ok(), None);
+        assert_eq!(tier.claim(7, Some(1), 0).ok(), Some(1));
+        assert_eq!(tier.claim(7, Some(1), 1).ok(), Some(PLACES));
+        assert_eq!(tier.claim(7, Some(1), 2).ok(), Some(PLACES + 1));
         // A repeat of another place takes the next spares.
-        assert_eq!(tier.claim(7, Some(2), 0), Some(2));
-        assert_eq!(tier.claim(7, Some(2), 1), Some(PLACES + 2));
-        assert_eq!(tier.claim(7, Some(2), 2), Some(PLACES + 3));
+        assert_eq!(tier.claim(7, Some(2), 0).ok(), Some(2));
+        assert_eq!(tier.claim(7, Some(2), 1).ok(), Some(PLACES + 2));
+        assert_eq!(tier.claim(7, Some(2), 2).ok(), Some(PLACES + 3));
         // There is no count cap on the spares: the 5th to the 8th repeat of one place in a frame
         // each have a spare of their own.
-        let later: Vec<Option<usize>> = (3..=6).map(|repeat| tier.claim(7, Some(1), repeat)).collect();
+        let later: Vec<Option<usize>> = (3..=6).map(|repeat| tier.claim(7, Some(1), repeat).ok()).collect();
         assert_eq!(
             later,
             vec![Some(PLACES + 4), Some(PLACES + 5), Some(PLACES + 6), Some(PLACES + 7)]
         );
         // The calls at the end of the world count apart and take the same spares.
-        assert_eq!(tier.claim_after(7, Some(1), 0), Some(1));
-        assert_eq!(tier.claim_after(7, Some(1), 1), Some(PLACES));
-        assert_eq!(tier.claim_after(7, Some(1), 6), Some(PLACES + 7));
-        assert_eq!(tier.claim_after(7, None, 0), None);
+        assert_eq!(tier.claim_after(7, Some(1), 0).ok(), Some(1));
+        assert_eq!(tier.claim_after(7, Some(1), 1).ok(), Some(PLACES));
+        assert_eq!(tier.claim_after(7, Some(1), 6).ok(), Some(PLACES + 7));
+        assert_eq!(tier.claim_after(7, None, 0).ok(), None);
         assert_eq!((tier.calls, tier.refused, tier.repeated), (10, 2, 0));
         assert_eq!((tier.calls_after, tier.refused_after, tier.repeated_after), (3, 1, 0));
         assert_eq!((tier.spare_calls, tier.spare_peak), (10, 8));
         // The next frame serves the place again, with its own set, and the spares start again.
         assert_eq!(
-            (tier.claim(8, Some(1), 0), tier.claim_after(8, Some(1), 0)),
+            (tier.claim(8, Some(1), 0).ok(), tier.claim_after(8, Some(1), 0).ok()),
             (Some(1), Some(1))
         );
-        assert_eq!(tier.claim(8, Some(1), 1), Some(PLACES));
+        assert_eq!(tier.claim(8, Some(1), 1).ok(), Some(PLACES));
         // A second call of the same kind on the place's own set is a repeat that was not counted by
         // the host: refused apart.
-        assert_eq!(tier.claim(8, Some(1), 0), None);
+        assert_eq!(tier.claim(8, Some(1), 0).ok(), None);
         assert_eq!(tier.repeated, 1);
         let line = tier.line();
         assert!(
@@ -1125,14 +1130,17 @@ mod tests {
     #[test]
     fn the_number_of_places_bounds_the_claims() {
         let mut tier = TierViews::new(2);
-        assert_eq!((tier.claim(1, Some(1), 0), tier.claim(1, Some(2), 0)), (Some(1), None));
+        assert_eq!(
+            (tier.claim(1, Some(1), 0).ok(), tier.claim(1, Some(2), 0).ok()),
+            (Some(1), None)
+        );
         // The spares start at the number of places.
-        assert_eq!(tier.claim(1, Some(1), 1), Some(2));
+        assert_eq!(tier.claim(1, Some(1), 1).ok(), Some(2));
         let mut wide = TierViews::new(1000);
         assert_eq!(wide.places(), MAX_PLACES);
-        assert_eq!(wide.claim(1, Some(MAX_PLACES as u8 - 1), 0), Some(MAX_PLACES - 1));
-        assert_eq!(wide.claim(1, Some(MAX_PLACES as u8), 0), None);
-        assert_eq!(wide.claim(1, Some(0), 1), Some(MAX_PLACES));
+        assert_eq!(wide.claim(1, Some(MAX_PLACES as u8 - 1), 0).ok(), Some(MAX_PLACES - 1));
+        assert_eq!(wide.claim(1, Some(MAX_PLACES as u8), 0).ok(), None);
+        assert_eq!(wide.claim(1, Some(0), 1).ok(), Some(MAX_PLACES));
     }
 
     /// The view slot of a place is noted once: the same slot again is no change, another slot is.
@@ -1154,15 +1162,15 @@ mod tests {
     #[test]
     fn the_post_chain_of_a_place_goes_once_in_a_frame_on_its_own_state() {
         let mut tier = TierViews::new(PLACES);
-        assert_eq!(tier.claim_post(10, Some(2), 0), Some(2));
-        assert_eq!(tier.claim_post(10, Some(2), 1), Some(PLACES));
-        assert_eq!(tier.claim_post(10, Some(0), 0), Some(0));
-        assert_eq!(tier.claim_post(10, None, 0), None);
-        assert_eq!(tier.claim_post(10, Some(PLACES as u8), 0), None);
-        assert_eq!(tier.claim_post(11, Some(2), 0), Some(2));
+        assert_eq!(tier.claim_post(10, Some(2), 0).ok(), Some(2));
+        assert_eq!(tier.claim_post(10, Some(2), 1).ok(), Some(PLACES));
+        assert_eq!(tier.claim_post(10, Some(0), 0).ok(), Some(0));
+        assert_eq!(tier.claim_post(10, None, 0).ok(), None);
+        assert_eq!(tier.claim_post(10, Some(PLACES as u8), 0).ok(), None);
+        assert_eq!(tier.claim_post(11, Some(2), 0).ok(), Some(2));
         assert_eq!((tier.post_calls, tier.post_repeated, tier.post_refused), (4, 0, 2));
-        assert_eq!(tier.claim(10, Some(2), 0), Some(2));
-        assert_eq!(tier.claim_after(10, Some(2), 0), Some(2));
+        assert_eq!(tier.claim(10, Some(2), 0).ok(), Some(2));
+        assert_eq!(tier.claim_after(10, Some(2), 0).ok(), Some(2));
         let line = tier.post_line();
         assert!(line.contains("4 calls, 2 refused") && line.contains("or above 4"), "{line}");
     }
@@ -1175,21 +1183,21 @@ mod tests {
     fn a_repeat_holds_one_spare_for_all_kinds_when_a_kind_skips_a_scene() {
         let mut tier = TierViews::new(PLACES);
         // The world start: place 1's repeat gets the first spare, place 2's the second.
-        assert_eq!(tier.claim(7, Some(1), 0), Some(1));
-        assert_eq!(tier.claim(7, Some(1), 1), Some(PLACES));
-        assert_eq!(tier.claim(7, Some(2), 0), Some(2));
-        assert_eq!(tier.claim(7, Some(2), 1), Some(PLACES + 1));
+        assert_eq!(tier.claim(7, Some(1), 0).ok(), Some(1));
+        assert_eq!(tier.claim(7, Some(1), 1).ok(), Some(PLACES));
+        assert_eq!(tier.claim(7, Some(2), 0).ok(), Some(2));
+        assert_eq!(tier.claim(7, Some(2), 1).ok(), Some(PLACES + 1));
         // The post chain and the grass run on place 2 only: their repeat has the second spare
         // (counted by each kind alone it would be the first, place 1's).
-        assert_eq!(tier.claim_post(7, Some(2), 0), Some(2));
-        assert_eq!(tier.claim_post(7, Some(2), 1), Some(PLACES + 1));
-        assert_eq!(tier.claim_after(7, Some(2), 0), Some(2));
-        assert_eq!(tier.claim_after(7, Some(2), 1), Some(PLACES + 1));
+        assert_eq!(tier.claim_post(7, Some(2), 0).ok(), Some(2));
+        assert_eq!(tier.claim_post(7, Some(2), 1).ok(), Some(PLACES + 1));
+        assert_eq!(tier.claim_after(7, Some(2), 0).ok(), Some(2));
+        assert_eq!(tier.claim_after(7, Some(2), 1).ok(), Some(PLACES + 1));
         // The other way: the kind that skips place 1 comes first in the next frame.
-        assert_eq!(tier.claim_post(8, Some(2), 1), Some(PLACES));
-        assert_eq!(tier.claim(8, Some(1), 1), Some(PLACES + 1));
-        assert_eq!(tier.claim(8, Some(2), 1), Some(PLACES));
-        assert_eq!(tier.claim_after(8, Some(1), 1), Some(PLACES + 1));
+        assert_eq!(tier.claim_post(8, Some(2), 1).ok(), Some(PLACES));
+        assert_eq!(tier.claim(8, Some(1), 1).ok(), Some(PLACES + 1));
+        assert_eq!(tier.claim(8, Some(2), 1).ok(), Some(PLACES));
+        assert_eq!(tier.claim_after(8, Some(1), 1).ok(), Some(PLACES + 1));
     }
 
     /// A spare is listed as idle when no call of any kind used it for more than
@@ -1200,14 +1208,14 @@ mod tests {
         let mut tier = TierViews::new(PLACES);
         // The first spare is used by the world start, the second by the grass only, a third by
         // the post chain only; a place's own set is called too.
-        assert_eq!(tier.claim(100, Some(0), 0), Some(0));
-        assert_eq!(tier.claim(100, Some(1), 1), Some(PLACES));
-        assert_eq!(tier.claim_after(100, Some(2), 1), Some(PLACES + 1));
-        assert_eq!(tier.claim_post(100, Some(3), 1), Some(PLACES + 2));
+        assert_eq!(tier.claim(100, Some(0), 0).ok(), Some(0));
+        assert_eq!(tier.claim(100, Some(1), 1).ok(), Some(PLACES));
+        assert_eq!(tier.claim_after(100, Some(2), 1).ok(), Some(PLACES + 1));
+        assert_eq!(tier.claim_post(100, Some(3), 1).ok(), Some(PLACES + 2));
         // At the limit they stay; one frame later they go.
         assert!(tier.idle_spares(100 + SPARE_IDLE_FRAMES).is_empty());
         // A call of the grass marks the second spare used: it stays while the others go.
-        assert_eq!(tier.claim_after(130, Some(1), 1), Some(PLACES));
+        assert_eq!(tier.claim_after(130, Some(1), 1).ok(), Some(PLACES));
         assert_eq!(tier.idle_spares(101 + SPARE_IDLE_FRAMES), vec![PLACES + 1, PLACES + 2]);
         // They are listed once.
         assert_eq!(tier.idle_spares(102 + SPARE_IDLE_FRAMES), Vec::<usize>::new());
@@ -1215,11 +1223,11 @@ mod tests {
         // A place's own set is not listed however old it is, and a spare starts again at its
         // next call.
         assert!(tier.idle_spares(100_000).is_empty());
-        assert_eq!(tier.claim(100_001, Some(1), 1), Some(PLACES));
+        assert_eq!(tier.claim(100_001, Some(1), 1).ok(), Some(PLACES));
         assert!(tier.idle_spares(100_001 + SPARE_IDLE_FRAMES).is_empty());
         assert_eq!(tier.idle_spares(100_002 + SPARE_IDLE_FRAMES), vec![PLACES]);
         // A frame before the last call (a restarted counter) lists nothing.
-        assert_eq!(tier.claim(200, Some(2), 1), Some(PLACES));
+        assert_eq!(tier.claim(200, Some(2), 1).ok(), Some(PLACES));
         assert!(tier.idle_spares(50).is_empty());
     }
 
@@ -1228,7 +1236,7 @@ mod tests {
     #[test]
     fn an_idle_spare_forgets_its_holder() {
         let mut tier = TierViews::new(PLACES);
-        assert_eq!(tier.claim(10, Some(1), 1), Some(PLACES));
+        assert_eq!(tier.claim(10, Some(1), 1).ok(), Some(PLACES));
         assert!(tier.note_holder(PLACES, 5));
         assert!(!tier.note_holder(PLACES, 5));
         assert_eq!(tier.idle_spares(11 + SPARE_IDLE_FRAMES + 10), vec![PLACES]);

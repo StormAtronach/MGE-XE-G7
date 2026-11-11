@@ -230,7 +230,6 @@ pub struct Ripples {
     pub origin: [f32; 2],
     pub steps: u64,
     pub drops_made: u64,
-    pub frames: u64,
 }
 
 impl Ripples {
@@ -379,7 +378,6 @@ impl Ripples {
             origin: [0.0, 0.0],
             steps: 0,
             drops_made: 0,
-            frames: 0,
         };
         // A new texture has no defined content for a copy or a read: all four start flat.
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -408,10 +406,11 @@ impl Ripples {
         let frame_time = self.last_time.map_or(0.0, |last| inputs.time - last);
         self.last_time = Some(inputs.time);
         if !(frame_time > 0.0) {
+            nirender_wgpu::pass_report::note_skipped(super::part::DYNAMIC_WAVES, "the time of the game stands");
             return;
         }
         let frame_time = frame_time.min(MOST_FRAME_TIME);
-        self.frames += 1;
+        nirender_wgpu::pass_report::note_ran(super::part::DYNAMIC_WAVES);
         // The steps of the frame, for both simulations.
         let steps = steps_of(&mut self.remaining, frame_time);
         let mut encoder = scene
@@ -592,7 +591,7 @@ impl Ripples {
         target: &wgpu::TextureView,
         offset: u32,
     ) {
-        nirender_wgpu::gpu::note_other_pass();
+        nirender_wgpu::gpu::note_inner_pass("ripples: a step");
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("ripples"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -617,7 +616,7 @@ impl Ripples {
 
 /// Makes a texture flat: all zeros.
 fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
-    nirender_wgpu::gpu::note_other_pass();
+    nirender_wgpu::gpu::note_inner_pass("ripples: the clear");
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("ripples clear"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {

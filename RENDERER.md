@@ -422,6 +422,12 @@ A debug view shows one value of the renderer in the picture, for a developer's t
 one shader view is on at a time. The line sources are a set beside it; this build has no line
 pass yet, so a line source has no effect.
 
+The views `lights`, `shadow-layers` and `water` add no work to normal play. Their code is only
+in the pipelines that the view makes when it goes on, and the view drops them when it goes
+off. So the frame in which a view goes on makes its first pipelines and takes longer. While
+the `water` view is on, each frame draws the reflection, also with the plane out of
+view.
+
 | Shader view | What it shows |
 | --- | --- |
 | `lights` | a draw lit for each pixel shows only the light it takes, without its material, its textures and the fog |

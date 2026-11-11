@@ -362,6 +362,9 @@ pub(crate) struct CoreMods {
     shadow_values: ShadowValues,
     /// The text of the water hooks for the plane, the same way.
     water_hooks: String,
+    /// The water hooks of the plane for the debug view `water`: the built-in colour hooks with
+    /// the file's other hooks ([`water_debug_hooks`]).
+    water_debug_hooks: String,
     /// What the log says about the files, one line each.
     report: Vec<String>,
 }
@@ -373,6 +376,7 @@ impl CoreMods {
             shadow_hooks: hook_text(&SHADOW_HOOKS, &[], ""),
             shadow_values: ShadowValues::default(),
             water_hooks: hook_text(&WATER_HOOKS, &[], ""),
+            water_debug_hooks: hook_text(&WATER_HOOKS, &[], ""),
             report: Vec::new(),
         }
     }
@@ -452,6 +456,12 @@ impl CoreMods {
             ) {
                 Ok((hooks, defined)) => {
                     mods.water_hooks = hooks;
+                    // The debug text must pass the homes as the file's text does; else the
+                    // view shows the built-in water.
+                    let debug = water_debug_hooks(&text, &defined);
+                    if water_homes.iter().all(|home| (home.check)(&debug).is_ok()) {
+                        mods.water_debug_hooks = debug;
+                    }
                     used.push(format!(
                         "XE Mod Water.wgsl ({})",
                         if defined.is_empty() {
@@ -461,11 +471,8 @@ impl CoreMods {
                         }
                     ));
                     mods.report.push("core mod: XE Mod Water.wgsl: the plane of the water takes its hooks; the water volumes and the dry spaces keep the built-in water".to_string());
-                    if defined
-                        .iter()
-                        .any(|hook| *hook == "water_color" || *hook == "underwater_color")
-                    {
-                        mods.report.push("core mod: XE Mod Water.wgsl: the debug view water shows no terms of its water colour (the terms are those of the built-in)".to_string());
+                    if defined.iter().any(|hook| WATER_COLOUR_HOOKS.contains(hook)) {
+                        mods.report.push("core mod: XE Mod Water.wgsl: the debug view water shows the terms of the built-in colour on the surface of the file".to_string());
                     }
                 }
                 Err(problem) => mods
@@ -495,6 +502,12 @@ impl CoreMods {
     /// library and [`WATER_INTERFACE`].
     pub fn water_hooks(&self) -> &str {
         &self.water_hooks
+    }
+
+    /// The water hooks of the plane for the debug view `water`: those of
+    /// [`water_hooks`](Self::water_hooks) with the built-in colour hooks.
+    pub fn water_debug_hooks(&self) -> &str {
+        &self.water_debug_hooks
     }
 
     /// The core mods of `files` (names under the folder, and texts), for a test of a home.
@@ -746,6 +759,56 @@ fn hook_text(hooks: &[Hook], defined: &[&str], text: &str) -> String {
         .collect();
     joined.push_str(text);
     joined
+}
+
+/// The hooks of the colour of the plane: the debug view `water` shows the terms of their
+/// built-ins.
+const WATER_COLOUR_HOOKS: [&str; 2] = ["water_color", "underwater_color"];
+
+/// The water hooks of a mod's file for the debug view `water`: the built-in colour hooks in
+/// place of the file's, and the file's other hooks (its `water_normal`). The file's colour
+/// functions stay under other names, so that its other functions still find what they call.
+fn water_debug_hooks(text: &str, defined: &[&'static str]) -> String {
+    let kept: Vec<&str> = defined
+        .iter()
+        .copied()
+        .filter(|hook| !WATER_COLOUR_HOOKS.contains(hook))
+        .collect();
+    let renamed = WATER_COLOUR_HOOKS
+        .iter()
+        .filter(|hook| defined.contains(hook))
+        .fold(text.to_string(), |text, hook| rename_definition(&text, hook));
+    hook_text(&WATER_HOOKS, &kept, &renamed)
+}
+
+/// The text with the definition of the function `name` named `mod_replaced_<name>`: a name of
+/// the mod's own (the rule of a file), so a built-in of `name` can join the text. A call of
+/// `name` then reaches the built-in.
+fn rename_definition(text: &str, name: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut rest = text;
+    while let Some(at) = rest.find("fn") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        let name_start = after.trim_start();
+        let word_before = matches!(out.chars().last(), Some(c) if c.is_ascii_alphanumeric() || c == '_');
+        let spaced = name_start.len() < after.len();
+        let definition = !word_before
+            && spaced
+            && name_start
+                .strip_prefix(name)
+                .is_some_and(|tail| tail.trim_start().starts_with('('));
+        if definition {
+            out.push_str("fn mod_replaced_");
+            out.push_str(name);
+            rest = &name_start[name.len()..];
+        } else {
+            out.push_str("fn");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A type as the hooks' signatures write it: `f32`, `vec3<f32>`, or the name of a struct.
@@ -1178,10 +1241,36 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert!(
             mods.report()
                 .iter()
-                .any(|line| line.contains("the debug view water shows no terms")),
+                .any(|line| line.contains("the debug view water shows the terms of the built-in colour")),
             "{:?}",
             mods.report()
         );
+        // The debug view: the built-in colour hooks, and the file's colour under another name.
+        let debug = mods.water_debug_hooks();
+        assert_eq!(debug.matches("fn water_color(").count(), 1);
+        assert!(debug.contains(super::super::water::WATER_COLOR) && debug.contains("fn mod_replaced_water_color("));
+        assert!(debug.contains(super::super::water::UNDERWATER_COLOR) && debug.contains("fn mod_marker("));
+        assert_eq!(CoreMods::built_in().water_debug_hooks(), CoreMods::built_in().water_hooks());
+    }
+
+    /// A file's colour hooks give way to the built-ins in the debug text; its normal stays.
+    #[test]
+    fn the_debug_text_of_a_water_file_keeps_its_normal() {
+        let text = "fn water_normal(a: vec4f, b: f32, c: vec2f) -> vec3f { return vec3f(0.0, 0.0, 1.0); }\nfn  underwater_color (p: WaterPixel) -> vec4f { return water_color(p); }\n";
+        let debug = water_debug_hooks(text, &["water_normal", "underwater_color"]);
+        assert!(!debug.contains(super::super::water::WATER_NORMAL));
+        assert!(debug.contains("fn water_normal(a: vec4f"));
+        assert!(debug.contains("fn mod_replaced_underwater_color (p: WaterPixel)"));
+        assert!(debug.contains(super::super::water::WATER_COLOR) && debug.contains(super::super::water::UNDERWATER_COLOR));
+        // Only a definition is renamed: a call, a longer name and a comment word stay.
+        assert_eq!(
+            rename_definition(
+                "fn water_color2() {} let x = water_color(p); // fn water_color(",
+                "water_color"
+            ),
+            "fn water_color2() {} let x = water_color(p); // fn mod_replaced_water_color("
+        );
+        assert_eq!(rename_definition("fnwater_color(", "water_color"), "fnwater_color(");
     }
 
     #[test]

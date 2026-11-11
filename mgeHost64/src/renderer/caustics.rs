@@ -128,8 +128,6 @@ pub struct Caustics {
     pub intensity: f32,
     /// The group of the draw, kept while what it binds stays the same.
     group: KeptGroup,
-    /// The frames with caustics, for the report.
-    pub frames: u64,
 }
 
 impl Caustics {
@@ -255,7 +253,6 @@ impl Caustics {
             wave_sampler,
             intensity,
             group: KeptGroup::default(),
-            frames: 0,
         }
     }
 
@@ -314,7 +311,6 @@ impl Caustics {
         pass.set_stencil_reference(0);
         pass.set_bind_group(1, &group, &[]);
         pass.draw(0..3, 0..draws(strength));
-        self.frames += 1;
     }
 }
 

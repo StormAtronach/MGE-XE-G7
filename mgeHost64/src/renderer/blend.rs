@@ -88,8 +88,6 @@ pub struct Blend {
     uniforms: wgpu::Buffer,
     /// The group of the draw, kept while what it binds stays the same.
     group: KeptGroup,
-    /// The frames with a blend, for the report.
-    pub frames: u64,
 }
 
 impl Blend {
@@ -171,7 +169,6 @@ impl Blend {
             layout,
             uniforms,
             group: KeptGroup::default(),
-            frames: 0,
         }
     }
 
@@ -220,7 +217,6 @@ impl Blend {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
-        self.frames += 1;
     }
 }
 

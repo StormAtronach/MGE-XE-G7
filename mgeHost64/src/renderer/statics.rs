@@ -66,6 +66,15 @@
 use nirender_wgpu::objects::{Create, CreateView};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+
+use nirender_wgpu::pass_report::Skip;
+
+/// The skips of the statics that more than one call answers.
+const FAILED: Skip = "the distant statics failed";
+const NO_CATALOG: Skip = "no catalog of the distant statics";
+const NO_WORLD: Skip = "no world space of the cell among the distant statics";
+const OFF: Skip = "the distant statics are off";
+const NO_GPU: Skip = "no GPU state of the statics";
 use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -3100,9 +3109,15 @@ impl Statics {
     /// Draws the grass of the frame into the pass: the places within the view range of the
     /// game that are in the view, one draw for each subset.
     pub fn draw_grass(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame) {
-        if self.failed || !self.settings.grass {
+        if self.failed {
+            nirender_wgpu::pass_report::note_skipped(super::part::GRASS, FAILED);
             return;
         }
+        if !self.settings.grass {
+            nirender_wgpu::pass_report::note_skipped(super::part::GRASS, "the grass is off");
+            return;
+        }
+        nirender_wgpu::pass_report::note_ran(super::part::GRASS);
         let started = Instant::now();
         self.draw_grass_timed(scene, pass, frame, GrassTarget::Main);
         self.grass_stats.calls += 1;
@@ -3121,9 +3136,15 @@ impl Statics {
         frame: &GrassFrame,
         k: usize,
     ) -> GrassView {
-        if self.failed || !self.settings.grass {
+        if self.failed {
+            nirender_wgpu::pass_report::note_skipped(super::part::GRASS, FAILED);
             return GrassView::default();
         }
+        if !self.settings.grass {
+            nirender_wgpu::pass_report::note_skipped(super::part::GRASS, "the grass is off");
+            return GrassView::default();
+        }
+        nirender_wgpu::pass_report::note_ran(super::part::GRASS);
         let drawn = self.draw_grass_timed(scene, pass, frame, GrassTarget::View(k));
         GrassView { drawn }
     }
@@ -3629,45 +3650,60 @@ impl Statics {
     /// passes that draw them, and does the work of the frame for the statics once: the main
     /// view first. A set chosen here is only drawn by `draw`; a set that is not here is chosen
     /// in its `draw`, as without this call.
-    pub fn prepare(&mut self, scene: &SceneView, sets: &[CullSet]) {
+    ///
+    /// Answers why the cull did not run.
+    pub fn prepare(&mut self, scene: &SceneView, sets: &[CullSet]) -> Result<(), Skip> {
         self.frame = scene.frame;
         self.prepared.fill(false);
-        let Some(first) = sets.first() else { return };
-        if self.failed || !self.settings.statics {
-            return;
+        let first = sets.first().ok_or("no set to cull")?;
+        if self.failed {
+            return Err(FAILED);
+        }
+        if !self.settings.statics {
+            return Err(OFF);
         }
         if first.set == 0 {
             self.view_planes = Some(first.planes);
         }
         let started = Instant::now();
         self.game_range = first.eye[3];
-        if self.frame_work(scene, [first.eye[0], first.eye[1], first.eye[2]], true) {
-            let catalog = self.catalog.clone();
-            if let (Some(catalog), Some(gpu)) = (catalog, self.gpu.as_mut()) {
-                if let (Some(culling), Some(world)) = (gpu.culling.as_mut(), catalog.worlds.get(&self.world)) {
-                    if !culling.has_world(&self.world) {
-                        culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
-                    }
-                    let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("distant statics, cull"),
-                    });
-                    let at = scene.commands.stamps().begin(
-                        &mut encoder,
-                        "distant statics: the GPU cull of all sets",
-                        nirender_wgpu::stamps::StampKind::Detail,
-                    );
-                    for cull_set in sets {
-                        let values = cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end);
-                        culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
-                        mark_prepared(&mut self.prepared, cull_set.set);
-                    }
-                    scene.commands.stamps().end(&mut encoder, at);
-                    scene.commands.defer(encoder.finish());
+        let culled = self
+            .frame_work(scene, [first.eye[0], first.eye[1], first.eye[2]], true)
+            .and_then(|()| {
+                let catalog = self.catalog.clone();
+                match (catalog, self.gpu.as_mut()) {
+                    (None, _) => Err(NO_CATALOG),
+                    (_, None) => Err(NO_GPU),
+                    (Some(catalog), Some(gpu)) => match (gpu.culling.as_mut(), catalog.worlds.get(&self.world)) {
+                        (None, _) => Err("no GPU cull"),
+                        (_, None) => Err(NO_WORLD),
+                        (Some(culling), Some(world)) => {
+                            if !culling.has_world(&self.world) {
+                                culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
+                            }
+                            let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("distant statics, cull"),
+                            });
+                            let at = scene.commands.stamps().begin(
+                                &mut encoder,
+                                "distant statics: the GPU cull of all sets",
+                                nirender_wgpu::stamps::StampKind::Detail,
+                            );
+                            for cull_set in sets {
+                                let values = cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end);
+                                culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
+                                mark_prepared(&mut self.prepared, cull_set.set);
+                            }
+                            scene.commands.stamps().end(&mut encoder, at);
+                            scene.commands.defer(encoder.finish());
+                            Ok(())
+                        }
+                    },
                 }
-            }
-        }
+            });
         self.prepare_calls += 1;
         self.prepare_seconds += started.elapsed().as_secs_f64();
+        culled
     }
 
     /// Chooses the places of one view of its own on the GPU (`cull_set.set` from [`tier_set`]),
@@ -3675,21 +3711,30 @@ impl Statics {
     /// frame (the arrivals, the residency, the budget): that is the main view's, and keyed to
     /// its eye, so a view far from the main eye draws only the subsets that are resident for
     /// that eye. The report line of the set counts these places as "not on the GPU". The buffers
-    /// of the set are made by [`ensure_view_set`](Self::ensure_view_set) first. Gives `None`
-    /// when the statics cannot draw the set (off, failed, no world space, no GPU culling, no
-    /// buffers or view group of the set).
-    pub fn prepare_view(&mut self, scene: &SceneView, cull_set: &CullSet) -> Option<()> {
-        if self.failed || !self.settings.statics || cull_set.set < tier_set(0) {
-            return None;
+    /// of the set are made by [`ensure_view_set`](Self::ensure_view_set) first. Answers why the
+    /// statics cannot draw the set (off, failed, not a set of a view, no view group, no GPU
+    /// state, no buffers of the set, no GPU culling of it).
+    pub fn prepare_view(&mut self, scene: &SceneView, cull_set: &CullSet) -> Result<(), Skip> {
+        if self.failed {
+            return Err(FAILED);
+        }
+        if !self.settings.statics {
+            return Err(OFF);
+        }
+        if cull_set.set < tier_set(0) {
+            return Err("not a set of a view of its own");
         }
         // The view groups come with the main view's call, and the group of a set with its first
         // call (`set_view_set`); before them the draw has no group 0.
-        group_of(&self.view_groups, cull_set.set)?;
-        let gpu = self.gpu.as_mut()?;
-        gpu.sets.get(cull_set.set)?.as_ref()?;
-        let culling = gpu.culling.as_mut()?;
+        group_of(&self.view_groups, cull_set.set).ok_or("no view group of the set")?;
+        let gpu = self.gpu.as_mut().ok_or(NO_GPU)?;
+        gpu.sets
+            .get(cull_set.set)
+            .and_then(Option::as_ref)
+            .ok_or("no buffers of the set")?;
+        let culling = gpu.culling.as_mut().ok_or("no GPU cull")?;
         if !culling.has_set(cull_set.set) {
-            return None;
+            return Err("no GPU cull of the set");
         }
         let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("distant statics, cull of a view of its own"),
@@ -3708,7 +3753,7 @@ impl Statics {
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
         mark_prepared(&mut self.prepared, cull_set.set);
-        Some(())
+        Ok(())
     }
 
     /// Makes what the statics need for the set `k` of the views of their own (its statics set is
@@ -3739,8 +3784,15 @@ impl Statics {
         Some(made)
     }
 
-    /// Draws the statics of the frame into the pass. Returns the number of draws.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
+    /// Draws the statics of the frame into the pass. Returns the number of draws (0: nothing in
+    /// view), or why the set was not drawn.
+    pub fn draw(
+        &mut self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        frame: &Frame,
+        set: usize,
+    ) -> Result<u32, Skip> {
         let started = Instant::now();
         let draws = self.draw_timed(scene, pass, frame, set);
         if self.set_stats.len() <= set {
@@ -3946,7 +3998,9 @@ impl Statics {
         ))
     }
 
-    fn frame_work(&mut self, scene: &SceneView, eye: [f32; 3], main: bool) -> bool {
+    /// The work of the frame for the statics. Answers why the statics cannot draw: no catalog, or
+    /// no world space of the cell in it.
+    fn frame_work(&mut self, scene: &SceneView, eye: [f32; 3], main: bool) -> Result<(), Skip> {
         self.frame = scene.frame;
         self.finish_load(scene);
         // The slots that went in the frame before are free: the draws that read them are done.
@@ -3971,9 +4025,9 @@ impl Statics {
             self.admit_merged(&catalog, eye);
         }
         self.take_arrivals(scene.device, scene.queue, eye);
-        let Some(catalog) = self.catalog.clone() else { return false };
+        let catalog = self.catalog.clone().ok_or(NO_CATALOG)?;
         if !catalog.worlds.contains_key(&self.world) {
-            return false;
+            return Err(NO_WORLD);
         }
         self.want_near(&catalog, eye);
         let retain = self.settings.draw_distance + CELL + CELL;
@@ -4014,7 +4068,7 @@ impl Statics {
         if main {
             self.frame_ended = true;
         }
-        true
+        Ok(())
     }
 
     /// Binds what the draws of a set read: its pipeline, its uniforms and the places. Gives false
@@ -4087,28 +4141,41 @@ impl Statics {
         })
     }
 
-    fn draw_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize) -> u32 {
-        if self.failed || !self.settings.statics {
-            return 0;
+    fn draw_timed(
+        &mut self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        frame: &Frame,
+        set: usize,
+    ) -> Result<u32, Skip> {
+        if self.failed {
+            return Err(FAILED);
+        }
+        if !self.settings.statics {
+            return Err(OFF);
         }
         let fade = self.fade_values();
         // Chosen in `prepare`: only the draws.
         if self.prepared.get(set).copied().unwrap_or(false) {
             self.prepared[set] = false;
-            let Some(gpu) = self.gpu.as_ref() else { return 0 };
-            return Self::draw_chosen(gpu, group_of(&self.view_groups, set), scene, pass, frame, set, fade);
+            let gpu = self.gpu.as_ref().ok_or(NO_GPU)?;
+            return Ok(Self::draw_chosen(
+                gpu,
+                group_of(&self.view_groups, set),
+                scene,
+                pass,
+                frame,
+                set,
+                fade,
+            ));
         }
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         if set == 0 {
             self.view_planes = Some(frame.planes);
         }
-        if !self.frame_work(scene, eye, set == 0) {
-            return 0;
-        }
-        let Some(catalog) = self.catalog.clone() else { return 0 };
-        let Some(world) = catalog.worlds.get(&self.world) else {
-            return 0;
-        };
+        self.frame_work(scene, eye, set == 0)?;
+        let catalog = self.catalog.clone().ok_or(NO_CATALOG)?;
+        let world = catalog.worlds.get(&self.world).ok_or(NO_WORLD)?;
         let settings = self.settings;
 
         // The places chosen on the GPU, in a command buffer of this set.
@@ -4118,7 +4185,15 @@ impl Statics {
                     culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
                 }
                 culling.run(scene, set, &cull_values(&settings, frame.planes, frame.eye, frame.fog_end));
-                return Self::draw_chosen(gpu, group_of(&self.view_groups, set), scene, pass, frame, set, fade);
+                return Ok(Self::draw_chosen(
+                    gpu,
+                    group_of(&self.view_groups, set),
+                    scene,
+                    pass,
+                    frame,
+                    set,
+                    fade,
+                ));
             }
         }
 
@@ -4202,11 +4277,11 @@ impl Statics {
             }
         }
         if self.draws.is_empty() {
-            return 0;
+            return Ok(0);
         }
-        let Some(gpu) = self.gpu.as_ref() else { return 0 };
+        let gpu = self.gpu.as_ref().ok_or(NO_GPU)?;
         if !Self::bind_set(gpu, group_of(&self.view_groups, set), scene, pass, frame, set, fade) {
-            return 0;
+            return Err("no uniforms of the set (a set of a view that is not made)");
         }
         let mut texture = u32::MAX;
         for &(draw_texture, subset, instance, faces) in &self.draws {
@@ -4233,7 +4308,7 @@ impl Statics {
             );
         }
         self.drawn += self.draws.len() as u64;
-        self.draws.len() as u32
+        Ok(self.draws.len() as u32)
     }
 }
 

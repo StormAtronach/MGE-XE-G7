@@ -55,9 +55,9 @@ At its start the renderer writes one line for each event:
   dropped, and why;
 - `core mod: XE Mod Water.wgsl: the plane of the water takes its hooks; the water volumes and
   the dry spaces keep the built-in water`: the water file is in use;
-- `core mod: XE Mod Water.wgsl: the debug view water shows no terms of its water colour (the
-  terms are those of the built-in)`: the water file defines `water_color` or
-  `underwater_color` (see "The water debug views");
+- `core mod: XE Mod Water.wgsl: the debug view water shows the terms of the built-in colour on
+  the surface of the file`: the water file defines `water_color` or `underwater_color` (see
+  "The water debug views");
 - `core mod: XE Mod <name>.fx is for Direct3D 9; the wgpu renderer reads XE Mod <name>.wgsl,
   and there is none`: a Direct3D 9 core mod with no `.wgsl` file beside it;
 - `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set.
@@ -252,11 +252,11 @@ water's colour. The terms are those of the built-in `water_color` and `underwate
 | 9 | the waves: red the height that the vertices read, green the same read for the pixel | the colour |
 | 10 | the colour | the picture of the game before the fog of the water is mixed into it |
 
-With a `water_color` or `underwater_color` of a mod, the views of that hook show the mod's
-colour, not the terms. The log says so. View 9 is the exception: it is drawn before
-`water_color` is called, so it replaces the colour of a mod too. Views 1, 2 and 10 also change
-the surfaces of the water volumes seen from below, as these share the built-in under-water
-shading.
+With a `water_color` or `underwater_color` of a mod, the view draws the plane with the
+built-in `water_color` and `underwater_color` in place of the mod's, and with the mod's other
+hooks, such as its `water_normal`. So the terms are those of the built-in colour on the
+surface of the mod. The log says so. Views 1, 2 and 10 also change the surfaces of the water
+volumes seen from below, as these share the built-in under-water shading.
 
 ## Cautions
 
@@ -265,4 +265,5 @@ shading.
 - **The shadow layers view** (the debug view `shadow-layers`) colours each pixel by the layer that
   the built-in margin picks. With a mod's `shadow_delta`, the view still shows the built-in
   choice, not the mod's.
-- **The water debug views** show the built-in terms only (see "The water debug views").
+- **The water debug views** show the terms of the built-in colour only, on the surface of the
+  mod (see "The water debug views").

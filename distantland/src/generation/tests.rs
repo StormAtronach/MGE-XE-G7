@@ -704,3 +704,24 @@ fn snapshot_future_tree(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<
     visit(root, root, &mut files);
     files
 }
+
+/// The report of the mesh overrides is written once for a start: by the pass that generates, or by
+/// the check when the distant land is current. A check of data that is not current writes one line.
+#[test]
+fn the_override_report_is_written_by_the_pass_that_describes_the_data() {
+    assert_eq!(RunMode::Inspect.override_log(true), OverrideLog::Report);
+    assert_eq!(RunMode::Inspect.override_log(false), OverrideLog::NextGeneration);
+    assert_eq!(RunMode::Publish.override_log(true), OverrideLog::Report);
+    assert_eq!(RunMode::Publish.override_log(false), OverrideLog::Report);
+    assert_eq!(
+        RunMode::Ensure { return_if_current: true }.override_log(true),
+        OverrideLog::Report
+    );
+    assert_eq!(
+        RunMode::Ensure {
+            return_if_current: false
+        }
+        .override_log(false),
+        OverrideLog::Report
+    );
+}

@@ -108,7 +108,7 @@ impl MenuKeep {
                 },
             ],
         });
-        let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
+        let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load, "menu: the kept picture");
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
