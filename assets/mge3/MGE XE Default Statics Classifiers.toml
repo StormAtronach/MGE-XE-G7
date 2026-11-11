@@ -158,6 +158,10 @@ statics = {
     'f\act_bm_stone_tree_01.nif' = { type = "far", ignore_script = true },
     'f\act_bm_stone_water_01.nif' = { type = "far", ignore_script = true },
     'f\act_bm_stone_wind_01.nif' = { type = "far", ignore_script = true },
+
+    # Tamriel Data. The column of the Imperial highway bridge (radius 670) falls in
+    # the far tier, and the spans that it carries go very far: the column goes with them.
+    'pc\x\pc_ex_imp_hway_bx_02.nif' = { type = "very_far" },
 }
 
 # Names that mark distant water. Names are prefixes and case-insensitive. A mesh
