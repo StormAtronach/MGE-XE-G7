@@ -7035,3 +7035,270 @@ mod interior_start_tests {
         std::fs::remove_dir_all(&root).ok();
     }
 }
+
+#[cfg(test)]
+mod frame_value_tests {
+    use super::*;
+
+    /// One GPU test at a time: each makes a device of its own.
+    static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A device with the helper's features and limits: the frame makes the post chain too.
+    struct TestDevice {
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        commands: nirender_wgpu::FrameCommands,
+    }
+
+    impl TestDevice {
+        fn new() -> TestDevice {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+            let descriptor = wgpu::DeviceDescriptor {
+                required_features: nirender_wgpu::required_features(),
+                required_limits: nirender_wgpu::fixed_limits(),
+                ..Default::default()
+            };
+            let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))
+                .expect("a device with the helper's features and limits");
+            TestDevice {
+                device,
+                queue,
+                commands: nirender_wgpu::FrameCommands::default(),
+            }
+        }
+
+        /// The world scene of an exterior cell, 64 x 64 pixels.
+        fn scene(&self) -> SceneView<'_> {
+            nirender_wgpu::SceneView {
+                device: &self.device,
+                queue: &self.queue,
+                commands: &self.commands,
+                target_format: wgpu::TextureFormat::Bgra8Unorm,
+                depth_format: wgpu::TextureFormat::Depth32Float,
+                target_size: (64, 64),
+                frame: 0,
+                view_key: nirender_wgpu::ViewKey::MAIN,
+                samples: 1,
+                view: [0.0; 16],
+                projection: [0.0; 16],
+                eye: [0.0; 3],
+                interior: false,
+                like_exterior: false,
+                wireframe: false,
+                fog_on: false,
+                fog_color: [0.0; 4],
+                fog_start: 0.0,
+                fog_end: 0.0,
+                sun_direction: None,
+                sun_color: [0.0; 3],
+                sun_ambient: [0.0; 3],
+                ambient: [0.0; 3],
+                picture: None,
+                depth: None,
+                before_depth: None,
+                lights: None,
+            }
+        }
+    }
+
+    /// The game's draws of a test: none.
+    struct NoDraws;
+
+    impl Replay for NoDraws {
+        fn replay(&mut self, _pass: &mut wgpu::RenderPass<'static>, _view: &nirender_wgpu::ReplayView) {}
+
+        fn count(&self) -> usize {
+            0
+        }
+    }
+
+    /// A DDS file of one RGBA pixel, as `dds_layout` reads it.
+    fn one_pixel_dds() -> Vec<u8> {
+        let mut dds = vec![0u8; 132];
+        dds[0..4].copy_from_slice(b"DDS ");
+        // The height, the width, the levels, the bits of a pixel and the mask of red.
+        for (at, value) in [(12, 1u32), (16, 1), (28, 1), (88, 32), (92, 0xFF)] {
+            dds[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        dds
+    }
+
+    /// A load of the terrain with no mesh: enough for the terrain's GPU objects.
+    fn loaded_terrain() -> Loaded {
+        Loaded {
+            terrain: TerrainFile::default(),
+            atlas: one_pixel_dds(),
+            material: one_pixel_dds(),
+            material_flags: one_pixel_dds(),
+            patch_albedo: one_pixel_dds(),
+            blend_patterns: one_pixel_dds(),
+        }
+    }
+
+    /// A live session with distant land on in the settings and the load of the terrain under
+    /// way: the load ends when the sender sends it, as the loader thread does.
+    fn land_with_a_load(tag: &str) -> (DistantLand, PathBuf, std::sync::mpsc::Sender<Result<Loaded, String>>) {
+        let (mut land, root) = super::set_free_tests::land_with_no_data(tag);
+        // The game side has said hello: a frame without one stops the helper.
+        land.hello = Some("test".to_string());
+        land.synchronous = false;
+        let (sender, receiver) = channel();
+        land.loading = Some(receiver);
+        land.settings = Some(Settings {
+            version: Settings::VERSION,
+            flags: USE_DISTANT_LAND,
+            ..bytemuck::Zeroable::zeroed()
+        });
+        (land, root, sender)
+    }
+
+    /// `before_world` in a pass of its own: true when it drew the distant land.
+    fn before_world(land: &mut DistantLand, scene: &SceneView) -> bool {
+        let size = wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        };
+        let attachment = |format| {
+            scene
+                .device
+                .counted_texture(&wgpu::TextureDescriptor {
+                    label: Some("a test's target"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .counted_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let color = attachment(scene.target_format);
+        let depth = attachment(scene.depth_format);
+        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("a test's frame"),
+        });
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("a test's world"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+            .forget_lifetime();
+        let drew = land.before_world(scene, &mut pass, &mut NoDraws);
+        drop(pass);
+        scene.queue.submit([encoder.finish()]);
+        drew
+    }
+
+    /// W341 step B, acceptance 1: a load of the terrain that ends between `frame` and
+    /// `before_world` draws no land in that frame. The frame's answers said "no terrain", so its
+    /// blend, fog and sky are those of a frame without the land. The next frame draws it. On the
+    /// code before step B, `before_world` asks again, finishes the load, and draws the land: this
+    /// test fails there. `cargo test -p mgeHost64 -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_load_that_ends_after_the_frame_counts_from_the_next_frame() {
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gpu = TestDevice::new();
+        let scene = gpu.scene();
+        let (mut land, root, sender) = land_with_a_load("load-after-frame");
+
+        let parameters = land.frame(&scene);
+        assert!(!parameters.blend, "the load has not ended: the frame has no distant land");
+        sender.send(Ok(loaded_terrain())).unwrap();
+        assert!(
+            !before_world(&mut land, &scene),
+            "the load ended after the frame: the land waits for the next frame"
+        );
+
+        let parameters = land.frame(&scene);
+        assert!(parameters.blend, "the next frame has the terrain");
+        assert!(before_world(&mut land, &scene), "and draws it");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// W341 step B, acceptance 1: distant land that goes off after `frame` (a rejection of the
+    /// statics, a settings record that `after_frame` applies) is still drawn by that frame's
+    /// `before_world`: the frame's blend, fog and sky were made for the land. It is off from the
+    /// next frame. On the code before step B, `before_world` reads the field again and leaves the
+    /// land out: this test fails there.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn distant_land_that_goes_off_after_the_frame_counts_from_the_next_frame() {
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gpu = TestDevice::new();
+        let scene = gpu.scene();
+        let (mut land, root, sender) = land_with_a_load("off-after-frame");
+        sender.send(Ok(loaded_terrain())).unwrap();
+
+        let parameters = land.frame(&scene);
+        assert!(
+            parameters.blend,
+            "the load ended before the frame: the frame has distant land"
+        );
+        land.enabled = false;
+        assert!(
+            before_world(&mut land, &scene),
+            "the frame said distant land: its before_world draws the land"
+        );
+
+        let parameters = land.frame(&scene);
+        assert!(!parameters.blend, "the next frame has distant land off");
+        assert!(!before_world(&mut land, &scene), "and draws no land");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// W341 step B, acceptance 1, the second case: a frame under a menu after a world frame. Its
+    /// `before_world` takes "under a menu", and not the answers of the world frame before it: the
+    /// frame's value is written on each path of `frame`, the early return of a menu too. It passes
+    /// on the code before step B, where `before_world` reads `menu_reuse`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_frame_under_a_menu_after_a_world_frame_draws_no_land() {
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gpu = TestDevice::new();
+        let scene = gpu.scene();
+        let (mut land, root, sender) = land_with_a_load("menu-after-world");
+        sender.send(Ok(loaded_terrain())).unwrap();
+        assert!(land.frame(&scene).blend, "the world frame has distant land");
+        assert!(before_world(&mut land, &scene), "and draws it");
+
+        // A menu that shows the picture kept under it (`menu_caching`).
+        land.settings = Some(Settings {
+            version: Settings::VERSION,
+            flags: USE_DISTANT_LAND | USE_MENU_CACHING,
+            ..bytemuck::Zeroable::zeroed()
+        });
+        let mut environment: Environment = bytemuck::Zeroable::zeroed();
+        environment.version = Environment::VERSION;
+        environment.flags = 64;
+        land.environment = Some(environment);
+        land.menu_kept = true;
+        let parameters = land.frame(&scene);
+        assert!(parameters.post && !parameters.blend, "the menu frame shows the kept picture");
+        assert!(!before_world(&mut land, &scene), "under a menu: no land");
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
