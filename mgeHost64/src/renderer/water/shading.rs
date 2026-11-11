@@ -44,7 +44,8 @@ pub(in crate::renderer) struct Uniforms {
     /// the near plane of the game and the far plane of the distant land.
     pub land: [f32; 4],
     /// The colour of the sun with the light multiplier of the weather and no sunlight factor:
-    /// the variable `sunCol` of Direct3D 9, for the water hooks (`water_sun_color`).
+    /// the variable `sunCol` of Direct3D 9, for the water hooks (`water_sun_color`). Direct3D 9
+    /// applies the multiplier only with per-pixel lighting on; this colour has it always.
     pub sun_color: [f32; 4],
     /// The wind of the weather in x and y: the variable `windVec` of Direct3D 9, for the water
     /// hooks (`water_wind`).
