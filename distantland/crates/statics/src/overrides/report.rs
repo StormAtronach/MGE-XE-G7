@@ -45,7 +45,8 @@ pub enum ReportLevel {
 
 impl OverrideReport {
     /// The lines of the report against the meshes of the objects of this load order (the keys of
-    /// both are normalized the same way). Pure, for the tests; [`OverrideReport::log`] writes them.
+    /// both are normalized the same way). Pure, for the tests; [`OverrideReport::write_log`] writes
+    /// them.
     pub fn lines(&self, overrides: &StaticOverrides, meshes: &HashSet<&str>) -> Vec<(ReportLevel, String)> {
         let mut lines = Vec::new();
         for source in &self.sources {
@@ -107,9 +108,9 @@ impl OverrideReport {
         lines
     }
 
-    /// Writes [`OverrideReport::lines`] into the generator's log.
-    pub fn log(&self, overrides: &StaticOverrides, meshes: &HashSet<&str>) {
-        for (level, line) in self.lines(overrides, meshes) {
+    /// Writes the lines of [`OverrideReport::lines`] into the generator's log.
+    pub fn write_log(lines: &[(ReportLevel, String)]) {
+        for (level, line) in lines {
             match level {
                 ReportLevel::Info => info!("{line}"),
                 ReportLevel::Warning => warn!("{line}"),
