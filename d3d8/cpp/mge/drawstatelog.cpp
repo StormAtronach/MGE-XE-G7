@@ -5,6 +5,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 
 
@@ -29,6 +30,26 @@ static unsigned windowFrame = 0;
 static unsigned windowDraws = 0;
 static unsigned frameDraw = 0;
 static bool keyWasDown = false;
+// Set when the trigger file could not be deleted: the file then starts no more windows.
+static bool triggerFileStuck = false;
+
+// The trigger file in the folder of Morrowind.exe, not in the current folder, which can change
+// while the game runs. The name alone if the folder is not known.
+static const char* triggerPath() {
+    static char path[MAX_PATH] = {};
+    if (path[0] != 0) {
+        return path;
+    }
+    const DWORD length = GetModuleFileNameA(nullptr, path, MAX_PATH);
+    char* const folderEnd = (length > 0 && length < MAX_PATH) ? std::strrchr(path, '\\') : nullptr;
+    const size_t folderLength = folderEnd ? size_t(folderEnd - path) + 1 : 0;
+    if (folderEnd && folderLength + std::strlen(triggerFile) < MAX_PATH) {
+        std::strcpy(path + folderLength, triggerFile);
+    } else {
+        std::strcpy(path, triggerFile);
+    }
+    return path;
+}
 
 static const char* name(const char* const* names, unsigned count, DWORD value) {
     return value < count && names[value] ? names[value] : "?";
@@ -120,10 +141,15 @@ static bool triggered() {
     if (keyPressed) {
         return true;
     }
-    if (presents % triggerFileInterval != 0 || GetFileAttributesA(triggerFile) == INVALID_FILE_ATTRIBUTES) {
+    if (triggerFileStuck || presents % triggerFileInterval != 0 || GetFileAttributesA(triggerPath()) == INVALID_FILE_ATTRIBUTES) {
         return false;
     }
-    DeleteFileA(triggerFile);
+    if (!DeleteFileA(triggerPath())) {
+        const DWORD error = GetLastError();
+        triggerFileStuck = true;
+        LOG::logline("draw-state: %s cannot be deleted (error %lu): this window starts, and the file starts no more windows",
+            triggerPath(), error);
+    }
     return true;
 }
 

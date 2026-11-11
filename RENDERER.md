@@ -485,7 +485,7 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_DRAW_STATE_LOG=<n>` (d3d8.dll, Direct3D 9 only; 1 to 600): a window of n frames
   starts at a press of the Pause key while the game has the focus, or when the file
   `mge-draw-state.trigger` is in the game folder (d3d8.dll deletes it; it looks at each 30th
-  frame). Each draw of the game in the window writes a `draw-state frame <f> scene <s> draw <d>:`
+  frame; if the delete fails, it logs this once, and the file starts no more windows). Each draw of the game in the window writes a `draw-state frame <f> scene <s> draw <d>:`
   line to mgeXE.log: the primitives, the vertex format, whether a shader is bound, the depth,
   cull, stencil, blend, alpha test, colour mask, fog and lighting states, the lights that are
   on (bits), the normalize, specular and ambient states, the material, and the texture, colour,
