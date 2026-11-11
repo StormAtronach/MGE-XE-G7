@@ -29,6 +29,7 @@
 // A link in a doc comment of the renderer that rustdoc cannot resolve fails the doc build.
 #![deny(rustdoc::broken_intra_doc_links)]
 
+use nirender_wgpu::objects::{Create, CreateView};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
@@ -63,7 +64,6 @@ use distantland::mge_xe::distant_terrain::{
 };
 use mge_config::{ConfigDocument, FILE_NAME};
 use nirender_wgpu::wgpu;
-use nirender_wgpu::wgpu::util::DeviceExt;
 use nirender_wgpu::{
     Additions, DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay,
     SceneView, Status, TableShade,
@@ -958,6 +958,10 @@ pub struct DistantLand {
     extension_refused: u32,
     /// True when an environment record of another version came and is in the log.
     environment_version_logged: bool,
+    /// A record of the frame changed what this extension draws (all but the environment, the
+    /// status text and a picture request): `frame_changed` gives it to the count of the GPU
+    /// objects, with the loads.
+    changed: bool,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -1523,6 +1527,7 @@ impl DistantLand {
             refused_ids: Vec::new(),
             extension_refused: 0,
             environment_version_logged: false,
+            changed: true,
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -1961,7 +1966,7 @@ fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::Textur
             layout.width, layout.height, layout.skipped
         );
     }
-    let texture = scene.device.create_texture_with_data(
+    let texture = scene.device.counted_texture_with_data(
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some(name),
@@ -1980,7 +1985,7 @@ fn dds_texture(scene: &SceneView, name: &str, dds: &[u8]) -> Result<wgpu::Textur
         wgpu::util::TextureDataOrder::MipMajor,
         &dds[layout.offset..],
     );
-    Ok(texture.create_view(&Default::default()))
+    Ok(texture.counted_view(&Default::default()))
 }
 
 /// The pixels of a TGA file as red, green, blue, alpha, the top row first: a true-colour
@@ -2048,7 +2053,7 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
         return dds_texture(scene, name, bytes);
     }
     let (width, height, pixels) = tga_pixels(name, bytes)?;
-    let texture = scene.device.create_texture_with_data(
+    let texture = scene.device.counted_texture_with_data(
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some(name),
@@ -2067,7 +2072,7 @@ fn image_texture(scene: &SceneView, name: &str, bytes: &[u8]) -> Result<wgpu::Te
         wgpu::util::TextureDataOrder::MipMajor,
         &pixels,
     );
-    Ok(texture.create_view(&Default::default()))
+    Ok(texture.counted_view(&Default::default()))
 }
 
 /// The frames without a load before the slow step of [`SlowStep`]: the watchdog's flag of the
@@ -2113,13 +2118,13 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         dds_texture(scene, TERRAIN_PATCH_ALBEDO_FILE_NAME, &loaded.patch_albedo)?,
         dds_texture(scene, TERRAIN_BLEND_PATTERNS_FILE_NAME, &loaded.blend_patterns)?,
     ];
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+    let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
         mipmap_filter: wgpu::MipmapFilterMode::Linear,
         ..Default::default()
     });
-    let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+    let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("distant land"),
         size: size_of::<LandUniforms>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -2135,7 +2140,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         },
         count: None,
     };
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("distant land"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
@@ -2175,24 +2180,24 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         binding: 6,
         resource: wgpu::BindingResource::Sampler(&sampler),
     });
-    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("distant land"),
         layout: &layout,
         entries: &entries,
     });
     let source = format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl());
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     // Group 0: the view group (the view of the pass and the baked light); group 1: the values
     // and the textures of the land. The shadow map has the view group only.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant land"),
         bind_group_layouts: &[Some(view_layout), Some(&layout)],
         immediate_size: 0,
     });
-    let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let shadow_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant land shadow"),
         bind_group_layouts: &[Some(view_layout)],
         immediate_size: 0,
@@ -2203,7 +2208,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     // water is a texture of this program, with one sample.
     let make_pipeline =
         |cull_mode: Option<wgpu::Face>, polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("distant land"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -2264,11 +2269,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
 
     // The casters of the shadow map: the land with the depth from the sun.
     let shadow_source = format!("{}{LAND_SHADOW_SHADER}", view::wgsl());
-    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let shadow_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land shadow"),
         source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
     });
-    let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let shadow_pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant land shadow"),
         layout: Some(&shadow_layout),
         vertex: wgpu::VertexState {
@@ -2314,12 +2319,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         if mesh.vertices.is_empty() || mesh.triangles.is_empty() {
             continue;
         }
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertices = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant land, vertices"),
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let indexes = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant land, indexes"),
             contents: bytemuck::cast_slice(&mesh.triangles),
             usage: wgpu::BufferUsages::INDEX,
@@ -3314,7 +3319,12 @@ impl Extension for DistantLand {
         std::mem::take(&mut self.pictures)
     }
 
+    fn frame_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed) || self.loading.is_some()
+    }
+
     fn data(&mut self, id: u32, bytes: &[u8]) {
+        self.changed |= !matches!(id, ENVIRONMENT_ID | STATUS_ID | PICTURE_ID);
         if id == HELLO_ID {
             match hello_check(bytes) {
                 Ok(build) => {

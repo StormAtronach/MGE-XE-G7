@@ -11,6 +11,7 @@
 //! `lastpass` the output of the pass before, and `pass0` to `pass7` the outputs of the first
 //! eight passes of the shader. The variables of MGE XE are one uniform.
 
+use nirender_wgpu::objects::{Create, CreateView};
 use nirender_wgpu::{SceneView, wgpu};
 
 /// The variables that MGE XE gives a shader (section 2 of the specification), as one
@@ -1206,7 +1207,7 @@ impl HdrClock {
 
 impl Hdr {
     fn new(device: &wgpu::Device, blit_layout: &wgpu::BindGroupLayout, reaction: f32) -> Hdr {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.counted_texture(&wgpu::TextureDescriptor {
             label: Some("post hdr"),
             size: wgpu::Extent3d {
                 width: 512,
@@ -1224,7 +1225,7 @@ impl Hdr {
         });
         let levels = (0..10)
             .map(|level| {
-                texture.create_view(&wgpu::TextureViewDescriptor {
+                texture.counted_view(&wgpu::TextureViewDescriptor {
                     base_mip_level: level,
                     mip_level_count: Some(1),
                     ..Default::default()
@@ -1232,7 +1233,7 @@ impl Hdr {
             })
             .collect();
         let pipeline = full_screen_pipeline(device, "post hdr", BLIT_SHADER, blit_layout, wgpu::TextureFormat::Rgba8Unorm);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let buffer = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("post hdr"),
             size: 4,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
@@ -5477,13 +5478,13 @@ impl PostView {
     }
 
     fn new(device: &wgpu::Device, owns_hdr: bool) -> PostView {
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("post"),
             size: size_of::<Variables>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        let depth_uniform = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("post depth"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -5550,7 +5551,7 @@ impl PostView {
         self.size = size;
         self.pool.clear();
         let depth = make_texture(device, size, wgpu::TextureFormat::R32Float);
-        let view = depth.create_view(&Default::default());
+        let view = depth.counted_view(&Default::default());
         self.depth = Some((depth, view));
     }
 
@@ -5567,7 +5568,7 @@ impl PostView {
         } else {
             wgpu::TextureFormat::Rgba8Unorm
         };
-        let view = make_texture(device, size, format).create_view(&Default::default());
+        let view = make_texture(device, size, format).counted_view(&Default::default());
         self.pool.push(Pooled { scale, half_float, view });
         self.pool.len() - 1
     }
@@ -5579,7 +5580,7 @@ impl PostView {
         }
         let buffers = self.infos.get_mut(name).expect("the entry was made above");
         while buffers.len() <= number {
-            buffers.push(device.create_buffer(&wgpu::BufferDescriptor {
+            buffers.push(device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some("post pass"),
                 size: 16,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -5675,7 +5676,7 @@ impl Post {
                 wgpu::TextureViewDimension::D2,
             )
         };
-        let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let frame_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post frame"),
             entries: &[
                 uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
@@ -5699,23 +5700,23 @@ impl Post {
         });
         let mut entries = vec![uniform(0, wgpu::ShaderStages::FRAGMENT)];
         entries.extend((1..=10).map(colour));
-        let shader_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let shader_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post shader"),
             entries: &entries,
         });
         let mut entries = vec![uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT)];
         entries.extend((1..=10).map(colour));
-        let pass_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let pass_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post pass"),
             entries: &entries,
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("post shaders"),
             bind_group_layouts: &[Some(&frame_layout), Some(&shader_layout), Some(&pass_layout)],
             immediate_size: 0,
         });
         let make_sampler = |filter: wgpu::FilterMode, address: wgpu::AddressMode| {
-            device.create_sampler(&wgpu::SamplerDescriptor {
+            device.counted_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: address,
                 address_mode_v: address,
                 address_mode_w: address,
@@ -5733,9 +5734,8 @@ impl Post {
             make_sampler(wgpu::FilterMode::Nearest, wgpu::AddressMode::MirrorRepeat),
         ];
         // A white pixel, for a shader without a texture.
-        use wgpu::util::DeviceExt;
         let white = device
-            .create_texture_with_data(
+            .counted_texture_with_data(
                 scene.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("post white"),
@@ -5754,9 +5754,9 @@ impl Post {
                 wgpu::util::TextureDataOrder::MipMajor,
                 &[255, 255, 255, 255],
             )
-            .create_view(&Default::default());
+            .counted_view(&Default::default());
         let black = device
-            .create_texture_with_data(
+            .counted_texture_with_data(
                 scene.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("post black"),
@@ -5775,9 +5775,9 @@ impl Post {
                 wgpu::util::TextureDataOrder::MipMajor,
                 &[0, 0, 0, 255],
             )
-            .create_view(&Default::default());
+            .counted_view(&Default::default());
         // The linear depth.
-        let depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let depth_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post depth"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -5801,7 +5801,7 @@ impl Post {
             &depth_layout,
             wgpu::TextureFormat::R32Float,
         );
-        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let blit_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post blit"),
             entries: &[
                 texture(
@@ -5814,7 +5814,7 @@ impl Post {
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
         let debug = 0.0f32;
-        let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let debug_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post debug"),
             entries: &[
                 texture(
@@ -5838,14 +5838,13 @@ impl Post {
         let debug_pipeline =
             full_screen_pipeline(device, "post debug", DEBUG_BLIT_SHADER, &debug_layout, scene.target_format);
         let debug_uniform = {
-            use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("post debug"),
                 contents: bytemuck::cast_slice(&[debug, 0.0, 0.0, 0.0]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             })
         };
-        let no_values = device.create_buffer(&wgpu::BufferDescriptor {
+        let no_values = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("post no values"),
             size: (MOD_SLOTS * 16) as u64,
             usage: wgpu::BufferUsages::UNIFORM,
@@ -5982,7 +5981,7 @@ impl Post {
         // An error of the WGSL of a file, or a pass that is not a function of it, comes
         // back from the scope and does not stop the program.
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(&shader.name),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
@@ -5995,7 +5994,7 @@ impl Post {
                 } else {
                     wgpu::TextureFormat::Rgba8Unorm
                 };
-                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(&shader.name),
                     layout: Some(&self.pipeline_layout),
                     vertex: wgpu::VertexState {
@@ -6079,8 +6078,7 @@ impl Post {
             .collect();
         // The variables, with their values before a mod sets them.
         let values = (!shader.variables.is_empty()).then(|| {
-            use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("post values"),
                 contents: bytemuck::cast_slice(&values_of(&shader.variables, &[])),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -6095,7 +6093,7 @@ impl Post {
             binding: i as u32 + 1,
             resource: wgpu::BindingResource::TextureView(textures.get(i).unwrap_or(&self.white)),
         }));
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(&shader.name),
             layout: &self.shader_layout,
             entries: &entries,
@@ -6533,7 +6531,7 @@ impl Post {
 
 /// A texture that a pass draws into and a shader reads.
 fn make_texture(device: &wgpu::Device, size: (u32, u32), format: wgpu::TextureFormat) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+    device.counted_texture(&wgpu::TextureDescriptor {
         label: Some("post"),
         size: wgpu::Extent3d {
             width: size.0,
@@ -6583,16 +6581,16 @@ pub(super) fn full_screen_pipeline(
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     let _long = nirender_wgpu::LongStep::begin();
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[Some(layout)],
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -6737,7 +6735,7 @@ mod tests {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
-        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let blit_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("test blit"),
             entries: &[
                 texture(
@@ -6748,12 +6746,12 @@ mod tests {
                 sampler(1, wgpu::SamplerBindingType::Filtering),
             ],
         });
-        let linear = device.create_sampler(&wgpu::SamplerDescriptor {
+        let linear = device.counted_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let picture = device.create_texture(&wgpu::TextureDescriptor {
+        let picture = device.counted_texture(&wgpu::TextureDescriptor {
             label: Some("test picture"),
             size: wgpu::Extent3d {
                 width: 64,
@@ -6767,19 +6765,19 @@ mod tests {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let view = picture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = picture.counted_view(&wgpu::TextureViewDescriptor::default());
 
         // Work for the GPU: copies of 128 MB, as many as take about `busy`. One timed run of 100 copies
         // gives the time of a copy.
         let size = 128 << 20;
         let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
-        let from = device.create_buffer(&wgpu::BufferDescriptor {
+        let from = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("test busy from"),
             size,
             usage,
             mapped_at_creation: false,
         });
-        let to = device.create_buffer(&wgpu::BufferDescriptor {
+        let to = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("test busy to"),
             size,
             usage,

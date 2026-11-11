@@ -12,6 +12,7 @@
 //! draw multiplies by at most 2: a larger factor takes more draws (`draws`), each with the
 //! part of the factor between 2^n and 2^(n+1).
 
+use nirender_wgpu::objects::Create;
 use nirender_wgpu::{SceneView, wgpu};
 
 const SHADER: &str = "
@@ -144,7 +145,7 @@ impl Caustics {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("caustics"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -171,11 +172,11 @@ impl Caustics {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("caustics"),
             source: wgpu::ShaderSource::Wgsl(shader().into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("caustics"),
             bind_group_layouts: &[Some(view_layout), Some(&layout)],
             immediate_size: 0,
@@ -192,7 +193,7 @@ impl Caustics {
             alpha: wgpu::BlendComponent::REPLACE,
         };
         let make_pipeline = |stencil: wgpu::StencilState| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("caustics"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -229,13 +230,13 @@ impl Caustics {
         };
         let pipeline = make_pipeline(Default::default());
         let pipeline_cut = make_pipeline(cut);
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("caustics"),
             size: 64 + 4 * 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let wave_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let wave_sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::Repeat,

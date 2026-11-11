@@ -8,6 +8,7 @@
 //! the water plane, the dry spaces, the caustics and the water volumes. The number of a view
 //! is the number of a set of the statics.
 
+use nirender_wgpu::objects::Create;
 use nirender_wgpu::wgpu;
 
 use super::distant_lights::{self, LightBinding};
@@ -788,7 +789,7 @@ impl ViewBinding {
             count: None,
         }];
         entries.extend(LightBinding::layout_entries(1));
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("view"),
             entries: &entries,
         });
@@ -802,7 +803,7 @@ impl ViewBinding {
     }
 
     fn make_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor {
+        device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("view"),
             size: size_of::<View>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -816,7 +817,7 @@ impl ViewBinding {
             resource: buffer.as_entire_binding(),
         }];
         entries.extend(light.entries(1));
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("view"),
             layout: &self.layout,
             entries: &entries,

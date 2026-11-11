@@ -17,6 +17,7 @@
 //! reads them with its own position (the plane; on the Direct3D 9 path a water volume reads
 //! the same two).
 
+use nirender_wgpu::objects::{Create, CreateView};
 use nirender_wgpu::{SceneView, wgpu};
 
 /// The size of each texture, in pixels (`waveTexResolution`).
@@ -235,7 +236,7 @@ pub struct Ripples {
 impl Ripples {
     pub fn new(scene: &SceneView) -> Ripples {
         let device = scene.device;
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ripples"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -268,21 +269,21 @@ impl Ripples {
         });
         // Both simulations read their texture with the repeat mode and the linear filter
         // (`sampRain` of the Direct3D 9 path).
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("ripples"),
             size: SLOTS * SLOT_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let target = |label: &str| {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
+            let texture = device.counted_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
                     width: SIZE,
@@ -299,8 +300,8 @@ impl Ripples {
                     | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            let view = texture.create_view(&Default::default());
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let view = texture.counted_view(&Default::default());
+            let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
                 layout: &layout,
                 entries: &[
@@ -324,17 +325,17 @@ impl Ripples {
             });
             Target { texture, view, group }
         };
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ripples"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ripples"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let pipeline = |entry: &str| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("ripples"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {

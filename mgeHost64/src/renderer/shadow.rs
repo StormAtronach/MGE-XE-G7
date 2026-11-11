@@ -5,6 +5,7 @@
 //! matrices, the clear and the blur, and a debug view; the casters are drawn by the terrain
 //! and the statics modules into the passes that this module starts.
 
+use nirender_wgpu::objects::{Create, CreateView};
 use std::rc::Rc;
 
 use nirender_wgpu::{SceneView, wgpu};
@@ -268,7 +269,7 @@ impl Shadow {
         // The map is two layers wide: each at most half of the largest texture of the GPU.
         let resolution = resolution.clamp(256, 4096).min(device.limits().max_texture_dimension_2d / 2);
         let target = |label, format, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
+            device.counted_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
                     width: 2 * resolution,
@@ -291,17 +292,17 @@ impl Shadow {
             Shadow::depth_format(scene.depth_format),
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         )
-        .create_view(&Default::default());
-        let atlas_view = Rc::new(atlas.create_view(&Default::default()));
-        let blur_view = blur.create_view(&Default::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        .counted_view(&Default::default());
+        let atlas_view = Rc::new(atlas.counted_view(&Default::default()));
+        let blur_view = blur.counted_view(&Default::default());
+        let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow blur"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -338,16 +339,16 @@ impl Shadow {
                              format: wgpu::TextureFormat,
                              depth: Option<wgpu::DepthStencilState>,
                              samples: u32| {
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -396,8 +397,7 @@ impl Shadow {
             scene.samples,
         );
         let uniform = |values: [f32; 4]| {
-            use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("shadow"),
                 contents: bytemuck::cast_slice(&values),
                 usage: wgpu::BufferUsages::UNIFORM,
@@ -408,7 +408,7 @@ impl Shadow {
         let rcp = 1.0 / resolution as f32;
         let blur_uniforms = [uniform([rcp, 0.0, 0.0, 0.0]), uniform([0.0, rcp, 0.0, 0.0])];
         let group = |uniform: &wgpu::Buffer, view: &wgpu::TextureView| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
+            device.counted_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("shadow"),
                 layout: &layout,
                 entries: &[

@@ -11,6 +11,7 @@
 //! Meshes of mods that draw through a mask of their own write 0xf4; this bit is not one of
 //! theirs.
 
+use nirender_wgpu::objects::Create;
 use nirender_wgpu::{SceneView, wgpu};
 
 use super::shading;
@@ -99,11 +100,11 @@ impl Dry {
     /// the shared shading (`Water::layout`).
     pub fn new(scene: &SceneView, view_layout: &wgpu::BindGroupLayout, frame_layout: &wgpu::BindGroupLayout) -> Dry {
         let device = scene.device;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water dry spaces"),
             source: wgpu::ShaderSource::Wgsl(shader().into()),
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water dry spaces"),
             bind_group_layouts: &[Some(view_layout), Some(frame_layout)],
             immediate_size: 0,
@@ -126,7 +127,7 @@ impl Dry {
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &attributes,
             })];
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("water dry spaces"),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
@@ -210,9 +211,8 @@ impl Dry {
 
     /// The triangles of the dry spaces, three corners each, in the world.
     pub fn set_masks(&mut self, scene: &SceneView, corners: &[[f32; 3]]) {
-        use wgpu::util::DeviceExt;
         self.masks = (corners.len() >= 3).then(|| {
-            let buffer = scene.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let buffer = scene.device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("water dry spaces"),
                 contents: bytemuck::cast_slice(corners),
                 usage: wgpu::BufferUsages::VERTEX,

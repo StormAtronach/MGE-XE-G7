@@ -4,6 +4,7 @@
 //! a pixel of the game goes into the picture of the distant land that was there before the
 //! game drew.
 
+use nirender_wgpu::objects::Create;
 use nirender_wgpu::{SceneView, wgpu};
 
 const SHADER: &str = "
@@ -101,7 +102,7 @@ impl Blend {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("blend"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -118,16 +119,16 @@ impl Blend {
                 texture(2, wgpu::TextureSampleType::Depth),
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blend"),
             source: wgpu::ShaderSource::Wgsl(shader().into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("blend"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blend"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -156,7 +157,7 @@ impl Blend {
             multiview_mask: None,
             cache: None,
         });
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("blend"),
             size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

@@ -63,6 +63,7 @@
 //!
 //! No test against the land hides a place.
 
+use nirender_wgpu::objects::{Create, CreateView};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::os::windows::fs::FileExt;
@@ -78,7 +79,6 @@ use distantland::mge_xe::usage_data::load_usage_data;
 use mge_config::{ConfigDocument, StaticsResidency};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
-use nirender_wgpu::wgpu::util::DeviceExt;
 
 use super::water::{FarWater, Look};
 use super::{CELL, dds_texture};
@@ -1533,13 +1533,13 @@ const GRASS_SET_BYTES: u64 = (GRASS_RECORDS * GRASS_RECORD) as u64 + size_of::<G
 impl Gpu {
     /// The uniforms and the group of one set of the statics (group 1 of its pipelines).
     fn make_buffer_set(&self, device: &wgpu::Device) -> BufferSet {
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("distant statics"),
             size: size_of::<SetUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant statics"),
             layout: &self.set_layout,
             entries: &[
@@ -2999,12 +2999,12 @@ impl Statics {
                 }
                 Geometry::Pool(slot)
             } else {
-                let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                let vertices = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("distant static, vertices"),
                     contents: &arrival.vertices,
                     usage: wgpu::BufferUsages::VERTEX,
                 });
-                let indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                let indexes = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("distant static, indexes"),
                     contents: &arrival.indexes,
                     usage: wgpu::BufferUsages::INDEX,
@@ -3137,13 +3137,13 @@ impl Statics {
         }
         let mut made = 0;
         if gpu.grass_sets[k].is_none() {
-            let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some("grass, a view of its own"),
                 size: size_of::<GrassUniforms>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let records = device.create_buffer(&wgpu::BufferDescriptor {
+            let records = device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some("grass, the places of a view of its own"),
                 size: (GRASS_RECORDS * GRASS_RECORD) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -4397,7 +4397,7 @@ fn make_gpu(
     let device = scene.device;
     let catalog = &loaded.catalog;
     let make_uniforms = || {
-        device.create_buffer(&wgpu::BufferDescriptor {
+        device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("distant statics"),
             size: size_of::<SetUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -4405,18 +4405,18 @@ fn make_gpu(
         })
     };
     let uniform_buffers: [wgpu::Buffer; FIXED_SETS] = core::array::from_fn(|_| make_uniforms());
-    let palettes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let palettes = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant statics, the palettes"),
         contents: bytemuck::cast_slice(&catalog.palettes),
         usage: wgpu::BufferUsages::STORAGE,
     });
     // Long ago: a subset that is there from the start of a replay is in.
-    let arrivals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let arrivals = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant statics, the arrivals"),
         contents: bytemuck::cast_slice(&vec![-1.0e9f32; catalog.subsets.len().max(1)]),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+    let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
         address_mode_u: wgpu::AddressMode::Repeat,
         address_mode_v: wgpu::AddressMode::Repeat,
         mag_filter: wgpu::FilterMode::Linear,
@@ -4425,7 +4425,7 @@ fn make_gpu(
         anisotropy_clamp: 8,
         ..Default::default()
     });
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("distant statics"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
@@ -4466,7 +4466,7 @@ fn make_gpu(
             },
         ],
     });
-    let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let texture_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("distant statics, textures"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -4480,7 +4480,7 @@ fn make_gpu(
         }],
     });
     let groups = uniform_buffers.each_ref().map(|uniforms| {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant statics"),
             layout: &layout,
             entries: &[
@@ -4506,7 +4506,7 @@ fn make_gpu(
 
     // A texture that is not there, or that this program does not read, is white.
     let white = device
-        .create_texture_with_data(
+        .counted_texture_with_data(
             scene.queue,
             &wgpu::TextureDescriptor {
                 label: Some("distant statics, no texture"),
@@ -4525,7 +4525,7 @@ fn make_gpu(
             wgpu::util::TextureDataOrder::MipMajor,
             &[255, 255, 255, 255],
         )
-        .create_view(&Default::default());
+        .counted_view(&Default::default());
     let mut missing = Vec::new();
     let mut textures = Vec::with_capacity(catalog.textures.len());
     let mut texture_views = Vec::with_capacity(catalog.textures.len());
@@ -4541,7 +4541,7 @@ fn make_gpu(
                 white.clone()
             }
         };
-        textures.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        textures.push(device.counted_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant statics, textures"),
             layout: &texture_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -4560,13 +4560,13 @@ fn make_gpu(
     }
 
     let source = format!("{}{SET_WGSL}{SHADER}{}", super::view::wgsl(), super::FOG_FUNCTION);
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant statics"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     // Group 0: the view group of the set (`view::ViewBinding`); group 1: the values of the
     // set; group 2: the textures of a draw.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant statics"),
         bind_group_layouts: &[Some(view_layout), Some(&layout), Some(&texture_layout)],
         immediate_size: 0,
@@ -4583,7 +4583,7 @@ fn make_gpu(
                          polygon_mode: wgpu::PolygonMode,
                          multisample: wgpu::MultisampleState,
                          write_mask: wgpu::ColorWrites| {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("distant statics"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -4676,11 +4676,11 @@ fn make_gpu(
     });
     // The casters of the shadow map: the same vertices and places, the depth from the sun.
     let shadow_source = format!("{}{SET_WGSL}{SHADOW_SHADER}", super::view::wgsl());
-    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let shadow_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant statics shadow"),
         source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
     });
-    let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let shadow_pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant statics shadow"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -4747,7 +4747,7 @@ fn make_gpu(
     if instance_data.is_empty() {
         instance_data.resize(20, 0.0);
     }
-    let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let instances = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("distant statics, the places"),
         contents: bytemuck::cast_slice(&instance_data),
         usage: wgpu::BufferUsages::VERTEX,
@@ -4781,13 +4781,13 @@ fn make_gpu(
     };
 
     // The grass: its own uniforms and shader, and the textures of the statics.
-    let grass_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+    let grass_uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("grass"),
         size: size_of::<GrassUniforms>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let grass_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let grass_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("grass"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
@@ -4826,7 +4826,7 @@ fn make_gpu(
     });
     // The shadow map is made at the first frame with shadows; until then the group has a
     // texture of one texel in its place (the shader reads no shadow without a map).
-    let grass_shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+    let grass_shadow_sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
         label: Some("grass, the shadow map"),
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
@@ -4834,7 +4834,7 @@ fn make_gpu(
     });
     let no_shadow = std::rc::Rc::new(
         device
-            .create_texture(&wgpu::TextureDescriptor {
+            .counted_texture(&wgpu::TextureDescriptor {
                 label: Some("grass, no shadow map"),
                 size: wgpu::Extent3d {
                     width: 1,
@@ -4848,7 +4848,7 @@ fn make_gpu(
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
-            .create_view(&Default::default()),
+            .counted_view(&Default::default()),
     );
     let grass_group = make_grass_group(
         device,
@@ -4859,18 +4859,18 @@ fn make_gpu(
         &grass_shadow_sampler,
     );
     let grass_source = grass_source(shadow_hooks);
-    let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let grass_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("grass"),
         source: wgpu::ShaderSource::Wgsl(grass_source.into()),
     });
-    let grass_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let grass_pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("grass"),
         bind_group_layouts: &[Some(view_layout), Some(&grass_layout), Some(&texture_layout)],
         immediate_size: 0,
     });
     let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
     let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("grass"),
             layout: Some(&grass_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -4927,7 +4927,7 @@ fn make_gpu(
     let grass_pipeline_lines =
         lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage)));
     let grass_picture_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill, Default::default());
-    let grass_records = device.create_buffer(&wgpu::BufferDescriptor {
+    let grass_records = device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("grass, the places of a frame"),
         size: (GRASS_RECORDS * GRASS_RECORD) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -4976,7 +4976,7 @@ fn make_grass_group(
     atlas: &wgpu::TextureView,
     atlas_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.counted_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("grass"),
         layout,
         entries: &[
