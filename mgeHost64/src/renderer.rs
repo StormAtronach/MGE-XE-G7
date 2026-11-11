@@ -218,6 +218,23 @@ const EXTENSION_FORMAT: u32 = 3;
 const HELLO_BUILD_ID_AT: usize = 8;
 const HELLO_BUILD_ID_BYTES: usize = 64;
 
+/// The name of an extension record that changes what this extension draws, for the count of
+/// the GPU objects; [`None`] for the environment, a picture request and the status text, and
+/// for the shader state, which `data` judges by its content.
+fn changing_record_name(id: u32) -> Option<&'static str> {
+    match id {
+        ENVIRONMENT_ID | PICTURE_ID | STATUS_ID | SHADER_STATE_ID => None,
+        SETTINGS_ID => Some("extension record settings"),
+        TUNE_ID => Some("extension record tune"),
+        WATER_LOOKS_ID => Some("extension record water looks"),
+        WATER_MASKS_ID => Some("extension record water masks"),
+        VIS_GROUPS_ID => Some("extension record vis groups"),
+        PREFETCH_ID => Some("extension record prefetch"),
+        HELLO_ID => Some("extension record hello"),
+        _ => Some("extension record of an unknown id"),
+    }
+}
+
 /// The build id of this program: its name, its version and its commit (`build.rs` puts the
 /// commit into MGE_COMMIT).
 fn build_id() -> String {
@@ -958,10 +975,10 @@ pub struct DistantLand {
     extension_refused: u32,
     /// True when an environment record of another version came and is in the log.
     environment_version_logged: bool,
-    /// A record of the frame changed what this extension draws (all but the environment, the
-    /// status text and a picture request): `frame_changed` gives it to the count of the GPU
-    /// objects, with the loads.
-    changed: bool,
+    /// The first record of the frame that changed what this extension draws (all but the
+    /// environment, the status text and a picture request), by its name: `frame_changed`
+    /// gives it to the count of the GPU objects, with the loads.
+    changed: Option<&'static str>,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
     /// The last settings record of MGE XE, and the one that the renderer follows.
@@ -1527,7 +1544,7 @@ impl DistantLand {
             refused_ids: Vec::new(),
             extension_refused: 0,
             environment_version_logged: false,
-            changed: true,
+            changed: Some("the first frame"),
             tunables: tunables::Tunables::new(),
             settings: None,
             settings_applied: None,
@@ -3319,12 +3336,15 @@ impl Extension for DistantLand {
         std::mem::take(&mut self.pictures)
     }
 
-    fn frame_changed(&mut self) -> bool {
-        std::mem::take(&mut self.changed) || self.loading.is_some()
+    fn frame_changed(&mut self) -> Option<&'static str> {
+        let load = self.loading.is_some().then_some("a load of distant land");
+        self.changed.take().or(load)
     }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {
-        self.changed |= !matches!(id, ENVIRONMENT_ID | STATUS_ID | PICTURE_ID);
+        if let Some(name) = changing_record_name(id) {
+            self.changed.get_or_insert(name);
+        }
         if id == HELLO_ID {
             match hello_check(bytes) {
                 Ok(build) => {
@@ -3524,6 +3544,11 @@ impl Extension for DistantLand {
         }
         if id == SHADER_STATE_ID {
             if let Some(state) = post::ShaderState::read(bytes) {
+                // New values of the variables of a known shader are no change of what this
+                // extension draws for the count of the GPU objects.
+                if !self.shader_states.iter().any(|known| known.same_but_values(&state)) {
+                    self.changed.get_or_insert("extension record shader state");
+                }
                 if !self.shader_states_new.contains(&state.name) {
                     self.shader_states_new.push(state.name.clone());
                 }

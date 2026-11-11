@@ -358,6 +358,25 @@ impl ShaderState {
         }
         Some(state)
     }
+
+    /// True when `other` differs from this state only in the values of its variables: the
+    /// same shader, switch, priority and reloads, and the same variables with the same types
+    /// and numbers of values. Such a change goes into the values that the shader reads, with
+    /// no new GPU object.
+    pub fn same_but_values(&self, other: &ShaderState) -> bool {
+        let layout = |state: &ShaderState| {
+            state
+                .values
+                .iter()
+                .map(|(name, kind, floats)| (name.clone(), *kind, floats.len()))
+                .collect::<Vec<_>>()
+        };
+        self.name == other.name
+            && self.enabled == other.enabled
+            && self.priority == other.priority
+            && self.reloads == other.reloads
+            && layout(self) == layout(other)
+    }
 }
 
 /// The floats of `modv` for a shader: the default of each variable, or what a mod set.
@@ -6662,6 +6681,37 @@ mod shader_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// New values of the variables are no change of the layout; a new variable, another number
+    /// of values, the switch and a reload are.
+    #[test]
+    fn a_shader_state_with_new_values_only_has_the_same_layout() {
+        let flames = |time: Vec<f32>| ShaderState {
+            name: "flames".into(),
+            enabled: true,
+            priority: None,
+            reloads: 0,
+            values: vec![("time".into(), b'f', time)],
+        };
+        let state = flames(vec![1.0]);
+        assert!(state.same_but_values(&flames(vec![2.0])));
+        assert!(!state.same_but_values(&flames(vec![2.0, 3.0])));
+        let mut more = flames(vec![1.0]);
+        more.values.push(("glow".into(), b'f', vec![0.5]));
+        assert!(!state.same_but_values(&more));
+        assert!(!state.same_but_values(&ShaderState {
+            enabled: false,
+            ..flames(vec![1.0])
+        }));
+        assert!(!state.same_but_values(&ShaderState {
+            reloads: 1,
+            ..flames(vec![1.0])
+        }));
+        assert!(!state.same_but_values(&ShaderState {
+            name: "other".into(),
+            ..flames(vec![1.0])
+        }));
+    }
 
     /// The step of the point is the advance of the clock of the game: 0 for the first call, for a
     /// clock that stands and for a clock that goes back (the next step counts from the new time),
