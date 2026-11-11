@@ -1778,6 +1778,25 @@ impl DistantLand {
         }
     }
 
+    /// Distant statics with subset flags that this build does not know: distant land is off for
+    /// the session, as on Direct3D 9, and the data must be generated again. Read once a frame, in
+    /// `frame`, after the statics' load and the settings of the frame (W341 step B).
+    fn reject_unknown_statics(&mut self) {
+        let Some(problem) = self
+            .statics
+            .as_ref()
+            .and_then(|statics| statics.rejected())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        println!("distant land: off: {problem}");
+        self.problem = Some(format!("distant land is off: {problem}"));
+        self.enabled = false;
+        self.statics = None;
+        self.lights = None;
+    }
+
     /// Makes the buffers, the textures and the pipeline when the loader thread is done.
     fn finish_load(&mut self, scene: &SceneView) {
         let Some(receiver) = self.loading.as_ref() else { return };
@@ -3023,6 +3042,7 @@ impl Extension for DistantLand {
             statics.finish_load(scene);
         }
         self.apply_settings();
+        self.reject_unknown_statics();
         self.cell_facts(scene);
         self.free_idle_spares(scene.frame);
         if let Some(statics) = self.statics.as_mut() {
@@ -3366,7 +3386,7 @@ impl Extension for DistantLand {
     fn after_frame(&mut self, scene: &SceneView) {
         let Some((world, eye)) = self.prefetch.clone() else { return };
         // At the first load of a session the data comes in a frame with no world: the loads
-        // are finished here, as in `frame` and `before_world`.
+        // are finished here, as in `frame`.
         self.finish_generation();
         self.poll_lights(scene);
         self.finish_load(scene);
@@ -3643,22 +3663,7 @@ impl Extension for DistantLand {
             return false;
         }
         self.near_fog = None;
-        self.cell_facts(scene);
         self.write_game_view(scene);
-        // Distant statics with subset flags that this build does not know: distant land is off
-        // for the session, as on Direct3D 9, and the data must be generated again.
-        if let Some(problem) = self
-            .statics
-            .as_ref()
-            .and_then(|statics| statics.rejected())
-            .map(str::to_string)
-        {
-            println!("distant land: off: {problem}");
-            self.problem = Some(format!("distant land is off: {problem}"));
-            self.enabled = false;
-            self.statics = None;
-            self.lights = None;
-        }
         if std::mem::take(&mut self.lose_device) {
             println!("gpu: the device is destroyed for the test of a lost device");
             nirender_wgpu::gpu::test_loss(scene.device);
@@ -3687,7 +3692,6 @@ impl Extension for DistantLand {
             return false;
         }
         self.poll_lights(scene);
-        self.finish_load(scene);
         let Some(gpu) = self.gpu.as_ref() else {
             Self::note_world_skipped(self.shadow_in_frame, "no terrain on the GPU", true);
             return false;
