@@ -48,6 +48,11 @@ pub use dry::read_masks;
 pub use volume::{FarWater, Look, VolumeLight, VolumeLook, marked as volume_marked};
 pub(super) use shading::{CAUSTICS, caustic_strength};
 
+/// The shader of the surfaces of the water volumes with the standard look and `shadow_hooks`.
+pub(super) fn volume_source(shadow_hooks: &str) -> String {
+    volume::standard_source(shadow_hooks)
+}
+
 /// The shader of the plane: the shared shading and the entry points of the plane.
 fn shader() -> String {
     format!("{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, PLANE)

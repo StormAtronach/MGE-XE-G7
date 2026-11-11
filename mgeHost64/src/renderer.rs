@@ -831,7 +831,8 @@ pub struct DistantLand {
     distant_cell: bool,
     /// The light for each pixel of this frame, or [`None`].
     shade: Option<PerPixel>,
-    /// The shadow hooks of the shaders and the values of the shadow (`core_mods.rs`).
+    /// The core mods of the session (`Data Files/shaders/core-mods`): the hooks of the shaders
+    /// and the values of the shadow.
     core_mods: core_mods::CoreMods,
     /// The sun of the frame for the shadow of a draw: the direction the light goes in and
     /// its colour, from the scene's sun (the weather's sky light, the plugin's scene record),
@@ -1175,14 +1176,12 @@ fn draw_shader_text(shadow_hooks: &str) -> String {
     format!("{DRAW_SHADER}{shadow_hooks}")
 }
 
-#[cfg(test)]
 /// The world shader with the text of this extension and the shadow hooks, as the host joins
 /// them (`extension_shaders` of `nirender_wgpu`).
 fn world_source(shadow_hooks: &str) -> String {
     nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{}\n", draw_shader_text(shadow_hooks)))
 }
 
-#[cfg(test)]
 /// The world shader as the device checks it, in both texture tiers: tier A with the binding
 /// arrays of its request, tier C with the request of every adapter.
 fn check_world_source(shadow_hooks: &str) -> Result<(), String> {
@@ -1191,6 +1190,16 @@ fn check_world_source(shadow_hooks: &str) -> Result<(), String> {
     shader_check::check_with("the world shader, tier a", &source, tier_a)?;
     shader_check::check("the world shader, tier c", &nirender_wgpu::tier_c_shader_source(&source))?;
     Ok(())
+}
+
+/// The shaders that call the shadow hooks: the draws of the game, the grass, the surfaces of
+/// the water volumes.
+fn shadow_homes() -> [core_mods::Home; 3] {
+    [
+        core_mods::Home { name: "world shader", check: check_world_source },
+        core_mods::Home { name: "grass", check: |hooks| shader_check::check("grass", &statics::grass_source(hooks)).map(|_| ()) },
+        core_mods::Home { name: "water volume", check: |hooks| shader_check::check("water volume", &water::volume_source(hooks)).map(|_| ()) },
+    ]
 }
 
 /// The casters of the shadow map: `ShadowVS` and `ShadowPS` of `XE Shadowmap.fx` for the
@@ -1260,7 +1269,7 @@ impl DistantLand {
     pub fn start(root: &Path, live: bool) -> DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
-        let core_mods = core_mods::CoreMods::built_in();
+        let core_mods = core_mods::CoreMods::load(&|name| data_file(root, name), &shadow_homes());
         // The places of the full tier: the player's setting, or the environment variable for a
         // test, which may go up to the code's bound (one place for each view slot).
         let full_tier_max = std::env::var("MGE_XE_FULL_TIER_MAX")
@@ -4486,7 +4495,9 @@ mod shader_tests {
     #[test]
     fn the_homes_of_the_shadow_hooks_take_the_built_ins() {
         let hooks = core_mods::CoreMods::built_in();
-        shader_check::check("grass", &statics::grass_source(hooks.shadow_hooks())).unwrap();
+        for home in shadow_homes() {
+            (home.check)(hooks.shadow_hooks()).unwrap_or_else(|problem| panic!("{}: {problem}", home.name));
+        }
         let source = world_source(hooks.shadow_hooks());
         assert_eq!(source.matches("fn shadow_delta(").count(), 1);
         assert_eq!(source.matches("fn shadow_esm(").count(), 1);
