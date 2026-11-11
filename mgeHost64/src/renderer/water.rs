@@ -324,7 +324,8 @@ impl Water {
     /// Makes the plane, the pipeline and the reflection target. `waves` is the DDS file of
     /// the wave texture, a volume of 32-bit pixels. `view_layout` is that of the view group
     /// (`view.rs`), group 0 of each pipeline of the water.
-    pub fn new(scene: &SceneView, waves: &[u8], view_layout: &wgpu::BindGroupLayout) -> Result<Water, String> {
+    /// `shadow_hooks`: the shadow hooks of the session, for the surfaces of the water volumes.
+    pub fn new(scene: &SceneView, waves: &[u8], view_layout: &wgpu::BindGroupLayout, shadow_hooks: &str) -> Result<Water, String> {
         let device = scene.device;
         let waves = wave_texture(scene, waves)?;
         let (vertices, indexes) = coarse_disc();
@@ -417,7 +418,7 @@ impl Water {
         let pipeline_cut = make_pipeline(wgpu::PolygonMode::Fill, dry::outside());
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let volume_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let volumes = volume::Volumes::new(scene, view_layout, &layout);
+        let volumes = volume::Volumes::new(scene, view_layout, &layout, shadow_hooks);
         let dry = dry::Dry::new(scene, view_layout, &layout);
         // Between two levels too: the blur that is sharp at the waterline reads the levels
         // of the reflection. Each other read names the first level.

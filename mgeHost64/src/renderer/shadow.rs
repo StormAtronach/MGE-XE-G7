@@ -16,7 +16,8 @@ static SHADOW_LAYERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 use super::multiply;
 
-/// The constants of `XE Mod Shadow Data.fx`.
+/// The constants of `XE Mod Shadow Data.fx`: the built-in values of a core mod's
+/// `XE Mod Shadow Data.wgsl` (`core_mods::ShadowValues`). `ESM_SCALE` matches the map's format.
 pub const ESM_C: f32 = 60.0;
 pub const ESM_BIAS: f32 = 2e-3 * ESM_C;
 pub const ESM_SCALE: f32 = 32768.0;
@@ -415,9 +416,9 @@ impl Shadow {
 
     /// The values of the frame for the shader functions of the draws of the game: the two
     /// matrices from the view space of the game to the layers (8 vectors, the rows of
-    /// Direct3D), then the constants, the visibility of the sun, and 1 when the camera is
-    /// above the sea.
-    pub fn frame_values(&self, sun_vis: f32, view: &[f32; 16], above_sea: bool) -> [[f32; 4]; 32] {
+    /// Direct3D), then the values of the shadow (`shadow_values`, the built-in ones or those of
+    /// a core mod), the visibility of the sun, and 1 when the camera is above the sea.
+    pub fn frame_values(&self, sun_vis: f32, view: &[f32; 16], above_sea: bool, shadow_values: &super::core_mods::ShadowValues) -> [[f32; 4]; 32] {
         let mut values = [[0.0f32; 4]; 32];
         let from_view = inverse(view);
         for layer in 0..2 {
@@ -426,8 +427,8 @@ impl Shadow {
                 values[layer * 4 + row] = [to_shadow[row * 4], to_shadow[row * 4 + 1], to_shadow[row * 4 + 2], to_shadow[row * 4 + 3]];
             }
         }
-        values[8] = [ESM_C, ESM_BIAS, ESM_SCALE, 1.0 / self.resolution as f32];
-        values[9] = [SHADE_COLOR[0], SHADE_COLOR[1], SHADE_COLOR[2], SHADE];
+        values[8] = shadow_values.esm(1.0 / self.resolution as f32);
+        values[9] = shadow_values.shade();
         values[10] = [sun_vis, if above_sea { 1.0 } else { 0.0 }, if self.layers_debug { 1.0 } else { 0.0 }, 0.0];
         values
     }

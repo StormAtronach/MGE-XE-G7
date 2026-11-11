@@ -225,6 +225,8 @@ pub struct VolumeLight<'a> {
     /// The shadow map of the frame (`shadow.rs`): the atlas, the matrices of its two layers from
     /// the world (the layout of Direct3D), and 1 over its resolution.
     pub shadow: Option<(&'a wgpu::TextureView, [[f32; 16]; 2], f32)>,
+    /// The values of the shadow: the built-in ones or those of a core mod.
+    pub shadow_values: crate::renderer::core_mods::ShadowValues,
     /// The lights of the frame for each pixel.
     pub lights: Option<&'a FrameLights<'a>>,
     /// The strength of the caustics under the surfaces (`water::caustic_strength`); 0 for none.
@@ -348,21 +350,31 @@ fn sunlight_at(place: vec3f) -> f32 {
     let s1 = clip_with(lighting.shadow1, place);
     let p0 = vec3f(s0.xy, s0.z / s0.w);
     let p1 = vec3f(s1.xy, s1.z / s1.w);
-    let margin = vec3f(1.0 - 8.0 * lighting.esm.w, 1.0 - 8.0 * lighting.esm.w, 1.0);
-    var dz = 1e-6;
-    if all(abs(p0) < margin) {
-        let uv = vec2f(0.5 + 0.5 * p0.x, 0.5 - 0.5 * p0.y);
-        dz = textureSampleLevel(shadow_atlas, clamp_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r / lighting.esm.z - p0.z;
-    } else if all(abs(p1) < margin) {
-        let uv = vec2f(0.5 + 0.5 * p1.x, 0.5 - 0.5 * p1.y);
-        dz = textureSampleLevel(shadow_atlas, clamp_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r / lighting.esm.z - p1.z;
-    }
+    let dz = shadow_delta(p0, p1);
     if dz >= 0.0 {
         return 1.0;
     }
     // shadowESM, and the fade at the edge of the outer layer.
     let fade = clamp(25.0 * (1.0 - abs(p1.xy)), vec2f(0.0), vec2f(1.0));
-    return 1.0 - (1.0 - clamp(exp(lighting.esm.x * dz + lighting.esm.y), 0.0, 1.0)) * fade.x * fade.y;
+    return 1.0 - shadow_esm(dz) * fade.x * fade.y;
+}
+
+// The library of the shadow hooks (`core_mods.rs`): the shadow map of the frame and its
+// values. The hooks join this shader after its text.
+fn shadow_map_depth(layer: u32, uv: vec2f) -> f32 {
+    if layer == 0u {
+        return textureSampleLevel(shadow_atlas, clamp_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r;
+    }
+    return textureSampleLevel(shadow_atlas, clamp_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r;
+}
+fn shadow_texel() -> f32 {
+    return lighting.esm.w;
+}
+fn shadow_esm_scale() -> f32 {
+    return lighting.esm.z;
+}
+fn shadow_esm_values() -> vec2f {
+    return lighting.esm.xy;
 }
 
 // The light of a point or spot light at a distance, for a place in `direction` (from the place
@@ -732,22 +744,35 @@ fn water_shader(surface: WaterSurface) -> vec4f {
 ";
 
 /// The shader of the surfaces with the water shader of the look: the shared shading, the
-/// entry points of a surface, and the function `water_shader`.
-fn shader_with(water: &str) -> String {
-    format!("{}{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, shading::CAUSTICS, VOLUME, nirender_wgpu::spot::WGSL, water)
+/// entry points of a surface, the function `water_shader`, and the shadow hooks of the session
+/// (`core_mods.rs`).
+fn shader_with(water: &str, shadow_hooks: &str) -> String {
+    format!("{}{}{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, shading::CAUSTICS, VOLUME, nirender_wgpu::spot::WGSL, water, shadow_hooks)
         .replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
 }
 
 /// The shader of the surfaces with the standard look.
+pub(super) fn standard_source(shadow_hooks: &str) -> String {
+    shader_with(STANDARD, shadow_hooks)
+}
+
+/// The water shader of a mod with the built-in hooks, for a test.
+#[cfg(test)]
+fn test_water_shader(file: &str) -> Result<String, String> {
+    water_shader_source("test", file, crate::renderer::core_mods::CoreMods::built_in().shadow_hooks())
+}
+
+/// The shader of the surfaces with the standard look and the built-in hooks, for a test.
+#[cfg(test)]
 fn shader() -> String {
-    shader_with(STANDARD)
+    standard_source(crate::renderer::core_mods::CoreMods::built_in().shadow_hooks())
 }
 
 /// The source of the water shader `name` of a mod (`Data Files/shaders/water/<name>.wgsl`),
 /// checked as the device checks it. The file starts with the line
 /// `//! interface: mge-xe-water-wgsl 1`; the rest is WGSL with the function `water_shader`
 /// (`docs/water-shaders.md`).
-pub fn water_shader_source(name: &str, file: &str) -> Result<String, String> {
+pub fn water_shader_source(name: &str, file: &str, shadow_hooks: &str) -> Result<String, String> {
     let mut interface = false;
     for line in file.lines() {
         let Some(rest) = line.strip_prefix("//!") else { break };
@@ -760,7 +785,7 @@ pub fn water_shader_source(name: &str, file: &str) -> Result<String, String> {
     if !interface {
         return Err("no line `//! interface: mge-xe-water-wgsl 1` at its start".to_string());
     }
-    let source = shader_with(file);
+    let source = shader_with(file, shadow_hooks);
     crate::renderer::shader_check::check(name, &source)?;
     Ok(source)
 }
@@ -840,6 +865,8 @@ pub(super) struct Volumes {
     /// their names in `shaders`. A name whose file is missing or fails has the standard one.
     modules: Vec<wgpu::ShaderModule>,
     shaders: HashMap<String, u16>,
+    /// The shadow hooks of the session (`core_mods.rs`), for the shaders of mods.
+    shadow_hooks: String,
     /// The group of the textures of the mesh, its sampler, and a group of white textures for
     /// the standard look.
     mesh_layout: wgpu::BindGroupLayout,
@@ -880,9 +907,10 @@ pub(super) struct Volumes {
 impl Volumes {
     /// `view_layout` is that of the view group (`view.rs`), `frame_layout` that of the group
     /// of the shared shading (`Water::layout`, with `light_layout_entries`).
-    pub fn new(scene: &SceneView, view_layout: &wgpu::BindGroupLayout, frame_layout: &wgpu::BindGroupLayout) -> Volumes {
+    /// `shadow_hooks`: the shadow hooks of the session, which join every shader of the surfaces.
+    pub fn new(scene: &SceneView, view_layout: &wgpu::BindGroupLayout, frame_layout: &wgpu::BindGroupLayout, shadow_hooks: &str) -> Volumes {
         let device = scene.device;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water volume"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water volume"), source: wgpu::ShaderSource::Wgsl(standard_source(shadow_hooks).into()) });
         let mesh_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water volume mesh"),
             entries: &[
@@ -966,6 +994,7 @@ impl Volumes {
         Volumes {
             modules: vec![module],
             shaders: HashMap::new(),
+            shadow_hooks: shadow_hooks.to_string(),
             mesh_layout,
             mesh_sampler,
             white,
@@ -1036,7 +1065,7 @@ impl Volumes {
         if let Some((_, layers, rcp)) = light.shadow {
             let eye = scene.eye.map(|v| v as f32);
             values.shadow = layers.map(|layer| super::super::view::relative_of_product(&layer, eye));
-            values.esm = [super::super::shadow::ESM_C, super::super::shadow::ESM_BIAS, super::super::shadow::ESM_SCALE, rcp];
+            values.esm = light.shadow_values.esm(rcp);
             bits |= 1;
         }
         if let Some(lights) = light.lights {
@@ -1063,7 +1092,7 @@ impl Volumes {
     /// Adds the water shader of a mod by its name, from its file ([`None`]: there is none). A
     /// shader that fails has the standard look, and the reason is returned.
     pub fn add_shader(&mut self, device: &wgpu::Device, name: &str, file: Option<&str>) -> Result<(), String> {
-        let result = file.ok_or_else(|| "no file shaders/water/<name>.wgsl".to_string()).and_then(|file| water_shader_source(name, file));
+        let result = file.ok_or_else(|| "no file shaders/water/<name>.wgsl".to_string()).and_then(|file| water_shader_source(name, file, &self.shadow_hooks));
         let index = match &result {
             Ok(source) => {
                 let label = format!("water shader {name}");
@@ -1602,8 +1631,8 @@ fn water_shader(surface: WaterSurface) -> vec4f {
     return finish_water(surface, shade, look);
 }
 ";
-        assert!(water_shader_source("test", file).is_ok(), "{:?}", water_shader_source("test", file).err());
-        assert!(water_shader_source("test", "fn water_shader(surface: WaterSurface) -> vec4f { return vec4f(1.0); }").unwrap_err().contains("interface"));
-        assert!(water_shader_source("test", "//! interface: mge-xe-water-wgsl 1\nfn water_shader(x: f32) -> f32 { return x; }").is_err());
+        assert!(test_water_shader(file).is_ok(), "{:?}", test_water_shader(file).err());
+        assert!(test_water_shader("fn water_shader(surface: WaterSurface) -> vec4f { return vec4f(1.0); }").unwrap_err().contains("interface"));
+        assert!(test_water_shader("//! interface: mge-xe-water-wgsl 1\nfn water_shader(x: f32) -> f32 { return x; }").is_err());
     }
 }
