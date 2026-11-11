@@ -1175,7 +1175,9 @@ fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
     data_places(root, relative).iter().find_map(|place| std::fs::read(place).ok())
 }
 
-/// The places of a path under `Data Files`, in the order [`data_file`] tries them.
+/// The places of a path under `Data Files`, in the order [`data_file`] tries them. A place
+/// whose real path is one already in the list (the game folder is also the folder of this
+/// program, or `MGE_XE_GAME_DIR`) is left out.
 fn data_places(root: &Path, relative: &str) -> Vec<PathBuf> {
     let name = Path::new("Data Files").join(relative);
     let mut places = vec![root.join(&name)];
@@ -1185,7 +1187,21 @@ fn data_places(root: &Path, relative: &str) -> Vec<PathBuf> {
     if let Some(exe) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
         places.push(exe.join(&name));
     }
+    let mut real_paths = Vec::new();
+    places.retain(|place| {
+        let real = std::fs::canonicalize(place).unwrap_or_else(|_| place.clone());
+        let new = !real_paths.contains(&real);
+        real_paths.push(real);
+        new
+    });
     places
+}
+
+/// A path for the log, without the prefix `\\?\` that [`std::fs::canonicalize`] gives on
+/// Windows.
+fn shown(path: &Path) -> String {
+    let text = path.display().to_string();
+    text.strip_prefix(r"\\?\").map_or(text.clone(), str::to_owned)
 }
 
 /// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`).
@@ -1290,9 +1306,10 @@ impl DistantLand {
     /// ([`DistantLand::reflection_kept`]): the files of `Data Files/shaders/water` (each place
     /// of [`data_places`], listed: a look loads its file only during the volume draws, after
     /// the reflection pass) and the shadow hooks of the core mods, which every volume shader
-    /// takes. A folder that cannot be listed keeps the reflection too. Logs one line.
+    /// takes. A folder that cannot be listed keeps the reflection too. Logs one line with the
+    /// files, each real path once (two places can be one folder).
     fn reflection_readers(root: &Path, shadow_hooks: &str) -> Option<String> {
-        let mut files = 0;
+        let mut files = std::collections::BTreeSet::new();
         let mut kept = None;
         if Water::shader_reads_reflection(shadow_hooks) {
             kept = Some("the shadow hooks of the core mods".to_string());
@@ -1310,16 +1327,21 @@ impl DistantLand {
                 if path.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("wgsl")) {
                     continue;
                 }
-                files += 1;
+                let path = std::fs::canonicalize(&path).unwrap_or(path);
+                if !files.insert(path.clone()) {
+                    continue;
+                }
                 let reads = std::fs::read(&path).map_or(true, |bytes| Water::shader_reads_reflection(&String::from_utf8_lossy(&bytes)));
                 if reads {
-                    kept.get_or_insert_with(|| format!("{} reads it", path.display()));
+                    kept.get_or_insert_with(|| format!("{} reads it", shown(&path)));
                 }
             }
         }
+        let listed = files.iter().map(|path| shown(path)).collect::<Vec<_>>().join("; ");
+        let count = files.len();
         match &kept {
-            Some(reason) => println!("water: {files} water shaders of mods listed; the reflection is drawn in every frame with water: {reason}"),
-            None => println!("water: {files} water shaders of mods listed, none reads the reflection: a frame skips it when the plane is out of view"),
+            Some(reason) => println!("water: {count} water shaders of mods listed ({listed}); the reflection is drawn in every frame with water: {reason}"),
+            None => println!("water: {count} water shaders of mods listed ({listed}), none reads the reflection: a frame skips it when the plane is out of view"),
         }
         kept
     }
@@ -4543,6 +4565,28 @@ impl DistantLand {
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade, original })
+    }
+}
+
+#[cfg(test)]
+mod data_place_tests {
+    use super::*;
+
+    #[test]
+    fn the_folder_of_the_program_as_the_root_is_one_place() {
+        let exe = std::env::current_exe().unwrap();
+        let folder = exe.parent().unwrap();
+        // The root is the folder of this program: the root's place and the program's place
+        // are one.
+        let places = data_places(folder, "shaders/water");
+        let in_folder = places.iter().filter(|place| place.starts_with(folder)).count();
+        assert_eq!(in_folder, 1, "{places:?}");
+    }
+
+    #[test]
+    fn a_path_for_the_log_has_no_prefix() {
+        assert_eq!(shown(Path::new(r"\\?\D:\Mods\a\shaders\water\x.wgsl")), r"D:\Mods\a\shaders\water\x.wgsl");
+        assert_eq!(shown(Path::new("Data Files/x.wgsl")), "Data Files/x.wgsl");
     }
 }
 
