@@ -118,16 +118,22 @@ impl DebugView {
         Ok(debug)
     }
 
-    pub fn lights(&self) -> bool {
-        self.view == View::Lights
-    }
-
     pub fn shadow_layers(&self) -> bool {
         self.view == View::ShadowLayers
     }
 
     pub fn shadow_map(&self) -> bool {
         self.view == View::ShadowMap
+    }
+
+    /// The id of the frame's view for the crate (`FrameParameters::debug_view`). The view of
+    /// the shadow layers shows the layers of the frame's shadow map: a frame without the map
+    /// has no layers, so it has no view and draws as normal play.
+    pub fn frame_id(&self, shadow_in_frame: bool) -> u32 {
+        if self.shadow_layers() && !shadow_in_frame {
+            return view_id::NONE;
+        }
+        self.view.id()
     }
 
     /// The term of the water's view, 0 when it is off.
@@ -315,7 +321,7 @@ mod tests {
         // A first record with the bit 1 sets the lights view.
         let mut debug = DebugView::default();
         debug.settings_word(SETTINGS_DEBUG_LIGHT);
-        assert!(debug.lights());
+        assert_eq!(debug.view, View::Lights);
     }
 
     #[test]
@@ -328,10 +334,10 @@ mod tests {
         assert!(debug.shadow_map());
         // 0 to 1: the lights view.
         debug.settings_word(SETTINGS_DEBUG_LIGHT | 2);
-        assert!(debug.lights());
+        assert_eq!(debug.view, View::Lights);
         // The other bits are not views.
         debug.settings_word(SETTINGS_DEBUG_LIGHT);
-        assert!(debug.lights());
+        assert_eq!(debug.view, View::Lights);
         // 1 to 0 clears the lights view.
         debug.settings_word(0);
         assert_eq!(debug.view, View::None);
@@ -340,5 +346,19 @@ mod tests {
         debug.tune("view shadow-layers");
         debug.settings_word(0);
         assert!(debug.shadow_layers());
+    }
+
+    /// The view of the shadow layers reaches the crate only in a frame with the shadow map;
+    /// the other views do not depend on the map.
+    #[test]
+    fn the_layers_view_needs_the_shadow_map_of_the_frame() {
+        let mut debug = DebugView::default();
+        debug.tune("view shadow-layers");
+        assert_eq!(debug.frame_id(true), view_id::SHADOW_LAYERS);
+        assert_eq!(debug.frame_id(false), view_id::NONE);
+        debug.tune("view lights");
+        assert_eq!(debug.frame_id(false), view_id::LIGHTS);
+        debug.tune("view water 1");
+        assert_eq!(debug.frame_id(false), view_id::WATER);
     }
 }
