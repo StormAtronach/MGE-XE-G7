@@ -16,7 +16,11 @@ come in a later part of the work.
   same name as the `.fx` file of Direct3D 9. A mod can ship both files side by side: Direct3D 9
   reads the `.fx`, wgpu reads the `.wgsl`.
 - **The first line.** The file starts with the line `//! interface: mge-xe-core 1`. A file
-  without this line, or with another number, is not used.
+  without this line, or with another number, is not used. The `//!` lines must be the first
+  lines of the file, with nothing between them: after a blank line, a `//!` line is a plain
+  comment. In `XE Mod Shadow Data.wgsl` that means the values are left out, with no log line.
+- **The encoding.** Save the file as UTF-8 without a byte order mark (BOM). With a BOM, the
+  interface line is not found.
 - **Hooks only.** A file holds only:
   - hook functions, with the exact signature of interface 1;
   - functions, constants and structs of its own, whose names start with `mod_`.
@@ -40,11 +44,13 @@ come in a later part of the work.
 At its start the renderer writes one line for each event:
 
 - `core mods: XE Mod Shadow.wgsl (shadow_delta, shadow_esm) (interface mge-xe-core 1)`: the
-  files in use, with the hooks that each file defines;
+  files in use, with the hooks that each file defines; a values file shows its values line, as
+  in `XE Mod Shadow Data.wgsl (shade = 0.5)`;
 - `core mods: none used (Data Files/shaders/core-mods, interface mge-xe-core 1)`: no file is
   in use;
 - `core mod: XE Mod <name>.wgsl: <reason>; the built-in shadow is used`: a file that is
-  dropped, and why (the shader check's error text, or the rule it breaks);
+  dropped, and why (the shader check's error text, or the rule it breaks). When both shadow
+  files are installed, the line ends with `; XE Mod <other>.wgsl is dropped with it`;
 - `core mod: XE Mod <name>.fx is for Direct3D 9; the wgpu renderer reads XE Mod <name>.wgsl,
   and there is none`: a Direct3D 9 core mod with no `.wgsl` file beside it;
 - `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set.
@@ -71,7 +77,7 @@ surfaces of the water volumes.
 | Hook | Signature | What it gives | Direct3D 9 function |
 | --- | --- | --- | --- |
 | `shadow_delta` | `fn shadow_delta(s0: vec3f, s1: vec3f) -> f32` | The depth of the shadow map less the depth of the pixel. `s0` and `s1` are the pixel in the spaces of the two shadow layers. A positive number where the map has nothing nearer to the sun. | `shadowDeltaZ` |
-| `shadow_esm` | `fn shadow_esm(dz: f32) -> f32` | The shadow amount, 0 to 1, for a negative `dz`. The renderer multiplies it by the sun's light. | `shadowESM` |
+| `shadow_esm` | `fn shadow_esm(dz: f32) -> f32` | The shadow amount, 0 to 1, for a negative `dz`. The renderer scales it by the sun's light and by the fade at the edge of the outer layer. | `shadowESM` |
 
 The library of the shadow hooks:
 
