@@ -30,6 +30,11 @@ public:
     HRESULT _stdcall SetTextureStageState(DWORD a, D3DTEXTURESTAGESTATETYPE b, DWORD c);
     HRESULT _stdcall SetTexture(DWORD a, IDirect3DBaseTexture8* b);
     HRESULT _stdcall DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b, UINT c, UINT d, UINT e);
+    // The other draws of the game go to the device unchanged; these add the line of
+    // DrawStateLog.
+    HRESULT _stdcall DrawPrimitive(D3DPRIMITIVETYPE a, UINT b, UINT c);
+    HRESULT _stdcall DrawPrimitiveUP(D3DPRIMITIVETYPE a, UINT b, const void* c, UINT d);
+    HRESULT _stdcall DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE a, UINT b, UINT c, UINT d, const void* e, D3DFORMAT f, const void* g, UINT h);
     HRESULT _stdcall SetVertexShader(DWORD a);
     HRESULT _stdcall SetStreamSource(UINT a, IDirect3DVertexBuffer8* b, UINT c);
     HRESULT _stdcall SetIndices(IDirect3DIndexBuffer8* a, UINT b);

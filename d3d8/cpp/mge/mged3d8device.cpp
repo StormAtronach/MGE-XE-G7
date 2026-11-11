@@ -15,6 +15,7 @@
 #include "configuration.h"
 #include "distantland.h"
 #include "distantlandready.h"
+#include "drawstatelog.h"
 #include "gammaramp.h"
 #include "mgedinput.h"
 #include "morrowindskinning.h"
@@ -304,6 +305,7 @@ static void updateFrameLogic(MWBridge* mwBridge) {
 
 HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, const RGNDATA* d) {
     CameraRelative::onPresent();
+    DrawStateLog::onPresent();
 
     auto mwBridge = MWBridge::get();
 
@@ -744,7 +746,33 @@ HRESULT _stdcall MGEProxyDevice::SetTextureStageState(DWORD a, D3DTEXTURESTAGEST
     return ProxyDevice::SetTextureStageState(a, b, c);
 }
 
+HRESULT _stdcall MGEProxyDevice::DrawPrimitive(D3DPRIMITIVETYPE a, UINT b, UINT c) {
+    if (DrawStateLog::logging()) {
+        DrawStateLog::onDraw(realDevice, sceneCount, a, c);
+    }
+    return ProxyDevice::DrawPrimitive(a, b, c);
+}
+
+HRESULT _stdcall MGEProxyDevice::DrawPrimitiveUP(D3DPRIMITIVETYPE a, UINT b, const void* c, UINT d) {
+    if (DrawStateLog::logging()) {
+        DrawStateLog::onDraw(realDevice, sceneCount, a, b);
+    }
+    return ProxyDevice::DrawPrimitiveUP(a, b, c, d);
+}
+
+HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE a, UINT b, UINT c, UINT d, const void* e, D3DFORMAT f, const void* g, UINT h) {
+    if (DrawStateLog::logging()) {
+        DrawStateLog::onDraw(realDevice, sceneCount, a, d);
+    }
+    return ProxyDevice::DrawIndexedPrimitiveUP(a, b, c, d, e, f, g, h);
+}
+
 HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b, UINT c, UINT d, UINT e) {
+    // The state of the game's draw, before distant land takes, replaces or suppresses it.
+    if (DrawStateLog::logging()) {
+        DrawStateLog::onDraw(realDevice, sceneCount, a, e);
+    }
+
     const bool indexedSkinning =
         rs.vertexBlendState != D3DVBF_DISABLE &&
         (rs.fvf & D3DFVF_LASTBETA_UBYTE4) != 0;
