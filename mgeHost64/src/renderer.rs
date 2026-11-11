@@ -997,6 +997,10 @@ pub struct DistantLand {
     volumes_wanted: bool,
     /// Surfaces of water volumes were drawn in this frame.
     volumes_drawn: bool,
+    /// Why the reflection is drawn in every frame with water, for the session: a shader that
+    /// joins the water's library reads it ([`DistantLand::reflection_readers`]). [`None`]: a
+    /// frame may skip it ([`DistantLand::reflection_needed`]).
+    reflection_kept: Option<String>,
     /// The looks of the slots of water volumes, from the game (`MGE_WaterLookSet`).
     water_looks: std::collections::HashMap<u32, water::Look>,
     /// The water among the distant statics in view in this frame, from `before_world`.
@@ -1168,6 +1172,13 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 /// The bytes of a file under `Data Files`: in the game folder (the mods of Mod Organizer are
 /// in its file system), in `MGE_XE_GAME_DIR`, or beside this program (for a replay).
 fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
+    data_places(root, relative).iter().find_map(|place| std::fs::read(place).ok())
+}
+
+/// The places of a path under `Data Files`, in the order [`data_file`] tries them. A place
+/// whose real path is one already in the list (the game folder is also the folder of this
+/// program, or `MGE_XE_GAME_DIR`) is left out.
+fn data_places(root: &Path, relative: &str) -> Vec<PathBuf> {
     let name = Path::new("Data Files").join(relative);
     let mut places = vec![root.join(&name)];
     if let Some(game) = nirender_wgpu::switches::path("MGE_XE_GAME_DIR") {
@@ -1176,7 +1187,21 @@ fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
     if let Some(exe) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
         places.push(exe.join(&name));
     }
-    places.iter().find_map(|place| std::fs::read(place).ok())
+    let mut real_paths = Vec::new();
+    places.retain(|place| {
+        let real = std::fs::canonicalize(place).unwrap_or_else(|_| place.clone());
+        let new = !real_paths.contains(&real);
+        real_paths.push(real);
+        new
+    });
+    places
+}
+
+/// A path for the log, without the prefix `\\?\` that [`std::fs::canonicalize`] gives on
+/// Windows.
+fn shown(path: &Path) -> String {
+    let text = path.display().to_string();
+    text.strip_prefix(r"\\?\").map_or(text.clone(), str::to_owned)
 }
 
 /// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`).
@@ -1277,6 +1302,62 @@ fn fog_with(lit: vec3f, world: vec3f, scatter: bool) -> vec3f {
 ";
 
 impl DistantLand {
+    /// The shaders that join the water's library and read the reflection, for the session
+    /// ([`DistantLand::reflection_kept`]): the files of `Data Files/shaders/water` (each place
+    /// of [`data_places`], listed: a look loads its file only during the volume draws, after
+    /// the reflection pass) and the shadow hooks of the core mods, which every volume shader
+    /// takes. A folder that cannot be listed keeps the reflection too. Logs one line with the
+    /// files, each real path once (two places can be one folder).
+    fn reflection_readers(root: &Path, shadow_hooks: &str) -> Option<String> {
+        let mut files = std::collections::BTreeSet::new();
+        let mut kept = None;
+        if Water::shader_reads_reflection(shadow_hooks) {
+            kept = Some("the shadow hooks of the core mods".to_string());
+        }
+        for folder in data_places(root, "shaders/water") {
+            let entries = match std::fs::read_dir(&folder) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    kept.get_or_insert_with(|| format!("{} cannot be listed: {error}", folder.display()));
+                    continue;
+                }
+            };
+            for path in entries.filter_map(|entry| entry.ok().map(|entry| entry.path())) {
+                if path.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("wgsl")) {
+                    continue;
+                }
+                let path = std::fs::canonicalize(&path).unwrap_or(path);
+                if !files.insert(path.clone()) {
+                    continue;
+                }
+                let reads = std::fs::read(&path).map_or(true, |bytes| Water::shader_reads_reflection(&String::from_utf8_lossy(&bytes)));
+                if reads {
+                    kept.get_or_insert_with(|| format!("{} reads it", shown(&path)));
+                }
+            }
+        }
+        let listed = files.iter().map(|path| shown(path)).collect::<Vec<_>>().join("; ");
+        let count = files.len();
+        match &kept {
+            Some(reason) => println!("water: {count} water shaders of mods listed ({listed}); the reflection is drawn in every frame with water: {reason}"),
+            None => println!("water: {count} water shaders of mods listed ({listed}), none reads the reflection: a frame skips it when the plane is out of view"),
+        }
+        kept
+    }
+
+    /// The frame draws the reflection (or its one colour): the frame is under water (the
+    /// surfaces of water volumes read it from below), or a shader of the session reads it
+    /// ([`DistantLand::reflection_kept`]), or the plane can be in the main view
+    /// ([`Water::plane_in_view`], to the end of the plane in the frame).
+    fn reflection_needed(&self, scene: &SceneView, frame: &WaterFrame) -> bool {
+        if frame.underwater || self.reflection_kept.is_some() {
+            return true;
+        }
+        let far = frame.view_end.unwrap_or(self.draw_distance);
+        Water::plane_in_view(&scene.view, &scene.projection, scene.eye[2] as f32, frame.water_level, frame.wave_height.unwrap_or(0.0), far)
+    }
+
     /// Reads the settings of MGE XE in `root` and starts the load of the terrain.
     /// `live`: a game session, which runs the startup generation when `automatic_rebuild` is
     /// on. The terrain and the statics load after it.
@@ -1284,6 +1365,7 @@ impl DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
         let core_mods = core_mods::CoreMods::load(&|name| data_file(root, name), &shadow_homes(), &water_homes());
+        let reflection_kept = Self::reflection_readers(root, core_mods.shadow_hooks());
         // The places of the full tier: the player's setting, or the environment variable for a
         // test, which may go up to the code's bound (one place for each view slot).
         let full_tier_max = std::env::var("MGE_XE_FULL_TIER_MAX")
@@ -1390,6 +1472,7 @@ impl DistantLand {
             volumes_ready: false,
             volumes_wanted: false,
             volumes_drawn: false,
+            reflection_kept,
             water_looks: std::collections::HashMap::new(),
             far_water: Vec::new(),
             water_masks: None,
@@ -1567,9 +1650,10 @@ impl Drop for DistantLand {
         println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!("distant lights: {} frames with glows", self.lights.as_ref().map_or(0, |lights| lights.frames));
         println!(
-            "water: {} frames, {} reflections, {} frames with caustics, {} surfaces of water volumes, {} far water draws",
+            "water: {} frames, {} reflections, {} frames without the reflection (the plane out of view), {} frames with caustics, {} surfaces of water volumes, {} far water draws",
             self.water.as_ref().map_or(0, |w| w.frames),
             self.water.as_ref().map_or(0, |w| w.reflections),
+            self.water.as_ref().map_or(0, |w| w.reflections_skipped),
             self.caustics.as_ref().map_or(0, |c| c.frames),
             self.water.as_ref().map_or(0, |w| w.volumes_drawn()),
             self.water.as_ref().map_or(0, |w| w.far_drawn())
@@ -3082,9 +3166,15 @@ impl Extension for DistantLand {
         if !self.enabled || !self.distant_cell {
             // A cell without the distant land: the reflection of the water is one colour,
             // as `clearReflection` of the Direct3D 9 path has it.
-            let frame = self.water_frame(scene);
-            if let (Some(frame), Some(water)) = (frame, self.water.as_mut()) {
-                water.fill_reflection(scene, &frame);
+            if let Some(frame) = self.water_frame(scene) {
+                let needed = self.reflection_needed(scene, &frame);
+                if let Some(water) = self.water.as_mut() {
+                    if needed {
+                        water.fill_reflection(scene, &frame);
+                    } else {
+                        water.reflections_skipped += 1;
+                    }
+                }
             }
             return false;
         }
@@ -3211,13 +3301,19 @@ impl Extension for DistantLand {
         // An interior reflects only with `reflect_interiors`; without it the reflection is one
         // colour, as in a cell without the distant land.
         let mirrored = !scene.interior || self.reflect_interior;
-        if let (Some(water), Some(frame), false) = (self.water.as_mut(), water_frame.as_ref(), mirrored) {
+        // A frame whose plane is out of view and that has no other reader draws no
+        // reflection: the texture keeps its last content, which nothing reads in it.
+        let reflection_frame = water_frame.as_ref().filter(|frame| self.reflection_needed(scene, frame));
+        if let (Some(water), Some(_), None) = (self.water.as_mut(), water_frame.as_ref(), reflection_frame) {
+            water.reflections_skipped += 1;
+        }
+        if let (Some(water), Some(frame), false) = (self.water.as_mut(), reflection_frame, mirrored) {
             water.fill_reflection(scene, frame);
         }
 
         // The reflection in the water: the land and the sky, mirrored, in a pass of their
         // own that goes to the GPU before the frame.
-        if let (Some(water), Some(frame)) = (self.water.as_mut(), water_frame.as_ref().filter(|_| mirrored)) {
+        if let (Some(water), Some(frame)) = (self.water.as_mut(), reflection_frame.filter(|_| mirrored)) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection") });
             if let Some(timer) = self.gpu_time.as_ref() {
                 timer.start(&mut encoder);
@@ -3856,6 +3952,12 @@ impl DistantLand {
                 continue;
             }
             let file = data_file(&self.root, &format!("shaders/water/{name}.wgsl")).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+            // A file that came after the start of the session (`reflection_readers` listed
+            // the folder then): the reflection is drawn from the next frame on.
+            if self.reflection_kept.is_none() && file.as_deref().is_some_and(Water::shader_reads_reflection) {
+                println!("water shader {name}: reads the reflection; it is drawn in every frame with water from the next frame");
+                self.reflection_kept = Some(format!("shaders/water/{name}.wgsl reads it"));
+            }
             match water.add_water_shader(scene.device, &name, file.as_deref()) {
                 Ok(()) => println!("water shader {name}: loaded"),
                 Err(problem) => println!("water shader {name}: the standard look in its place: {problem}"),
@@ -4463,6 +4565,28 @@ impl DistantLand {
         // Direct3D 9 path has them.
         let (sun, ambient) = self.environment.map_or((1.0, 1.0), |e| (e.light_sun_mult, e.light_amb_mult));
         Some(PerPixel { sun, ambient, fade, original })
+    }
+}
+
+#[cfg(test)]
+mod data_place_tests {
+    use super::*;
+
+    #[test]
+    fn the_folder_of_the_program_as_the_root_is_one_place() {
+        let exe = std::env::current_exe().unwrap();
+        let folder = exe.parent().unwrap();
+        // The root is the folder of this program: the root's place and the program's place
+        // are one.
+        let places = data_places(folder, "shaders/water");
+        let in_folder = places.iter().filter(|place| place.starts_with(folder)).count();
+        assert_eq!(in_folder, 1, "{places:?}");
+    }
+
+    #[test]
+    fn a_path_for_the_log_has_no_prefix() {
+        assert_eq!(shown(Path::new(r"\\?\D:\Mods\a\shaders\water\x.wgsl")), r"D:\Mods\a\shaders\water\x.wgsl");
+        assert_eq!(shown(Path::new("Data Files/x.wgsl")), "Data Files/x.wgsl");
     }
 }
 
