@@ -680,13 +680,19 @@ fn no_corruption_makes_a_reader_panic() {
     // A linear congruential generator (Knuth's MMIX constants).
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
     let mut next = move || {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         (state >> 33) as usize
     };
     for _ in 0..4000 {
         let mut bytes = original.clone();
         for _ in 0..1 + next() % 4 {
-            let at = if next() % 2 == 0 { next() % size } else { next() % bytes.len() };
+            let at = if next() % 2 == 0 {
+                next() % size
+            } else {
+                next() % bytes.len()
+            };
             bytes[at] = next() as u8;
         }
         let _ = read_static_tables(&bytes, len);

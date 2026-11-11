@@ -73,7 +73,9 @@ pub fn parse_lights(bytes: &[u8]) -> io::Result<Lights> {
     }
     let (source_count, tile_count, tile) = (word(bytes, 12), word(bytes, 16), word(bytes, 20));
     if tile as usize != LIGHT_TILE {
-        return Err(invalid_data(format!("lights.data tile side mismatch: expected {LIGHT_TILE}, found {tile}")));
+        return Err(invalid_data(format!(
+            "lights.data tile side mismatch: expected {LIGHT_TILE}, found {tile}"
+        )));
     }
     let (cell, step) = (f32::from_bits(word(bytes, 24)), f32::from_bits(word(bytes, 28)));
     if cell != LIGHT_CELL || step != LIGHT_STEP {
@@ -145,7 +147,10 @@ mod tests {
         let bytes = file(3, 2);
         let lights = parse_lights(&bytes).unwrap();
         assert_eq!(lights.source_count, 3);
-        assert_eq!(lights.sources, bytes[LIGHTS_HEADER_SIZE..LIGHTS_HEADER_SIZE + 3 * LIGHT_SOURCE_SIZE]);
+        assert_eq!(
+            lights.sources,
+            bytes[LIGHTS_HEADER_SIZE..LIGHTS_HEADER_SIZE + 3 * LIGHT_SOURCE_SIZE]
+        );
         assert_eq!(lights.tiles, vec![(-3, 7), (-2, 6)]);
         assert_eq!(lights.texels.len(), 2 * LIGHT_TILE * LIGHT_TILE * LIGHT_TEXEL_SIZE);
         assert_eq!(lights.texels[..], bytes[bytes.len() - lights.texels.len()..]);
@@ -193,14 +198,20 @@ mod tests {
         }
         let mut state: u64 = 0x2545_F491_4F6C_DD1D;
         let mut next = move || {
-            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (state >> 33) as usize
         };
         for _ in 0..4000 {
             let mut bytes = original.clone();
             for _ in 0..1 + next() % 4 {
                 // Half of the changes in the header, where the counts are.
-                let at = if next() % 2 == 0 { next() % LIGHTS_HEADER_SIZE } else { next() % bytes.len() };
+                let at = if next() % 2 == 0 {
+                    next() % LIGHTS_HEADER_SIZE
+                } else {
+                    next() % bytes.len()
+                };
                 bytes[at] = next() as u8;
             }
             let _ = parse_lights(&bytes);

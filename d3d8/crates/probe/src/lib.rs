@@ -83,14 +83,25 @@ pub fn probe_lines(output: &str) -> Vec<String> {
 pub fn answer(output: &str, code: Option<i32>, exit_gpu: i32, seconds: u64) -> Answer {
     let last = output.lines().rev().find_map(|line| {
         let line = line.trim_end();
-        line.strip_prefix("probe: use ").map(|backend| (true, format!("use {backend}"))).or_else(|| line.strip_prefix("probe: none: ").map(|reason| (false, reason.to_string())))
+        line.strip_prefix("probe: use ")
+            .map(|backend| (true, format!("use {backend}")))
+            .or_else(|| line.strip_prefix("probe: none: ").map(|reason| (false, reason.to_string())))
     });
     match (last, code) {
         (Some((true, reason)), Some(0)) => Answer { usable: true, reason },
         (Some((false, reason)), Some(code)) if code == exit_gpu => Answer { usable: false, reason },
-        (Some((_, reason)), Some(code)) => Answer { usable: false, reason: format!("the probe said \"{reason}\" and ended with the code {code:#x}") },
-        (None, Some(code)) => Answer { usable: false, reason: format!("the probe ended with the code {code:#x} and no answer") },
-        (_, None) => Answer { usable: false, reason: format!("the probe gave no answer in {seconds} s") },
+        (Some((_, reason)), Some(code)) => Answer {
+            usable: false,
+            reason: format!("the probe said \"{reason}\" and ended with the code {code:#x}"),
+        },
+        (None, Some(code)) => Answer {
+            usable: false,
+            reason: format!("the probe ended with the code {code:#x} and no answer"),
+        },
+        (_, None) => Answer {
+            usable: false,
+            reason: format!("the probe gave no answer in {seconds} s"),
+        },
     }
 }
 
@@ -111,13 +122,25 @@ fn run_full(exe: &str, exit_gpu: i32, seconds: u64) -> Run {
 /// (see the module's head), the wait is up to `seconds`, then the answer of its lines.
 fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> Run {
     let started = Instant::now();
-    let mut child = match command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+    let mut child = match command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
         Ok(child) => child,
         // No end of its own, as for a probe ended at the limit: a start that failed (a scanner
         // that holds the new copy of numidium.exe) says nothing about the machine.
         Err(error) => {
-            let answer = Answer { usable: false, reason: format!("the probe did not start: {error}") };
-            return Run { answer, end: End::NotStarted, lines: Vec::new() };
+            let answer = Answer {
+                usable: false,
+                reason: format!("the probe did not start: {error}"),
+            };
+            return Run {
+                answer,
+                end: End::NotStarted,
+                lines: Vec::new(),
+            };
         }
     };
     let mut stdout = child.stdout.take().expect("the probe's output is piped");
@@ -143,7 +166,11 @@ fn run_command(mut command: Command, exit_gpu: i32, seconds: u64) -> Run {
     // The probe has ended, so its end of the pipe is closed and the reader ends.
     let output = reader.join().unwrap_or_default();
     let end = code.map_or(End::Limit, End::Code);
-    Run { answer: answer(&output, code, exit_gpu, seconds), end, lines: probe_lines(&output) }
+    Run {
+        answer: answer(&output, code, exit_gpu, seconds),
+        end,
+        lines: probe_lines(&output),
+    }
 }
 
 /// What a cache line says about its machine.
@@ -272,9 +299,31 @@ pub fn check(exe: &str, path: &str, key: &str, exit_gpu: i32, seconds: u64) -> O
 /// [`check`] with the probe as a function that gives its run.
 fn check_with(path: &str, key: &str, seconds: u64, probe: impl FnOnce() -> Run) -> Outcome {
     let no_answer_before = match read_cache(path).filter(|cached| cached.key == key) {
-        Some(Cached { said: Said::Usable, reason, .. }) => return Outcome { verdict: Verdict::CachedUsable, reason, lines: Vec::new() },
-        Some(Cached { said: Said::None, reason, .. }) => return Outcome { verdict: Verdict::CachedNone, reason, lines: Vec::new() },
-        Some(Cached { said: Said::NoAnswer, .. }) => true,
+        Some(Cached {
+            said: Said::Usable,
+            reason,
+            ..
+        }) => {
+            return Outcome {
+                verdict: Verdict::CachedUsable,
+                reason,
+                lines: Vec::new(),
+            };
+        }
+        Some(Cached {
+            said: Said::None,
+            reason,
+            ..
+        }) => {
+            return Outcome {
+                verdict: Verdict::CachedNone,
+                reason,
+                lines: Vec::new(),
+            };
+        }
+        Some(Cached {
+            said: Said::NoAnswer, ..
+        }) => true,
         None => false,
     };
     let run = probe();
@@ -282,7 +331,11 @@ fn check_with(path: &str, key: &str, seconds: u64, probe: impl FnOnce() -> Run) 
     if let Some((said, cached_reason)) = line {
         let _ = std::fs::write(path, format_cache(key, said, &cached_reason));
     }
-    Outcome { verdict, reason, lines: run.lines }
+    Outcome {
+        verdict,
+        reason,
+        lines: run.lines,
+    }
 }
 
 /// The decision after a probe ran: from how the probe ended and whether the cache said "no
@@ -298,15 +351,27 @@ fn decide(no_answer_before: bool, run: &Run, seconds: u64) -> (Verdict, String, 
     let answer = &run.answer;
     match run.end {
         End::Code(_) => {
-            let (verdict, said) = if answer.usable { (Verdict::ProbeUsable, Said::Usable) } else { (Verdict::ProbeNone, Said::None) };
+            let (verdict, said) = if answer.usable {
+                (Verdict::ProbeUsable, Said::Usable)
+            } else {
+                (Verdict::ProbeNone, Said::None)
+            };
             (verdict, answer.reason.clone(), Some((said, answer.reason.clone())))
         }
         End::Limit if no_answer_before => {
             let reason = format!("the probe gave no answer twice in a row ({seconds} s each)");
             (Verdict::NoAnswerTwice, reason.clone(), Some((Said::None, reason)))
         }
-        End::Limit => (Verdict::NoAnswer, format!("{}; the wgpu path is tried", answer.reason), Some((Said::NoAnswer, answer.reason.clone()))),
-        End::NotStarted => (Verdict::NotStarted, format!("{}; not cached, the next start probes again", answer.reason), None),
+        End::Limit => (
+            Verdict::NoAnswer,
+            format!("{}; the wgpu path is tried", answer.reason),
+            Some((Said::NoAnswer, answer.reason.clone())),
+        ),
+        End::NotStarted => (
+            Verdict::NotStarted,
+            format!("{}; not cached, the next start probes again", answer.reason),
+            None,
+        ),
     }
 }
 
@@ -322,11 +387,19 @@ mod tests {
         use std::os::windows::process::CommandExt;
         let mut command = Command::new("cmd");
         // 4000 lines of 40 bytes: 160 KB, then the answer line.
-        command.raw_arg("/C \"(for /L %i in (1,1,4000) do @echo line %i of a long output of the probe) & echo probe: use vulkan\"");
+        command.raw_arg(
+            "/C \"(for /L %i in (1,1,4000) do @echo line %i of a long output of the probe) & echo probe: use vulkan\"",
+        );
         let started = Instant::now();
         let run = run_command(command, 20, 30);
         assert_eq!(run.end, End::Code(0), "{:?}", run.answer);
-        assert_eq!(run.answer, Answer { usable: true, reason: "use vulkan".to_string() });
+        assert_eq!(
+            run.answer,
+            Answer {
+                usable: true,
+                reason: "use vulkan".to_string()
+            }
+        );
         // Only the probe's own line goes to the log, not the 4000 others.
         assert_eq!(run.lines, vec!["probe: use vulkan".to_string()]);
         assert!(started.elapsed() < Duration::from_secs(30));
@@ -343,7 +416,14 @@ mod tests {
 
     /// The probe's runs of the decision table, with no lines.
     fn ran(usable: bool, reason: &str, end: End) -> Run {
-        Run { answer: Answer { usable, reason: reason.to_string() }, end, lines: Vec::new() }
+        Run {
+            answer: Answer {
+                usable,
+                reason: reason.to_string(),
+            },
+            end,
+            lines: Vec::new(),
+        }
     }
     fn usable() -> Run {
         ran(true, "use dx12", End::Code(0))
@@ -390,7 +470,11 @@ mod tests {
                 None => panic!("row {row}: a probe ran though the cache had the answer"),
             });
             assert_eq!(outcome.verdict, verdict, "row {row}");
-            assert_eq!((outcome.verdict.wgpu(), outcome.verdict.shows_box()), (wgpu, shows_box), "row {row}");
+            assert_eq!(
+                (outcome.verdict.wgpu(), outcome.verdict.shows_box()),
+                (wgpu, shows_box),
+                "row {row}"
+            );
             assert_eq!(read_cache(&path).map(|cached| cached.said), after, "row {row}");
         }
 
@@ -401,7 +485,10 @@ mod tests {
         assert_eq!(read_cache(&path).unwrap().reason, "the probe gave no answer in 5 s");
         let second = check_with(&path, "key", 5, silent);
         assert_eq!(second.reason, "the probe gave no answer twice in a row (5 s each)");
-        assert_eq!(read_cache(&path).unwrap().reason, "the probe gave no answer twice in a row (5 s each)");
+        assert_eq!(
+            read_cache(&path).unwrap().reason,
+            "the probe gave no answer twice in a row (5 s each)"
+        );
 
         // A "no answer" of another machine (another key) is no line for this one: the first
         // silence of this machine tries the wgpu path.
@@ -421,11 +508,20 @@ mod tests {
             .lines()
             .filter_map(|line| {
                 let (name, value) = line.trim().strip_suffix(',')?.split_once(" = ")?;
-                name.starts_with("MgeProbe").then(|| (name.to_string(), value.trim().parse().expect("a number")))
+                name.starts_with("MgeProbe")
+                    .then(|| (name.to_string(), value.trim().parse().expect("a number")))
             })
             .collect();
         // The C++ names drop the word "Probe" of a verdict that starts with it.
-        let mut rust: Vec<(String, u32)> = Verdict::ALL.iter().map(|&verdict| (format!("MgeProbe{}", format!("{verdict:?}").trim_start_matches("Probe")), verdict as u32)).collect();
+        let mut rust: Vec<(String, u32)> = Verdict::ALL
+            .iter()
+            .map(|&verdict| {
+                (
+                    format!("MgeProbe{}", format!("{verdict:?}").trim_start_matches("Probe")),
+                    verdict as u32,
+                )
+            })
+            .collect();
         cpp.sort();
         rust.sort();
         assert_eq!(cpp, rust);
@@ -434,7 +530,12 @@ mod tests {
         // match has no wildcard, so a new verdict does not compile here until it is named,
         // and then the count and the order below ask for it in ALL.
         let last = |verdict: Verdict| match verdict {
-            Verdict::ProbeNone | Verdict::ProbeUsable | Verdict::CachedNone | Verdict::CachedUsable | Verdict::NoAnswer | Verdict::NoAnswerTwice => false,
+            Verdict::ProbeNone
+            | Verdict::ProbeUsable
+            | Verdict::CachedNone
+            | Verdict::CachedUsable
+            | Verdict::NoAnswer
+            | Verdict::NoAnswerTwice => false,
             Verdict::NotStarted => true,
         };
         assert!(last(Verdict::ALL[Verdict::ALL.len() - 1]));
@@ -448,9 +549,19 @@ mod tests {
     fn a_cache_line_reads_back_as_written() {
         let key = "NVIDIA GeForce RTX 5070 32.0.16.1714; numidium.exe 46896640 133000";
         let text = format_cache(key, Said::Usable, "use vulkan");
-        assert_eq!(parse_cache(&text), Some(Cached { key: key.to_string(), said: Said::Usable, reason: "use vulkan".to_string() }));
+        assert_eq!(
+            parse_cache(&text),
+            Some(Cached {
+                key: key.to_string(),
+                said: Said::Usable,
+                reason: "use vulkan".to_string()
+            })
+        );
         let read = parse_cache(&format_cache("k", Said::None, "dx12: lacks\tthe arrays\nand more")).unwrap();
-        assert_eq!((read.said, read.reason.as_str()), (Said::None, "dx12: lacks the arrays and more"));
+        assert_eq!(
+            (read.said, read.reason.as_str()),
+            (Said::None, "dx12: lacks the arrays and more")
+        );
         let read = parse_cache(&format_cache("k", Said::NoAnswer, "the probe gave no answer in 5 s")).unwrap();
         assert_eq!(read.said, Said::NoAnswer);
         assert_eq!(text.lines().count(), 1);
@@ -471,11 +582,21 @@ mod tests {
         // The same key: the cache answers, no probe runs (the program is not there), and there
         // are no probe lines for the log.
         let outcome = check("a-program-that-is-not-there.exe", &path, "key A", 20, 1);
-        assert_eq!(outcome, Outcome { verdict: Verdict::CachedNone, reason: "lacks x".to_string(), lines: Vec::new() });
+        assert_eq!(
+            outcome,
+            Outcome {
+                verdict: Verdict::CachedNone,
+                reason: "lacks x".to_string(),
+                lines: Vec::new()
+            }
+        );
         // Another key: the probe runs and answers with its lines; the cache has the new key
         // and the answer, one line, and not the probe's lines.
         let lines = probe_lines(OK);
-        let outcome = check_with(&path, "key B", 5, || Run { lines: lines.clone(), ..usable() });
+        let outcome = check_with(&path, "key B", 5, || Run {
+            lines: lines.clone(),
+            ..usable()
+        });
         assert_eq!(outcome.verdict, Verdict::ProbeUsable);
         assert_eq!(outcome.lines, lines);
         assert_eq!(read_cache(&path).unwrap().key, "key B");
@@ -492,7 +613,11 @@ mod tests {
         let outcome = check("a-program-that-is-not-there.exe", &path, "key", 20, 1);
         assert_eq!(outcome.verdict, Verdict::NotStarted);
         assert!(outcome.reason.starts_with("the probe did not start"), "{}", outcome.reason);
-        assert!(outcome.reason.ends_with("; not cached, the next start probes again"), "{}", outcome.reason);
+        assert!(
+            outcome.reason.ends_with("; not cached, the next start probes again"),
+            "{}",
+            outcome.reason
+        );
         assert!(read_cache(&path).is_none(), "a probe that did not start was cached");
         let _ = std::fs::remove_dir(&folder);
     }
@@ -502,14 +627,26 @@ mod tests {
 
     #[test]
     fn a_usable_gpu_names_its_backend() {
-        assert_eq!(answer(OK, Some(0), 20, 5), Answer { usable: true, reason: "use vulkan".to_string() });
+        assert_eq!(
+            answer(OK, Some(0), 20, 5),
+            Answer {
+                usable: true,
+                reason: "use vulkan".to_string()
+            }
+        );
     }
 
     #[test]
     fn a_refusal_carries_the_reason_of_the_probe() {
         let answer = answer(NONE, Some(20), 20, 5);
         assert!(!answer.usable);
-        assert!(answer.reason.starts_with("vulkan: A card: lacks room in the binding arrays: has 1 textures"), "{}", answer.reason);
+        assert!(
+            answer
+                .reason
+                .starts_with("vulkan: A card: lacks room in the binding arrays: has 1 textures"),
+            "{}",
+            answer.reason
+        );
     }
 
     /// A crash is a none with its code; a silence has its own reason (its verdict is
@@ -517,10 +654,19 @@ mod tests {
     #[test]
     fn a_crash_and_a_silence_have_their_cause() {
         // A fast fail of a Rust panic, as Windows reports it (0xC0000409 as a signed code).
-        assert_eq!(answer("", Some(-1073740791), 20, 5).reason, "the probe ended with the code 0xc0000409 and no answer");
+        assert_eq!(
+            answer("", Some(-1073740791), 20, 5).reason,
+            "the probe ended with the code 0xc0000409 and no answer"
+        );
         assert!(!answer("", Some(-1073740791), 20, 5).usable);
-        assert_eq!(answer("probe: use vulkan\n", Some(3), 20, 5).reason, "the probe said \"use vulkan\" and ended with the code 0x3");
-        assert_eq!(answer("probe: vulkan: A card: lacks x\n", None, 20, 5).reason, "the probe gave no answer in 5 s");
+        assert_eq!(
+            answer("probe: use vulkan\n", Some(3), 20, 5).reason,
+            "the probe said \"use vulkan\" and ended with the code 0x3"
+        );
+        assert_eq!(
+            answer("probe: vulkan: A card: lacks x\n", None, 20, 5).reason,
+            "the probe gave no answer in 5 s"
+        );
     }
 
     /// A probe that runs past the limit is ended (TerminateProcess), so that no probe runs
@@ -547,13 +693,23 @@ mod tests {
         let long = format!("probe: {}\n", "\u{e9}".repeat(400)).repeat(20);
         let lines = probe_lines(&long);
         assert_eq!(lines.len(), 16);
-        assert!(lines.iter().all(|line| line.len() <= 600 && line.len() >= 599), "{}", lines[0].len());
+        assert!(
+            lines.iter().all(|line| line.len() <= 600 && line.len() >= 599),
+            "{}",
+            lines[0].len()
+        );
     }
 
     #[test]
     fn the_last_answer_line_counts() {
         let twice = "probe: none: first\nprobe: use dx12\nprobe: 0.3 s\n";
-        assert_eq!(answer(twice, Some(0), 20, 5), Answer { usable: true, reason: "use dx12".to_string() });
+        assert_eq!(
+            answer(twice, Some(0), 20, 5),
+            Answer {
+                usable: true,
+                reason: "use dx12".to_string()
+            }
+        );
     }
 
     #[test]

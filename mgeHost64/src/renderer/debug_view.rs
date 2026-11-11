@@ -37,7 +37,12 @@ impl View {
     /// The view of a name and its term. The water and the post chain take a term above 0;
     /// the other views take none.
     pub fn parse(name: &str, term: Option<&str>) -> Result<View, String> {
-        let term = term.map(|text| text.parse::<f32>().ok().filter(|term| term.is_finite() && *term > 0.0).ok_or_else(|| format!("the term {text:?} is not a number above 0")));
+        let term = term.map(|text| {
+            text.parse::<f32>()
+                .ok()
+                .filter(|term| term.is_finite() && *term > 0.0)
+                .ok_or_else(|| format!("the term {text:?} is not a number above 0"))
+        });
         let view = match (name, term) {
             ("lights", None) => View::Lights,
             ("shadow-layers", None) => View::ShadowLayers,
@@ -88,13 +93,21 @@ impl DebugView {
     /// The view of a session. A replay (`pinned`) takes `--debug-view` and `--debug-lines` out
     /// of the arguments, so the crate does not see them; a live session has no such arguments.
     pub fn from_arguments(arguments: &mut Vec<String>, pinned: bool) -> Result<DebugView, String> {
-        let mut debug = DebugView { pinned, ..DebugView::default() };
-        while let Some(at) = arguments.iter().position(|argument| argument == "--debug-view" || argument == "--debug-lines") {
+        let mut debug = DebugView {
+            pinned,
+            ..DebugView::default()
+        };
+        while let Some(at) = arguments
+            .iter()
+            .position(|argument| argument == "--debug-view" || argument == "--debug-lines")
+        {
             if !pinned {
                 return Err(format!("{} is an argument of a replay", arguments[at]));
             }
             let flag = arguments.remove(at);
-            let value = (at < arguments.len()).then(|| arguments.remove(at)).ok_or_else(|| format!("{flag} takes a name"))?;
+            let value = (at < arguments.len())
+                .then(|| arguments.remove(at))
+                .ok_or_else(|| format!("{flag} takes a name"))?;
             if flag == "--debug-lines" {
                 debug.lines = LineSources::parse_list(&value).map_err(|problem| problem.to_string())?;
                 continue;
@@ -175,7 +188,11 @@ impl DebugView {
 
     fn lines_text(&self) -> String {
         let names: Vec<&str> = self.lines.names().collect();
-        if names.is_empty() { "none".to_owned() } else { names.join(",") }
+        if names.is_empty() {
+            "none".to_owned()
+        } else {
+            names.join(",")
+        }
     }
 }
 
@@ -185,14 +202,24 @@ pub const SETTINGS_DEBUG_LIGHT: u32 = 1;
 
 /// The start-time switches that set the debug views before this carrier. The helper reads
 /// none of them.
-pub const RETIRED_SWITCHES: [&str; 4] = ["MGE_XE_SHADOW_LAYERS", "MGE_XE_SHADOW_DEBUG", "MGE_XE_WATER_DEBUG", "MGE_XE_POST_DEBUG"];
+pub const RETIRED_SWITCHES: [&str; 4] = [
+    "MGE_XE_SHADOW_LAYERS",
+    "MGE_XE_SHADOW_DEBUG",
+    "MGE_XE_WATER_DEBUG",
+    "MGE_XE_POST_DEBUG",
+];
 
 /// The log line for the retired switches that are set (`is_set` answers for one name), so that
 /// a variable left from an old test does not look like a view that failed. [`None`] when none
 /// is set.
 pub fn retired_switches_line(is_set: impl Fn(&str) -> bool) -> Option<String> {
     let set: Vec<&str> = RETIRED_SWITCHES.into_iter().filter(|name| is_set(name)).collect();
-    (!set.is_empty()).then(|| format!("debug view: {} set, but retired: use the tune `debug view <name>`, nirender.debug.view or --debug-view", set.join(", ")))
+    (!set.is_empty()).then(|| {
+        format!(
+            "debug view: {} set, but retired: use the tune `debug view <name>`, nirender.debug.view or --debug-view",
+            set.join(", ")
+        )
+    })
 }
 
 #[cfg(test)]

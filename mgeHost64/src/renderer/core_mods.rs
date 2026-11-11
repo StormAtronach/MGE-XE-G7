@@ -57,7 +57,18 @@ const FOLDER: &str = "shaders/core-mods";
 
 /// The core files of the Direct3D 9 path that a mod can replace with an `.fx`: such a file
 /// without its `.wgsl` is named in the log.
-const DIRECT3D9_FILES: [&str; 10] = ["Shadow", "Shadow Data", "Water", "Water Standard", "Water Volume", "Caustics", "Grass", "Landscape", "Sky", "Statics"];
+const DIRECT3D9_FILES: [&str; 10] = [
+    "Shadow",
+    "Shadow Data",
+    "Water",
+    "Water Standard",
+    "Water Volume",
+    "Caustics",
+    "Grass",
+    "Landscape",
+    "Sky",
+    "Statics",
+];
 
 /// A function of the renderer that a core mod may replace: its name, the types of its
 /// arguments and of its result as naga writes them, and its built-in WGSL.
@@ -69,8 +80,18 @@ struct Hook {
 }
 
 const SHADOW_HOOKS: [Hook; 2] = [
-    Hook { name: "shadow_delta", arguments: &["vec3<f32>", "vec3<f32>"], result: "f32", built_in: SHADOW_DELTA },
-    Hook { name: "shadow_esm", arguments: &["f32"], result: "f32", built_in: SHADOW_ESM },
+    Hook {
+        name: "shadow_delta",
+        arguments: &["vec3<f32>", "vec3<f32>"],
+        result: "f32",
+        built_in: SHADOW_DELTA,
+    },
+    Hook {
+        name: "shadow_esm",
+        arguments: &["f32"],
+        result: "f32",
+        built_in: SHADOW_ESM,
+    },
 ];
 
 const SHADOW_DELTA: &str = "
@@ -112,9 +133,24 @@ fn shadow_esm_values() -> vec2f { return vec2f(0.0); }
 const SHADOW_LIBRARY_NAMES: [&str; 4] = ["shadow_map_depth", "shadow_texel", "shadow_esm_scale", "shadow_esm_values"];
 
 const WATER_HOOKS: [Hook; 3] = [
-    Hook { name: "water_normal", arguments: &["vec4<f32>", "f32", "vec2<f32>"], result: "vec3<f32>", built_in: super::water::WATER_NORMAL },
-    Hook { name: "water_color", arguments: &["WaterPixel"], result: "vec4<f32>", built_in: super::water::WATER_COLOR },
-    Hook { name: "underwater_color", arguments: &["WaterPixel"], result: "vec4<f32>", built_in: super::water::UNDERWATER_COLOR },
+    Hook {
+        name: "water_normal",
+        arguments: &["vec4<f32>", "f32", "vec2<f32>"],
+        result: "vec3<f32>",
+        built_in: super::water::WATER_NORMAL,
+    },
+    Hook {
+        name: "water_color",
+        arguments: &["WaterPixel"],
+        result: "vec4<f32>",
+        built_in: super::water::WATER_COLOR,
+    },
+    Hook {
+        name: "underwater_color",
+        arguments: &["WaterPixel"],
+        result: "vec4<f32>",
+        built_in: super::water::UNDERWATER_COLOR,
+    },
 ];
 
 /// The struct of the water hooks, part of the interface: it joins the plane's shader.
@@ -233,7 +269,12 @@ pub(crate) struct ShadowValues {
 
 impl Default for ShadowValues {
     fn default() -> ShadowValues {
-        ShadowValues { shade: shadow::SHADE, shade_color: shadow::SHADE_COLOR, esm_c: shadow::ESM_C, esm_bias: shadow::ESM_BIAS }
+        ShadowValues {
+            shade: shadow::SHADE,
+            shade_color: shadow::SHADE_COLOR,
+            esm_c: shadow::ESM_C,
+            esm_bias: shadow::ESM_BIAS,
+        }
     }
 }
 
@@ -254,10 +295,17 @@ impl ShadowValues {
     fn parse(line: &str) -> Result<ShadowValues, String> {
         let mut values = ShadowValues::default();
         for item in line.split(',').map(str::trim).filter(|item| !item.is_empty()) {
-            let Some((key, numbers)) = item.split_once('=') else { return Err(format!("the value `{item}` has no `name = number`")) };
+            let Some((key, numbers)) = item.split_once('=') else {
+                return Err(format!("the value `{item}` has no `name = number`"));
+            };
             let numbers: Vec<f32> = numbers
                 .split_whitespace()
-                .map(|word| word.parse::<f32>().ok().filter(|number| number.is_finite()).ok_or_else(|| format!("`{word}` of the value {} is not a number", key.trim())))
+                .map(|word| {
+                    word.parse::<f32>()
+                        .ok()
+                        .filter(|number| number.is_finite())
+                        .ok_or_else(|| format!("`{word}` of the value {} is not a number", key.trim()))
+                })
                 .collect::<Result<_, _>>()?;
             let key = key.trim();
             let count = if key == "shade_color" { 3 } else { 1 };
@@ -269,20 +317,32 @@ impl ShadowValues {
                 "shade_color" => values.shade_color = [numbers[0], numbers[1], numbers[2]],
                 "esm_c" => values.esm_c = numbers[0],
                 "esm_bias" => values.esm_bias = numbers[0],
-                other => return Err(format!("the value `{other}` is not known (shade, shade_color, esm_c, esm_bias)")),
+                other => {
+                    return Err(format!(
+                        "the value `{other}` is not known (shade, shade_color, esm_c, esm_bias)"
+                    ));
+                }
             }
         }
         // `shadowSunEstimate` divides by the shade plus the light, which is 0 at night: 0/0 at a
         // shade of 0.
         if values.shade < 0.01 {
-            return Err(format!("the value shade = {} is out of its range: 0.01 or more", values.shade));
+            return Err(format!(
+                "the value shade = {} is out of its range: 0.01 or more",
+                values.shade
+            ));
         }
         if values.shade_color.iter().any(|part| !(0.0..=1.0).contains(part)) {
             let [r, g, b] = values.shade_color;
-            return Err(format!("the value shade_color = {r} {g} {b} is out of its range: 0 to 1 in each number"));
+            return Err(format!(
+                "the value shade_color = {r} {g} {b} is out of its range: 0 to 1 in each number"
+            ));
         }
         if !(values.esm_c > 0.0 && values.esm_c <= 88.0) {
-            return Err(format!("the value esm_c = {} is out of its range: above 0, at most 88", values.esm_c));
+            return Err(format!(
+                "the value esm_c = {} is out of its range: above 0, at most 88",
+                values.esm_c
+            ));
         }
         Ok(values)
     }
@@ -309,7 +369,12 @@ pub(crate) struct CoreMods {
 impl CoreMods {
     /// The built-in hooks only.
     pub fn built_in() -> CoreMods {
-        CoreMods { shadow_hooks: hook_text(&SHADOW_HOOKS, &[], ""), shadow_values: ShadowValues::default(), water_hooks: hook_text(&WATER_HOOKS, &[], ""), report: Vec::new() }
+        CoreMods {
+            shadow_hooks: hook_text(&SHADOW_HOOKS, &[], ""),
+            shadow_values: ShadowValues::default(),
+            water_hooks: hook_text(&WATER_HOOKS, &[], ""),
+            report: Vec::new(),
+        }
     }
 
     /// The files under `Data Files` (`read` gives the bytes of a path there), checked with the
@@ -317,7 +382,10 @@ impl CoreMods {
     /// report is printed.
     pub fn load(read: &dyn Fn(&str) -> Option<Vec<u8>>, shadow_homes: &[Home], water_homes: &[Home]) -> CoreMods {
         let mods = if nirender_wgpu::switches::on("MGE_XE_CORE_MODS") == Some(false) {
-            CoreMods { report: vec!["core mods: off (MGE_XE_CORE_MODS=0)".to_string()], ..CoreMods::built_in() }
+            CoreMods {
+                report: vec!["core mods: off (MGE_XE_CORE_MODS=0)".to_string()],
+                ..CoreMods::built_in()
+            }
         } else {
             CoreMods::read(read, shadow_homes, water_homes)
         };
@@ -331,7 +399,10 @@ impl CoreMods {
     fn read(read: &dyn Fn(&str) -> Option<Vec<u8>>, shadow_homes: &[Home], water_homes: &[Home]) -> CoreMods {
         let mut mods = CoreMods::built_in();
         // A byte order mark, which an editor on Windows can put first, is not part of the text.
-        let file = |name: &str, extension: &str| read(&format!("{FOLDER}/XE Mod {name}.{extension}")).map(|bytes| String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string());
+        let file = |name: &str, extension: &str| {
+            read(&format!("{FOLDER}/XE Mod {name}.{extension}"))
+                .map(|bytes| String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string())
+        };
         for name in DIRECT3D9_FILES {
             if file(name, "wgsl").is_none() && file(name, "fx").is_some() {
                 mods.report.push(format!("core mod: XE Mod {name}.fx is for Direct3D 9; the wgpu renderer reads XE Mod {name}.wgsl, and there is none"));
@@ -345,7 +416,14 @@ impl CoreMods {
                     mods.shadow_hooks = shadow.hooks;
                     mods.shadow_values = shadow.values;
                     if shadow_file.is_some() {
-                        used.push(format!("XE Mod Shadow.wgsl ({})", if shadow.defined.is_empty() { "no hook".to_string() } else { shadow.defined.join(", ") }));
+                        used.push(format!(
+                            "XE Mod Shadow.wgsl ({})",
+                            if shadow.defined.is_empty() {
+                                "no hook".to_string()
+                            } else {
+                                shadow.defined.join(", ")
+                            }
+                        ));
                     }
                     if let Some(values) = shadow.values_line {
                         used.push(format!("XE Mod Shadow Data.wgsl ({values})"));
@@ -353,25 +431,53 @@ impl CoreMods {
                 }
                 Err((name, problem)) => {
                     let other = if name == "Shadow" { "Shadow Data" } else { "Shadow" };
-                    let with = if shadow_file.is_some() && data_file.is_some() { format!("; XE Mod {other}.wgsl is dropped with it") } else { String::new() };
-                    mods.report.push(format!("core mod: XE Mod {name}.wgsl: {problem}; the built-in shadow is used{with}"));
+                    let with = if shadow_file.is_some() && data_file.is_some() {
+                        format!("; XE Mod {other}.wgsl is dropped with it")
+                    } else {
+                        String::new()
+                    };
+                    mods.report.push(format!(
+                        "core mod: XE Mod {name}.wgsl: {problem}; the built-in shadow is used{with}"
+                    ));
                 }
             }
         }
         if let Some(text) = file("Water", "wgsl") {
-            match hook_file(&text, &WATER_HOOKS, &format!("{WATER_INTERFACE}{WATER_LIBRARY}"), &WATER_LIBRARY_NAMES, water_homes) {
+            match hook_file(
+                &text,
+                &WATER_HOOKS,
+                &format!("{WATER_INTERFACE}{WATER_LIBRARY}"),
+                &WATER_LIBRARY_NAMES,
+                water_homes,
+            ) {
                 Ok((hooks, defined)) => {
                     mods.water_hooks = hooks;
-                    used.push(format!("XE Mod Water.wgsl ({})", if defined.is_empty() { "no hook".to_string() } else { defined.join(", ") }));
+                    used.push(format!(
+                        "XE Mod Water.wgsl ({})",
+                        if defined.is_empty() {
+                            "no hook".to_string()
+                        } else {
+                            defined.join(", ")
+                        }
+                    ));
                     mods.report.push("core mod: XE Mod Water.wgsl: the plane of the water takes its hooks; the water volumes and the dry spaces keep the built-in water".to_string());
-                    if defined.iter().any(|hook| *hook == "water_color" || *hook == "underwater_color") {
+                    if defined
+                        .iter()
+                        .any(|hook| *hook == "water_color" || *hook == "underwater_color")
+                    {
                         mods.report.push("core mod: XE Mod Water.wgsl: the debug view water shows no terms of its water colour (the terms are those of the built-in)".to_string());
                     }
                 }
-                Err(problem) => mods.report.push(format!("core mod: XE Mod Water.wgsl: {problem}; the built-in water is used")),
+                Err(problem) => mods
+                    .report
+                    .push(format!("core mod: XE Mod Water.wgsl: {problem}; the built-in water is used")),
             }
         }
-        mods.report.push(if used.is_empty() { format!("core mods: none used (Data Files/{FOLDER}, interface {INTERFACE})") } else { format!("core mods: {} (interface {INTERFACE})", used.join(", ")) });
+        mods.report.push(if used.is_empty() {
+            format!("core mods: none used (Data Files/{FOLDER}, interface {INTERFACE})")
+        } else {
+            format!("core mods: {} (interface {INTERFACE})", used.join(", "))
+        });
         mods
     }
 
@@ -394,8 +500,15 @@ impl CoreMods {
     /// The core mods of `files` (names under the folder, and texts), for a test of a home.
     #[cfg(test)]
     pub fn of_files(files: &[(&str, &str)], shadow_homes: &[Home], water_homes: &[Home]) -> CoreMods {
-        let files: std::collections::HashMap<String, String> = files.iter().map(|(name, text)| (format!("{FOLDER}/XE Mod {name}"), text.to_string())).collect();
-        CoreMods::read(&|path| files.get(path).map(|text| text.as_bytes().to_vec()), shadow_homes, water_homes)
+        let files: std::collections::HashMap<String, String> = files
+            .iter()
+            .map(|(name, text)| (format!("{FOLDER}/XE Mod {name}"), text.to_string()))
+            .collect();
+        CoreMods::read(
+            &|path| files.get(path).map(|text| text.as_bytes().to_vec()),
+            shadow_homes,
+            water_homes,
+        )
     }
 
     /// The lines of the log about the files.
@@ -414,7 +527,11 @@ struct ShadowMod {
 }
 
 /// Checks the shadow files and joins them; the error names the file that failed.
-fn shadow_mod(shadow_file: Option<&str>, data_file: Option<&str>, homes: &[Home]) -> Result<ShadowMod, (&'static str, String)> {
+fn shadow_mod(
+    shadow_file: Option<&str>,
+    data_file: Option<&str>,
+    homes: &[Home],
+) -> Result<ShadowMod, (&'static str, String)> {
     let mut values = ShadowValues::default();
     let mut values_line = None;
     if let Some(text) = data_file {
@@ -426,14 +543,33 @@ fn shadow_mod(shadow_file: Option<&str>, data_file: Option<&str>, homes: &[Home]
         }
         rules(text, &[], "", &[]).map_err(fail)?;
     }
-    let Some(text) = shadow_file else { return Ok(ShadowMod { hooks: hook_text(&SHADOW_HOOKS, &[], ""), values, defined: Vec::new(), values_line }) };
-    let (hooks, defined) = hook_file(text, &SHADOW_HOOKS, SHADOW_LIBRARY, &SHADOW_LIBRARY_NAMES, homes).map_err(|problem| ("Shadow", problem))?;
-    Ok(ShadowMod { hooks, values, defined, values_line })
+    let Some(text) = shadow_file else {
+        return Ok(ShadowMod {
+            hooks: hook_text(&SHADOW_HOOKS, &[], ""),
+            values,
+            defined: Vec::new(),
+            values_line,
+        });
+    };
+    let (hooks, defined) = hook_file(text, &SHADOW_HOOKS, SHADOW_LIBRARY, &SHADOW_LIBRARY_NAMES, homes)
+        .map_err(|problem| ("Shadow", problem))?;
+    Ok(ShadowMod {
+        hooks,
+        values,
+        defined,
+        values_line,
+    })
 }
 
 /// Checks a file of hooks with its header, its rules and each of its homes. Gives the hook text
 /// for the homes (the file's hooks and the built-ins of the others), and the hooks it defines.
-fn hook_file(text: &str, hooks: &'static [Hook], library: &str, library_names: &[&str], homes: &[Home]) -> Result<(String, Vec<&'static str>), String> {
+fn hook_file(
+    text: &str,
+    hooks: &'static [Hook],
+    library: &str,
+    library_names: &[&str],
+    homes: &[Home],
+) -> Result<(String, Vec<&'static str>), String> {
     header(text, &[])?;
     let defined = rules(text, hooks, library, library_names)?;
     let joined = hook_text(hooks, &defined, text);
@@ -447,7 +583,12 @@ fn hook_file(text: &str, hooks: &'static [Hook], library: &str, library_names: &
 /// is the interface, the others are keys of `allowed`. A `//!` line after the first line of
 /// code is an error, so that no value is lost without a word.
 fn header(text: &str, allowed: &[&str]) -> Result<Vec<(String, String)>, String> {
-    let mut rest = text.lines().map(str::trim).skip_while(|line| line.is_empty()).filter(|line| !line.is_empty()).peekable();
+    let mut rest = text
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| line.is_empty())
+        .filter(|line| !line.is_empty())
+        .peekable();
     let mut header_lines = Vec::new();
     while let Some(line) = rest.next_if(|line| line.starts_with("//!")) {
         header_lines.push(&line[3..]);
@@ -456,7 +597,11 @@ fn header(text: &str, allowed: &[&str]) -> Result<Vec<(String, String)>, String>
         return Err(format!("the line `{late}` comes after the code: the `//!` lines come first"));
     }
     let mut lines = header_lines.into_iter();
-    let interface = lines.next().and_then(|line| line.split_once(':')).filter(|(key, _)| key.trim() == "interface").map(|(_, value)| value.trim().to_string());
+    let interface = lines
+        .next()
+        .and_then(|line| line.split_once(':'))
+        .filter(|(key, _)| key.trim() == "interface")
+        .map(|(_, value)| value.trim().to_string());
     match interface {
         None => return Err(format!("no line `//! interface: {INTERFACE}` at its start")),
         Some(value) if value != INTERFACE => return Err(format!("the interface `{value}` is not {INTERFACE}")),
@@ -464,7 +609,9 @@ fn header(text: &str, allowed: &[&str]) -> Result<Vec<(String, String)>, String>
     }
     let mut keys = Vec::new();
     for line in lines {
-        let Some((key, value)) = line.split_once(':') else { return Err(format!("the line `//!{line}` has no `key: value`")) };
+        let Some((key, value)) = line.split_once(':') else {
+            return Err(format!("the line `//!{line}` has no `key: value`"));
+        };
         let key = key.trim();
         if !allowed.contains(&key) {
             return Err(format!("the key `{key}` is not known in this file"));
@@ -478,33 +625,61 @@ fn header(text: &str, allowed: &[&str]) -> Result<Vec<(String, String)>, String>
 /// names of `library` (functions and structs) used, and names of its own that start with
 /// `mod_`. Gives the hooks that the file defines.
 fn rules(text: &str, hooks: &'static [Hook], library: &str, library_names: &[&str]) -> Result<Vec<&'static str>, String> {
-    let defined: Vec<&'static str> = hooks.iter().filter(|hook| defines(text, hook.name)).map(|hook| hook.name).collect();
+    let defined: Vec<&'static str> = hooks
+        .iter()
+        .filter(|hook| defines(text, hook.name))
+        .map(|hook| hook.name)
+        .collect();
     // The file comes first, so that the lines of an error are the lines of the file. The hooks
     // that it lacks are declarations: a file may call them, and the built-ins may use what the
     // renderer has outside the interface.
-    let lacking: String = hooks.iter().filter(|hook| !defined.contains(&hook.name)).map(declaration).collect();
+    let lacking: String = hooks
+        .iter()
+        .filter(|hook| !defined.contains(&hook.name))
+        .map(declaration)
+        .collect();
     let source = format!("{text}\n{library}\n{lacking}");
     let module = naga::front::wgsl::parse_str(&source).map_err(|error| error.emit_to_string(&source))?;
     if let Some(entry) = module.entry_points.first() {
         return Err(format!("the entry point `{}`: a core mod has none", entry.name));
     }
     if let Some((_, variable)) = module.global_variables.iter().next() {
-        return Err(format!("the variable `{}` outside a function: a core mod has none (no binding)", variable.name.as_deref().unwrap_or("?")));
+        return Err(format!(
+            "the variable `{}` outside a function: a core mod has none (no binding)",
+            variable.name.as_deref().unwrap_or("?")
+        ));
     }
     if let Some((_, value)) = module.overrides.iter().next() {
-        return Err(format!("the override `{}`: a core mod has none", value.name.as_deref().unwrap_or("?")));
+        return Err(format!(
+            "the override `{}`: a core mod has none",
+            value.name.as_deref().unwrap_or("?")
+        ));
     }
     let own = |name: &str| name.starts_with("mod_");
     for (_, function) in module.functions.iter() {
         let name = function.name.as_deref().unwrap_or("");
         if let Some(hook) = hooks.iter().find(|hook| hook.name == name) {
-            let arguments: Vec<String> = function.arguments.iter().map(|argument| type_name(&module, argument.ty)).collect();
-            let result = function.result.as_ref().map_or("nothing".to_string(), |result| type_name(&module, result.ty));
+            let arguments: Vec<String> = function
+                .arguments
+                .iter()
+                .map(|argument| type_name(&module, argument.ty))
+                .collect();
+            let result = function
+                .result
+                .as_ref()
+                .map_or("nothing".to_string(), |result| type_name(&module, result.ty));
             if arguments != hook.arguments || result != hook.result {
-                return Err(format!("the hook `{name}` takes ({}) and gives {result}; interface 1 has ({}) -> {}", arguments.join(", "), hook.arguments.join(", "), hook.result));
+                return Err(format!(
+                    "the hook `{name}` takes ({}) and gives {result}; interface 1 has ({}) -> {}",
+                    arguments.join(", "),
+                    hook.arguments.join(", "),
+                    hook.result
+                ));
             }
         } else if !own(name) && !library_names.contains(&name) {
-            return Err(format!("the function `{name}`: a function of a core mod is a hook of its file, or its name starts with `mod_`"));
+            return Err(format!(
+                "the function `{name}`: a function of a core mod is a hook of its file, or its name starts with `mod_`"
+            ));
         }
     }
     for (_, kind) in module.types.iter() {
@@ -514,11 +689,20 @@ fn rules(text: &str, hooks: &'static [Hook], library: &str, library_names: &[&st
             && !name.starts_with("__")
             && !library_names.contains(&name)
         {
-            return Err(format!("the struct `{name}`: the name of a struct of a core mod starts with `mod_`"));
+            return Err(format!(
+                "the struct `{name}`: the name of a struct of a core mod starts with `mod_`"
+            ));
         }
     }
-    if let Some(name) = module.constants.iter().filter_map(|(_, constant)| constant.name.as_deref()).find(|name| !own(name)) {
-        return Err(format!("the constant `{name}`: the name of a constant of a core mod starts with `mod_`"));
+    if let Some(name) = module
+        .constants
+        .iter()
+        .filter_map(|(_, constant)| constant.name.as_deref())
+        .find(|name| !own(name))
+    {
+        return Err(format!(
+            "the constant `{name}`: the name of a constant of a core mod starts with `mod_`"
+        ));
     }
     Ok(defined)
 }
@@ -526,22 +710,40 @@ fn rules(text: &str, hooks: &'static [Hook], library: &str, library_names: &[&st
 /// A hook as a function with its signature and a zero result, for the check of a file that
 /// lacks it.
 fn declaration(hook: &Hook) -> String {
-    let arguments: Vec<String> = hook.arguments.iter().enumerate().map(|(index, kind)| format!("a{index}: {kind}")).collect();
-    format!("fn {}({}) -> {} {{ return {}(); }}\n", hook.name, arguments.join(", "), hook.result, hook.result)
+    let arguments: Vec<String> = hook
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, kind)| format!("a{index}: {kind}"))
+        .collect();
+    format!(
+        "fn {}({}) -> {} {{ return {}(); }}\n",
+        hook.name,
+        arguments.join(", "),
+        hook.result,
+        hook.result
+    )
 }
 
 /// True when `text` declares the function `name` (`fn name`), outside a line comment.
 fn defines(text: &str, name: &str) -> bool {
     text.lines().any(|line| {
         let code = line.split("//").next().unwrap_or("");
-        let words: Vec<&str> = code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).filter(|word| !word.is_empty()).collect();
+        let words: Vec<&str> = code
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|word| !word.is_empty())
+            .collect();
         words.windows(2).any(|pair| pair[0] == "fn" && pair[1] == name)
     })
 }
 
 /// The built-ins of the hooks that `defined` lacks, then `text`.
 fn hook_text(hooks: &[Hook], defined: &[&str], text: &str) -> String {
-    let mut joined: String = hooks.iter().filter(|hook| !defined.contains(&hook.name)).map(|hook| hook.built_in).collect();
+    let mut joined: String = hooks
+        .iter()
+        .filter(|hook| !defined.contains(&hook.name))
+        .map(|hook| hook.built_in)
+        .collect();
     joined.push_str(text);
     joined
 }
@@ -570,10 +772,22 @@ fn type_name(module: &naga::Module, handle: naga::Handle<naga::Type>) -> String 
 #[cfg(test)]
 pub(crate) fn library_differences(library: &str, home_source: &str) -> Vec<String> {
     let declared = naga::front::wgsl::parse_str(library).unwrap();
-    let home = naga::front::wgsl::parse_str(home_source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(home_source)));
+    let home =
+        naga::front::wgsl::parse_str(home_source).unwrap_or_else(|error| panic!("{}", error.emit_to_string(home_source)));
     let signature = |module: &naga::Module, function: &naga::Function| {
-        let arguments: Vec<String> = function.arguments.iter().map(|argument| type_name(module, argument.ty)).collect();
-        format!("({}) -> {}", arguments.join(", "), function.result.as_ref().map_or("nothing".to_string(), |result| type_name(module, result.ty)))
+        let arguments: Vec<String> = function
+            .arguments
+            .iter()
+            .map(|argument| type_name(module, argument.ty))
+            .collect();
+        format!(
+            "({}) -> {}",
+            arguments.join(", "),
+            function
+                .result
+                .as_ref()
+                .map_or("nothing".to_string(), |result| type_name(module, result.ty))
+        )
     };
     let mut differences = Vec::new();
     for (_, function) in declared.functions.iter() {
@@ -581,7 +795,10 @@ pub(crate) fn library_differences(library: &str, home_source: &str) -> Vec<Strin
         let wanted = signature(&declared, function);
         match home.functions.iter().find(|(_, other)| other.name.as_deref() == Some(name)) {
             Some((_, other)) if signature(&home, other) == wanted => {}
-            Some((_, other)) => differences.push(format!("{name}: the home has {}, the interface {wanted}", signature(&home, other))),
+            Some((_, other)) => differences.push(format!(
+                "{name}: the home has {}, the interface {wanted}",
+                signature(&home, other)
+            )),
             None => differences.push(format!("{name}: not in the home")),
         }
     }
@@ -620,10 +837,16 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         Err("a planted failure".to_string())
     }
 
-    const HOMES: [Home; 1] = [Home { name: "test home", check: test_home }];
+    const HOMES: [Home; 1] = [Home {
+        name: "test home",
+        check: test_home,
+    }];
 
     fn mods_of(files: &[(&str, &str)], homes: &[Home]) -> CoreMods {
-        let files: HashMap<String, String> = files.iter().map(|(name, text)| (format!("{FOLDER}/XE Mod {name}"), text.to_string())).collect();
+        let files: HashMap<String, String> = files
+            .iter()
+            .map(|(name, text)| (format!("{FOLDER}/XE Mod {name}"), text.to_string()))
+            .collect();
         CoreMods::read(&|path| files.get(path).map(|text| text.as_bytes().to_vec()), homes, &[])
     }
 
@@ -636,7 +859,10 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         test_home(CoreMods::built_in().shadow_hooks()).unwrap();
         let mods = mods_of(&[], &HOMES);
         assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks());
-        assert_eq!(mods.report(), [format!("core mods: none used (Data Files/{FOLDER}, interface {INTERFACE})")]);
+        assert_eq!(
+            mods.report(),
+            [format!("core mods: none used (Data Files/{FOLDER}, interface {INTERFACE})")]
+        );
     }
 
     #[test]
@@ -645,39 +871,95 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         let mods = mods_of(&[("Shadow.wgsl", &file)], &HOMES);
         // Both hooks come from the file: no built-in is joined.
         assert_eq!(mods.shadow_hooks(), file);
-        assert_eq!(mods.report(), [format!("core mods: XE Mod Shadow.wgsl (shadow_delta, shadow_esm) (interface {INTERFACE})")]);
+        assert_eq!(
+            mods.report(),
+            [format!(
+                "core mods: XE Mod Shadow.wgsl (shadow_delta, shadow_esm) (interface {INTERFACE})"
+            )]
+        );
     }
 
     #[test]
     fn a_file_with_one_hook_keeps_the_built_in_of_the_other() {
-        let file = format!("{}fn mod_half(x: f32) -> f32 {{ return 0.5 * x; }}\nfn shadow_esm(dz: f32) -> f32 {{ return mod_half(1.0); }}\n", header_line());
+        let file = format!(
+            "{}fn mod_half(x: f32) -> f32 {{ return 0.5 * x; }}\nfn shadow_esm(dz: f32) -> f32 {{ return mod_half(1.0); }}\n",
+            header_line()
+        );
         let mods = mods_of(&[("Shadow.wgsl", &file)], &HOMES);
         assert_eq!(mods.shadow_hooks(), format!("{SHADOW_DELTA}{file}"));
-        assert!(mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)"), "{:?}", mods.report());
+        assert!(
+            mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)"),
+            "{:?}",
+            mods.report()
+        );
     }
 
     /// Each rule drops the file with its reason, and the built-ins stay.
     #[test]
     fn a_file_that_breaks_a_rule_is_dropped_with_its_reason() {
         let cases = [
-            ("fn shadow_esm(dz: f32) -> f32 { return 0.0; }\n".to_string(), "no line `//! interface: mge-xe-core 1` at its start"),
-            ("//! interface: mge-xe-core 2\n".to_string(), "the interface `mge-xe-core 2` is not mge-xe-core 1"),
-            (format!("{}//! values: shade = 1\n", header_line()), "the key `values` is not known in this file"),
-            (format!("{}@group(3) @binding(0) var<uniform> mod_u: vec4f;\n", header_line()), "the variable `mod_u` outside a function"),
-            (format!("{}var<private> mod_p: f32;\n", header_line()), "the variable `mod_p` outside a function"),
-            (format!("{}@fragment fn mod_fs() -> @location(0) vec4f {{ return vec4f(1.0); }}\n", header_line()), "the entry point `mod_fs`"),
-            (format!("{}fn helper() -> f32 {{ return 1.0; }}\n", header_line()), "the function `helper`"),
+            (
+                "fn shadow_esm(dz: f32) -> f32 { return 0.0; }\n".to_string(),
+                "no line `//! interface: mge-xe-core 1` at its start",
+            ),
+            (
+                "//! interface: mge-xe-core 2\n".to_string(),
+                "the interface `mge-xe-core 2` is not mge-xe-core 1",
+            ),
+            (
+                format!("{}//! values: shade = 1\n", header_line()),
+                "the key `values` is not known in this file",
+            ),
+            (
+                format!("{}@group(3) @binding(0) var<uniform> mod_u: vec4f;\n", header_line()),
+                "the variable `mod_u` outside a function",
+            ),
+            (
+                format!("{}var<private> mod_p: f32;\n", header_line()),
+                "the variable `mod_p` outside a function",
+            ),
+            (
+                format!(
+                    "{}@fragment fn mod_fs() -> @location(0) vec4f {{ return vec4f(1.0); }}\n",
+                    header_line()
+                ),
+                "the entry point `mod_fs`",
+            ),
+            (
+                format!("{}fn helper() -> f32 {{ return 1.0; }}\n", header_line()),
+                "the function `helper`",
+            ),
             (format!("{}struct Light {{ x: f32 }}\n", header_line()), "the struct `Light`"),
             (format!("{}const SCALE: f32 = 2.0;\n", header_line()), "the constant `SCALE`"),
-            (format!("{}fn shadow_esm(dz: f32, x: f32) -> f32 {{ return 0.0; }}\n", header_line()), "the hook `shadow_esm` takes (f32, f32) and gives f32; interface 1 has (f32) -> f32"),
-            (format!("{}fn shadow_delta(s0: vec3f, s1: vec3f) -> vec2f {{ return vec2f(0.0); }}\n", header_line()), "the hook `shadow_delta` takes (vec3<f32>, vec3<f32>) and gives vec2<f32>"),
-            (format!("{}fn shadow_esm(dz: f32) -> f32 {{ return no_such(dz); }}\n", header_line()), "no_such"),
+            (
+                format!("{}fn shadow_esm(dz: f32, x: f32) -> f32 {{ return 0.0; }}\n", header_line()),
+                "the hook `shadow_esm` takes (f32, f32) and gives f32; interface 1 has (f32) -> f32",
+            ),
+            (
+                format!(
+                    "{}fn shadow_delta(s0: vec3f, s1: vec3f) -> vec2f {{ return vec2f(0.0); }}\n",
+                    header_line()
+                ),
+                "the hook `shadow_delta` takes (vec3<f32>, vec3<f32>) and gives vec2<f32>",
+            ),
+            (
+                format!("{}fn shadow_esm(dz: f32) -> f32 {{ return no_such(dz); }}\n", header_line()),
+                "no_such",
+            ),
         ];
         for (file, reason) in cases {
             let mods = mods_of(&[("Shadow.wgsl", &file)], &HOMES);
             assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks(), "{file}");
-            assert!(mods.report()[0].starts_with("core mod: XE Mod Shadow.wgsl: ") && mods.report()[0].contains(reason), "{file}: {:?}", mods.report());
-            assert!(mods.report()[0].ends_with("; the built-in shadow is used"), "{:?}", mods.report());
+            assert!(
+                mods.report()[0].starts_with("core mod: XE Mod Shadow.wgsl: ") && mods.report()[0].contains(reason),
+                "{file}: {:?}",
+                mods.report()
+            );
+            assert!(
+                mods.report()[0].ends_with("; the built-in shadow is used"),
+                "{:?}",
+                mods.report()
+            );
             assert!(mods.report()[1].starts_with("core mods: none used"), "{:?}", mods.report());
         }
     }
@@ -685,10 +967,23 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     #[test]
     fn a_file_that_a_home_refuses_is_dropped() {
         let file = format!("{}{SHADOW_ESM}", header_line());
-        let homes = [Home { name: "test home", check: test_home }, Home { name: "grass", check: failing_home }];
+        let homes = [
+            Home {
+                name: "test home",
+                check: test_home,
+            },
+            Home {
+                name: "grass",
+                check: failing_home,
+            },
+        ];
         let mods = mods_of(&[("Shadow.wgsl", &file)], &homes);
         assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks());
-        assert!(mods.report()[0].contains("the grass fails with it: a planted failure"), "{:?}", mods.report());
+        assert!(
+            mods.report()[0].contains("the grass fails with it: a planted failure"),
+            "{:?}",
+            mods.report()
+        );
     }
 
     #[test]
@@ -701,7 +996,11 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert_eq!(values.shade(), [1.0, 0.5, 0.25, 0.8]);
         assert_eq!(values.esm(0.5), [shadow::ESM_C, shadow::ESM_BIAS, shadow::ESM_SCALE, 0.5]);
         assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks());
-        assert!(mods.report()[0].contains("XE Mod Shadow Data.wgsl (shade = 0.8, shade_color = 1 0.5 0.25)"), "{:?}", mods.report());
+        assert!(
+            mods.report()[0].contains("XE Mod Shadow Data.wgsl (shade = 0.8, shade_color = 1 0.5 0.25)"),
+            "{:?}",
+            mods.report()
+        );
     }
 
     /// A bad value drops Shadow Data and the Shadow file with it; a bad Shadow file drops the
@@ -711,26 +1010,75 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         let good_data = format!("{}//! values: shade = 0.8\n", header_line());
         let good_shadow = format!("{}{SHADOW_ESM}", header_line());
         for (shadow_file, data, reason) in [
-            (good_shadow.clone(), format!("{}//! values: shade = dark\n", header_line()), "XE Mod Shadow Data.wgsl: `dark` of the value shade is not a number"),
-            (good_shadow.clone(), format!("{}//! values: depth = 1\n", header_line()), "the value `depth` is not known"),
-            (good_shadow.clone(), format!("{}//! values: shade_color = 1 1\n", header_line()), "the value shade_color has 2 numbers, not 3"),
-            (good_shadow.clone(), format!("{}//! values: shade = 0\n", header_line()), "the value shade = 0 is out of its range: 0.01 or more"),
-            (good_shadow.clone(), format!("{}//! values: shade_color = 1 2 0\n", header_line()), "the value shade_color = 1 2 0 is out of its range: 0 to 1 in each number"),
-            (good_shadow.clone(), format!("{}//! values: esm_c = 88.5\n", header_line()), "the value esm_c = 88.5 is out of its range: above 0, at most 88"),
-            (good_shadow.clone(), format!("{}//! values: shade = 0.8\nfn mod_x() {{}}\nfn shadow_esm(dz: f32) -> f32 {{ return dz; }}\n", header_line()), "XE Mod Shadow Data.wgsl: the function `shadow_esm`"),
-            (format!("{}fn helper() {{}}\n", header_line()), good_data.clone(), "XE Mod Shadow.wgsl: the function `helper`"),
+            (
+                good_shadow.clone(),
+                format!("{}//! values: shade = dark\n", header_line()),
+                "XE Mod Shadow Data.wgsl: `dark` of the value shade is not a number",
+            ),
+            (
+                good_shadow.clone(),
+                format!("{}//! values: depth = 1\n", header_line()),
+                "the value `depth` is not known",
+            ),
+            (
+                good_shadow.clone(),
+                format!("{}//! values: shade_color = 1 1\n", header_line()),
+                "the value shade_color has 2 numbers, not 3",
+            ),
+            (
+                good_shadow.clone(),
+                format!("{}//! values: shade = 0\n", header_line()),
+                "the value shade = 0 is out of its range: 0.01 or more",
+            ),
+            (
+                good_shadow.clone(),
+                format!("{}//! values: shade_color = 1 2 0\n", header_line()),
+                "the value shade_color = 1 2 0 is out of its range: 0 to 1 in each number",
+            ),
+            (
+                good_shadow.clone(),
+                format!("{}//! values: esm_c = 88.5\n", header_line()),
+                "the value esm_c = 88.5 is out of its range: above 0, at most 88",
+            ),
+            (
+                good_shadow.clone(),
+                format!(
+                    "{}//! values: shade = 0.8\nfn mod_x() {{}}\nfn shadow_esm(dz: f32) -> f32 {{ return dz; }}\n",
+                    header_line()
+                ),
+                "XE Mod Shadow Data.wgsl: the function `shadow_esm`",
+            ),
+            (
+                format!("{}fn helper() {{}}\n", header_line()),
+                good_data.clone(),
+                "XE Mod Shadow.wgsl: the function `helper`",
+            ),
         ] {
             let mods = mods_of(&[("Shadow.wgsl", &shadow_file), ("Shadow Data.wgsl", &data)], &HOMES);
             assert_eq!(mods.shadow_values(), ShadowValues::default(), "{reason}");
             assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks(), "{reason}");
-            assert!(mods.report()[0].contains(reason) && mods.report()[0].ends_with("is dropped with it"), "{reason}: {:?}", mods.report());
+            assert!(
+                mods.report()[0].contains(reason) && mods.report()[0].ends_with("is dropped with it"),
+                "{reason}: {:?}",
+                mods.report()
+            );
         }
     }
 
     #[test]
     fn an_fx_file_without_its_wgsl_is_named() {
-        let mods = mods_of(&[("Water.fx", "technique T {}"), ("Sky.fx", "technique T {}"), ("Sky.wgsl", "not read yet")], &HOMES);
-        assert_eq!(mods.report()[0], "core mod: XE Mod Water.fx is for Direct3D 9; the wgpu renderer reads XE Mod Water.wgsl, and there is none");
+        let mods = mods_of(
+            &[
+                ("Water.fx", "technique T {}"),
+                ("Sky.fx", "technique T {}"),
+                ("Sky.wgsl", "not read yet"),
+            ],
+            &HOMES,
+        );
+        assert_eq!(
+            mods.report()[0],
+            "core mod: XE Mod Water.fx is for Direct3D 9; the wgpu renderer reads XE Mod Water.wgsl, and there is none"
+        );
         assert_eq!(mods.report().len(), 2, "{:?}", mods.report());
     }
 
@@ -744,13 +1092,21 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         let late = format!("{}fn mod_x() {{}}\n//! values: shade = 0.8\n", header_line());
         let mods = mods_of(&[("Shadow Data.wgsl", &late)], &HOMES);
         assert_eq!(mods.shadow_values(), ShadowValues::default());
-        assert!(mods.report()[0].contains("the line `//! values: shade = 0.8` comes after the code"), "{:?}", mods.report());
+        assert!(
+            mods.report()[0].contains("the line `//! values: shade = 0.8` comes after the code"),
+            "{:?}",
+            mods.report()
+        );
         let marked = format!("\u{feff}{}//! values: shade = 0.8\n", header_line());
         let mods = mods_of(&[("Shadow Data.wgsl", &marked)], &HOMES);
         assert_eq!(mods.shadow_values().shade, 0.8, "{:?}", mods.report());
         let marked = format!("\u{feff}{}{SHADOW_ESM}", header_line());
         let mods = mods_of(&[("Shadow.wgsl", &marked)], &HOMES);
-        assert!(!mods.shadow_hooks().contains('\u{feff}') && mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)"), "{:?}", mods.report());
+        assert!(
+            !mods.shadow_hooks().contains('\u{feff}') && mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)"),
+            "{:?}",
+            mods.report()
+        );
     }
 
     #[test]
@@ -767,10 +1123,18 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     #[test]
     fn the_library_names_match_its_declarations() {
         let module = naga::front::wgsl::parse_str(SHADOW_LIBRARY).unwrap();
-        let names: Vec<&str> = module.functions.iter().filter_map(|(_, function)| function.name.as_deref()).collect();
+        let names: Vec<&str> = module
+            .functions
+            .iter()
+            .filter_map(|(_, function)| function.name.as_deref())
+            .collect();
         assert_eq!(names, SHADOW_LIBRARY_NAMES);
         let module = naga::front::wgsl::parse_str(&format!("{WATER_INTERFACE}{WATER_LIBRARY}")).unwrap();
-        let mut names: Vec<&str> = module.functions.iter().filter_map(|(_, function)| function.name.as_deref()).collect();
+        let mut names: Vec<&str> = module
+            .functions
+            .iter()
+            .filter_map(|(_, function)| function.name.as_deref())
+            .collect();
         names.push("WaterPixel");
         assert_eq!(names, WATER_LIBRARY_NAMES);
     }
@@ -778,36 +1142,88 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     /// A water file that colours the plane one colour and calls the built-in normal, which it
     /// lacks: the marker of the tests of the plane and of the other water modules.
     pub(crate) fn marker_water_file() -> String {
-        format!("{}fn water_color(p: WaterPixel) -> vec4f {{\n    return vec4f(mod_marker(water_normal(p.texcoords, p.distance, p.world.xy)), 1.0);\n}}\nfn mod_marker(normal: vec3f) -> vec3f {{\n    return vec3f(0.123, 0.0, 0.0) + 0.0 * normal;\n}}\n", header_line())
+        format!(
+            "{}fn water_color(p: WaterPixel) -> vec4f {{\n    return vec4f(mod_marker(water_normal(p.texcoords, p.distance, p.world.xy)), 1.0);\n}}\nfn mod_marker(normal: vec3f) -> vec3f {{\n    return vec3f(0.123, 0.0, 0.0) + 0.0 * normal;\n}}\n",
+            header_line()
+        )
     }
 
     #[test]
     fn a_water_file_joins_the_plane_with_the_built_ins_it_lacks() {
         let file = marker_water_file();
         let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &HOMES, &[]);
-        assert_eq!(mods.water_hooks(), format!("{}{}{file}", super::super::water::WATER_NORMAL, super::super::water::UNDERWATER_COLOR));
+        assert_eq!(
+            mods.water_hooks(),
+            format!(
+                "{}{}{file}",
+                super::super::water::WATER_NORMAL,
+                super::super::water::UNDERWATER_COLOR
+            )
+        );
         assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks());
-        assert!(mods.report().iter().any(|line| line.contains("XE Mod Water.wgsl (water_color)")), "{:?}", mods.report());
-        assert!(mods.report().iter().any(|line| line.contains("the water volumes and the dry spaces keep the built-in water")), "{:?}", mods.report());
-        assert!(mods.report().iter().any(|line| line.contains("the debug view water shows no terms")), "{:?}", mods.report());
+        assert!(
+            mods.report()
+                .iter()
+                .any(|line| line.contains("XE Mod Water.wgsl (water_color)")),
+            "{:?}",
+            mods.report()
+        );
+        assert!(
+            mods.report()
+                .iter()
+                .any(|line| line.contains("the water volumes and the dry spaces keep the built-in water")),
+            "{:?}",
+            mods.report()
+        );
+        assert!(
+            mods.report()
+                .iter()
+                .any(|line| line.contains("the debug view water shows no terms")),
+            "{:?}",
+            mods.report()
+        );
     }
 
     #[test]
     fn a_water_file_that_breaks_a_rule_is_dropped() {
         for (file, reason) in [
-            (format!("{}fn water_color(p: WaterPixel) -> vec3f {{ return vec3f(0.0); }}\n", header_line()), "the hook `water_color` takes (WaterPixel) and gives vec3<f32>"),
+            (
+                format!(
+                    "{}fn water_color(p: WaterPixel) -> vec3f {{ return vec3f(0.0); }}\n",
+                    header_line()
+                ),
+                "the hook `water_color` takes (WaterPixel) and gives vec3<f32>",
+            ),
             (format!("{}struct WaterPixel {{ x: f32 }}\n", header_line()), "WaterPixel"),
-            (format!("{}fn water_color(p: WaterPixel) -> vec4f {{ return vec4f(water.sky_col.rgb, 1.0); }}\n", header_line()), "water"),
+            (
+                format!(
+                    "{}fn water_color(p: WaterPixel) -> vec4f {{ return vec4f(water.sky_col.rgb, 1.0); }}\n",
+                    header_line()
+                ),
+                "water",
+            ),
         ] {
             let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &HOMES, &[]);
             assert_eq!(mods.water_hooks(), CoreMods::built_in().water_hooks(), "{file}");
-            assert!(mods.report()[0].starts_with("core mod: XE Mod Water.wgsl: ") && mods.report()[0].contains(reason) && mods.report()[0].ends_with("; the built-in water is used"), "{file}: {:?}", mods.report());
+            assert!(
+                mods.report()[0].starts_with("core mod: XE Mod Water.wgsl: ")
+                    && mods.report()[0].contains(reason)
+                    && mods.report()[0].ends_with("; the built-in water is used"),
+                "{file}: {:?}",
+                mods.report()
+            );
         }
     }
 
     #[test]
     fn a_hook_is_declared_by_its_signature() {
-        assert_eq!(declaration(&WATER_HOOKS[1]), "fn water_color(a0: WaterPixel) -> vec4<f32> { return vec4<f32>(); }\n");
-        assert_eq!(declaration(&SHADOW_HOOKS[0]), "fn shadow_delta(a0: vec3<f32>, a1: vec3<f32>) -> f32 { return f32(); }\n");
+        assert_eq!(
+            declaration(&WATER_HOOKS[1]),
+            "fn water_color(a0: WaterPixel) -> vec4<f32> { return vec4<f32>(); }\n"
+        );
+        assert_eq!(
+            declaration(&SHADOW_HOOKS[0]),
+            "fn shadow_delta(a0: vec3<f32>, a1: vec3<f32>) -> f32 { return f32(); }\n"
+        );
     }
 }

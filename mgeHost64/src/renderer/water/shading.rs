@@ -76,7 +76,9 @@ fn caustic_light(under: vec3f, sun: vec3f, time: f32, distance: f32, strength: f
 /// the visibility of the sun and the far fog colour, which has the light of the sky.
 pub(in crate::renderer) fn caustic_strength(intensity: f32, sun_vis: f32, fog_color_far: [f32; 3]) -> f32 {
     let sunlight = 1.0 - (1.0 - sun_vis).powi(2);
-    let sky = (fog_color_far[0] * fog_color_far[0] + fog_color_far[1] * fog_color_far[1] + fog_color_far[2] * fog_color_far[2]).sqrt();
+    let sky =
+        (fog_color_far[0] * fog_color_far[0] + fog_color_far[1] * fog_color_far[1] + fog_color_far[2] * fog_color_far[2])
+            .sqrt();
     0.05 * intensity * (0.75 * sunlight + 0.35 * sky).clamp(0.0, 1.0)
 }
 
@@ -467,7 +469,14 @@ fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
 /// its colour and its depth, and every function that reads them, itself or through a call. A
 /// shader that names none of them does not read the reflection, so a frame whose readers all
 /// name none can skip the pass. `the_reflection_readers_are_listed` keeps the list whole.
-pub(in crate::renderer) const REFLECTION_READERS: [&str; 6] = ["reflection", "mirror_depth", "mirror_way", "reflection_soft", "reflection_at", "underwater"];
+pub(in crate::renderer) const REFLECTION_READERS: [&str; 6] = [
+    "reflection",
+    "mirror_depth",
+    "mirror_way",
+    "reflection_soft",
+    "reflection_at",
+    "underwater",
+];
 
 /// True when the WGSL text names one of [`REFLECTION_READERS`] as a word outside a comment.
 pub(in crate::renderer) fn reads_reflection(wgsl: &str) -> bool {
@@ -501,7 +510,8 @@ fn without_comments(wgsl: &str) -> String {
 
 /// The words of a WGSL text: its names and numbers.
 fn words(wgsl: &str) -> impl Iterator<Item = &str> {
-    wgsl.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).filter(|word| !word.is_empty())
+    wgsl.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|word| !word.is_empty())
 }
 
 #[cfg(test)]
@@ -519,21 +529,31 @@ mod tests {
                 let name = function.split('(').next().unwrap().trim();
                 let body = &function[function.find('(').unwrap()..];
                 if !REFLECTION_READERS.contains(&name) {
-                    assert!(!reads_reflection(body), "the function {name} reaches the reflection: add it to REFLECTION_READERS");
+                    assert!(
+                        !reads_reflection(body),
+                        "the function {name} reaches the reflection: add it to REFLECTION_READERS"
+                    );
                 }
             }
         }
         // Each listed name is in the library: a stale name hides nothing, but says so.
         for name in REFLECTION_READERS {
-            assert!(words(&without_comments(COMMON)).any(|word| word == name), "{name} is not in COMMON");
+            assert!(
+                words(&without_comments(COMMON)).any(|word| word == name),
+                "{name} is not in COMMON"
+            );
         }
     }
 
     #[test]
     fn a_mod_shader_reads_the_reflection_by_a_listed_name() {
-        assert!(reads_reflection("fn water_shader(s: WaterSurface) -> vec4f { return underwater(s.screen, 1.0, vec4f(0.0), s.flat.xy, vec3f(0.0), 1.0); }"));
+        assert!(reads_reflection(
+            "fn water_shader(s: WaterSurface) -> vec4f { return underwater(s.screen, 1.0, vec4f(0.0), s.flat.xy, vec3f(0.0), 1.0); }"
+        ));
         assert!(reads_reflection("let c = textureLoad(mirror_depth, vec2i(0), 0);"));
-        assert!(!reads_reflection("// the reflection of the sky\nfn water_shader(s: WaterSurface) -> vec4f { return vec4f(sky_color(s.facing), 1.0); }"));
+        assert!(!reads_reflection(
+            "// the reflection of the sky\nfn water_shader(s: WaterSurface) -> vec4f { return vec4f(sky_color(s.facing), 1.0); }"
+        ));
         assert!(!reads_reflection("/* reflection_at */ let my_reflection_at = 1.0;"));
     }
 

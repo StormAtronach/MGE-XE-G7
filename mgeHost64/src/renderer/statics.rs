@@ -73,12 +73,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ash::vk;
-use distantland::mge_xe::distant_statics::{load_static_tables, StaticTables};
+use distantland::mge_xe::distant_statics::{StaticTables, load_static_tables};
 use distantland::mge_xe::usage_data::load_usage_data;
 use mge_config::{ConfigDocument, StaticsResidency};
+use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
-use nirender_wgpu::SceneView;
 
 use super::water::{FarWater, Look};
 use super::{CELL, dds_texture};
@@ -147,17 +147,31 @@ const BENT_SHARE: f32 = 0.3;
 /// the triangles (three u16 each) of a subset; [`None`] without a triangle of some area.
 fn normal_alignment(vertices: &[u8], indexes: &[u8]) -> Option<f32> {
     let count = vertices.len() / VERTEX;
-    let position = |v: usize| [half(vertices, v * VERTEX), half(vertices, v * VERTEX + 2), half(vertices, v * VERTEX + 4)];
+    let position = |v: usize| {
+        [
+            half(vertices, v * VERTEX),
+            half(vertices, v * VERTEX + 2),
+            half(vertices, v * VERTEX + 4),
+        ]
+    };
     let normal = |v: usize| -> [f32; 3] { core::array::from_fn(|i| vertices[v * VERTEX + 8 + i] as f32 / 127.5 - 1.0) };
     let (mut corners, mut against) = (0u32, 0u32);
     for triangle in indexes.chunks_exact(TRIANGLE) {
-        let corner: [usize; 3] = core::array::from_fn(|i| u16::from_le_bytes([triangle[2 * i], triangle[2 * i + 1]]) as usize);
+        let corner: [usize; 3] =
+            core::array::from_fn(|i| u16::from_le_bytes([triangle[2 * i], triangle[2 * i + 1]]) as usize);
         if corner.iter().any(|&v| v >= count) {
             continue;
         }
         let [a, b, c] = corner.map(position);
-        let (e1, e2) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
-        let face = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        let (e1, e2) = (
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        let face = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
         let area = (face[0] * face[0] + face[1] * face[1] + face[2] * face[2]).sqrt();
         if area < 1e-6 {
             continue;
@@ -264,19 +278,29 @@ enum GrassMiss {
 impl GrassPlace {
     /// The tile of the place: its row and its column, in tiles of [`GRASS_TILE`] units.
     fn tile(&self) -> (i32, i32) {
-        ((self.position[1] / GRASS_TILE).floor() as i32, (self.position[0] / GRASS_TILE).floor() as i32)
+        (
+            (self.position[1] / GRASS_TILE).floor() as i32,
+            (self.position[0] / GRASS_TILE).floor() as i32,
+        )
     }
 
     /// Why the place is not in the view of the eye with the view range and the planes of the
     /// view: [`None`] when it is taken.
     fn miss(&self, eye: [f32; 3], range: f32, planes: &[[f32; 4]; 6]) -> Option<GrassMiss> {
-        let to = [self.position[0] - eye[0], self.position[1] - eye[1], self.position[2] - eye[2]];
+        let to = [
+            self.position[0] - eye[0],
+            self.position[1] - eye[1],
+            self.position[2] - eye[2],
+        ];
         let reach = range + self.radius;
         if to[0] * to[0] + to[1] * to[1] + to[2] * to[2] > reach * reach {
             return Some(GrassMiss::TooFar);
         }
         let p = self.position;
-        if !planes.iter().all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -self.radius) {
+        if !planes
+            .iter()
+            .all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -self.radius)
+        {
             return Some(GrassMiss::OutOfView);
         }
         None
@@ -296,7 +320,13 @@ struct GrassTile {
 impl GrassTile {
     /// The tile of the places `members` (not empty), starting at `first` in the list of the cell.
     fn of(first: u32, members: &[&GrassPlace]) -> GrassTile {
-        let mut tile = GrassTile { first, count: members.len() as u32, min: [f32::MAX; 3], max: [f32::MIN; 3], radius: 0.0 };
+        let mut tile = GrassTile {
+            first,
+            count: members.len() as u32,
+            min: [f32::MAX; 3],
+            max: [f32::MIN; 3],
+            radius: 0.0,
+        };
         for place in members {
             for axis in 0..3 {
                 tile.min[axis] = tile.min[axis].min(place.position[axis]);
@@ -318,13 +348,15 @@ impl GrassTile {
     /// monotonic in the position and in the radius, so a place inside the box cannot pass where
     /// the box fails, in the numbers of the machine too.
     fn misses(&self, eye: [f32; 3], range: f32, planes: &[[f32; 4]; 6]) -> bool {
-        let to: [f32; 3] = core::array::from_fn(|axis| (self.min[axis] - eye[axis]).max(0.0).max(eye[axis] - self.max[axis]));
+        let to: [f32; 3] =
+            core::array::from_fn(|axis| (self.min[axis] - eye[axis]).max(0.0).max(eye[axis] - self.max[axis]));
         let reach = range + self.radius;
         if to[0] * to[0] + to[1] * to[1] + to[2] * to[2] > reach * reach {
             return true;
         }
         planes.iter().any(|plane| {
-            let corner: [f32; 3] = core::array::from_fn(|axis| if plane[axis] >= 0.0 { self.max[axis] } else { self.min[axis] });
+            let corner: [f32; 3] =
+                core::array::from_fn(|axis| if plane[axis] >= 0.0 { self.max[axis] } else { self.min[axis] });
             plane[0] * corner[0] + plane[1] * corner[1] + plane[2] * corner[2] + plane[3] < -self.radius
         })
     }
@@ -347,7 +379,11 @@ impl GrassCell {
         let mut first = 0;
         while first < self.places.len() {
             let tile = grass[self.places[first] as usize].tile();
-            let end = first + self.places[first..].iter().take_while(|index| grass[**index as usize].tile() == tile).count();
+            let end = first
+                + self.places[first..]
+                    .iter()
+                    .take_while(|index| grass[**index as usize].tile() == tile)
+                    .count();
             let members: Vec<&GrassPlace> = self.places[first..end].iter().map(|index| &grass[*index as usize]).collect();
             self.tiles.push(GrassTile::of(first as u32, &members));
             first = end;
@@ -356,8 +392,16 @@ impl GrassCell {
 
     /// The places of the tiles that can have a place for the view, in the order of the cell, each
     /// with its position in the list of the cell.
-    fn reachable<'a>(&'a self, eye: [f32; 3], range: f32, planes: &'a [[f32; 4]; 6]) -> impl Iterator<Item = (usize, u32)> + 'a {
-        self.tiles.iter().filter(move |tile| !tile.misses(eye, range, planes)).flat_map(move |tile| tile.range().map(move |at| (at, self.places[at])))
+    fn reachable<'a>(
+        &'a self,
+        eye: [f32; 3],
+        range: f32,
+        planes: &'a [[f32; 4]; 6],
+    ) -> impl Iterator<Item = (usize, u32)> + 'a {
+        self.tiles
+            .iter()
+            .filter(move |tile| !tile.misses(eye, range, planes))
+            .flat_map(move |tile| tile.range().map(move |at| (at, self.places[at])))
     }
 }
 
@@ -404,7 +448,11 @@ impl GrassKept {
     /// Starts a call in the world space `world`.
     fn begin<'a>(&'a mut self, world: &'a [u8]) -> GrassKeep<'a> {
         self.call += 1;
-        GrassKeep { worlds: &mut self.worlds, world, call: self.call }
+        GrassKeep {
+            worlds: &mut self.worlds,
+            world,
+            call: self.call,
+        }
     }
 
     /// Ends a call: the cells that no call walked in the last [`GRASS_KEEP_CALLS`] calls go, and
@@ -420,7 +468,12 @@ impl GrassKept {
     /// The number of cells with records, and the bytes of their records.
     fn size(&self) -> (usize, usize) {
         let cells = self.worlds.values().flat_map(|cells| cells.values());
-        cells.fold((0, 0), |(count, bytes), cell| (count + 1, bytes + cell.records.len() * std::mem::size_of::<Option<[f32; 12]>>()))
+        cells.fold((0, 0), |(count, bytes), cell| {
+            (
+                count + 1,
+                bytes + cell.records.len() * std::mem::size_of::<Option<[f32; 12]>>(),
+            )
+        })
     }
 }
 
@@ -439,7 +492,10 @@ impl GrassKeep<'_> {
             self.worlds.insert(self.world.to_vec(), HashMap::new());
         }
         let cells = self.worlds.get_mut(self.world).expect("the world space is inserted above");
-        cells.entry(key).or_insert_with(|| CellRecords { records: vec![None; places], walked: call })
+        cells.entry(key).or_insert_with(|| CellRecords {
+            records: vec![None; places],
+            walked: call,
+        })
     }
 }
 
@@ -553,7 +609,13 @@ impl World {
                         }
                         let record = *record.get_or_insert_with(|| kept.record(at, place, &mut counts.records_made));
                         let fade = Resident::fade_after(sight.now - on_gpu.arrived, sight.fade_seconds);
-                        draws.push(GrassDraw { texture: on_gpu.texture, subset: id, record, fade, bent: on_gpu.bent });
+                        draws.push(GrassDraw {
+                            texture: on_gpu.texture,
+                            subset: id,
+                            record,
+                            fade,
+                            bent: on_gpu.bent,
+                        });
                     }
                     counts.without_resident += (draws.len() == draws_before) as u64;
                 }
@@ -632,7 +694,9 @@ fn world_matrix(position: [f32; 3], rotation: [f32; 3], scale: f32) -> [f32; 16]
     let (sx, cx) = (-rotation[0]).sin_cos();
     let (sy, cy) = (-rotation[1]).sin_cos();
     let (sz, cz) = (-rotation[2]).sin_cos();
-    let scaling = [scale, 0.0, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, 0.0, 1.0];
+    let scaling = [
+        scale, 0.0, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
     let about_z = [cz, sz, 0.0, 0.0, -sz, cz, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
     let about_y = [cy, 0.0, -sy, 0.0, 0.0, 1.0, 0.0, 0.0, sy, 0.0, cy, 0.0, 0.0, 0.0, 0.0, 1.0];
     let about_x = [1.0, 0.0, 0.0, 0.0, 0.0, cx, sx, 0.0, 0.0, -sx, cx, 0.0, 0.0, 0.0, 0.0, 1.0];
@@ -669,9 +733,10 @@ impl From<String> for CatalogError {
 /// that the crate refuses is data that this build cannot use (`Rejected`), with its reason.
 fn read_tables(path: &Path) -> Result<StaticTables, CatalogError> {
     load_static_tables(path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::InvalidData => {
-            CatalogError::Rejected(format!("{}: {error}: generate distant land again in the MGE XE GUI", path.display()))
-        }
+        std::io::ErrorKind::InvalidData => CatalogError::Rejected(format!(
+            "{}: {error}: generate distant land again in the MGE XE GUI",
+            path.display()
+        )),
         _ => CatalogError::Missing(format!("{}: {error}", path.display())),
     })
 }
@@ -681,10 +746,12 @@ fn read_tables(path: &Path) -> Result<StaticTables, CatalogError> {
 /// reject. It reads the tables only, not the geometry. A file that cannot be read is the problem
 /// of the loader of the statics, not of this check.
 pub(super) fn tables_problem_in(folder: &Path) -> Option<String> {
-    (0..SHARDS).find_map(|shard| match read_tables(&folder.join("statics").join(format!("static_meshes_{shard:03}"))) {
-        Err(CatalogError::Rejected(problem)) => Some(problem),
-        _ => None,
-    })
+    (0..SHARDS).find_map(
+        |shard| match read_tables(&folder.join("statics").join(format!("static_meshes_{shard:03}"))) {
+            Err(CatalogError::Rejected(problem)) => Some(problem),
+            _ => None,
+        },
+    )
 }
 
 /// Reads the tables of the 128 files and the places of `usage.data`.
@@ -767,7 +834,11 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
     }
 
     for model in statics.iter().filter(|model| model.kind == 4) {
-        for subset in subsets.iter_mut().skip(model.first_subset as usize).take(model.subset_count as usize) {
+        for subset in subsets
+            .iter_mut()
+            .skip(model.first_subset as usize)
+            .take(model.subset_count as usize)
+        {
             subset.grass = true;
         }
     }
@@ -776,7 +847,12 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
     // their order.
     let usage = load_usage_data(&statics_folder.join("usage.data")).map_err(|error| format!("usage.data: {error}"))?;
     if usage.num_meshes as usize != statics.len() {
-        return Err(format!("usage.data is for {} statics and the files have {}", usage.num_meshes, statics.len()).into());
+        return Err(format!(
+            "usage.data is for {} statics and the files have {}",
+            usage.num_meshes,
+            statics.len()
+        )
+        .into());
     }
     let mut instances: Vec<Instance> = Vec::new();
     let mut worlds: HashMap<Vec<u8>, World> = HashMap::new();
@@ -784,17 +860,30 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
     let mut grass: Vec<GrassPlace> = Vec::new();
     // The places of the exterior, then those of each interior cell that has statics.
     let exterior = (&[][..], &usage.exterior);
-    let interiors = usage.interiors.iter().map(|interior| (unpadded(&interior.name), &interior.references));
+    let interiors = usage
+        .interiors
+        .iter()
+        .map(|interior| (unpadded(&interior.name), &interior.references));
     for (name, places) in core::iter::once(exterior).chain(interiors) {
         let world_space = worlds.entry(name.to_vec()).or_default();
         for place in places {
-            let Some(model) = statics.get(place.id as usize) else { continue };
+            let Some(model) = statics.get(place.id as usize) else {
+                continue;
+            };
             if model.kind == 4 {
                 // Grass: one record for the place. Its world matrix is made when it is drawn.
                 if settings.grass {
                     let center = (model.center[0].powi(2) + model.center[1].powi(2) + model.center[2].powi(2)).sqrt();
-                    let cell = ((place.location.x / CELL).floor() as i32, (place.location.y / CELL).floor() as i32);
-                    world_space.grass_cells.entry(cell).or_default().places.push(grass.len() as u32);
+                    let cell = (
+                        (place.location.x / CELL).floor() as i32,
+                        (place.location.y / CELL).floor() as i32,
+                    );
+                    world_space
+                        .grass_cells
+                        .entry(cell)
+                        .or_default()
+                        .places
+                        .push(grass.len() as u32);
                     grass.push(GrassPlace {
                         first_subset: model.first_subset,
                         subset_count: model.subset_count,
@@ -811,8 +900,14 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
                 continue;
             }
             // A building counts as one object: each of its subsets has the bounds of the model.
-            let Some(tier) = tier_of(model.kind, model.radius * place.scale, settings) else { continue };
-            let world = world_matrix([place.location.x, place.location.y, place.location.z], [place.rotation.x, place.rotation.y, place.rotation.z], place.scale);
+            let Some(tier) = tier_of(model.kind, model.radius * place.scale, settings) else {
+                continue;
+            };
+            let world = world_matrix(
+                [place.location.x, place.location.y, place.location.z],
+                [place.rotation.x, place.rotation.y, place.rotation.z],
+                place.scale,
+            );
             for subset in model.first_subset..model.first_subset + model.subset_count {
                 let Some(s) = subsets.get(subset as usize) else { continue };
                 if s.vertex_count == 0 || s.triangle_count == 0 {
@@ -821,10 +916,17 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
                 let (center, radius) = if model.kind == 6 {
                     (transform(&world, model.center), model.radius * place.scale)
                 } else {
-                    (transform(&world, [s.sphere[0], s.sphere[1], s.sphere[2]]), s.sphere[3] * place.scale)
+                    (
+                        transform(&world, [s.sphere[0], s.sphere[1], s.sphere[2]]),
+                        s.sphere[3] * place.scale,
+                    )
                 };
                 let cell = ((center[0] / CELL).floor() as i32, (center[1] / CELL).floor() as i32);
-                let list = if s.water != 0 { &mut world_space.water_cells } else { &mut world_space.cells };
+                let list = if s.water != 0 {
+                    &mut world_space.water_cells
+                } else {
+                    &mut world_space.cells
+                };
                 list.entry(cell).or_default().push(instances.len() as u32);
                 if !s.components.is_empty() {
                     merged_place.insert(subset, instances.len() as u32);
@@ -832,7 +934,14 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
                         world_space.merged.push(instances.len() as u32);
                     }
                 }
-                instances.push(Instance { subset, world, center, radius, tier, group: place.vis_index });
+                instances.push(Instance {
+                    subset,
+                    world,
+                    center,
+                    radius,
+                    tier,
+                    group: place.vis_index,
+                });
             }
         }
     }
@@ -840,7 +949,19 @@ fn read_catalog(folder: &Path, settings: &Settings) -> Result<Catalog, CatalogEr
         world.make_grass_tiles(&grass);
     }
     let groups = usage.vis_groups.len() + 1;
-    Ok(Catalog { folder: folder.to_path_buf(), subsets, instances, worlds, textures, palettes, merged_place, grass, groups, ordinary_bytes, merged_bytes })
+    Ok(Catalog {
+        folder: folder.to_path_buf(),
+        subsets,
+        instances,
+        worlds,
+        textures,
+        palettes,
+        merged_place,
+        grass,
+        groups,
+        ordinary_bytes,
+        merged_bytes,
+    })
 }
 
 /// The work of the grass calls of the main view since the last report, by what the loop does:
@@ -969,7 +1090,14 @@ struct Arrival {
 
 impl Arrival {
     fn unreadable(subset: u32) -> Arrival {
-        Arrival { subset, unreadable: true, vertices: Vec::new(), indexes: Vec::new(), faces: [0; 3], bent: false }
+        Arrival {
+            subset,
+            unreadable: true,
+            vertices: Vec::new(),
+            indexes: Vec::new(),
+            faces: [0; 3],
+            bent: false,
+        }
     }
 }
 
@@ -1026,7 +1154,14 @@ fn read_subset(catalog: &Catalog, files: &mut HashMap<u16, Option<File>>, subset
         ordered
     };
     let bent = s.grass && normal_alignment(&vertices, &indexes).is_some_and(|share| share >= BENT_SHARE);
-    Some(Arrival { subset, unreadable: false, vertices, indexes, faces, bent })
+    Some(Arrival {
+        subset,
+        unreadable: false,
+        vertices,
+        indexes,
+        faces,
+        bent,
+    })
 }
 
 /// Fills `buffer` from `file` at `offset`; [`None`] on an error or when the file ends first.
@@ -1064,10 +1199,16 @@ pub(super) fn memory_budget(device: &wgpu::Device) -> Option<(u64, u64)> {
     }
     let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
     let mut properties = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget);
-    unsafe { instance.raw_instance().get_physical_device_memory_properties2(hal.raw_physical_device(), &mut properties) };
+    unsafe {
+        instance
+            .raw_instance()
+            .get_physical_device_memory_properties2(hal.raw_physical_device(), &mut properties)
+    };
     let memory = properties.memory_properties;
     let heaps = &memory.memory_heaps[..(memory.memory_heap_count as usize).min(vk::MAX_MEMORY_HEAPS)];
-    let largest = (0..heaps.len()).filter(|&heap| heaps[heap].flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL)).max_by_key(|&heap| heaps[heap].size)?;
+    let largest = (0..heaps.len())
+        .filter(|&heap| heaps[heap].flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
+        .max_by_key(|&heap| heaps[heap].size)?;
     (budget.heap_budget[largest] > 0).then_some((budget.heap_budget[largest], budget.heap_usage[largest]))
 }
 
@@ -1084,7 +1225,11 @@ pub(super) fn cap_from_budget(budget: u64, used: u64, merged: u64) -> u64 {
 /// many, their bytes on the GPU before and after, and the limit that decided it. One line for
 /// each decision of a frame, not one for each subset, so the log stays quiet in a walk.
 fn memory_event(stamp: &str, what: &str, count: u32, before: u64, after: u64, limit: &str) -> String {
-    format!("distant statics: {stamp}: {count} merged subsets {what}, {:.0} MB to {:.0} MB on the GPU ({limit})", before as f64 / 1e6, after as f64 / 1e6)
+    format!(
+        "distant statics: {stamp}: {count} merged subsets {what}, {:.0} MB to {:.0} MB on the GPU ({limit})",
+        before as f64 / 1e6,
+        after as f64 / 1e6
+    )
 }
 
 /// When a memory decision happened, for its log line: the renderer's frame and the performance
@@ -1104,7 +1249,11 @@ fn qpc() -> i64 {
 
 /// The limit of a [`memory_event`] in bytes, with its name: "none" for no limit.
 fn bytes_limit(name: &str, bytes: u64) -> String {
-    if bytes >= u64::MAX / 2 { format!("{name} none") } else { format!("{name} {:.0} MB", bytes as f64 / 1e6) }
+    if bytes >= u64::MAX / 2 {
+        format!("{name} none")
+    } else {
+        format!("{name} {:.0} MB", bytes as f64 / 1e6)
+    }
 }
 
 /// Whether a new value of the cap from the memory budget is lower (-1) or higher (1) than the
@@ -1144,7 +1293,12 @@ fn pick_trim(mut candidates: Vec<(f32, f32, u32, u64)>, mut bytes: u64, low: u64
 /// and asked for. Gives the subsets to ask for, the subsets to take off the GPU for them, and
 /// whether a wanted subset must wait. A subset on the GPU goes only for a nearer one, and only
 /// when that makes enough room.
-fn plan_merged(wanted: &[(f32, u32, u64)], mut on_gpu: Vec<(f32, u32, u64)>, mut used: u64, cap: u64) -> (Vec<u32>, Vec<u32>, bool) {
+fn plan_merged(
+    wanted: &[(f32, u32, u64)],
+    mut on_gpu: Vec<(f32, u32, u64)>,
+    mut used: u64,
+    cap: u64,
+) -> (Vec<u32>, Vec<u32>, bool) {
     on_gpu.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let (mut admit, mut evict) = (Vec::new(), Vec::new());
     let mut end = on_gpu.len();
@@ -1193,7 +1347,11 @@ impl Resident {
     /// The share of a subset that is in `since` seconds after its arrival, as the shaders have it,
     /// with the fade time `seconds` (0 for no fade).
     fn fade_after(since: f32, seconds: f32) -> f32 {
-        if seconds > 0.0 { (since / seconds).clamp(0.0, 1.0) } else { 1.0 }
+        if seconds > 0.0 {
+            (since / seconds).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
     }
 }
 
@@ -1209,7 +1367,11 @@ impl GrassOrder {
     /// Sorts the draws given as (texture, subset) in the order of their choice.
     fn sort(&mut self, draws: impl Iterator<Item = (u32, u32)>) {
         self.keys.clear();
-        self.keys.extend(draws.enumerate().map(|(index, (texture, subset))| (texture, subset, index as u32)));
+        self.keys.extend(
+            draws
+                .enumerate()
+                .map(|(index, (texture, subset))| (texture, subset, index as u32)),
+        );
         // A stable sort on the texture and the subset: the draws start in the order of their choice, so equal ones keep it, and the key is a total order of (texture, subset, index).
         self.keys.sort_by_key(|key| (key.0, key.1));
     }
@@ -1236,9 +1398,14 @@ impl GrassHash {
     fn of(records: &[f32]) -> GrassHash {
         let (whole, rest) = records.as_chunks::<{ Self::RECORD_FLOATS }>();
         debug_assert!(rest.is_empty());
-        let mut hash = GrassHash { ordered: Self::FNV_OFFSET, unordered: 0 };
+        let mut hash = GrassHash {
+            ordered: Self::FNV_OFFSET,
+            unordered: 0,
+        };
         for record in whole {
-            let one = record.iter().fold(Self::FNV_OFFSET, |one, value| (one ^ value.to_bits() as u64).wrapping_mul(Self::FNV_PRIME));
+            let one = record.iter().fold(Self::FNV_OFFSET, |one, value| {
+                (one ^ value.to_bits() as u64).wrapping_mul(Self::FNV_PRIME)
+            });
             hash.ordered = (hash.ordered ^ one).wrapping_mul(Self::FNV_PRIME);
             hash.unordered = hash.unordered.wrapping_add(one);
         }
@@ -1376,10 +1543,22 @@ impl Gpu {
             label: Some("distant statics"),
             layout: &self.set_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.palettes.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.set_sampler) },
-                wgpu::BindGroupEntry { binding: 3, resource: self.arrivals.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.palettes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.set_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.arrivals.as_entire_binding(),
+                },
             ],
         });
         BufferSet { group, uniforms }
@@ -1578,7 +1757,10 @@ const FADE_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0
 
 /// The three columns of a world matrix of Direct3D that a position uses, as a grass record.
 fn grass_record(world: &[f32; 16]) -> [f32; 12] {
-    [world[0], world[4], world[8], world[12], world[1], world[5], world[9], world[13], world[2], world[6], world[10], world[14]]
+    [
+        world[0], world[4], world[8], world[12], world[1], world[5], world[9], world[13], world[2], world[6], world[10],
+        world[14],
+    ]
 }
 
 /// The values of a set of the statics in a frame for its draws and its choice of places. Those
@@ -1882,9 +2064,13 @@ impl Statics {
         let settings = statics.settings;
         thread::spawn(move || {
             let result = read_catalog(&folder, &settings).map(|catalog| {
-                let mut textures: Vec<Option<Vec<u8>>> = catalog.textures.iter().map(|name| read_texture(&folder, name)).collect();
+                let mut textures: Vec<Option<Vec<u8>>> =
+                    catalog.textures.iter().map(|name| read_texture(&folder, name)).collect();
                 archive_textures(&folder, &catalog.textures, &mut textures);
-                Loaded { catalog: Arc::new(catalog), textures }
+                Loaded {
+                    catalog: Arc::new(catalog),
+                    textures,
+                }
             });
             let _ = sender.send(result);
         });
@@ -1898,7 +2084,11 @@ impl Statics {
         let settings = Settings {
             statics: land.statics,
             grass: land.render_grass,
-            band_ends: [land.near_static_end * CELL, land.far_static_end * CELL, land.very_far_static_end * CELL],
+            band_ends: [
+                land.near_static_end * CELL,
+                land.far_static_end * CELL,
+                land.very_far_static_end * CELL,
+            ],
             far_min_size: land.far_static_min_size,
             very_far_min_size: land.very_far_static_min_size,
             draw_distance: land.draw_distance * CELL,
@@ -2019,7 +2209,14 @@ impl Statics {
             grass: false,
         };
         let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
-        let place = Instance { subset: 0, world: identity, center: [0.0; 3], radius: 64.0, tier: 0, group: 0 };
+        let place = Instance {
+            subset: 0,
+            world: identity,
+            center: [0.0; 3],
+            radius: 64.0,
+            tier: 0,
+            group: 0,
+        };
         let mut cell = World::default();
         cell.cells.insert((0, 0), vec![0]);
         let worlds = HashMap::from([(Vec::new(), World::default()), (interior.to_vec(), cell)]);
@@ -2036,7 +2233,10 @@ impl Statics {
             ordinary_bytes: 0,
             merged_bytes: 0,
         };
-        let loaded = Loaded { catalog: Arc::new(catalog), textures: vec![None] };
+        let loaded = Loaded {
+            catalog: Arc::new(catalog),
+            textures: vec![None],
+        };
         (statics, LateCatalog { sender, loaded })
     }
 
@@ -2054,7 +2254,8 @@ impl Statics {
             return;
         };
         // (first subset, subset count) -> (places, hidden places, groups)
-        let mut models: std::collections::BTreeMap<(u32, u32), (u32, u32, std::collections::BTreeSet<u16>)> = Default::default();
+        let mut models: std::collections::BTreeMap<(u32, u32), (u32, u32, std::collections::BTreeSet<u16>)> =
+            Default::default();
         let cells = (radius / CELL).ceil() as i32 + 1;
         let (cx, cy) = ((x / CELL).floor() as i32, (y / CELL).floor() as i32);
         for gy in cy - cells..=cy + cells {
@@ -2072,11 +2273,19 @@ impl Statics {
                 }
             }
         }
-        println!("grass report ({x}, {y}) within {radius}: {} models, grass on: {}", models.len(), self.settings.grass);
+        println!(
+            "grass report ({x}, {y}) within {radius}: {} models, grass on: {}",
+            models.len(),
+            self.settings.grass
+        );
         for ((first, count), (places, hidden_places, groups)) in &models {
-            println!("  model at subset {first} ({count} subsets): {places} places, {hidden_places} hidden, groups {groups:?}");
+            println!(
+                "  model at subset {first} ({count} subsets): {places} places, {hidden_places} hidden, groups {groups:?}"
+            );
             for subset in *first..first + count {
-                let Some(s) = catalog.subsets.get(subset as usize) else { continue };
+                let Some(s) = catalog.subsets.get(subset as usize) else {
+                    continue;
+                };
                 let texture = catalog.textures.get(s.texture as usize).map_or("?", |name| name.as_str());
                 println!(
                     "    subset {subset}: texture {} '{texture}', {} vertices, {} triangles, alpha {}, grass {}, on the GPU {}",
@@ -2095,7 +2304,12 @@ impl Statics {
     /// starts again: the command `statics report <label>` of `nirender.tune`.
     pub fn report(&mut self, label: &str) {
         let names: Vec<String> = (0..self.set_stats.len()).map(|set| self.set_name(set)).collect();
-        for (name, stats) in names.iter().map(String::as_str).zip(self.set_stats.iter()).chain(core::iter::once(("grass", &self.grass_stats))) {
+        for (name, stats) in names
+            .iter()
+            .map(String::as_str)
+            .zip(self.set_stats.iter())
+            .chain(core::iter::once(("grass", &self.grass_stats)))
+        {
             if stats.calls == 0 {
                 continue;
             }
@@ -2154,7 +2368,8 @@ impl Statics {
         self.prepare_seconds = 0.0;
         if let (Some(gpu), Some(device), Some(queue)) = (self.gpu.as_ref(), self.device.as_ref(), self.queue.as_ref()) {
             if let Some(culling) = gpu.culling.as_ref() {
-                for ((name, stats), counts) in names.iter().zip(self.set_stats.iter()).zip(culling.take_stats(device, queue)) {
+                for ((name, stats), counts) in names.iter().zip(self.set_stats.iter()).zip(culling.take_stats(device, queue))
+                {
                     if stats.calls == 0 {
                         continue;
                     }
@@ -2228,7 +2443,10 @@ impl Statics {
     /// The reader thread ended (a panic): what it was asked for never comes. The statics are
     /// off, and a wait on a load does not wait for them.
     fn reader_ended(&mut self) {
-        println!("distant statics: off: the reader thread ended; {} subsets did not come", self.requested.len());
+        println!(
+            "distant statics: off: the reader thread ended; {} subsets did not come",
+            self.requested.len()
+        );
         self.arrivals = None;
         self.requested.clear();
         self.failed = true;
@@ -2261,7 +2479,11 @@ impl Statics {
             println!("distant statics: vis groups: {hidden} of {} hidden", catalog.groups - 1);
         } else if !self.groups_record.is_empty() {
             self.shown.clear();
-            println!("distant statics: a record of {} vis groups for a catalog of {}; all are shown", self.groups_record.len(), catalog.groups);
+            println!(
+                "distant statics: a record of {} vis groups for a catalog of {}; all are shown",
+                self.groups_record.len(),
+                catalog.groups
+            );
         }
     }
 
@@ -2282,7 +2504,8 @@ impl Statics {
         self.here.clear();
         let Some(catalog) = self.catalog.as_ref() else { return };
         if let Some(world) = catalog.worlds.get(&self.world) {
-            self.here.extend(world.merged.iter().map(|&index| catalog.instances[index as usize].subset));
+            self.here
+                .extend(world.merged.iter().map(|&index| catalog.instances[index as usize].subset));
         }
     }
 
@@ -2300,8 +2523,17 @@ impl Statics {
     fn request_world(&mut self) {
         let Some(catalog) = self.catalog.clone() else { return };
         let Some(requests) = self.requests.as_ref() else { return };
-        let Some(world) = catalog.worlds.get(&self.world) else { return };
-        let mut wanted: Vec<u32> = world.cells.values().chain(world.water_cells.values()).flatten().map(|i| catalog.instances[*i as usize].subset).filter(|s| catalog.subsets[*s as usize].components.is_empty()).collect();
+        let Some(world) = catalog.worlds.get(&self.world) else {
+            return;
+        };
+        let mut wanted: Vec<u32> = world
+            .cells
+            .values()
+            .chain(world.water_cells.values())
+            .flatten()
+            .map(|i| catalog.instances[*i as usize].subset)
+            .filter(|s| catalog.subsets[*s as usize].components.is_empty())
+            .collect();
         // The subsets of the grass too: they are never merged.
         wanted.extend(world.grass_cells.values().flat_map(|cell| &cell.places).flat_map(|i| {
             let place = &catalog.grass[*i as usize];
@@ -2325,7 +2557,9 @@ impl Statics {
     /// `distant_land.statics_fallback_cap_mb`. `MGE_XE_STATICS_CAP_MB` gives a fixed cap,
     /// for a test.
     fn select_cap(&mut self, device: &wgpu::Device) {
-        if let Some(mb) = nirender_wgpu::switches::parsed("MGE_XE_STATICS_CAP_MB", "a number of MB", |mb| mb.parse::<u64>().ok()) {
+        if let Some(mb) =
+            nirender_wgpu::switches::parsed("MGE_XE_STATICS_CAP_MB", "a number of MB", |mb| mb.parse::<u64>().ok())
+        {
             self.merged_cap = mb << 20;
             println!("distant statics: the cap of the merged subsets is {mb} MB, from MGE_XE_STATICS_CAP_MB");
         } else if let Some((budget, used)) = memory_budget(device) {
@@ -2340,9 +2574,14 @@ impl Statics {
         } else {
             self.merged_cap = self.fallback_cap;
             if self.fallback_cap == u64::MAX {
-                println!("distant statics: the GPU gives no memory budget; no cap of the merged subsets (distant_land.statics_fallback_cap_mb = 0)");
+                println!(
+                    "distant statics: the GPU gives no memory budget; no cap of the merged subsets (distant_land.statics_fallback_cap_mb = 0)"
+                );
             } else {
-                println!("distant statics: the GPU gives no memory budget; the cap of the merged subsets is {} MB (distant_land.statics_fallback_cap_mb)", self.fallback_cap >> 20);
+                println!(
+                    "distant statics: the GPU gives no memory budget; the cap of the merged subsets is {} MB (distant_land.statics_fallback_cap_mb)",
+                    self.fallback_cap >> 20
+                );
             }
         }
         self.first_cap = self.merged_cap;
@@ -2350,7 +2589,19 @@ impl Statics {
         println!(
             "distant statics: residency {:?}, the high mark of the merged subsets {}",
             self.residency,
-            if high >= u64::MAX / 2 { "none".to_string() } else { format!("{:.0} MB ({})", high as f64 / 1e6, if self.resident_mark > 0 { "distant_land.statics_resident_mb" } else { "half of the first cap" }) }
+            if high >= u64::MAX / 2 {
+                "none".to_string()
+            } else {
+                format!(
+                    "{:.0} MB ({})",
+                    high as f64 / 1e6,
+                    if self.resident_mark > 0 {
+                        "distant_land.statics_resident_mb"
+                    } else {
+                        "half of the first cap"
+                    }
+                )
+            }
         );
     }
 
@@ -2423,7 +2674,11 @@ impl Statics {
         {
             gpu.pools.remove(slot);
             if let (Some(culling), Some(queue)) = (gpu.culling.as_ref(), self.queue.as_ref()) {
-                queue.write_buffer(&culling.subsets, subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&cull::Subset::default()));
+                queue.write_buffer(
+                    &culling.subsets,
+                    subset as u64 * size_of::<cull::Subset>() as u64,
+                    bytemuck::bytes_of(&cull::Subset::default()),
+                );
             }
         }
         Some(resident)
@@ -2432,7 +2687,10 @@ impl Statics {
     /// True when `subset` may be asked for from the reader thread: it is not on the GPU, not
     /// asked for already, and neither unreadable nor refused by a full pool.
     fn may_ask(&self, subset: u32) -> bool {
-        !self.resident.contains_key(&subset) && !self.requested.contains(&subset) && !self.unreadable.contains(&subset) && !self.refused.contains(&subset)
+        !self.resident.contains_key(&subset)
+            && !self.requested.contains(&subset)
+            && !self.unreadable.contains(&subset)
+            && !self.refused.contains(&subset)
     }
 
     /// Takes the farthest merged subsets off the GPU while their bytes are over the cap: after
@@ -2441,7 +2699,12 @@ impl Statics {
         if self.merged_bytes <= self.merged_cap {
             return;
         }
-        let mut on_gpu: Vec<(f32, u32)> = self.resident.keys().filter(|subset| catalog.merged_place.contains_key(subset)).map(|subset| (self.distance_here(catalog, *subset, eye), *subset)).collect();
+        let mut on_gpu: Vec<(f32, u32)> = self
+            .resident
+            .keys()
+            .filter(|subset| catalog.merged_place.contains_key(subset))
+            .map(|subset| (self.distance_here(catalog, *subset, eye), *subset))
+            .collect();
         on_gpu.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
         let (before, mut count) = (self.merged_bytes, 0);
         for (_, subset) in on_gpu {
@@ -2455,7 +2718,17 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(&self.stamp(), "taken off for the lower cap", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
+            println!(
+                "{}",
+                memory_event(
+                    &self.stamp(),
+                    "taken off for the lower cap",
+                    count,
+                    before,
+                    self.merged_bytes,
+                    &bytes_limit("the cap", self.merged_cap)
+                )
+            );
         }
     }
 
@@ -2474,16 +2747,30 @@ impl Statics {
         };
         let distance = |subset: u32| flat_distance(&catalog.instances[catalog.merged_place[&subset] as usize], eye);
         let mut pending = std::mem::take(&mut self.wanted);
-        let mut wanted: Vec<(f32, u32, u64)> = pending.drain(..).filter(|subset| self.may_ask(*subset)).map(|subset| (distance(subset), subset, catalog.subsets[subset as usize].bytes())).collect();
+        let mut wanted: Vec<(f32, u32, u64)> = pending
+            .drain(..)
+            .filter(|subset| self.may_ask(*subset))
+            .map(|subset| (distance(subset), subset, catalog.subsets[subset as usize].bytes()))
+            .collect();
         self.wanted = pending;
         wanted.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         wanted.dedup_by_key(|w| w.1);
-        let asked: u64 = self.requested.iter().filter(|subset| catalog.merged_place.contains_key(subset)).map(|subset| catalog.subsets[*subset as usize].bytes()).sum();
+        let asked: u64 = self
+            .requested
+            .iter()
+            .filter(|subset| catalog.merged_place.contains_key(subset))
+            .map(|subset| catalog.subsets[*subset as usize].bytes())
+            .sum();
         let used = self.merged_bytes + asked;
         let (admit, evict, waiting) = if used + wanted.iter().map(|w| w.2).sum::<u64>() <= self.merged_cap {
             (wanted.iter().map(|w| w.1).collect(), Vec::new(), false)
         } else {
-            let on_gpu = self.resident.iter().filter(|(subset, _)| catalog.merged_place.contains_key(subset)).map(|(subset, resident)| (self.distance_here(catalog, *subset, eye), *subset, resident.bytes)).collect();
+            let on_gpu = self
+                .resident
+                .iter()
+                .filter(|(subset, _)| catalog.merged_place.contains_key(subset))
+                .map(|(subset, resident)| (self.distance_here(catalog, *subset, eye), *subset, resident.bytes))
+                .collect();
             plan_merged(&wanted, on_gpu, used, self.merged_cap)
         };
         let (before, mut count) = (self.merged_bytes, 0);
@@ -2495,7 +2782,17 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(&self.stamp(), "taken off for nearer ones", count, before, self.merged_bytes, &bytes_limit("the cap", self.merged_cap)));
+            println!(
+                "{}",
+                memory_event(
+                    &self.stamp(),
+                    "taken off for nearer ones",
+                    count,
+                    before,
+                    self.merged_bytes,
+                    &bytes_limit("the cap", self.merged_cap)
+                )
+            );
         }
         self.cap_waiting = waiting && admit.is_empty();
         for subset in admit {
@@ -2514,7 +2811,11 @@ impl Statics {
     /// and their load no longer counts for the watchdog ([`Statics::loading`]).
     fn take_catalog(&mut self) -> Option<Result<Loaded, CatalogError>> {
         let receiver = self.loading.as_ref()?;
-        let answer = if self.synchronous { receiver.recv().map_err(|_| TryRecvError::Disconnected) } else { receiver.try_recv() };
+        let answer = if self.synchronous {
+            receiver.recv().map_err(|_| TryRecvError::Disconnected)
+        } else {
+            receiver.try_recv()
+        };
         match answer {
             Ok(result) => {
                 self.loading = None;
@@ -2567,16 +2868,35 @@ impl Statics {
         );
         // The interior cells with a world space, for a test that needs one: the first few,
         // or all of them with MGE_XE_LIST_WORLDS=1.
-        let mut interiors: Vec<&[u8]> = catalog.worlds.keys().map(|name| name.as_slice()).filter(|name| !name.is_empty()).collect();
+        let mut interiors: Vec<&[u8]> = catalog
+            .worlds
+            .keys()
+            .map(|name| name.as_slice())
+            .filter(|name| !name.is_empty())
+            .collect();
         interiors.sort();
         if !interiors.is_empty() {
-            let shown = if nirender_wgpu::switches::on("MGE_XE_LIST_WORLDS") == Some(true) { interiors.len() } else { 12 };
-            let names: Vec<String> = interiors.iter().take(shown).map(|name| String::from_utf8_lossy(name).into_owned()).collect();
-            println!("distant statics: interior cells with statics: {}{}", names.join("; "), if interiors.len() > shown { "; ..." } else { "" });
+            let shown = if nirender_wgpu::switches::on("MGE_XE_LIST_WORLDS") == Some(true) {
+                interiors.len()
+            } else {
+                12
+            };
+            let names: Vec<String> = interiors
+                .iter()
+                .take(shown)
+                .map(|name| String::from_utf8_lossy(name).into_owned())
+                .collect();
+            println!(
+                "distant statics: interior cells with statics: {}{}",
+                names.join("; "),
+                if interiors.len() > shown { "; ..." } else { "" }
+            );
         }
         self.device = Some(scene.device.clone());
         self.queue = Some(scene.queue.clone());
-        self.gpu = Some(super::timed("the distant statics' GPU objects", || make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage, &self.shadow_hooks)));
+        self.gpu = Some(super::timed("the distant statics' GPU objects", || {
+            make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage, &self.shadow_hooks)
+        }));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();
         let for_reader = catalog.clone();
@@ -2634,7 +2954,16 @@ impl Statics {
             // the unreadable ones.
             if arrival.unreadable || arrival.indexes.is_empty() {
                 if self.unreadable.is_empty() {
-                    println!("distant statics: subset {} {} statics/static_meshes_{:03}; such a subset is not drawn and not asked for again (the count is in the summary)", arrival.subset, if arrival.unreadable { "cannot be read from" } else { "has no triangles in" }, s.shard);
+                    println!(
+                        "distant statics: subset {} {} statics/static_meshes_{:03}; such a subset is not drawn and not asked for again (the count is in the summary)",
+                        arrival.subset,
+                        if arrival.unreadable {
+                            "cannot be read from"
+                        } else {
+                            "has no triangles in"
+                        },
+                        s.shard
+                    );
                 }
                 self.unreadable.insert(arrival.subset);
                 continue;
@@ -2645,23 +2974,48 @@ impl Statics {
                 let Some(slot) = gpu.pools.put(device, queue, s.texture, &arrival.vertices, &arrival.indexes) else {
                     if !self.pool_full {
                         self.pool_full = true;
-                        println!("distant statics: {}: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn until a slot of the pool goes free", self.stamp());
+                        println!(
+                            "distant statics: {}: the pool of a texture cannot grow for a subset of {size} bytes; it is not drawn until a slot of the pool goes free",
+                            self.stamp()
+                        );
                     }
                     self.refused.insert(arrival.subset);
                     self.refused_count += 1;
                     continue;
                 };
                 if let Some(culling) = gpu.culling.as_ref() {
-                    let entry = cull::Subset { first_index: slot.first_index, base_vertex: slot.base_vertex, faces: arrival.faces, resident: 1, _pad: [0; 2] };
-                    queue.write_buffer(&culling.subsets, arrival.subset as u64 * size_of::<cull::Subset>() as u64, bytemuck::bytes_of(&entry));
+                    let entry = cull::Subset {
+                        first_index: slot.first_index,
+                        base_vertex: slot.base_vertex,
+                        faces: arrival.faces,
+                        resident: 1,
+                        _pad: [0; 2],
+                    };
+                    queue.write_buffer(
+                        &culling.subsets,
+                        arrival.subset as u64 * size_of::<cull::Subset>() as u64,
+                        bytemuck::bytes_of(&entry),
+                    );
                 }
                 Geometry::Pool(slot)
             } else {
-                let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("distant static, vertices"), contents: &arrival.vertices, usage: wgpu::BufferUsages::VERTEX });
-                let indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("distant static, indexes"), contents: &arrival.indexes, usage: wgpu::BufferUsages::INDEX });
+                let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("distant static, vertices"),
+                    contents: &arrival.vertices,
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("distant static, indexes"),
+                    contents: &arrival.indexes,
+                    usage: wgpu::BufferUsages::INDEX,
+                });
                 Geometry::Own { vertices, indexes }
             };
-            let arrived = if self.prefetching { -1.0e9 } else { self.clock.elapsed().as_secs_f32() };
+            let arrived = if self.prefetching {
+                -1.0e9
+            } else {
+                self.clock.elapsed().as_secs_f32()
+            };
             if let Some(gpu) = self.gpu.as_ref() {
                 queue.write_buffer(&gpu.arrivals, arrival.subset as u64 * 4, bytemuck::bytes_of(&arrived));
             }
@@ -2670,7 +3024,17 @@ impl Statics {
                 self.grass_bent += arrival.bent as u64;
             }
             let wanted_at = self.clock.elapsed().as_secs_f32();
-            self.resident.insert(arrival.subset, Resident { geometry, faces: arrival.faces, bytes: size, arrived, wanted_at, bent: arrival.bent });
+            self.resident.insert(
+                arrival.subset,
+                Resident {
+                    geometry,
+                    faces: arrival.faces,
+                    bytes: size,
+                    arrived,
+                    wanted_at,
+                    bent: arrival.bent,
+                },
+            );
             self.resident_bytes += size;
             self.most_bytes = self.most_bytes.max(self.resident_bytes);
             let again = !self.ever_arrived.insert(arrival.subset);
@@ -2679,7 +3043,11 @@ impl Statics {
                 wait.arrived_bytes += size;
                 wait.again += again as u32;
             }
-            if let Some(&index) = self.catalog.as_ref().and_then(|catalog| catalog.merged_place.get(&arrival.subset)) {
+            if let Some(&index) = self
+                .catalog
+                .as_ref()
+                .and_then(|catalog| catalog.merged_place.get(&arrival.subset))
+            {
                 self.merged_bytes += size;
                 self.most_merged = self.most_merged.max(self.merged_bytes);
                 if !self.prefetching {
@@ -2710,7 +3078,11 @@ impl Statics {
         let near = flat_distance(instance, eye) - instance.radius;
         self.play_arrivals += 1;
         let c = instance.center;
-        let in_view = self.view_planes.is_some_and(|planes| planes.iter().all(|p| p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3] >= -instance.radius));
+        let in_view = self.view_planes.is_some_and(|planes| {
+            planes
+                .iter()
+                .all(|p| p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3] >= -instance.radius)
+        });
         if in_view {
             self.view_arrivals[((near.max(0.0) / CELL) as usize).min(VIEW_BANDS - 1)] += 1;
         }
@@ -2742,7 +3114,13 @@ impl Statics {
     /// frame: the view group `view::tier_game(k)` has the projection of the game, and the call
     /// has places, uniforms and a group of its own. The view has no shadow on its grass. The
     /// main view's grass counters stay as they are.
-    pub fn draw_grass_view(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame, k: usize) -> GrassView {
+    pub fn draw_grass_view(
+        &mut self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        frame: &GrassFrame,
+        k: usize,
+    ) -> GrassView {
         if self.failed || !self.settings.grass {
             return GrassView::default();
         }
@@ -2771,29 +3149,57 @@ impl Statics {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let group = make_grass_group(device, &gpu.grass_layout, &uniforms, &gpu.grass_sampler, &gpu.grass_no_shadow, &gpu.grass_shadow_sampler);
+            let group = make_grass_group(
+                device,
+                &gpu.grass_layout,
+                &uniforms,
+                &gpu.grass_sampler,
+                &gpu.grass_no_shadow,
+                &gpu.grass_shadow_sampler,
+            );
             made += uniforms.size() + records.size();
-            gpu.grass_sets[k] = Some(GrassSet { records, uniforms, group });
+            gpu.grass_sets[k] = Some(GrassSet {
+                records,
+                uniforms,
+                group,
+            });
         }
         made
     }
 
     /// Draws the grass for `target`; returns the places drawn.
-    fn draw_grass_timed(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &GrassFrame, target: GrassTarget) -> usize {
+    fn draw_grass_timed(
+        &mut self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        frame: &GrassFrame,
+        target: GrassTarget,
+    ) -> usize {
         let main = matches!(target, GrassTarget::Main);
         // The shadow map is made once in a session: the group takes it at its first frame.
         if let (Some(shadow), Some(gpu), true) = (frame.shadow.as_ref(), self.gpu.as_mut(), main) {
             if !std::rc::Rc::ptr_eq(&gpu.grass_atlas, &shadow.atlas) {
-                gpu.grass_group = make_grass_group(scene.device, &gpu.grass_layout, &gpu.grass_uniforms, &gpu.grass_sampler, &shadow.atlas, &gpu.grass_shadow_sampler);
+                gpu.grass_group = make_grass_group(
+                    scene.device,
+                    &gpu.grass_layout,
+                    &gpu.grass_uniforms,
+                    &gpu.grass_sampler,
+                    &shadow.atlas,
+                    &gpu.grass_shadow_sampler,
+                );
                 gpu.grass_atlas = shadow.atlas.clone();
             }
         }
-        let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else { return 0 };
+        let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else {
+            return 0;
+        };
         let view_index = match target {
             GrassTarget::Main => super::view::GAME,
             GrassTarget::View(k) => super::view::tier_game(k),
         };
-        let Some(view) = self.view_groups.get(view_index).and_then(Option::as_ref) else { return 0 };
+        let Some(view) = self.view_groups.get(view_index).and_then(Option::as_ref) else {
+            return 0;
+        };
         let (records_buffer, uniforms_buffer, group) = match target {
             GrassTarget::Main => (&gpu.grass_records, &gpu.grass_uniforms, &gpu.grass_group),
             GrassTarget::View(k) => match gpu.grass_sets.get(k).and_then(Option::as_ref) {
@@ -2801,14 +3207,23 @@ impl Statics {
                 None => return 0,
             },
         };
-        let Some(world) = catalog.worlds.get(&self.world) else { return 0 };
+        let Some(world) = catalog.worlds.get(&self.world) else {
+            return 0;
+        };
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
         self.grass_draws.clear();
         let [now, fade_seconds, _, _] = self.fade_values();
         let mut counts = GrassParts::default();
         let choose_started = Instant::now();
-        let sight = GrassSight { eye, range: view_range, planes: frame.planes, now, fade_seconds, limit: GRASS_RECORDS };
+        let sight = GrassSight {
+            eye,
+            range: view_range,
+            planes: frame.planes,
+            now,
+            fade_seconds,
+            limit: GRASS_RECORDS,
+        };
         let keep = self.grass_kept.begin(&self.world);
         let (shown, resident) = (&self.shown, &self.resident);
         let cut = world.choose_grass(
@@ -2817,7 +3232,11 @@ impl Statics {
             |group| hidden(shown, group),
             |subset| {
                 let r = resident.get(&subset)?;
-                Some(GrassSubset { texture: catalog.subsets[subset as usize].texture, arrived: r.arrived, bent: r.bent as u32 as f32 })
+                Some(GrassSubset {
+                    texture: catalog.subsets[subset as usize].texture,
+                    arrived: r.arrived,
+                    bent: r.bent as u32 as f32,
+                })
             },
             &mut self.grass_draws,
             &mut counts,
@@ -2835,19 +3254,26 @@ impl Statics {
             return 0;
         }
         let sort_started = Instant::now();
-        self.grass_order.sort(self.grass_draws.iter().map(|draw| (draw.texture, draw.subset)));
+        self.grass_order
+            .sort(self.grass_draws.iter().map(|draw| (draw.texture, draw.subset)));
         counts.sort_seconds = sort_started.elapsed().as_secs_f64();
         let records_started = Instant::now();
         let draws = &self.grass_draws;
         self.grass_records.clear();
-        self.grass_records.extend(self.grass_order.keys.iter().flat_map(|&(_, _, index)| {
-            let draw = &draws[index as usize];
-            draw.record.into_iter().chain([draw.fade, draw.bent, 0.0, 0.0])
-        }));
+        self.grass_records
+            .extend(self.grass_order.keys.iter().flat_map(|&(_, _, index)| {
+                let draw = &draws[index as usize];
+                draw.record.into_iter().chain([draw.fade, draw.bent, 0.0, 0.0])
+            }));
         if self.grass_hash {
-            println!("{}", GrassHash::of(&self.grass_records).line(self.grass_frames, main, self.grass_records.len(), cut));
+            println!(
+                "{}",
+                GrassHash::of(&self.grass_records).line(self.grass_frames, main, self.grass_records.len(), cut)
+            );
         }
-        scene.queue.write_buffer(records_buffer, 0, bytemuck::cast_slice(&self.grass_records));
+        scene
+            .queue
+            .write_buffer(records_buffer, 0, bytemuck::cast_slice(&self.grass_records));
         counts.records_seconds = records_started.elapsed().as_secs_f64();
         let setup_started = Instant::now();
         let uniforms = GrassUniforms {
@@ -2858,11 +3284,18 @@ impl Statics {
             wind: frame.wind,
             foot: frame.foot,
             shadow_layers: frame.shadow.as_ref().map_or([[0.0; 16]; 2], |shadow| shadow.layers),
-            esm: frame.shadow_values.esm(frame.shadow.as_ref().map_or(0.0, |shadow| shadow.rcp)),
+            esm: frame
+                .shadow_values
+                .esm(frame.shadow.as_ref().map_or(0.0, |shadow| shadow.rcp)),
             shade: frame.shadow_values.shade(),
             shadow: frame.shadow.as_ref().map_or([0.0; 4], |shadow| {
                 let c = frame.sun_color;
-                [1.0, super::shadow::sun_light([c[0], c[1], c[2]], shadow.sun_vis, shadow.day), shadow.above_sea as u32 as f32, shadow.edge as u32 as f32]
+                [
+                    1.0,
+                    super::shadow::sun_light([c[0], c[1], c[2]], shadow.sun_vis, shadow.day),
+                    shadow.above_sea as u32 as f32,
+                    shadow.edge as u32 as f32,
+                ]
             }),
             look: frame.look,
         };
@@ -2891,7 +3324,12 @@ impl Statics {
             while end < self.grass_order.keys.len() && self.grass_order.keys[end].1 == subset {
                 end += 1;
             }
-            if let Some(Resident { geometry: Geometry::Own { vertices, indexes }, faces, .. }) = self.resident.get(&subset) {
+            if let Some(Resident {
+                geometry: Geometry::Own { vertices, indexes },
+                faces,
+                ..
+            }) = self.resident.get(&subset)
+            {
                 pass.set_bind_group(2, &gpu.textures[texture as usize], &[]);
                 pass.set_vertex_buffer(0, vertices.slice(..));
                 pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
@@ -2924,7 +3362,12 @@ impl Statics {
     /// The fade of the shaders: the time now on the clock of the arrivals, and the fade
     /// time. A replay has no fade: its pictures must not depend on the time of the machine.
     fn fade_values(&self) -> [f32; 4] {
-        [self.clock.elapsed().as_secs_f32(), if self.synchronous { 0.0 } else { self.fade_seconds }, 0.0, 0.0]
+        [
+            self.clock.elapsed().as_secs_f32(),
+            if self.synchronous { 0.0 } else { self.fade_seconds },
+            0.0,
+            0.0,
+        ]
     }
 
     /// Adds the counts of a grass call of the main view to the report; the calls of the views
@@ -2992,14 +3435,18 @@ impl Statics {
             return found;
         }
         let Some(catalog) = self.catalog.clone() else { return found };
-        let Some(world) = catalog.worlds.get(&self.world) else { return found };
+        let Some(world) = catalog.worlds.get(&self.world) else {
+            return found;
+        };
         let reach = self.settings.draw_distance;
         let admit = reach + CELL;
         let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
         let cells = ((reach + CELL) / CELL).ceil() as i32;
         for y in cell_y - cells..=cell_y + cells {
             for x in cell_x - cells..=cell_x + cells {
-                let Some(list) = world.water_cells.get(&(x, y)) else { continue };
+                let Some(list) = world.water_cells.get(&(x, y)) else {
+                    continue;
+                };
                 for index in list {
                     let instance = &catalog.instances[*index as usize];
                     if hidden(&self.shown, instance.group) {
@@ -3007,16 +3454,33 @@ impl Statics {
                     }
                     let subset = &catalog.subsets[instance.subset as usize];
                     let Some(look) = subset.look else { continue };
-                    let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
-                    if !subset.components.is_empty() && (to[0] * to[0] + to[1] * to[1]).sqrt() <= admit + instance.radius && self.may_ask(instance.subset) {
+                    let to = [
+                        instance.center[0] - eye[0],
+                        instance.center[1] - eye[1],
+                        instance.center[2] - eye[2],
+                    ];
+                    if !subset.components.is_empty()
+                        && (to[0] * to[0] + to[1] * to[1]).sqrt() <= admit + instance.radius
+                        && self.may_ask(instance.subset)
+                    {
                         self.wanted.push(instance.subset);
                     }
-                    let Some(Resident { geometry: Geometry::Own { vertices, indexes }, faces, .. }) = self.resident.get(&instance.subset) else { continue };
+                    let Some(Resident {
+                        geometry: Geometry::Own { vertices, indexes },
+                        faces,
+                        ..
+                    }) = self.resident.get(&instance.subset)
+                    else {
+                        continue;
+                    };
                     let range = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
                     if range > reach + instance.radius {
                         continue;
                     }
-                    if !planes.iter().all(|p| p[0] * instance.center[0] + p[1] * instance.center[1] + p[2] * instance.center[2] + p[3] >= -instance.radius) {
+                    if !planes.iter().all(|p| {
+                        p[0] * instance.center[0] + p[1] * instance.center[1] + p[2] * instance.center[2] + p[3]
+                            >= -instance.radius
+                    }) {
                         continue;
                     }
                     // The place of the reference is the translation of its world matrix.
@@ -3028,7 +3492,10 @@ impl Statics {
                         world: instance.world,
                         look,
                         loaded: px >= loaded[0] && py >= loaded[1] && px < loaded[2] && py < loaded[3],
-                        texture: self.gpu.as_ref().and_then(|gpu| gpu.texture_views.get(subset.texture as usize).cloned()),
+                        texture: self
+                            .gpu
+                            .as_ref()
+                            .and_then(|gpu| gpu.texture_views.get(subset.texture as usize).cloned()),
                     });
                 }
             }
@@ -3077,7 +3544,9 @@ impl Statics {
     /// The bytes that the cull buffers of the set `set` of the views of their own would take
     /// now, 0 when they exist or the statics cannot draw (no GPU culling, no world space).
     pub fn view_set_bytes_needed(&self, set: usize) -> u64 {
-        let (Some(gpu), Some(catalog)) = (self.gpu.as_ref(), self.catalog.as_ref()) else { return 0 };
+        let (Some(gpu), Some(catalog)) = (self.gpu.as_ref(), self.catalog.as_ref()) else {
+            return 0;
+        };
         let Some(culling) = gpu.culling.as_ref() else { return 0 };
         match (culling.has_world(&self.world), culling.has_set(tier_set(set))) {
             (true, true) => 0,
@@ -3092,7 +3561,8 @@ impl Statics {
     /// the grass sets.
     pub fn views_bytes(&self) -> u64 {
         let Some(gpu) = self.gpu.as_ref() else { return 0 };
-        gpu.culling.as_ref().map_or(0, cull::Culling::views_bytes) + gpu.grass_sets.iter().flatten().count() as u64 * GRASS_SET_BYTES
+        gpu.culling.as_ref().map_or(0, cull::Culling::views_bytes)
+            + gpu.grass_sets.iter().flatten().count() as u64 * GRASS_SET_BYTES
     }
 
     /// The bytes that the grass set `k` would take now, 0 when it exists.
@@ -3178,8 +3648,14 @@ impl Statics {
                     if !culling.has_world(&self.world) {
                         culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
                     }
-                    let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull") });
-                    let at = scene.commands.stamps().begin(&mut encoder, "distant statics: the GPU cull of all sets", nirender_wgpu::stamps::StampKind::Detail);
+                    let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("distant statics, cull"),
+                    });
+                    let at = scene.commands.stamps().begin(
+                        &mut encoder,
+                        "distant statics: the GPU cull of all sets",
+                        nirender_wgpu::stamps::StampKind::Detail,
+                    );
                     for cull_set in sets {
                         let values = cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end);
                         culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
@@ -3215,9 +3691,20 @@ impl Statics {
         if !culling.has_set(cull_set.set) {
             return None;
         }
-        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull of a view of its own") });
-        let at = scene.commands.stamps().begin(&mut encoder, "distant statics: the GPU cull of a view of its own", nirender_wgpu::stamps::StampKind::Detail);
-        culling.encode(scene.queue, &mut encoder, cull_set.set, &cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end));
+        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("distant statics, cull of a view of its own"),
+        });
+        let at = scene.commands.stamps().begin(
+            &mut encoder,
+            "distant statics: the GPU cull of a view of its own",
+            nirender_wgpu::stamps::StampKind::Detail,
+        );
+        culling.encode(
+            scene.queue,
+            &mut encoder,
+            cull_set.set,
+            &cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end),
+        );
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
         mark_prepared(&mut self.prepared, cull_set.set);
@@ -3274,18 +3761,32 @@ impl Statics {
     /// With "all", every merged subset of the world space is wanted once, when they fit
     /// under the high mark.
     fn want_near(&mut self, catalog: &Catalog, eye: [f32; 3]) {
-        let Some(world) = catalog.worlds.get(&self.world) else { return };
+        let Some(world) = catalog.worlds.get(&self.world) else {
+            return;
+        };
         let admit = self.settings.draw_distance + CELL;
         let now = self.clock.elapsed().as_secs_f32();
         let all = self.residency == StaticsResidency::All && self.all_world.as_deref() != Some(self.world.as_slice());
         if all {
             self.all_world = Some(self.world.clone());
-            let bytes: u64 = world.merged.iter().map(|&index| catalog.subsets[catalog.instances[index as usize].subset as usize].bytes()).sum();
+            let bytes: u64 = world
+                .merged
+                .iter()
+                .map(|&index| catalog.subsets[catalog.instances[index as usize].subset as usize].bytes())
+                .sum();
             let high = self.high_mark();
             if bytes <= high {
-                println!("distant statics: residency all: the {:.0} MB of merged subsets of the world space fit under the high mark of {:.0} MB; all are asked for", bytes as f64 / 1e6, high as f64 / 1e6);
+                println!(
+                    "distant statics: residency all: the {:.0} MB of merged subsets of the world space fit under the high mark of {:.0} MB; all are asked for",
+                    bytes as f64 / 1e6,
+                    high as f64 / 1e6
+                );
             } else {
-                println!("distant statics: residency all: the {:.0} MB of merged subsets of the world space do not fit under the high mark of {:.0} MB; as auto", bytes as f64 / 1e6, high as f64 / 1e6);
+                println!(
+                    "distant statics: residency all: the {:.0} MB of merged subsets of the world space do not fit under the high mark of {:.0} MB; as auto",
+                    bytes as f64 / 1e6,
+                    high as f64 / 1e6
+                );
             }
             if bytes <= high {
                 // The pools grow once to hold them all, not in doublings (with doublings
@@ -3313,7 +3814,9 @@ impl Statics {
                         entry.1 += (s.triangle_count * 3 + 1) & !1;
                     }
                 }
-                if let (Some(gpu), Some(device), Some(queue)) = (self.gpu.as_mut(), self.device.as_ref(), self.queue.as_ref()) {
+                if let (Some(gpu), Some(device), Some(queue)) =
+                    (self.gpu.as_mut(), self.device.as_ref(), self.queue.as_ref())
+                {
                     for (texture, (vertices, indexes)) in room {
                         gpu.pools.reserve(device, queue, texture, vertices, indexes);
                     }
@@ -3342,7 +3845,11 @@ impl Statics {
     /// `distant_land.statics_resident_mb`, or half of the first cap of the session; never over
     /// the cap as it is now (another program that takes memory lowers it).
     fn high_mark(&self) -> u64 {
-        let mark = if self.resident_mark > 0 { self.resident_mark } else { self.first_cap / 2 };
+        let mark = if self.resident_mark > 0 {
+            self.resident_mark
+        } else {
+            self.first_cap / 2
+        };
         mark.min(self.merged_cap)
     }
 
@@ -3363,7 +3870,12 @@ impl Statics {
             .filter_map(|(subset, resident)| {
                 let instance = &catalog.instances[*catalog.merged_place.get(subset)? as usize];
                 let distance = self.distance_here(catalog, *subset, eye);
-                (now - resident.wanted_at > KEEP_SECONDS && distance > admit + instance.radius).then_some((resident.wanted_at, distance, *subset, resident.bytes))
+                (now - resident.wanted_at > KEEP_SECONDS && distance > admit + instance.radius).then_some((
+                    resident.wanted_at,
+                    distance,
+                    *subset,
+                    resident.bytes,
+                ))
             })
             .collect();
         let (before, mut count) = (self.merged_bytes, 0);
@@ -3375,7 +3887,17 @@ impl Statics {
             }
         }
         if count > 0 {
-            println!("{}", memory_event(&self.stamp(), "trimmed (wanted least recently)", count, before, self.merged_bytes, &bytes_limit("the high mark", high)));
+            println!(
+                "{}",
+                memory_event(
+                    &self.stamp(),
+                    "trimmed (wanted least recently)",
+                    count,
+                    before,
+                    self.merged_bytes,
+                    &bytes_limit("the high mark", high)
+                )
+            );
         }
     }
 
@@ -3434,7 +3956,8 @@ impl Statics {
                 let freed = gpu.pools.next_frame();
                 // Those pools have room again: the subsets they refused may be asked for.
                 if let (false, Some(catalog)) = (freed.is_empty(), self.catalog.as_ref()) {
-                    self.refused.retain(|refused| !freed.contains(&catalog.subsets[*refused as usize].texture));
+                    self.refused
+                        .retain(|refused| !freed.contains(&catalog.subsets[*refused as usize].texture));
                 }
             }
         }
@@ -3481,7 +4004,10 @@ impl Statics {
             }
             if count > 0 {
                 let limit = format!("farther than {retain:.0} units and the subset's radius");
-                println!("{}", memory_event(&self.stamp(), "taken off, too far", count, before, self.merged_bytes, &limit));
+                println!(
+                    "{}",
+                    memory_event(&self.stamp(), "taken off, too far", count, before, self.merged_bytes, &limit)
+                );
             }
         }
         self.frames += 1;
@@ -3494,12 +4020,24 @@ impl Statics {
     /// Binds what the draws of a set read: its pipeline, its uniforms and the places. Gives false
     /// when the set has no uniforms (a set of the views of their own that is not made): nothing
     /// is bound then.
-    fn bind_set(gpu: &Gpu, view_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) -> bool {
-        let Some(buffers) = gpu.sets.get(set).and_then(Option::as_ref) else { return false };
+    fn bind_set(
+        gpu: &Gpu,
+        view_group: Option<&wgpu::BindGroup>,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        frame: &Frame,
+        set: usize,
+        fade: [f32; 4],
+    ) -> bool {
+        let Some(buffers) = gpu.sets.get(set).and_then(Option::as_ref) else {
+            return false;
+        };
         if let Some(view_group) = view_group {
             pass.set_bind_group(0, view_group, &[]);
         }
-        scene.queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms_of(frame, fade)));
+        scene
+            .queue
+            .write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms_of(frame, fade)));
         // Lines when the game draws in wireframe (see `SceneView::wireframe`), as MGE XE on
         // Direct3D 9 draws with the fill mode the engine left; the shadow map stays filled.
         // A pass with another count of samples than the main view's (a rendered texture) has the
@@ -3511,21 +4049,37 @@ impl Statics {
             _ => (&gpu.pipeline, &gpu.pipeline_lines),
         };
         let shadow = matches!(set, 2 | 3);
-        pass.set_pipeline(if shadow { &gpu.shadow_pipeline } else if scene.wireframe { lines.as_ref().unwrap_or(fill) } else { fill });
+        pass.set_pipeline(if shadow {
+            &gpu.shadow_pipeline
+        } else if scene.wireframe {
+            lines.as_ref().unwrap_or(fill)
+        } else {
+            fill
+        });
         pass.set_bind_group(1, &buffers.group, &[]);
         pass.set_vertex_buffer(1, gpu.instances.slice(..));
         true
     }
 
     /// The indirect draws of a set that the GPU chose.
-    fn draw_chosen(gpu: &Gpu, view_group: Option<&wgpu::BindGroup>, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, frame: &Frame, set: usize, fade: [f32; 4]) -> u32 {
+    fn draw_chosen(
+        gpu: &Gpu,
+        view_group: Option<&wgpu::BindGroup>,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        frame: &Frame,
+        set: usize,
+        fade: [f32; 4],
+    ) -> u32 {
         let Some(culling) = gpu.culling.as_ref() else { return 0 };
         if !Self::bind_set(gpu, view_group, scene, pass, frame, set, fade) {
             return 0;
         }
         let (pools, textures) = (&gpu.pools, &gpu.textures);
         culling.draw(set, pass, |pass, texture| {
-            let Some((vertices, indexes)) = pools.buffers(texture) else { return false };
+            let Some((vertices, indexes)) = pools.buffers(texture) else {
+                return false;
+            };
             pass.set_bind_group(2, &textures[texture as usize], &[]);
             pass.set_vertex_buffer(0, vertices.slice(..));
             pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
@@ -3552,7 +4106,9 @@ impl Statics {
             return 0;
         }
         let Some(catalog) = self.catalog.clone() else { return 0 };
-        let Some(world) = catalog.worlds.get(&self.world) else { return 0 };
+        let Some(world) = catalog.worlds.get(&self.world) else {
+            return 0;
+        };
         let settings = self.settings;
 
         // The places chosen on the GPU, in a command buffer of this set.
@@ -3585,7 +4141,11 @@ impl Statics {
                     }
                     stats.visited += 1;
                     let subset = &catalog.subsets[instance.subset as usize];
-                    let to = [instance.center[0] - eye[0], instance.center[1] - eye[1], instance.center[2] - eye[2]];
+                    let to = [
+                        instance.center[0] - eye[0],
+                        instance.center[1] - eye[1],
+                        instance.center[2] - eye[2],
+                    ];
                     let range = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
                     let Some(resident) = self.resident.get(&instance.subset) else {
                         stats.waiting += 1;
@@ -3597,7 +4157,10 @@ impl Statics {
                         stats.distance += 1;
                         continue;
                     }
-                    if !frame.planes.iter().all(|p| p[0] * instance.center[0] + p[1] * instance.center[1] + p[2] * instance.center[2] + p[3] >= -instance.radius) {
+                    if !frame.planes.iter().all(|p| {
+                        p[0] * instance.center[0] + p[1] * instance.center[1] + p[2] * instance.center[2] + p[3]
+                            >= -instance.radius
+                    }) {
                         stats.frustum += 1;
                         continue;
                     }
@@ -3618,7 +4181,13 @@ impl Statics {
         }
         self.draws.sort_unstable();
         stats.drawn = self.draws.len() as u64;
-        stats.runs = self.draws.iter().zip(self.draws.iter().skip(1)).filter(|(a, b)| (a.0, a.1) != (b.0, b.1)).count() as u64 + (!self.draws.is_empty()) as u64;
+        stats.runs = self
+            .draws
+            .iter()
+            .zip(self.draws.iter().skip(1))
+            .filter(|(a, b)| (a.0, a.1) != (b.0, b.1))
+            .count() as u64
+            + (!self.draws.is_empty()) as u64;
         if let Some(total) = self.set_stats.get_mut(set) {
             for (sum, add) in [
                 (&mut total.visited, stats.visited),
@@ -3641,15 +4210,27 @@ impl Statics {
         }
         let mut texture = u32::MAX;
         for &(draw_texture, subset, instance, faces) in &self.draws {
-            let Some(Resident { geometry: Geometry::Pool(slot), .. }) = self.resident.get(&subset) else { continue };
+            let Some(Resident {
+                geometry: Geometry::Pool(slot),
+                ..
+            }) = self.resident.get(&subset)
+            else {
+                continue;
+            };
             if draw_texture != texture {
-                let Some((vertices, indexes)) = gpu.pools.buffers(draw_texture) else { continue };
+                let Some((vertices, indexes)) = gpu.pools.buffers(draw_texture) else {
+                    continue;
+                };
                 texture = draw_texture;
                 pass.set_bind_group(2, &gpu.textures[texture as usize], &[]);
                 pass.set_vertex_buffer(0, vertices.slice(..));
                 pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
             }
-            pass.draw_indexed(slot.first_index..slot.first_index + faces * 3, slot.base_vertex as i32, instance..instance + 1);
+            pass.draw_indexed(
+                slot.first_index..slot.first_index + faces * 3,
+                slot.base_vertex as i32,
+                instance..instance + 1,
+            );
         }
         self.drawn += self.draws.len() as u64;
         self.draws.len() as u32
@@ -3686,7 +4267,11 @@ fn cull_values(settings: &Settings, planes: [[f32; 4]; 6], eye: [f32; 4], fog_en
 
 /// The values of the draws of a set (group 1).
 fn uniforms_of(frame: &Frame, fade: [f32; 4]) -> SetUniforms {
-    SetUniforms { range: [frame.eye[3], 0.0, 0.0, 0.0], handoff: [frame.time, frame.eye[3] - HANDOFF, HANDOFF_BAND, HANDOFF_CULL], fade }
+    SetUniforms {
+        range: [frame.eye[3], 0.0, 0.0, 0.0],
+        handoff: [frame.time, frame.eye[3] - HANDOFF, HANDOFF_BAND, HANDOFF_CULL],
+        fade,
+    }
 }
 
 /// A set for [`Statics::prepare`]: its number (0 the main view, 1 the mirror, 2 and 3 the
@@ -3710,17 +4295,29 @@ impl Drop for Statics {
         println!(
             "distant statics: at most {:.0} MB of merged subsets on the GPU, the cap at the end {}; the cap went down {} times and up {} times, {} subsets taken off for nearer ones, {} frames in which some waited; residency {:?}, the high mark {}, {} subsets trimmed",
             self.most_merged as f64 / 1e6,
-            if self.merged_cap == u64::MAX { "none".to_string() } else { format!("{:.0} MB", self.merged_cap as f64 / 1e6) },
+            if self.merged_cap == u64::MAX {
+                "none".to_string()
+            } else {
+                format!("{:.0} MB", self.merged_cap as f64 / 1e6)
+            },
             self.lowered,
             self.raised,
             self.evicted,
             self.capped_frames,
             self.residency,
-            if self.high_mark() >= u64::MAX / 2 { "none".to_string() } else { format!("{:.0} MB", self.high_mark() as f64 / 1e6) },
+            if self.high_mark() >= u64::MAX / 2 {
+                "none".to_string()
+            } else {
+                format!("{:.0} MB", self.high_mark() as f64 / 1e6)
+            },
             self.trimmed
         );
         if !self.unreadable.is_empty() || self.refused_count > 0 {
-            println!("distant statics: {} subsets could not be read, {} arrivals found no room in a full pool", self.unreadable.len(), self.refused_count);
+            println!(
+                "distant statics: {} subsets could not be read, {} arrivals found no room in a full pool",
+                self.unreadable.len(),
+                self.refused_count
+            );
         }
         println!(
             "grass: {} frames, {:.0} records in a frame as a mean, {} frames with more than {GRASS_RECORDS}; {} subsets arrived, {} of them with bent normals",
@@ -3730,7 +4327,10 @@ impl Drop for Statics {
             self.grass_arrived,
             self.grass_bent
         );
-        println!("distant statics: {} places of hidden vis groups not drawn", self.hidden_skipped);
+        println!(
+            "distant statics: {} places of hidden vis groups not drawn",
+            self.hidden_skipped
+        );
         self.report("end");
     }
 }
@@ -3769,7 +4369,10 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
             None => return,
         },
     };
-    let options = distantland::vfs::VfsLoadOptions { morrowind_ini: Some(game.join("Morrowind.ini")), ..Default::default() };
+    let options = distantland::vfs::VfsLoadOptions {
+        morrowind_ini: Some(game.join("Morrowind.ini")),
+        ..Default::default()
+    };
     let files = match distantland::vfs::Vfs::load(&options) {
         Ok(files) => files,
         Err(problem) => {
@@ -3784,7 +4387,13 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
     }
 }
 
-fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLayout, alpha_to_coverage: bool, shadow_hooks: &str) -> Gpu {
+fn make_gpu(
+    scene: &SceneView,
+    loaded: &Loaded,
+    view_layout: &wgpu::BindGroupLayout,
+    alpha_to_coverage: bool,
+    shadow_hooks: &str,
+) -> Gpu {
     let device = scene.device;
     let catalog = &loaded.catalog;
     let make_uniforms = || {
@@ -3822,20 +4431,37 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
             wgpu::BindGroupLayoutEntry {
                 binding: 3,
                 visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
         ],
@@ -3858,10 +4484,22 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             label: Some("distant statics"),
             layout: &layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: palettes.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 3, resource: arrivals.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: palettes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: arrivals.as_entire_binding(),
+                },
             ],
         })
     });
@@ -3872,7 +4510,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             scene.queue,
             &wgpu::TextureDescriptor {
                 label: Some("distant statics, no texture"),
-                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -3902,16 +4544,26 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         textures.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant statics, textures"),
             layout: &texture_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
         }));
         texture_views.push(view);
     }
     if !missing.is_empty() {
-        println!("distant statics: {} textures are white: {}", missing.len(), missing.iter().take(6).cloned().collect::<Vec<_>>().join("; "));
+        println!(
+            "distant statics: {} textures are white: {}",
+            missing.len(),
+            missing.iter().take(6).cloned().collect::<Vec<_>>().join("; ")
+        );
     }
 
     let source = format!("{}{SET_WGSL}{SHADER}{}", super::view::wgsl(), super::FOG_FUNCTION);
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("distant statics"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
     // Group 0: the view group of the set (`view::ViewBinding`); group 1: the values of the
     // set; group 2: the textures of a draw.
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -3927,53 +4579,107 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     // coverage with `alpha_to_coverage`; the alpha of the back buffer stays 1, as a target
     // of the game without alpha gives). The mirror of the water is a texture of this
     // program, with one sample.
-    let make_pipeline = |cull: wgpu::Face, polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState, write_mask: wgpu::ColorWrites| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("distant statics"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs"),
-            compilation_options: Default::default(),
-            buffers: &[
-                Some(wgpu::VertexBufferLayout { array_stride: VERTEX as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &vertex }),
-                Some(wgpu::VertexBufferLayout { array_stride: 80, step_mode: wgpu::VertexStepMode::Instance, attributes: &place }),
-            ],
-        },
-        // `CullMode = CW` of the pass of MGE XE: a triangle with its corners clockwise on
-        // the screen is not drawn.
-        primitive: wgpu::PrimitiveState { front_face: wgpu::FrontFace::Ccw, cull_mode: Some(cull), polygon_mode, ..Default::default() },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: scene.depth_format,
-            depth_write_enabled: Some(true),
-            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
-        multisample,
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs"),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
+    let make_pipeline = |cull: wgpu::Face,
+                         polygon_mode: wgpu::PolygonMode,
+                         multisample: wgpu::MultisampleState,
+                         write_mask: wgpu::ColorWrites| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("distant statics"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: VERTEX as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &vertex,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 80,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &place,
+                    }),
+                ],
+            },
+            // `CullMode = CW` of the pass of MGE XE: a triangle with its corners clockwise on
+            // the screen is not drawn.
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(cull),
+                polygon_mode,
                 ..Default::default()
             },
-            targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-    let pipeline = make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Fill, scene.multisample(alpha_to_coverage), wgpu::ColorWrites::COLOR);
-    let mirror_pipeline = make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Fill, Default::default(), wgpu::ColorWrites::ALL);
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: scene.depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: scene.target_format,
+                    blend: None,
+                    write_mask,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    let pipeline = make_pipeline(
+        wgpu::Face::Back,
+        wgpu::PolygonMode::Fill,
+        scene.multisample(alpha_to_coverage),
+        wgpu::ColorWrites::COLOR,
+    );
+    let mirror_pipeline = make_pipeline(
+        wgpu::Face::Front,
+        wgpu::PolygonMode::Fill,
+        Default::default(),
+        wgpu::ColorWrites::ALL,
+    );
     // A view of its own into a rendered texture: one sample, the winding of the game.
-    let picture_pipeline = make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Fill, Default::default(), wgpu::ColorWrites::COLOR);
+    let picture_pipeline = make_pipeline(
+        wgpu::Face::Back,
+        wgpu::PolygonMode::Fill,
+        Default::default(),
+        wgpu::ColorWrites::COLOR,
+    );
     // The same as lines, for a frame in which the game draws in wireframe (see
     // `SceneView::wireframe`); a device without the line mode draws them filled then.
     let lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
-    let pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Back, wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage), wgpu::ColorWrites::COLOR));
-    let mirror_pipeline_lines = lines.then(|| make_pipeline(wgpu::Face::Front, wgpu::PolygonMode::Line, Default::default(), wgpu::ColorWrites::ALL));
+    let pipeline_lines = lines.then(|| {
+        make_pipeline(
+            wgpu::Face::Back,
+            wgpu::PolygonMode::Line,
+            scene.multisample(alpha_to_coverage),
+            wgpu::ColorWrites::COLOR,
+        )
+    });
+    let mirror_pipeline_lines = lines.then(|| {
+        make_pipeline(
+            wgpu::Face::Front,
+            wgpu::PolygonMode::Line,
+            Default::default(),
+            wgpu::ColorWrites::ALL,
+        )
+    });
     // The casters of the shadow map: the same vertices and places, the depth from the sun.
     let shadow_source = format!("{}{SET_WGSL}{SHADOW_SHADER}", super::view::wgsl());
-    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics shadow"), source: wgpu::ShaderSource::Wgsl(shadow_source.into()) });
+    let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("distant statics shadow"),
+        source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
+    });
     let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("distant statics shadow"),
         layout: Some(&pipeline_layout),
@@ -3982,11 +4688,22 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             entry_point: Some("vs"),
             compilation_options: Default::default(),
             buffers: &[
-                Some(wgpu::VertexBufferLayout { array_stride: VERTEX as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &vertex }),
-                Some(wgpu::VertexBufferLayout { array_stride: 80, step_mode: wgpu::VertexStepMode::Instance, attributes: &place }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: VERTEX as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &vertex,
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: 80,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &place,
+                }),
             ],
         },
-        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        primitive: wgpu::PrimitiveState {
+            cull_mode: None,
+            ..Default::default()
+        },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: super::shadow::Shadow::depth_format(scene.depth_format),
             depth_write_enabled: Some(true),
@@ -3999,12 +4716,20 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             module: &shadow_module,
             entry_point: Some("fs"),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::R16Float,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
         }),
         multiview_mask: None,
         cache: None,
     });
-    let sets: Vec<Option<BufferSet>> = groups.into_iter().zip(uniform_buffers).map(|(group, uniforms)| Some(BufferSet { group, uniforms })).collect();
+    let sets: Vec<Option<BufferSet>> = groups
+        .into_iter()
+        .zip(uniform_buffers)
+        .map(|(group, uniforms)| Some(BufferSet { group, uniforms }))
+        .collect();
 
     // The values of every place for the draws, once: the world matrix and the values of the
     // subset. A draw names its place by its first instance.
@@ -4012,7 +4737,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     for instance in &catalog.instances {
         let s = &catalog.subsets[instance.subset as usize];
         instance_data.extend_from_slice(&instance.world);
-        instance_data.extend_from_slice(&[s.palette as f32, s.has_alpha as u32 as f32, s.animate_uv as u32 as f32, instance.subset as f32]);
+        instance_data.extend_from_slice(&[
+            s.palette as f32,
+            s.has_alpha as u32 as f32,
+            s.animate_uv as u32 as f32,
+            instance.subset as f32,
+        ]);
     }
     if instance_data.is_empty() {
         instance_data.resize(20, 0.0);
@@ -4027,12 +4757,26 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         let places: Vec<cull::Place> = catalog
             .instances
             .iter()
-            .map(|instance| cull::Place { center: instance.center, radius: instance.radius, subset: instance.subset, tier: instance.tier as u32, group: instance.group as u32, _pad: 0 })
+            .map(|instance| cull::Place {
+                center: instance.center,
+                radius: instance.radius,
+                subset: instance.subset,
+                tier: instance.tier as u32,
+                group: instance.group as u32,
+                _pad: 0,
+            })
             .collect();
         println!("distant statics: the places are chosen on the GPU");
-        Some(cull::Culling::new(device, &places, catalog.subsets.len(), catalog.textures.len()))
+        Some(cull::Culling::new(
+            device,
+            &places,
+            catalog.subsets.len(),
+            catalog.textures.len(),
+        ))
     } else {
-        println!("distant statics: the places are chosen on the CPU (the device has no first instance or count for indirect draws)");
+        println!(
+            "distant statics: the places are chosen on the CPU (the device has no first instance or count for indirect draws)"
+        );
         None
     };
 
@@ -4049,17 +4793,35 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ],
     });
     // The shadow map is made at the first frame with shadows; until then the group has a
@@ -4074,7 +4836,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("grass, no shadow map"),
-                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -4084,53 +4850,82 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             })
             .create_view(&Default::default()),
     );
-    let grass_group = make_grass_group(device, &grass_layout, &grass_uniforms, &sampler, &no_shadow, &grass_shadow_sampler);
+    let grass_group = make_grass_group(
+        device,
+        &grass_layout,
+        &grass_uniforms,
+        &sampler,
+        &no_shadow,
+        &grass_shadow_sampler,
+    );
     let grass_source = grass_source(shadow_hooks);
-    let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("grass"), source: wgpu::ShaderSource::Wgsl(grass_source.into()) });
+    let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("grass"),
+        source: wgpu::ShaderSource::Wgsl(grass_source.into()),
+    });
     let grass_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("grass"),
         bind_group_layouts: &[Some(view_layout), Some(&grass_layout), Some(&texture_layout)],
         immediate_size: 0,
     });
     let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
-    let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("grass"),
-        layout: Some(&grass_pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &grass_module,
-            entry_point: Some("vs"),
-            compilation_options: Default::default(),
-            buffers: &[
-                Some(wgpu::VertexBufferLayout { array_stride: VERTEX as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &vertex }),
-                Some(wgpu::VertexBufferLayout { array_stride: GRASS_RECORD as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &grass_place }),
-            ],
-        },
-        // `CullMode = none` of the grass pass: the two sides of a blade.
-        primitive: wgpu::PrimitiveState { cull_mode: None, polygon_mode, ..Default::default() },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: scene.depth_format,
-            depth_write_enabled: Some(true),
-            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
-        // The alpha of the blade is the coverage of its pixel with `alpha_to_coverage`; the
-        // alpha of the back buffer stays 1.
-        multisample,
-        fragment: Some(wgpu::FragmentState {
-            module: &grass_module,
-            entry_point: Some("fs"),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
+    let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("grass"),
+            layout: Some(&grass_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &grass_module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: VERTEX as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &vertex,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: GRASS_RECORD as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &grass_place,
+                    }),
+                ],
+            },
+            // `CullMode = none` of the grass pass: the two sides of a blade.
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                polygon_mode,
                 ..Default::default()
             },
-            targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: scene.depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            // The alpha of the blade is the coverage of its pixel with `alpha_to_coverage`; the
+            // alpha of the back buffer stays 1.
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &grass_module,
+                entry_point: Some("fs"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: scene.target_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::COLOR,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
     let grass_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill, scene.multisample(alpha_to_coverage));
-    let grass_pipeline_lines = lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage)));
+    let grass_pipeline_lines =
+        lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage)));
     let grass_picture_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill, Default::default());
     let grass_records = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("grass, the places of a frame"),
@@ -4173,15 +4968,34 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
 
 /// The frame group of the grass: its uniforms, the sampler of its textures, and the shadow
 /// map.
-fn make_grass_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniforms: &wgpu::Buffer, sampler: &wgpu::Sampler, atlas: &wgpu::TextureView, atlas_sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+fn make_grass_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniforms: &wgpu::Buffer,
+    sampler: &wgpu::Sampler,
+    atlas: &wgpu::TextureView,
+    atlas_sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("grass"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(atlas) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(atlas_sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(atlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(atlas_sampler),
+            },
         ],
     })
 }
@@ -4196,15 +5010,26 @@ mod shader_tests {
     fn the_shaders_of_the_statics_are_valid() {
         let check = crate::renderer::shader_check::check;
         let view = crate::renderer::view::wgsl();
-        check("distant statics", &format!("{view}{SET_WGSL}{SHADER}{}", crate::renderer::FOG_FUNCTION)).unwrap();
+        check(
+            "distant statics",
+            &format!("{view}{SET_WGSL}{SHADER}{}", crate::renderer::FOG_FUNCTION),
+        )
+        .unwrap();
         check("distant statics shadow", &format!("{view}{SET_WGSL}{SHADOW_SHADER}")).unwrap();
-        check("grass", &super::grass_source(crate::renderer::core_mods::CoreMods::built_in().shadow_hooks())).unwrap();
+        check(
+            "grass",
+            &super::grass_source(crate::renderer::core_mods::CoreMods::built_in().shadow_hooks()),
+        )
+        .unwrap();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{grass_record, world_matrix, GrassDraw, GrassHash, GrassKept, GrassOrder, GrassParts, GrassMiss, GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, CELL, GRASS_KEEP_CALLS, GRASS_RECORDS};
+    use super::{
+        CELL, GRASS_KEEP_CALLS, GRASS_RECORDS, GrassDraw, GrassHash, GrassKept, GrassMiss, GrassOrder, GrassParts,
+        GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, grass_record, world_matrix,
+    };
 
     /// A record of 16 floats that starts at `first` and rises by one.
     fn rising_record(first: f32) -> Vec<f32> {
@@ -4215,11 +5040,35 @@ mod tests {
     /// on the bits of the floats, written in Python), not from this one.
     #[test]
     fn the_record_hash_has_known_values() {
-        assert_eq!(GrassHash::of(&[]), GrassHash { ordered: 0xcbf29ce484222325, unordered: 0 });
-        assert_eq!(GrassHash::of(&[0.0; 16]), GrassHash { ordered: 0x1bfc788be40011c0, unordered: 0x88201fb960ff6465 });
-        assert_eq!(GrassHash::of(&rising_record(0.0)), GrassHash { ordered: 0xebffe88ca04011c0, unordered: 0x9b3cfa2d13bf6465 });
+        assert_eq!(
+            GrassHash::of(&[]),
+            GrassHash {
+                ordered: 0xcbf29ce484222325,
+                unordered: 0
+            }
+        );
+        assert_eq!(
+            GrassHash::of(&[0.0; 16]),
+            GrassHash {
+                ordered: 0x1bfc788be40011c0,
+                unordered: 0x88201fb960ff6465
+            }
+        );
+        assert_eq!(
+            GrassHash::of(&rising_record(0.0)),
+            GrassHash {
+                ordered: 0xebffe88ca04011c0,
+                unordered: 0x9b3cfa2d13bf6465
+            }
+        );
         let two: Vec<f32> = [rising_record(0.0), rising_record(0.5)].concat();
-        assert_eq!(GrassHash::of(&two), GrassHash { ordered: 0xd97f375d8634e75f, unordered: 0xd9548e063fdec8ca });
+        assert_eq!(
+            GrassHash::of(&two),
+            GrassHash {
+                ordered: 0xd97f375d8634e75f,
+                unordered: 0xd9548e063fdec8ca
+            }
+        );
     }
 
     /// Two records in the other order change the ordered hash and keep the unordered one: the
@@ -4232,7 +5081,13 @@ mod tests {
         let (a, b) = (GrassHash::of(&forward), GrassHash::of(&backward));
         assert_ne!(a.ordered, b.ordered);
         assert_eq!(a.unordered, b.unordered);
-        assert_eq!(b, GrassHash { ordered: 0x5e661f88f7f4e75f, unordered: 0xd9548e063fdec8ca });
+        assert_eq!(
+            b,
+            GrassHash {
+                ordered: 0x5e661f88f7f4e75f,
+                unordered: 0xd9548e063fdec8ca
+            }
+        );
 
         let mut changed = forward.clone();
         changed[31] += 0.25;
@@ -4249,8 +5104,14 @@ mod tests {
     #[test]
     fn the_hash_line_has_the_form_of_the_first_measurement() {
         let hash = GrassHash::of(&rising_record(0.0));
-        assert_eq!(hash.line(7, true, 16 * 3, true), "grass hash frame 7 main: 3 records, cut true, ordered ebffe88ca04011c0, unordered 9b3cfa2d13bf6465");
-        assert!(hash.line(1, false, 0, false).starts_with("grass hash frame 1 view: 0 records, cut false, ordered "));
+        assert_eq!(
+            hash.line(7, true, 16 * 3, true),
+            "grass hash frame 7 main: 3 records, cut true, ordered ebffe88ca04011c0, unordered 9b3cfa2d13bf6465"
+        );
+        assert!(
+            hash.line(1, false, 0, false)
+                .starts_with("grass hash frame 1 view: 0 records, cut false, ordered ")
+        );
     }
 
     /// A small generator of numbers for the tests: the same sequence on each run.
@@ -4268,7 +5129,11 @@ mod tests {
         let mut lists = CellLists::new();
         let mut grass = Vec::new();
         for _ in 0..places {
-            let position = [lcg(state) * 3.0 * CELL - CELL, lcg(state) * 3.0 * CELL - CELL, lcg(state) * 2000.0 - 500.0];
+            let position = [
+                lcg(state) * 3.0 * CELL - CELL,
+                lcg(state) * 3.0 * CELL - CELL,
+                lcg(state) * 2000.0 - 500.0,
+            ];
             let cell = ((position[0] / CELL).floor() as i32, (position[1] / CELL).floor() as i32);
             lists.entry(cell).or_default().push(grass.len() as u32);
             grass.push(GrassPlace {
@@ -4303,7 +5168,11 @@ mod tests {
 
     /// The lists of the places of the cells of a world, in the order of the cells.
     fn lists_of(world: &World) -> CellLists {
-        world.grass_cells.iter().map(|(cell, grass_cell)| (*cell, grass_cell.places.clone())).collect()
+        world
+            .grass_cells
+            .iter()
+            .map(|(cell, grass_cell)| (*cell, grass_cell.places.clone()))
+            .collect()
     }
 
     /// A view from a random eye with random planes.
@@ -4313,12 +5182,27 @@ mod tests {
             let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-3);
             [n[0] / length, n[1] / length, n[2] / length, lcg(state) * 6000.0 - 1500.0]
         });
-        GrassSight { eye: [lcg(state) * 3.0 * CELL - CELL, lcg(state) * 3.0 * CELL - CELL, lcg(state) * 3000.0], range: 500.0 + lcg(state) * 7000.0, planes, now: 10.0, fade_seconds: 2.0, limit: GRASS_RECORDS }
+        GrassSight {
+            eye: [
+                lcg(state) * 3.0 * CELL - CELL,
+                lcg(state) * 3.0 * CELL - CELL,
+                lcg(state) * 3000.0,
+            ],
+            range: 500.0 + lcg(state) * 7000.0,
+            planes,
+            now: 10.0,
+            fade_seconds: 2.0,
+            limit: GRASS_RECORDS,
+        }
     }
 
     /// The subsets on the GPU in the tests: the ones whose number is not a multiple of 4.
     fn on_gpu(subset: u32) -> Option<GrassSubset> {
-        (subset % 4 != 0).then(|| GrassSubset { texture: subset % 3, arrived: 8.0 + subset as f32 * 0.3, bent: (subset % 2) as f32 })
+        (subset % 4 != 0).then(|| GrassSubset {
+            texture: subset % 3,
+            arrived: 8.0 + subset as f32 * 0.3,
+            bent: (subset % 2) as f32,
+        })
     }
 
     /// The group 3 is hidden in the tests.
@@ -4341,13 +5225,21 @@ mod tests {
                     if hidden_group(place.group) {
                         continue;
                     }
-                    let d = [place.position[0] - eye[0], place.position[1] - eye[1], place.position[2] - eye[2]];
+                    let d = [
+                        place.position[0] - eye[0],
+                        place.position[1] - eye[1],
+                        place.position[2] - eye[2],
+                    ];
                     let reach = sight.range + place.radius;
                     if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > reach * reach {
                         continue;
                     }
                     let p = place.position;
-                    if !sight.planes.iter().all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -place.radius) {
+                    if !sight
+                        .planes
+                        .iter()
+                        .all(|plane| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= -place.radius)
+                    {
                         continue;
                     }
                     for id in place.first_subset..place.first_subset + place.subset_count {
@@ -4357,7 +5249,13 @@ mod tests {
                         }
                         let record = grass_record(&world_matrix(place.position, place.rotation, place.scale));
                         let fade = Resident::fade_after(sight.now - on_gpu.arrived, sight.fade_seconds);
-                        draws.push(GrassDraw { texture: on_gpu.texture, subset: id, record, fade, bent: on_gpu.bent });
+                        draws.push(GrassDraw {
+                            texture: on_gpu.texture,
+                            subset: id,
+                            record,
+                            fade,
+                            bent: on_gpu.bent,
+                        });
                     }
                 }
             }
@@ -4377,7 +5275,10 @@ mod tests {
         let mut kept = GrassKept::default();
         let (mut taken, mut cuts) = (0, 0);
         for round in 0..120 {
-            let sight = GrassSight { limit: if round % 3 == 0 { 40 } else { GRASS_RECORDS }, ..random_sight(&mut state) };
+            let sight = GrassSight {
+                limit: if round % 3 == 0 { 40 } else { GRASS_RECORDS },
+                ..random_sight(&mut state)
+            };
             let (expected, expected_cut) = reference_choice(&tile_lists, &grass, &sight);
             let mut draws = Vec::new();
             let mut counts = GrassParts::default();
@@ -4388,7 +5289,11 @@ mod tests {
             taken += draws.len();
             cuts += cut as usize;
         }
-        assert!(taken > 1000 && cuts > 5 && kept.size().0 > 0, "{taken} draws, {cuts} cuts, {} cells kept", kept.size().0);
+        assert!(
+            taken > 1000 && cuts > 5 && kept.size().0 > 0,
+            "{taken} draws, {cuts} cuts, {} cells kept",
+            kept.size().0
+        );
     }
 
     /// The clock is read once for a call, and the fade is still one value for each subset: every
@@ -4398,17 +5303,45 @@ mod tests {
     fn each_subset_has_its_own_fade_in_a_call() {
         let mut state = 5;
         let (world, grass) = random_world(&mut state, 2000);
-        let sight = GrassSight { range: 9000.0, eye: [4000.0, 4000.0, 500.0], planes: [[0.0, 0.0, 0.0, 1.0]; 6], ..random_sight(&mut state) };
+        let sight = GrassSight {
+            range: 9000.0,
+            eye: [4000.0, 4000.0, 500.0],
+            planes: [[0.0, 0.0, 0.0, 1.0]; 6],
+            ..random_sight(&mut state)
+        };
         let mut draws = Vec::new();
-        world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut GrassParts::default(), GrassKept::default().begin(b""));
+        world.choose_grass(
+            &grass,
+            &sight,
+            hidden_group,
+            on_gpu,
+            &mut draws,
+            &mut GrassParts::default(),
+            GrassKept::default().begin(b""),
+        );
         let mut fades = std::collections::HashMap::new();
         for draw in &draws {
             let arrived = on_gpu(draw.subset).expect("a draw has a subset on the GPU").arrived;
-            assert_eq!(draw.fade, Resident::fade_after(sight.now - arrived, sight.fade_seconds), "subset {}", draw.subset);
-            assert_eq!(*fades.entry(draw.subset).or_insert(draw.fade), draw.fade, "subset {}", draw.subset);
+            assert_eq!(
+                draw.fade,
+                Resident::fade_after(sight.now - arrived, sight.fade_seconds),
+                "subset {}",
+                draw.subset
+            );
+            assert_eq!(
+                *fades.entry(draw.subset).or_insert(draw.fade),
+                draw.fade,
+                "subset {}",
+                draw.subset
+            );
         }
         let distinct: std::collections::HashSet<u32> = fades.values().map(|fade| fade.to_bits()).collect();
-        assert!(distinct.len() > 1 && draws.len() > 100, "{} fades in {} draws", distinct.len(), draws.len());
+        assert!(
+            distinct.len() > 1 && draws.len() > 100,
+            "{} fades in {} draws",
+            distinct.len(),
+            draws.len()
+        );
     }
 
     /// The draws of a call as a sorted list of their bits: the order of the records is left out.
@@ -4440,13 +5373,24 @@ mod tests {
             let sight = random_sight(&mut state);
             let (expected, expected_cut) = reference_choice(&catalog_lists, &grass, &sight);
             let mut draws = Vec::new();
-            let cut = world.choose_grass(&grass, &sight, hidden_group, on_gpu, &mut draws, &mut GrassParts::default(), GrassKept::default().begin(b""));
+            let cut = world.choose_grass(
+                &grass,
+                &sight,
+                hidden_group,
+                on_gpu,
+                &mut draws,
+                &mut GrassParts::default(),
+                GrassKept::default().begin(b""),
+            );
             assert!(!expected_cut && !cut, "round {round} is cut by the cap");
             assert_eq!(sorted_bits(&draws), sorted_bits(&expected), "round {round}");
             taken += draws.len();
             reordered += (draws != expected) as usize;
         }
-        assert!(taken > 1000 && reordered > 20, "{taken} draws, {reordered} calls in another order");
+        assert!(
+            taken > 1000 && reordered > 20,
+            "{taken} draws, {reordered} calls in another order"
+        );
     }
 
     /// The cells of a world made as the catalog makes it hold the same places as the lists of the
@@ -4473,7 +5417,9 @@ mod tests {
                     let place = &grass[*index as usize];
                     assert_eq!(place.tile(), first);
                     assert!(place.radius <= tile.radius);
-                    assert!((0..3).all(|axis| tile.min[axis] <= place.position[axis] && place.position[axis] <= tile.max[axis]));
+                    assert!(
+                        (0..3).all(|axis| tile.min[axis] <= place.position[axis] && place.position[axis] <= tile.max[axis])
+                    );
                 }
                 next += tile.count as usize;
             }
@@ -4493,7 +5439,10 @@ mod tests {
         let mut kept = GrassKept::default();
         let (mut skipped, mut cuts, mut taken) = (0, 0, 0);
         for round in 0..200 {
-            let sight = GrassSight { limit: if round % 2 == 0 { 25 } else { GRASS_RECORDS }, ..random_sight(&mut state) };
+            let sight = GrassSight {
+                limit: if round % 2 == 0 { 25 } else { GRASS_RECORDS },
+                ..random_sight(&mut state)
+            };
             let (expected, expected_cut) = reference_choice(&tile_lists, &grass, &sight);
             let mut draws = Vec::new();
             let mut counts = GrassParts::default();
@@ -4505,7 +5454,10 @@ mod tests {
             cuts += cut as usize;
             taken += draws.len();
         }
-        assert!(skipped > 5000 && cuts > 5 && taken > 1000, "{skipped} skipped, {cuts} cuts, {taken} draws");
+        assert!(
+            skipped > 5000 && cuts > 5 && taken > 1000,
+            "{skipped} skipped, {cuts} cuts, {taken} draws"
+        );
     }
 
     /// A tile is skipped only when no place of it is taken, in cells of random places, eyes, ranges
@@ -4518,9 +5470,14 @@ mod tests {
             let (world, grass) = random_world(&mut state, 200);
             let sight = random_sight(&mut state);
             for cell in world.grass_cells.values() {
-                assert_eq!(cell.tiles.iter().map(|tile| tile.count as usize).sum::<usize>(), cell.places.len());
+                assert_eq!(
+                    cell.tiles.iter().map(|tile| tile.count as usize).sum::<usize>(),
+                    cell.places.len()
+                );
                 for tile in &cell.tiles {
-                    let taken = cell.places[tile.range()].iter().any(|index| grass[*index as usize].miss(sight.eye, sight.range, &sight.planes).is_none());
+                    let taken = cell.places[tile.range()]
+                        .iter()
+                        .any(|index| grass[*index as usize].miss(sight.eye, sight.range, &sight.planes).is_none());
                     if tile.misses(sight.eye, sight.range, &sight.planes) {
                         assert!(!taken);
                         skipped += 1;
@@ -4537,7 +5494,15 @@ mod tests {
     /// the side of the normal is inside, even if the corner nearest to the plane is outside.
     #[test]
     fn a_plane_that_cuts_a_tile_diagonally_keeps_it() {
-        let at = |x: f32, y: f32, radius: f32| GrassPlace { first_subset: 0, subset_count: 1, position: [x, y, 0.0], rotation: [0.0; 3], scale: 1.0, radius, group: 0 };
+        let at = |x: f32, y: f32, radius: f32| GrassPlace {
+            first_subset: 0,
+            subset_count: 1,
+            position: [x, y, 0.0],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            radius,
+            group: 0,
+        };
         let grass = [at(10.0, 10.0, 0.0), at(1000.0, 1000.0, 0.0)];
         let tile = GrassTile::of(0, &[&grass[0], &grass[1]]);
         let side = std::f32::consts::FRAC_1_SQRT_2;
@@ -4562,8 +5527,21 @@ mod tests {
     /// inside a tile.
     #[test]
     fn a_cell_orders_its_places_by_tile() {
-        let at = |x: f32, y: f32, z: f32, radius: f32| GrassPlace { first_subset: 0, subset_count: 1, position: [x, y, z], rotation: [0.0; 3], scale: 1.0, radius, group: 0 };
-        let grass = vec![at(100.0, 1100.0, 0.0, 2.0), at(1100.0, 100.0, 0.0, 5.0), at(100.0, 100.0, 0.0, 9.0), at(1200.0, 200.0, 4.0, 1.0)];
+        let at = |x: f32, y: f32, z: f32, radius: f32| GrassPlace {
+            first_subset: 0,
+            subset_count: 1,
+            position: [x, y, z],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            radius,
+            group: 0,
+        };
+        let grass = vec![
+            at(100.0, 1100.0, 0.0, 2.0),
+            at(1100.0, 100.0, 0.0, 5.0),
+            at(100.0, 100.0, 0.0, 9.0),
+            at(1200.0, 200.0, 4.0, 1.0),
+        ];
         let mut world = World::default();
         world.grass_cells.entry((0, 0)).or_default().places = vec![0, 1, 2, 3];
         world.make_grass_tiles(&grass);
@@ -4585,7 +5563,12 @@ mod tests {
 
     /// A sight in which every place passes the planes.
     fn open_sight(state: &mut u64, eye: [f32; 3]) -> GrassSight {
-        GrassSight { eye, range: 1500.0, planes: [[0.0, 0.0, 0.0, 1.0]; 6], ..random_sight(state) }
+        GrassSight {
+            eye,
+            range: 1500.0,
+            planes: [[0.0, 0.0, 0.0, 1.0]; 6],
+            ..random_sight(state)
+        }
     }
 
     /// A cell keeps its records over the next GRASS_KEEP_CALLS calls that do not walk it, loses
@@ -4595,7 +5578,10 @@ mod tests {
         let mut state = 3;
         let (world, grass) = random_world(&mut state, 8000);
         let near = open_sight(&mut state, [4000.0, 4000.0, 500.0]);
-        let far = GrassSight { eye: [4000.0 + 40.0 * CELL, 4000.0, 500.0], ..open_sight(&mut state, [0.0; 3]) };
+        let far = GrassSight {
+            eye: [4000.0 + 40.0 * CELL, 4000.0, 500.0],
+            ..open_sight(&mut state, [0.0; 3])
+        };
         let mut kept = GrassKept::default();
         let (drawn, made) = kept_call(&world, &grass, &near, &mut kept);
         assert!(drawn > 5 && made > 0, "{drawn} draws, {made} matrices");
@@ -4621,7 +5607,15 @@ mod tests {
         let mut kept = GrassKept::default();
         for _ in 0..3 {
             let (mut draws, mut counts) = (Vec::new(), GrassParts::default());
-            interior.choose_grass(&no_grass, &sight, hidden_group, on_gpu, &mut draws, &mut counts, kept.begin(b"Balmora, Eve's House"));
+            interior.choose_grass(
+                &no_grass,
+                &sight,
+                hidden_group,
+                on_gpu,
+                &mut draws,
+                &mut counts,
+                kept.begin(b"Balmora, Eve's House"),
+            );
             kept.end();
             assert!(draws.is_empty());
         }
@@ -4639,7 +5633,10 @@ mod tests {
     fn a_walk_along_a_cell_edge_makes_no_matrix_again() {
         let mut state = 9;
         let (world, grass) = random_world(&mut state, 8000);
-        let sights = [open_sight(&mut state, [CELL - 100.0, 4000.0, 500.0]), open_sight(&mut state, [CELL + 100.0, 4000.0, 500.0])];
+        let sights = [
+            open_sight(&mut state, [CELL - 100.0, 4000.0, 500.0]),
+            open_sight(&mut state, [CELL + 100.0, 4000.0, 500.0]),
+        ];
         let mut kept = GrassKept::default();
         let mut made_late = 0;
         for call in 0..40 {
@@ -4667,13 +5664,19 @@ mod tests {
     fn the_grass_draws_sort_by_texture_subset_and_choice() {
         let mut order = GrassOrder::default();
         order.sort([(2, 7), (1, 9), (2, 7), (1, 4), (1, 9), (2, 3)].into_iter());
-        assert_eq!(order.keys, vec![(1, 4, 3), (1, 9, 1), (1, 9, 4), (2, 3, 5), (2, 7, 0), (2, 7, 2)]);
+        assert_eq!(
+            order.keys,
+            vec![(1, 4, 3), (1, 9, 1), (1, 9, 4), (2, 3, 5), (2, 7, 0), (2, 7, 2)]
+        );
         // The keys are made again for the next call, not added to.
         order.sort([(5, 5)].into_iter());
         assert_eq!(order.keys, vec![(5, 5, 0)]);
     }
 
-    use super::{bytes_limit, cap_from_budget, cap_move, event_stamp, half, memory_event, qpc, read_tables, CatalogError, hidden, normal_alignment, pick_trim, plan_merged, BENT_SHARE, VERTEX};
+    use super::{
+        BENT_SHARE, CatalogError, VERTEX, bytes_limit, cap_from_budget, cap_move, event_stamp, half, hidden, memory_event,
+        normal_alignment, pick_trim, plan_merged, qpc, read_tables,
+    };
 
     const MB: u64 = 1 << 20;
 
@@ -4683,7 +5686,11 @@ mod tests {
     fn the_statics_load_counts_while_the_catalog_is_on_its_way() {
         let folder = std::env::temp_dir().join(format!("statics-loading-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(&document, folder, crate::renderer::core_mods::CoreMods::built_in().shadow_hooks());
+        let mut statics = super::Statics::start(
+            &document,
+            folder,
+            crate::renderer::core_mods::CoreMods::built_in().shadow_hooks(),
+        );
         statics.settings.statics = true;
         assert!(statics.loading());
         statics.settings.statics = false;
@@ -4699,7 +5706,11 @@ mod tests {
     fn a_loader_thread_that_ends_without_an_answer_is_a_failed_load() {
         let folder = std::env::temp_dir().join(format!("statics-disconnected-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(&document, folder, crate::renderer::core_mods::CoreMods::built_in().shadow_hooks());
+        let mut statics = super::Statics::start(
+            &document,
+            folder,
+            crate::renderer::core_mods::CoreMods::built_in().shadow_hooks(),
+        );
         statics.settings.statics = true;
         let (sender, receiver) = std::sync::mpsc::channel();
         statics.loading = Some(receiver);
@@ -4721,7 +5732,11 @@ mod tests {
         let mut land = super::super::DistantLand::start(&root, false);
         land.loading = None;
         land.generation = None;
-        land.statics = Some(super::Statics::start(&document, root.join("distantland"), crate::renderer::core_mods::CoreMods::built_in().shadow_hooks()));
+        land.statics = Some(super::Statics::start(
+            &document,
+            root.join("distantland"),
+            crate::renderer::core_mods::CoreMods::built_in().shadow_hooks(),
+        ));
         land.arrival = Some((std::time::Instant::now(), 2));
         assert!(land.messages().is_empty());
         assert!(land.arrival.is_some(), "the catalog is on its way");
@@ -4741,7 +5756,11 @@ mod tests {
     fn a_reader_thread_that_ends_turns_the_statics_off_and_ends_the_wait() {
         let folder = std::env::temp_dir().join(format!("statics-reader-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(&document, folder, crate::renderer::core_mods::CoreMods::built_in().shadow_hooks());
+        let mut statics = super::Statics::start(
+            &document,
+            folder,
+            crate::renderer::core_mods::CoreMods::built_in().shadow_hooks(),
+        );
         let (_sender, receiver) = std::sync::mpsc::channel();
         statics.arrivals = Some(receiver);
         statics.requested.insert(7);
@@ -4752,12 +5771,39 @@ mod tests {
 
     #[test]
     fn a_memory_event_line_names_its_frame_its_time_its_count_and_its_bytes() {
-        let line = memory_event(&event_stamp(1234, 56_789), "taken off for nearer ones", 3, 3_200_000_000, 3_150_000_000, &bytes_limit("the cap", 3_160_000_000));
-        assert_eq!(line, "distant statics: frame 1234, qpc 56789: 3 merged subsets taken off for nearer ones, 3200 MB to 3150 MB on the GPU (the cap 3160 MB)");
-        let none = memory_event(&event_stamp(7, 1), "trimmed (wanted least recently)", 1, 2_000_000, 1_000_000, &bytes_limit("the high mark", u64::MAX));
+        let line = memory_event(
+            &event_stamp(1234, 56_789),
+            "taken off for nearer ones",
+            3,
+            3_200_000_000,
+            3_150_000_000,
+            &bytes_limit("the cap", 3_160_000_000),
+        );
+        assert_eq!(
+            line,
+            "distant statics: frame 1234, qpc 56789: 3 merged subsets taken off for nearer ones, 3200 MB to 3150 MB on the GPU (the cap 3160 MB)"
+        );
+        let none = memory_event(
+            &event_stamp(7, 1),
+            "trimmed (wanted least recently)",
+            1,
+            2_000_000,
+            1_000_000,
+            &bytes_limit("the high mark", u64::MAX),
+        );
         assert!(none.ends_with("(the high mark none)"), "{none}");
-        let far = memory_event(&event_stamp(9, 1), "taken off, too far", 2, 5_000_000, 3_000_000, "farther than 26624 units and the subset's radius");
-        assert!(far.ends_with("5 MB to 3 MB on the GPU (farther than 26624 units and the subset's radius)"), "{far}");
+        let far = memory_event(
+            &event_stamp(9, 1),
+            "taken off, too far",
+            2,
+            5_000_000,
+            3_000_000,
+            "farther than 26624 units and the subset's radius",
+        );
+        assert!(
+            far.ends_with("5 MB to 3 MB on the GPU (farther than 26624 units and the subset's radius)"),
+            "{far}"
+        );
     }
 
     /// The time of an event is the performance counter: it runs, and it does not go back.
@@ -4831,18 +5877,27 @@ mod tests {
     #[test]
     fn a_bad_statics_file_is_rejected_with_its_reason() {
         use distantland::mge_xe::distant_statics::{
-            PackedDistantStatic, PackedSubset, PackedVertex, StaticMeshesFileHeader, StaticType, SubsetRecord, UvBoundRecord, HEADER_SIZE,
-            SUBSET_RECORD_SIZE,
+            HEADER_SIZE, PackedDistantStatic, PackedSubset, PackedVertex, SUBSET_RECORD_SIZE, StaticMeshesFileHeader,
+            StaticType, SubsetRecord, UvBoundRecord,
         };
         let subset = PackedSubset {
             texture: "a.dds".into(),
             vertices: vec![PackedVertex::default(); 3],
             triangles: vec![[0, 1, 2]],
-            palette: vec![UvBoundRecord { bound: [0.0, 1.0, 0.0, 1.0] }],
+            palette: vec![UvBoundRecord {
+                bound: [0.0, 1.0, 0.0, 1.0],
+            }],
             ..Default::default()
         };
         let mut statics = distantland::mge_xe::PackedDistantStatics::default();
-        statics.insert("a.nif".into(), PackedDistantStatic { static_type: StaticType::StaticNear, subsets: vec![subset], ..Default::default() });
+        statics.insert(
+            "a.nif".into(),
+            PackedDistantStatic {
+                static_type: StaticType::StaticNear,
+                subsets: vec![subset],
+                ..Default::default()
+            },
+        );
         let mut bytes = distantland::mge_xe::serialize_static_meshes(&statics).unwrap();
 
         let folder = std::env::temp_dir().join(format!("mgehost64-statics-{}", std::process::id()));
@@ -4858,11 +5913,17 @@ mod tests {
         bytes[at..at + SUBSET_RECORD_SIZE].copy_from_slice(bytemuck::bytes_of(&record));
         std::fs::write(&path, &bytes).unwrap();
         match read_tables(&path) {
-            Err(CatalogError::Rejected(problem)) => assert!(problem.contains("palette range") && problem.contains("generate distant land again"), "{problem}"),
+            Err(CatalogError::Rejected(problem)) => assert!(
+                problem.contains("palette range") && problem.contains("generate distant land again"),
+                "{problem}"
+            ),
             _ => panic!("a palette range past the table was not rejected"),
         }
 
-        assert!(matches!(read_tables(&folder.join("static_meshes_001")), Err(CatalogError::Missing(_))));
+        assert!(matches!(
+            read_tables(&folder.join("static_meshes_001")),
+            Err(CatalogError::Missing(_))
+        ));
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
@@ -4902,7 +5963,12 @@ mod tests {
     fn the_trim_takes_the_least_recently_wanted_first_down_to_the_low_mark() {
         // (wanted at, distance, subset, bytes): 3 was wanted longest ago, then 1 and 2 at the
         // same time, 2 farther.
-        let candidates = vec![(50.0, 9000.0, 1, 30), (50.0, 20000.0, 2, 30), (10.0, 5000.0, 3, 30), (90.0, 30000.0, 4, 30)];
+        let candidates = vec![
+            (50.0, 9000.0, 1, 30),
+            (50.0, 20000.0, 2, 30),
+            (10.0, 5000.0, 3, 30),
+            (90.0, 30000.0, 4, 30),
+        ];
         assert_eq!(pick_trim(candidates.clone(), 200, 140), vec![3, 2]);
         assert_eq!(pick_trim(candidates.clone(), 200, 200), Vec::<u32>::new());
         assert_eq!(pick_trim(candidates, 200, 0), vec![3, 2, 1, 4]);
@@ -5020,7 +6086,9 @@ mod reader_tests {
         let thread = std::thread::spawn(move || reader(catalog, request_receiver, arrival_sender));
         requests.send(0).unwrap();
         drop(requests);
-        let arrival = arrivals.recv_timeout(std::time::Duration::from_secs(5)).expect("an answer for the unreadable subset");
+        let arrival = arrivals
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("an answer for the unreadable subset");
         assert_eq!(arrival.subset, 0);
         assert!(arrival.unreadable);
         assert!(arrival.vertices.is_empty() && arrival.indexes.is_empty());

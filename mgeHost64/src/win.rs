@@ -310,7 +310,9 @@ impl Drop for MappedView {
 
 #[cfg(test)]
 mod tests {
-    use windows_sys::Win32::System::Threading::{GetProcessHandleCount, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessHandleCount, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     use super::*;
 
@@ -333,7 +335,11 @@ mod tests {
 
     fn handle_count(process: HANDLE) -> u32 {
         let mut count = 0;
-        assert_ne!(unsafe { GetProcessHandleCount(process, &raw mut count) }, 0, "GetProcessHandleCount failed");
+        assert_ne!(
+            unsafe { GetProcessHandleCount(process, &raw mut count) },
+            0,
+            "GetProcessHandleCount failed"
+        );
         count
     }
 
@@ -366,7 +372,8 @@ mod tests {
                 .spawn()
                 .expect("the ping command starts"),
         );
-        let process = OwnedHandle(unsafe { OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, child.0.id()) });
+        let process =
+            OwnedHandle(unsafe { OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, child.0.id()) });
         assert!(!process.raw().is_null(), "OpenProcess failed");
         let start = settled_handle_count(process.raw());
 
@@ -376,7 +383,11 @@ mod tests {
                 duplicate_to_process(event.raw(), process.raw()).unwrap() as usize as u32
             })
             .collect();
-        assert_eq!(handle_count(process.raw()), start + DUPLICATES, "the duplicates are in the child");
+        assert_eq!(
+            handle_count(process.raw()),
+            start + DUPLICATES,
+            "the duplicates are in the child"
+        );
 
         for remote in duplicates {
             close_remote_handle(process.raw(), remote);

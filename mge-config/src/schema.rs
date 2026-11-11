@@ -711,7 +711,12 @@ pub struct GrassSettings {
 
 impl Default for GrassSettings {
     fn default() -> Self {
-        Self { interior_wind: 0.075, soft_end: false, vertex_color_sway: false, wrap_lighting: false }
+        Self {
+            interior_wind: 0.075,
+            soft_end: false,
+            vertex_color_sway: false,
+            wrap_lighting: false,
+        }
     }
 }
 
@@ -940,7 +945,9 @@ impl Default for ShaderSettings {
     /// A new file starts with the chain of the tests of the wgpu renderer (the owner,
     /// 2026-10-18); the shaders are in the archive of MGE XE.
     fn default() -> Self {
-        Self { chain: ["SSAO Fast", "Sunshafts", "Bloom Fine"].map(String::from).to_vec() }
+        Self {
+            chain: ["SSAO Fast", "Sunshafts", "Bloom Fine"].map(String::from).to_vec(),
+        }
     }
 }
 
