@@ -124,8 +124,6 @@ pub struct Caustics {
     /// The strength setting, `distant_land.water.caustics_intensity` (0 to 100). A mod can
     /// change it while the game runs: the renderer sets it before each draw.
     pub intensity: f32,
-    /// The frames with caustics, for the report.
-    pub frames: u64,
 }
 
 impl Caustics {
@@ -250,7 +248,6 @@ impl Caustics {
             uniforms,
             wave_sampler,
             intensity,
-            frames: 0,
         }
     }
 
@@ -309,7 +306,6 @@ impl Caustics {
         pass.set_stencil_reference(0);
         pass.set_bind_group(1, &group, &[]);
         pass.draw(0..3, 0..draws(strength));
-        self.frames += 1;
     }
 }
 

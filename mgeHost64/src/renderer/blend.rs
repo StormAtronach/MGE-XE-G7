@@ -84,8 +84,6 @@ pub struct Blend {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
-    /// The frames with a blend, for the report.
-    pub frames: u64,
 }
 
 impl Blend {
@@ -166,7 +164,6 @@ impl Blend {
             pipeline,
             layout,
             uniforms,
-            frames: 0,
         }
     }
 
@@ -215,7 +212,6 @@ impl Blend {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
-        self.frames += 1;
     }
 }
 

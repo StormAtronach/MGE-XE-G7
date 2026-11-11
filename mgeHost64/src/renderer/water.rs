@@ -513,11 +513,6 @@ pub struct Water {
     /// The term of the debug view `water` (0: off), set for each frame ([`Water::set_debug`]):
     /// a look at one term of the shader.
     debug: f32,
-    pub frames: u64,
-    pub reflections: u64,
-    /// The frames whose reflection was not drawn: [`Water::plane_in_view`] false, and no
-    /// reader of the reflection in the frame.
-    pub reflections_skipped: u64,
 }
 
 impl Water {
@@ -742,7 +737,7 @@ impl Water {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("water no land"),
         });
-        nirender_wgpu::gpu::note_other_pass();
+        nirender_wgpu::gpu::note_inner_pass("water no land");
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("water no land"),
             color_attachments: &[],
@@ -857,9 +852,6 @@ impl Water {
             no_land,
             reflected: false,
             debug: 0.0,
-            frames: 0,
-            reflections: 0,
-            reflections_skipped: 0,
         })
     }
 
@@ -945,7 +937,7 @@ impl Water {
         frame: &WaterFrame,
     ) -> (wgpu::RenderPass<'static>, [f32; 16], [f32; 16]) {
         let clear = scene.fog_color;
-        nirender_wgpu::gpu::note_other_pass();
+        nirender_wgpu::gpu::note_other_pass(super::part::REFLECTION);
         let pass = encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("water reflection"),
@@ -983,7 +975,6 @@ impl Water {
         let projection = Self::far_projection(scene, frame.draw_distance);
         self.levels_wanted = frame.blur_reflections && frame.blur_contact;
         self.reflected = true;
-        self.reflections += 1;
         (pass, mirrored_view, projection)
     }
 
@@ -994,7 +985,7 @@ impl Water {
             return;
         }
         for (source, target) in self.level_groups.iter().zip(&self.reflection_levels[1..]) {
-            nirender_wgpu::gpu::note_other_pass();
+            nirender_wgpu::gpu::note_inner_pass("water reflection level");
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("water reflection level"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1039,7 +1030,7 @@ impl Water {
             label: Some("water reflection fill"),
         });
         for (index, level) in self.reflection_levels[..levels].iter().enumerate() {
-            nirender_wgpu::gpu::note_other_pass();
+            nirender_wgpu::gpu::note_other_pass(super::part::REFLECTION_FILL);
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("water reflection fill"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1085,8 +1076,10 @@ impl Water {
         frame: &WaterFrame,
     ) {
         if frame.underwater {
+            nirender_wgpu::pass_report::note_skipped(super::part::REFLECTED_SKY, "under water");
             return;
         }
+        nirender_wgpu::pass_report::note_ran(super::part::REFLECTED_SKY);
         let mirror = Self::mirror(frame.mirror_level).map(|v| v as f64);
         replay.replay(
             pass,
@@ -1138,9 +1131,13 @@ impl Water {
         uniforms_buffer: &wgpu::Buffer,
         picture: bool,
         light: Option<&VolumeLight>,
-    ) -> Option<wgpu::BindGroup> {
-        let depth = scene.depth?;
-        let picture = if picture { scene.picture? } else { &self.flat };
+    ) -> Result<wgpu::BindGroup, nirender_wgpu::pass_report::Skip> {
+        let depth = scene.depth.ok_or("no copy of the depth")?;
+        let picture = if picture {
+            scene.picture.ok_or("no copy of the picture")?
+        } else {
+            &self.flat
+        };
         let dynamic = frame.wave_height.zip(ripples);
         let eye = scene.eye.map(|v| v as f32);
         let [sun_col, sun_color, wind] = sun_and_wind(frame.sun_color, frame.sun_vis, frame.wind);
@@ -1265,7 +1262,7 @@ impl Water {
                 ],
             },
         );
-        Some(group)
+        Ok(group)
     }
 
     /// Draws the plane in place of the water plane of the game. `view` is the group of the
@@ -1278,10 +1275,8 @@ impl Water {
         view: &wgpu::BindGroup,
         frame: &WaterFrame,
         ripples: Option<&super::ripples::Ripples>,
-    ) {
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms, true, None) else {
-            return;
-        };
+    ) -> Result<(), nirender_wgpu::pass_report::Skip> {
+        let group = self.frame_group(scene, frame, ripples, &self.uniforms, true, None)?;
         let dynamic = frame.wave_height.zip(ripples);
         // The dry spaces cut the plane, but not from under the water (`renderStageWater`).
         let cut = self.dry.any() && !frame.underwater;
@@ -1290,7 +1285,7 @@ impl Water {
             // The eye is in a dry space at the level of the water: the waves put the plane
             // now over the eye and now under it, and the side that the count is made for is
             // not sure. The plane is edge-on and is left out.
-            return;
+            return Err("the eye is in a dry space at the level of the water");
         }
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, &group, &[]);
@@ -1319,8 +1314,8 @@ impl Water {
         if cut {
             self.dry.zero(pass);
         }
-        self.frames += 1;
         self.reflected = false;
+        Ok(())
     }
 
     /// The triangles of the dry spaces, three corners each, in the world.
@@ -1350,11 +1345,17 @@ impl Water {
         before_plane: bool,
     ) -> usize {
         if far.is_empty() && !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
+            nirender_wgpu::pass_report::note_skipped(super::part::VOLUMES, "no surface of a water volume");
             return 0;
         }
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light)) else {
-            return 0;
+        let group = match self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light)) {
+            Ok(group) => group,
+            Err(reason) => {
+                nirender_wgpu::pass_report::note_skipped(super::part::VOLUMES, reason);
+                return 0;
+            }
         };
+        nirender_wgpu::pass_report::note_ran(super::part::VOLUMES);
         // The dry spaces cut the surfaces near the camera, but not from under the water.
         let dry = (self.dry.any() && !frame.underwater).then_some(&self.dry);
         self.volumes
@@ -1381,12 +1382,15 @@ impl Water {
         ripples: Option<&super::ripples::Ripples>,
         caustics: &mut super::caustics::Caustics,
         caustics_frame: &super::caustics::CausticsFrame,
-    ) {
-        let Some(depth) = scene.depth else { return };
+    ) -> Result<(), nirender_wgpu::pass_report::Skip> {
+        let depth = scene.depth.ok_or("no copy of the depth")?;
         let group = self
             .dry
             .any()
-            .then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None))
+            .then(|| {
+                self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None)
+                    .ok()
+            })
             .flatten();
         pass.set_bind_group(0, view, &[]);
         if let Some(group) = group.as_ref() {
@@ -1399,6 +1403,7 @@ impl Water {
             pass.set_bind_group(1, group, &[]);
             self.dry.zero(pass);
         }
+        Ok(())
     }
 
     /// The start of a frame, for the surfaces of water volumes.

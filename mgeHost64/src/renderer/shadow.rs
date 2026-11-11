@@ -119,7 +119,6 @@ pub struct Shadow {
     pub debug: bool,
     /// The matrices of the two layers for this frame, with the layout of Direct3D.
     pub viewproj: [[f32; 16]; 2],
-    pub frames: u64,
 }
 
 /// `D3DXMatrixLookAtRH`, with the layout of Direct3D (a position is a row vector).
@@ -442,7 +441,6 @@ impl Shadow {
             debug_group,
             debug: false,
             viewproj: [[0.0; 16]; 2],
-            frames: 0,
         }
     }
 
@@ -456,8 +454,7 @@ impl Shadow {
     /// Starts the pass of the casters: the atlas cleared to [`ESM_SCALE`], the depth to 1. The
     /// caller sets the layer with `set_layer`, draws the casters, and then ends the pass.
     pub fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) -> wgpu::RenderPass<'static> {
-        self.frames += 1;
-        nirender_wgpu::gpu::note_other_pass();
+        nirender_wgpu::gpu::note_other_pass(super::part::SHADOW_MAP);
         encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow map"),
@@ -503,7 +500,7 @@ impl Shadow {
             .into_iter()
             .map(|(view, i)| (i, view))
         {
-            nirender_wgpu::gpu::note_other_pass();
+            nirender_wgpu::gpu::note_inner_pass("shadow blur");
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow blur"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

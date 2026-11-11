@@ -13,6 +13,8 @@
 //!   to their light at night (`baked_light`, in the view group, from [`LightBinding`]).
 
 use std::path::{Path, PathBuf};
+
+use nirender_wgpu::pass_report::Skip;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
@@ -590,8 +592,6 @@ impl Glows {
 pub struct DistantLights {
     loading: Option<Receiver<Result<LightsFile, String>>>,
     glows: Option<Glows>,
-    /// The frames with glows chosen, for the report.
-    pub frames: u64,
 }
 
 impl DistantLights {
@@ -608,7 +608,6 @@ impl DistantLights {
         DistantLights {
             loading: None,
             glows: Some(make_glows(scene, &file, view_layout)),
-            frames: 0,
         }
     }
 
@@ -622,7 +621,6 @@ impl DistantLights {
         DistantLights {
             loading: Some(receiver),
             glows: None,
-            frames: 0,
         }
     }
 
@@ -728,11 +726,10 @@ impl DistantLights {
 
     /// Chooses the glows of the frame, in a command buffer of its own before the frame. `set` is
     /// the main view's (0) or a view of its own's, which [`DistantLights::ensure_set`] made.
-    pub fn prepare(&mut self, scene: &SceneView, frame: &GlowFrame, set: usize) {
-        let Some(glows) = self.glows.as_ref() else { return };
-        let Some(buffers) = glows.sets.get(set).and_then(Option::as_ref) else {
-            return;
-        };
+    /// Answers why it chose nothing: no glows, or no buffers for `set`.
+    pub fn prepare(&mut self, scene: &SceneView, frame: &GlowFrame, set: usize) -> Result<(), Skip> {
+        let glows = self.glows.as_ref().ok_or(NO_GLOWS)?;
+        let buffers = glows.sets.get(set).and_then(Option::as_ref).ok_or(NO_SET)?;
         let cull = CullUniforms {
             planes: frame.planes,
             eye: frame.eye,
@@ -769,19 +766,22 @@ impl DistantLights {
         }
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
-        if set == 0 {
-            self.frames += 1;
-        }
+        Ok(())
     }
 
     /// Draws the glows chosen in `prepare` into the pass: after the land and the statics,
     /// against their depth. `view` is the view group of the view that draws, `set` its set of
     /// buffers and `samples` the samples of the pass.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, set: usize, samples: u32) {
-        let Some(glows) = self.glows.as_ref() else { return };
-        let Some(buffers) = glows.sets.get(set).and_then(Option::as_ref) else {
-            return;
-        };
+    /// Answers why it drew nothing, as [`DistantLights::prepare`].
+    pub fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'static>,
+        view: &wgpu::BindGroup,
+        set: usize,
+        samples: u32,
+    ) -> Result<(), Skip> {
+        let glows = self.glows.as_ref().ok_or(NO_GLOWS)?;
+        let buffers = glows.sets.get(set).and_then(Option::as_ref).ok_or(NO_SET)?;
         pass.set_pipeline(if samples == glows.samples {
             &glows.draw
         } else {
@@ -790,8 +790,13 @@ impl DistantLights {
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, &buffers.draw_group, &[]);
         pass.draw_indirect(&buffers.args, 0);
+        Ok(())
     }
 }
+
+/// The skips of the glows' calls.
+const NO_GLOWS: Skip = "no glows (the lights' file is not read, or has none)";
+const NO_SET: Skip = "no buffers for the set of the view";
 
 fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGroupLayout) -> Glows {
     let device = scene.device;
@@ -942,7 +947,6 @@ mod tests {
         let mut lights = DistantLights {
             loading: Some(receiver),
             glows: None,
-            frames: 0,
         };
         assert!(lights.take_file(false).is_none());
         assert!(lights.loading.is_some());

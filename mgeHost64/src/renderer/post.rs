@@ -1289,7 +1289,12 @@ impl Hdr {
                             ],
                         },
                     );
-                    let mut pass = full_screen_pass(encoder, level, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+                    let mut pass = full_screen_pass(
+                        encoder,
+                        level,
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        "post: the hdr levels",
+                    );
                     pass.set_pipeline(&self.pipeline);
                     pass.set_bind_group(0, &group, &[]);
                     pass.draw(0..3, 0..1);
@@ -5637,7 +5642,6 @@ pub struct Post {
     /// Direct3D 9.
     needs_hdr: bool,
     hdr_on: bool,
-    pub frames: u64,
     pub shaders_run: u64,
     /// The frames that made the depth frame (a shader of the chain read it).
     pub depth_frames: u64,
@@ -5879,7 +5883,6 @@ impl Post {
             no_sun_glare: false,
             needs_hdr: false,
             hdr_on: true,
-            frames: 0,
             shaders_run: 0,
             depth_frames: 0,
         };
@@ -6251,16 +6254,14 @@ impl Post {
         environment_flags: u32,
         distant: Option<[f32; 2]>,
         main_point: [f32; 4],
-    ) {
-        let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else {
-            return;
-        };
+    ) -> Result<(), nirender_wgpu::pass_report::Skip> {
+        let picture = scene.picture.ok_or("no copy of the picture")?;
+        let depth = scene.depth.ok_or("no copy of the depth")?;
         if self.is_empty() {
-            return;
+            return Err("the chain has no shader");
         }
         let device = scene.device;
         view.size_textures(device, scene.target_size);
-        self.frames += 1;
         // The adaptation point of the frame, from the picture before the chain: the main view
         // measures it, a view of its own reads the main view's.
         let mut variables = *variables;
@@ -6334,7 +6335,12 @@ impl Post {
                     ],
                 },
             );
-            let mut pass = full_screen_pass(encoder, depth_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+            let mut pass = full_screen_pass(
+                encoder,
+                depth_view,
+                wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                "post: the depth frame",
+            );
             pass.set_pipeline(&self.depth_pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
@@ -6396,14 +6402,11 @@ impl Post {
                 continue;
             }
             self.shaders_run += 1;
-            // The GPU time of each shader, with `MGE_XE_GPU_TIME=1`.
+            // The GPU time of each shader, with `MGE_XE_GPU_TIME=1`, and its passes in the census.
+            let shader_name = nirender_wgpu::stamps::name(&compiled.name);
             let stamps = scene.commands.stamps();
             let at = if stamps.on() {
-                stamps.begin(
-                    encoder,
-                    nirender_wgpu::stamps::name(&compiled.name),
-                    nirender_wgpu::stamps::StampKind::Detail,
-                )
+                stamps.begin(encoder, shader_name, nirender_wgpu::stamps::StampKind::Detail)
             } else {
                 nirender_wgpu::stamps::Stamp::NONE
             };
@@ -6456,7 +6459,7 @@ impl Post {
                     },
                 );
                 // A pass keeps what the texture held where it discards a pixel.
-                let mut render = full_screen_pass(encoder, &view.pool[sink].view, wgpu::LoadOp::Load);
+                let mut render = full_screen_pass(encoder, &view.pool[sink].view, wgpu::LoadOp::Load, shader_name);
                 render.set_pipeline(&pass.pipeline);
                 render.set_bind_group(0, &frame_group, &[]);
                 render.set_bind_group(1, &compiled.group, &[]);
@@ -6498,11 +6501,11 @@ impl Post {
                     ],
                 },
             );
-            let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
+            let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load, "post: the debug view");
             pass.set_pipeline(&self.debug_pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
-            return;
+            return Ok(());
         }
         // The result into the picture of the frame.
         if let Some(index) = last {
@@ -6523,11 +6526,12 @@ impl Post {
                     ],
                 },
             );
-            let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
+            let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load, "post: the result into the picture");
             pass.set_pipeline(&self.blit_pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
+        Ok(())
     }
 }
 
@@ -6622,12 +6626,15 @@ pub(super) fn full_screen_pipeline(
     })
 }
 
+/// A pass that covers `target`. `name`: the pass's name in the census of the passes; it is a
+/// pass inside a part that notes itself (the post chain, the menu's kept picture).
 pub(super) fn full_screen_pass<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
     load: wgpu::LoadOp<wgpu::Color>,
+    name: &'static str,
 ) -> wgpu::RenderPass<'a> {
-    nirender_wgpu::gpu::note_other_pass();
+    nirender_wgpu::gpu::note_inner_pass(name);
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("post"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6812,7 +6819,12 @@ mod tests {
         };
         while hdr.luminance == 0.5 && run.calls < 40 {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            drop(full_screen_pass(&mut encoder, &view, wgpu::LoadOp::Clear(wgpu::Color::WHITE)));
+            drop(full_screen_pass(
+                &mut encoder,
+                &view,
+                wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                "test",
+            ));
             let called = std::time::Instant::now();
             hdr.frame(
                 &device,
