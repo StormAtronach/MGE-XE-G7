@@ -425,7 +425,7 @@ pass yet, so a line source has no effect.
 | Shader view | What it shows |
 | --- | --- |
 | `lights` | a draw lit for each pixel shows only the light it takes, without its material, its textures and the fog |
-| `shadow-layers` | each pixel coloured by the layer of the shadow map that serves it: red the first, green the second, blue outside both, grey a draw without the shadow test; darker where the map shadows it |
+| `shadow-layers` | each pixel coloured by the layer of the shadow map that serves it: red the first, green the second, blue outside both, grey a draw without the shadow test; darker where the map shadows it. Indoors it shows nothing: an interior has no shadow map |
 | `shadow-map` | the atlas of the shadow map in the lower left of the picture |
 | `water <term>` | one term of the built-in water shader, 1 to 10: the table and the rule for a core mod's `water_color` are in `docs/core-mods.md`, "The water debug views" |
 | `post <term>` | 1 tints the result of the post chain, 2 shows its linear depth over 10000 units as grey |
