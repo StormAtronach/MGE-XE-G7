@@ -11,6 +11,7 @@
 //! `lastpass` the output of the pass before, and `pass0` to `pass7` the outputs of the first
 //! eight passes of the shader. The variables of MGE XE are one uniform.
 
+use nirender_wgpu::gpu::KeptGroup;
 use nirender_wgpu::objects::{Create, CreateView};
 use nirender_wgpu::{SceneView, wgpu};
 
@@ -5471,6 +5472,12 @@ pub struct PostView {
     /// number of the pass in it, so that a reload or a reorder of the chain gives a pass no
     /// buffer of another. A buffer is written before its pass in every run.
     infos: std::collections::HashMap<String, Vec<wgpu::Buffer>>,
+    /// The groups of the chain, each kept while what it binds stays the same: the depth frame,
+    /// the frame, each pass by the name of its shader and its number (as `infos`), and the blit.
+    depth_group: KeptGroup,
+    frame_group: KeptGroup,
+    pass_groups: std::collections::HashMap<String, Vec<KeptGroup>>,
+    blit_group: KeptGroup,
     /// This view measures the adaptation point (the main view); the others read its point.
     owns_hdr: bool,
     hdr: Option<Hdr>,
@@ -5516,6 +5523,10 @@ impl PostView {
             uniforms,
             depth_uniform,
             infos: std::collections::HashMap::new(),
+            depth_group: KeptGroup::default(),
+            frame_group: KeptGroup::default(),
+            pass_groups: std::collections::HashMap::new(),
+            blit_group: KeptGroup::default(),
             owns_hdr,
             hdr: None,
         }
@@ -5569,6 +5580,10 @@ impl PostView {
         }
         self.size = size;
         self.pool.clear();
+        self.depth_group = KeptGroup::default();
+        self.frame_group = KeptGroup::default();
+        self.pass_groups.clear();
+        self.blit_group = KeptGroup::default();
         let depth = make_texture(device, size, wgpu::TextureFormat::R32Float);
         let view = depth.counted_view(&Default::default());
         self.depth = Some((depth, view));
@@ -6330,7 +6345,7 @@ impl Post {
             self.depth_frames += 1;
             let stamps = scene.commands.stamps();
             let at = stamps.begin(encoder, "post: the depth frame", nirender_wgpu::stamps::StampKind::Detail);
-            let group = nirender_wgpu::gpu::frame_group(
+            let group = view.depth_group.get(
                 device,
                 &wgpu::BindGroupDescriptor {
                     label: Some("post depth"),
@@ -6362,7 +6377,7 @@ impl Post {
         // the picture. The passes of a shader each get a texture of their class that is not
         // the input and not an earlier pass of the shader (`pass0` to `pass7` read those).
         let mut last: Option<usize> = None;
-        let frame_group = nirender_wgpu::gpu::frame_group(
+        let frame_group = view.frame_group.get(
             device,
             &wgpu::BindGroupDescriptor {
                 label: Some("post frame"),
@@ -6464,7 +6479,18 @@ impl Post {
                     binding: i as u32 + 3,
                     resource: wgpu::BindingResource::TextureView(earlier(i)),
                 }));
-                let pass_group = nirender_wgpu::gpu::frame_group(
+                // The group of this pass of this shader, by the name and the number, as its info.
+                if !view.pass_groups.contains_key(compiled.name.as_str()) {
+                    view.pass_groups.insert(compiled.name.clone(), Vec::new());
+                }
+                let kept = view
+                    .pass_groups
+                    .get_mut(compiled.name.as_str())
+                    .expect("the entry was made above");
+                if kept.len() <= number {
+                    kept.resize_with(number + 1, KeptGroup::default);
+                }
+                let pass_group = kept[number].get(
                     device,
                     &wgpu::BindGroupDescriptor {
                         label: Some(&compiled.name),
@@ -6523,7 +6549,7 @@ impl Post {
         }
         // The result into the picture of the frame.
         if let Some(index) = last {
-            let group = nirender_wgpu::gpu::frame_group(
+            let group = view.blit_group.get(
                 device,
                 &wgpu::BindGroupDescriptor {
                     label: Some("post blit"),
