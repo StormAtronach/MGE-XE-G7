@@ -186,6 +186,10 @@ land. That last step is not optional.
 Your old settings will not carry over. We do not migrate `MGE.ini` into
 `mgeXE.toml`. You will need to set your options up again from the GUI.
 
+The wgpu renderer does not read `.fx` core mods. It reads WGSL hook files
+(`Data Files/shaders/core-mods/XE Mod <name>.wgsl`) that replace named
+functions of its shaders: see [docs/core-mods.md](docs/core-mods.md).
+
 Custom "core-mods" shader overrides are most likely not compatible. Uninstalling
 them first is recommended. Check your `mgeXE.log` after running the game for
 errors. Post-process shaders should be fine.
