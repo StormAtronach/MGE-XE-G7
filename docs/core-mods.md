@@ -16,8 +16,10 @@ This page describes interface 1 (`mge-xe-core 1`). The source is
   reads the `.fx`, wgpu reads the `.wgsl`.
 - **The header.** The file starts with the line `//! interface: mge-xe-core 1`. A file
   without this line, or with another number, is not used. All the `//!` lines of a file come
-  before its first line of code. Blank lines before and between them are allowed. A `//!` line
-  after the first line of code drops the file, and the log names that line. A UTF-8 byte order
+  first. Blank lines before and between them are allowed. A `//!` line after the first line
+  that is not a `//!` line or blank drops the file, and the log names that line. A `//`
+  comment counts as such a line: `//! interface`, then `// a note`, then `//! values` drops
+  the file. A UTF-8 byte order
   mark at the start of a file is removed before the file is read.
 - **Hooks only.** A file holds only:
   - hook functions, with the exact signature of interface 1;
@@ -155,7 +157,9 @@ when this file is installed: Direct3D 9 has a core file of its own for the volum
 | `underwater_color` | `fn underwater_color(p: WaterPixel) -> vec4f` | The colour of the plane seen from under the water. | `UnderwaterPS` |
 
 A hook may call the other hooks of its file, also a hook that the file leaves to the built-in.
-So a `water_color` of a mod can call `water_normal`, the mod's or the built-in.
+So a `water_color` of a mod can call `water_normal`, the mod's or the built-in. The built-in
+`underwater_color` calls `water_normal` too, so a mod's `water_normal` also changes the colour
+of the plane seen from under the water.
 
 The struct `WaterPixel` is part of the interface:
 
@@ -250,7 +254,9 @@ water's colour. The terms are those of the built-in `water_color` and `underwate
 
 With a `water_color` or `underwater_color` of a mod, the views of that hook show the mod's
 colour, not the terms. The log says so. View 9 is the exception: it is drawn before
-`water_color` is called, so it replaces the colour of a mod too.
+`water_color` is called, so it replaces the colour of a mod too. Views 1, 2 and 10 also change
+the surfaces of the water volumes seen from below, as these share the built-in under-water
+shading.
 
 ## Cautions
 
