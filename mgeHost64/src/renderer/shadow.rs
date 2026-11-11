@@ -112,7 +112,7 @@ pub struct Shadow {
     /// The uniforms of the blur groups, kept alive with them.
     _blur_uniforms: [wgpu::Buffer; 2],
     debug_pipeline: wgpu::RenderPipeline,
-    /// The sample count of [`Shadow::debug_pipeline`]: that of the main view.
+    /// The sample count of [`Shadow::debug_pipeline`]: that of the frame when the map was made.
     debug_samples: u32,
     debug_group: wgpu::BindGroup,
     /// The debug view `shadow-map`: the map drawn small over the frame.
@@ -415,8 +415,10 @@ impl Shadow {
     }
 
     /// The atlas in the lower left of the picture, for a test. `samples`: the sample count of
-    /// the pass. A pass with another count than the main view's (a rendered picture) gets no
-    /// atlas.
+    /// the frame (`SceneView::samples` of the main view), not of the pass. A frame whose count
+    /// is not the one the pipeline was made with (the count changed after the map was made)
+    /// gets no atlas. The check does not see a pass of its own count, such as a rendered
+    /// picture.
     pub fn draw_debug(&self, pass: &mut wgpu::RenderPass<'static>, samples: u32) {
         if samples != self.debug_samples {
             return;
