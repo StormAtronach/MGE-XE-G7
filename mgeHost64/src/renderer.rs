@@ -983,6 +983,35 @@ enum Reflection {
     None(Skip),
 }
 
+/// The plan of a view of its own (W341 step B): made from the frame's answers, the view's parts
+/// and its scene at each of its three calls. It reads nothing that changes within a frame, so the
+/// three calls get one answer. What a call makes for its set (the claim of a place, the groups
+/// and sets of the view) stays at the draw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewPlan {
+    /// Why the view gets none of the extension's parts of the world (under a menu, no distant
+    /// land), or nothing.
+    world: Option<Skip>,
+    /// The view has an orthographic projection (the local map's camera): its depth terms are not
+    /// those of a perspective one, so it gets no land.
+    orthographic: bool,
+    /// Why the land is not ready for the view (no terrain in the frame's facts), or nothing.
+    land: Option<Skip>,
+    /// Why the terrain is not drawn in the view, or nothing.
+    terrain: Option<Skip>,
+    /// Why the statics are not drawn in the view (not in the options, `MGE_XE_SKIP`), or nothing.
+    statics: Option<Skip>,
+    /// Why the glows are not drawn in the view (not in the options, not night, an interior), or
+    /// nothing.
+    glows: Option<Skip>,
+    /// Why the grass is not drawn in the view, or nothing.
+    grass: Option<Skip>,
+    /// Why the post chain does not run on the view, or nothing.
+    post: Option<Skip>,
+    /// The view asks for the water of MGE XE, which a view of its own does not draw.
+    water_asked: bool,
+}
+
 /// The plan before the first frame.
 const NO_FRAME: &str = "no frame yet";
 
@@ -4157,29 +4186,22 @@ impl Extension for DistantLand {
         pass: &mut wgpu::RenderPass<'static>,
         _replay: &mut dyn Replay,
     ) -> bool {
-        let blocked = if self.answers == FrameAnswers::UnderMenu {
-            Some(part::UNDER_MENU)
-        } else {
-            self.distant_skip()
-        };
-        if let Some(reason) = blocked {
+        let plan = self.view_plan(scene, parts);
+        if plan.water_asked {
+            pass_report::note_skipped(part::WATER_PLANE, "not drawn in a view of its own");
+        }
+        if let Some(reason) = plan.world {
             Self::note_view_skipped(parts, reason);
             return false;
         }
-        // A view with an orthographic projection (the local map's camera) gets no land: its
-        // depth terms are not those of a perspective one.
-        if !is_perspective(&scene.projection) {
+        if plan.orthographic {
             self.tier_views.orthographic += 1;
             Self::note_view_skipped(parts, ORTHOGRAPHIC);
             return false;
         }
-        let not_ready = if !self.facts.terrain || self.gpu.is_none() {
-            Some("no terrain on the GPU")
-        } else if !self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready) {
-            Some(part::NOT_MADE)
-        } else {
-            None
-        };
+        let not_ready = plan
+            .land
+            .or_else(|| (!self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready)).then_some(part::NOT_MADE));
         let claimed = match not_ready {
             Some(reason) => Err(reason),
             None => self
@@ -4202,28 +4224,13 @@ impl Extension for DistantLand {
         }
         // What this call makes for its set is made before the draws, within the size rule and an
         // out-of-memory scope: a part that is refused leaves the call without it.
-        let statics_skip = if !parts.contains(Additions::STATICS) {
-            Some(NOT_IN_OPTIONS)
-        } else if skipped("statics") {
-            Some("left out by MGE_XE_SKIP")
-        } else {
-            self.ensure_statics_set(scene, k).err()
-        };
+        let statics_skip = plan.statics.or_else(|| self.ensure_statics_set(scene, k).err());
         let statics_ready = statics_skip.is_none();
         if let Some(reason) = statics_skip {
             pass_report::note_skipped(part::STATICS, reason);
         }
         let night = self.night(scene);
-        let is_night = night > 0.0;
-        let glows_skip = if !parts.contains(Additions::GLOWS) {
-            Some(NOT_IN_OPTIONS)
-        } else if !is_night {
-            Some("not night")
-        } else if scene.interior {
-            Some("an interior")
-        } else {
-            self.ensure_glow_set(scene, k).err()
-        };
+        let glows_skip = plan.glows.or_else(|| self.ensure_glow_set(scene, k).err());
         let glows_ready = glows_skip.is_none();
         if let Some(reason) = glows_skip {
             pass_report::note_skipped(part::GLOW_CULL, reason);
@@ -4255,12 +4262,7 @@ impl Extension for DistantLand {
         let eye_range = [eye[0], eye[1], eye[2], view_range];
         let mut drew = false;
         // The terrain is for an exterior, as in the main view.
-        let terrain_skip = if parts.contains(Additions::LAND) {
-            Self::terrain_skip(scene)
-        } else {
-            Some(NOT_IN_OPTIONS)
-        };
-        match terrain_skip {
+        match plan.terrain {
             None => {
                 pass.push_debug_group("distant land (view of its own)");
                 let drawn = gpu.draw_meshes(scene, pass, view_group, &planes);
@@ -4344,7 +4346,11 @@ impl Extension for DistantLand {
         pass: &mut wgpu::RenderPass<'static>,
         _replay: &mut dyn Replay,
     ) {
-        if let Some(reason) = self.view_grass_skip(scene, parts) {
+        let grass_skip = self
+            .view_plan(scene, parts)
+            .grass
+            .or_else(|| self.statics.is_none().then_some(NO_STATICS));
+        if let Some(reason) = grass_skip {
             pass_report::note_skipped(part::GRASS, reason);
             return;
         }
@@ -4399,11 +4405,7 @@ impl Extension for DistantLand {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
     ) {
-        let blocked = if self.answers == FrameAnswers::UnderMenu {
-            Some(part::UNDER_MENU)
-        } else if !parts.contains(Additions::POST_COVER) {
-            Some(NOT_IN_OPTIONS)
-        } else if let Some(reason) = self.chain() {
+        let blocked = if let Some(reason) = self.view_plan(scene, parts).post {
             Some(reason)
         } else if scene.picture.is_none() {
             Some("no copy of the picture")
@@ -4870,26 +4872,44 @@ impl DistantLand {
     }
 
     /// Why a view of its own draws no grass before its place is claimed, or nothing.
-    fn view_grass_skip(&self, scene: &SceneView, parts: Additions) -> Option<Skip> {
-        if self.answers == FrameAnswers::UnderMenu {
-            return Some(part::UNDER_MENU);
+    fn view_plan(&self, scene: &SceneView, parts: Additions) -> ViewPlan {
+        let under_menu = self.answers == FrameAnswers::UnderMenu;
+        let world = if under_menu {
+            Some(part::UNDER_MENU)
+        } else {
+            self.distant_skip()
+        };
+        let orthographic = !is_perspective(&scene.projection);
+        let of = |flag: Additions| (!parts.contains(flag)).then_some(NOT_IN_OPTIONS);
+        let terrain = of(Additions::LAND).or_else(|| Self::terrain_skip(scene));
+        let statics = of(Additions::STATICS).or_else(|| skipped("statics").then_some("left out by MGE_XE_SKIP"));
+        let glows = of(Additions::GLOWS).or_else(|| {
+            if self.night(scene) > 0.0 {
+                scene.interior.then_some("an interior")
+            } else {
+                Some("not night")
+            }
+        });
+        let grass = world
+            .or_else(|| of(Additions::GRASS))
+            .or_else(|| skipped("grass").then_some("left out by MGE_XE_SKIP"))
+            .or_else(|| orthographic.then_some(ORTHOGRAPHIC));
+        let post = if under_menu {
+            Some(part::UNDER_MENU)
+        } else {
+            of(Additions::POST_COVER).or_else(|| self.chain())
+        };
+        ViewPlan {
+            world,
+            orthographic,
+            land: (!self.facts.terrain).then_some("no terrain on the GPU"),
+            terrain,
+            statics,
+            glows,
+            grass,
+            post,
+            water_asked: parts.contains(Additions::WATER),
         }
-        if let Some(reason) = self.distant_skip() {
-            return Some(reason);
-        }
-        if !parts.contains(Additions::GRASS) {
-            return Some(NOT_IN_OPTIONS);
-        }
-        if skipped("grass") {
-            return Some("left out by MGE_XE_SKIP");
-        }
-        if !is_perspective(&scene.projection) {
-            return Some(ORTHOGRAPHIC);
-        }
-        if self.statics.is_none() {
-            return Some(NO_STATICS);
-        }
-        None
     }
 
     /// No shadow map in the frame, for `reason`: no statics in its layers either.
