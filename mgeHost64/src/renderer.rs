@@ -966,6 +966,21 @@ struct Plan {
     water: Option<Skip>,
     /// Why the picture has no surfaces of water volumes, or nothing.
     volumes: Option<Skip>,
+    /// The reflection in the water. The mirror's cull set, its pass, the one-colour fill and
+    /// their notes read it.
+    reflection: Reflection,
+}
+
+/// The reflection in the water of a picture (W341 step B): the mirror, one colour, or none with
+/// its reason.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reflection {
+    /// The land, the sky and the statics, mirrored, in a pass of their own.
+    Mirror,
+    /// One colour: a cell without the distant land (`clearReflection` of the Direct3D 9 path),
+    /// or an interior without `reflect_interiors`.
+    Fill,
+    None(Skip),
 }
 
 /// The plan before the first frame.
@@ -978,6 +993,7 @@ impl Default for Plan {
             terrain: Some(NO_FRAME),
             water: Some(NO_FRAME),
             volumes: Some(NO_FRAME),
+            reflection: Reflection::None(NO_FRAME),
         }
     }
 }
@@ -3776,18 +3792,14 @@ impl Extension for DistantLand {
             Self::note_world_skipped(self.shadow_in_frame, reason, false);
             // A cell without the distant land: the reflection of the water is one colour,
             // as `clearReflection` of the Direct3D 9 path has it.
-            match self.water_frame(scene) {
-                Ok(frame) => {
-                    let needed = self.reflection_needed(scene, &frame);
-                    if let Some(water) = self.water.as_mut() {
-                        if needed {
-                            water.fill_reflection(scene, &frame);
-                        } else {
-                            pass_report::note_skipped(part::REFLECTION_FILL, part::OUT_OF_VIEW);
-                        }
+            match self.plan.reflection {
+                Reflection::None(reason) => pass_report::note_skipped(part::REFLECTION_FILL, reason),
+                _ => {
+                    let frame = self.water_frame(scene);
+                    if let (Some(water), Ok(frame)) = (self.water.as_mut(), frame.as_ref()) {
+                        water.fill_reflection(scene, frame);
                     }
                 }
-                Err(reason) => pass_report::note_skipped(part::REFLECTION_FILL, reason),
             }
             return false;
         }
@@ -3883,10 +3895,9 @@ impl Extension for DistantLand {
                     });
                 }
             }
-            if let (Some(_), Some(frame)) = (
-                self.water.as_ref().filter(|_| self.reflect_statics),
-                water_frame.as_ref().ok(),
-            ) {
+            // The mirror's set, only for a picture that draws the mirror with its statics.
+            if let (Reflection::Mirror, true, Ok(frame)) = (self.plan.reflection, self.reflect_statics, water_frame.as_ref())
+            {
                 let mirrored_view = multiply(&Water::mirror(frame.mirror_level), &scene.view);
                 let projection = Water::far_projection(scene, frame.draw_distance);
                 sets.push(statics::CullSet {
@@ -3989,39 +4000,26 @@ impl Extension for DistantLand {
             }
         }
 
-        // An interior reflects only with `reflect_interiors`; without it the reflection is one
-        // colour, as in a cell without the distant land.
-        let mirrored = !scene.interior || self.reflect_interior;
-        // A frame whose plane is out of view and that has no other reader draws no
-        // reflection: the texture keeps its last content, which nothing reads in it.
-        let reflection_frame = match water_frame.as_ref() {
-            Ok(frame) if self.reflection_needed(scene, frame) => Some(frame),
-            Ok(_) => {
-                Self::note_reflection_skipped(part::OUT_OF_VIEW);
-                None
-            }
-            Err(reason) => {
-                Self::note_reflection_skipped(reason);
-                None
-            }
-        };
-        match (reflection_frame, mirrored) {
-            (Some(_), true) => pass_report::note_skipped(part::REFLECTION_FILL, "the mirror is drawn"),
-            (Some(_), false) => {
+        // The reflection of the picture (the plan). An interior without `reflect_interiors` has
+        // one colour, as a cell without the distant land.
+        let reflection = self.plan.reflection;
+        match reflection {
+            Reflection::Mirror => pass_report::note_skipped(part::REFLECTION_FILL, "the mirror is drawn"),
+            Reflection::Fill => {
                 pass_report::note_skipped(part::REFLECTION, "an interior, and reflect_interiors is off");
                 pass_report::note_skipped(part::REFLECTED_SKY, "no mirror");
                 pass_report::note_skipped(part::MIRROR_LAND, "no mirror");
                 pass_report::note_skipped(part::MIRROR_STATICS, "no mirror");
             }
-            (None, _) => {}
+            Reflection::None(reason) => Self::note_reflection_skipped(reason),
         }
-        if let (Some(water), Some(frame), false) = (self.water.as_mut(), reflection_frame, mirrored) {
+        if let (Some(water), Ok(frame), Reflection::Fill) = (self.water.as_mut(), water_frame.as_ref(), reflection) {
             water.fill_reflection(scene, frame);
         }
 
         // The reflection in the water: the land and the sky, mirrored, in a pass of their
         // own that goes to the GPU before the frame.
-        if let (Some(water), Some(frame)) = (self.water.as_mut(), reflection_frame.filter(|_| mirrored)) {
+        if let (Some(water), Ok(frame), Reflection::Mirror) = (self.water.as_mut(), water_frame.as_ref(), reflection) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("water reflection"),
             });
@@ -4741,12 +4739,35 @@ impl DistantLand {
             FrameAnswers::UnderMenu => Some(part::UNDER_MENU),
             FrameAnswers::World(_) => self.distant_skip(),
         };
+        let water = self.water_skip(scene);
         Plan {
             world,
             terrain: Self::terrain_skip(scene),
-            water: self.water_skip(scene),
+            water,
             volumes: self.volume_skip(scene),
+            reflection: self.reflection(scene, world, water),
         }
+    }
+
+    /// The reflection of the picture of `scene`, for the plan. A picture whose plane is out of
+    /// view and that has no other reader draws none: the texture keeps its last content, which
+    /// nothing reads in it.
+    fn reflection(&self, scene: &SceneView, world: Option<Skip>, water: Option<Skip>) -> Reflection {
+        if self.answers == FrameAnswers::UnderMenu {
+            return Reflection::None(part::UNDER_MENU);
+        }
+        let frame = match self.water_frame_of(scene, water) {
+            Ok(frame) => frame,
+            Err(reason) => return Reflection::None(reason),
+        };
+        if !self.reflection_needed(scene, &frame) {
+            return Reflection::None(part::OUT_OF_VIEW);
+        }
+        // An interior reflects only with `reflect_interiors`.
+        if world.is_some() || (scene.interior && !self.reflect_interior) {
+            return Reflection::Fill;
+        }
+        Reflection::Mirror
     }
 
     /// The chain of post shaders of the frame, or why it has none: the frame's answer.
