@@ -2434,14 +2434,18 @@ fn extension_shade(in: VertexOut) -> vec4f {
     }
     var d = vec3f(0.0);
     var a = draw.scene_ambient.rgb;
+    // A draw with no lights of any source (the renderer's NO_LIGHTS_BIT, 32768u): no lookup
+    // of the clusters, no lights of the world, no loop. The bit is a fact of the stage key, so
+    // the stage shader of such a draw has none of that code.
+    let no_lights = (draw.counts.w & 32768u) != 0u;
     // The lights of the world (`world_lights_here`): the point lights of the cluster of the
     // pixel, in place of the draw's own; the draw keeps its directional lights.
-    let world = world_lights_here();
+    let world = !no_lights && world_lights_here();
     // The lights of the draw, or of the cluster of the pixel when the frame has clusters.
     var first = draw.light_range.x;
-    var count = draw.light_range.y;
+    var count = select(draw.light_range.y, 0u, no_lights);
     var clustered = false;
-    if !world && (draw.light_range.w & 1u) != 0u {
+    if !no_lights && !world && (draw.light_range.w & 1u) != 0u {
         let view_z = (draw.view * vec4f(in.world_position, 1.0)).z;
         let cluster = cluster_lights(in.clip.xy, view_z);
         if clusters.grid.w != 0u {
@@ -4512,7 +4516,11 @@ impl DistantLand {
         }
     }
 
-    /// The bits of `counts.w` that `shade` sets for a draw with these facts.
+    /// The bits of `counts.w` that `shade` sets for a draw with these facts: 1 the extension
+    /// shades, 2 a draw that adds (no fog colour), 16 and 128 the light for each pixel, 32 the
+    /// sun's shadow, 64 the shadow takes the alpha, 256 a draw that adds under water, 512 the
+    /// game's lights with MGE XE's fade (not the original lights). The renderer adds its own [`nirender_wgpu::NO_LIGHTS_BIT`] (32768) after
+    /// `shade` for a draw lit for each pixel with no lights.
     fn shade_flags(&self, facts: &DrawFacts) -> u32 {
         // A draw that adds to the picture (a glow, a spell, a bug) under water: its light goes
         // to the colour of the water with the distance, and the fog adds no colour to it.
@@ -4673,6 +4681,16 @@ mod shader_tests {
         let source = world_source(core_mods::CoreMods::built_in().shadow_hooks());
         assert_eq!(source.matches(nirender_wgpu::spot::WGSL).count(), 1);
         assert_eq!(source.matches("fn spot_cone").count(), 1);
+    }
+
+    /// The draw part reads the crate's bit of a draw with no lights by its number: the number
+    /// in the WGSL is the crate's constant, and the bit is outside the extension's own bits.
+    #[test]
+    fn the_draw_shader_reads_the_crates_no_lights_bit() {
+        let bit = format!("(draw.counts.w & {}u) != 0u", nirender_wgpu::NO_LIGHTS_BIT);
+        assert_eq!(DRAW_SHADER.matches(bit.as_str()).count(), 1);
+        let own = 1 | 2 | 16 | 32 | 64 | 128 | 256 | 512;
+        assert_eq!(own & nirender_wgpu::NO_LIGHTS_BIT, 0);
     }
 }
 
