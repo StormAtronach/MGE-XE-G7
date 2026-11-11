@@ -502,13 +502,16 @@ pub fn run(mut arguments: Vec<String>) {
     // A replay draws the files that are there. A game session makes them again first when
     // they do not match the job of mgeXE.toml, as the IPC host mode does.
     let live = arguments.iter().any(|argument| argument == "--live");
-    // A replay's view comes only from its arguments, which the crate does not take.
-    let debug_view = DebugView::from_arguments(&mut arguments, !live).unwrap_or_else(|problem| {
-        eprintln!("debug view: {problem}");
-        std::process::exit(2);
-    });
+    // A replay's view comes only from its arguments, which the crate does not take: they go
+    // out of the list here, and a wrong one ends the program in the closure below, after the
+    // log is set up, so that its line is in the log.
+    let debug_view = DebugView::from_arguments(&mut arguments, !live);
     // The distant land starts after the log of the helper is set up: its lines are in it.
     nirender_wgpu::run_with(arguments, move || -> Option<Box<dyn Extension>> {
+        let debug_view = debug_view.unwrap_or_else(|problem| {
+            eprintln!("debug view: {problem}");
+            std::process::exit(2);
+        });
         let mut land = DistantLand::start(Path::new("."), live);
         if let Some(line) = debug_view::retired_switches_line(|name| nirender_wgpu::switches::text(name).is_some()) {
             println!("{line}");
