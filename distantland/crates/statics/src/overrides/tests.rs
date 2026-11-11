@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::parse::{parse_ranges, parse_static_keywords, strip_comment, unescape};
-use super::{OverridesBuilder, WaterNames};
+use super::{OverridesBuilder, ReportLevel, SourceKind, WaterNames};
 use crate::mge_xe::distant_statics::StaticType;
 
 #[test]
@@ -152,4 +152,69 @@ fn later_water_names_replace_the_table_and_warn_when_they_differ() {
         *warnings.lock().unwrap(),
         ["Water names from Other-metadata.toml replace conflicting names from Same-metadata.toml"]
     );
+}
+
+/// A builder with a global list (a matched very far key, a matched key of `reduction` only, an
+/// unmatched key) and a plugin's metadata (a matched near key that replaces the list's type of
+/// the same mesh, an unmatched key).
+fn report_builder() -> OverridesBuilder {
+    let mut builder = OverridesBuilder::new();
+    builder.begin_source("default.toml");
+    builder.insert_mesh_override("pc\\x\\bridge_bot.nif".to_owned(), parse_static_keywords(b"very_far"));
+    builder.insert_mesh_override("x\\rock.nif".to_owned(), parse_static_keywords(b"reduction_50"));
+    builder.insert_mesh_override("x\\absent_in_list.nif".to_owned(), parse_static_keywords(b"far"));
+    builder.insert_mesh_override("x\\tower.nif".to_owned(), parse_static_keywords(b"far"));
+    builder.begin_plugin_source("Mod-metadata.toml");
+    builder.insert_mesh_override("x\\tower.nif".to_owned(), parse_static_keywords(b"near"));
+    builder.insert_mesh_override("x\\absent_in_mod.nif".to_owned(), parse_static_keywords(b"ignore"));
+    builder
+}
+
+fn report_meshes() -> hashbrown::HashSet<&'static str> {
+    ["pc\\x\\bridge_bot.nif", "x\\rock.nif", "x\\tower.nif", "x\\other.nif"].into_iter().collect()
+}
+
+/// Each source has its count of keys and of keys that match; a used key that states a tier
+/// names its type and the source that won; `reduction` alone is no statement.
+#[test]
+fn the_report_names_each_used_key_with_its_type_and_its_source() {
+    let (overrides, report) = report_builder().finish_with_report();
+    let lines = report.lines(&overrides, &report_meshes());
+    let infos: Vec<&str> = lines.iter().filter(|(level, _)| *level == ReportLevel::Info).map(|(_, line)| line.as_str()).collect();
+    assert!(infos.contains(&"Mesh overrides of default.toml: 4 keys, 3 match a mesh of this load order"), "{infos:?}");
+    assert!(infos.contains(&"Mesh overrides of Mod-metadata.toml: 2 keys, 1 match a mesh of this load order"), "{infos:?}");
+    assert!(infos.contains(&"Mesh override pc\\x\\bridge_bot.nif: very_far, from default.toml"), "{infos:?}");
+    assert!(infos.contains(&"Mesh override x\\tower.nif: near, from Mod-metadata.toml"), "{infos:?}");
+    assert!(!infos.iter().any(|line| line.starts_with("Mesh override x\\rock.nif")), "{infos:?}");
+    assert!(infos.contains(&"Mesh overrides in use: near 1, very_far 1"), "{infos:?}");
+}
+
+/// A key that matches nothing: a note for a global list, a warning for a plugin's metadata.
+#[test]
+fn an_unmatched_key_is_a_note_in_a_list_and_a_warning_in_a_plugin() {
+    let (overrides, report) = report_builder().finish_with_report();
+    let lines = report.lines(&overrides, &report_meshes());
+    assert!(lines.contains(&(
+        ReportLevel::Info,
+        "Note: mesh override x\\absent_in_list.nif of default.toml matches no mesh of this load order".to_owned()
+    )));
+    assert!(lines.contains(&(
+        ReportLevel::Warning,
+        "Mesh override x\\absent_in_mod.nif of Mod-metadata.toml matches no mesh of this load order: the plugin names a mesh it does not use".to_owned()
+    )));
+    assert_eq!(lines.iter().filter(|(level, _)| *level == ReportLevel::Warning).count(), 1, "{lines:?}");
+}
+
+/// A key that a source gives twice counts once, and the later value wins.
+#[test]
+fn the_report_counts_a_repeated_key_once() {
+    let mut builder = OverridesBuilder::new();
+    builder.begin_source("list.toml");
+    builder.insert_mesh_override("x\\a.nif".to_owned(), parse_static_keywords(b"far"));
+    builder.insert_mesh_override("x\\a.nif".to_owned(), parse_static_keywords(b"very_far"));
+    let (overrides, report) = builder.finish_with_report();
+    assert_eq!(report.sources.len(), 1);
+    assert_eq!(report.sources[0].mesh_keys, ["x\\a.nif"]);
+    assert_eq!(report.sources[0].kind, SourceKind::GlobalList);
+    assert_eq!(overrides.mesh_overrides["x\\a.nif"].static_type, StaticType::StaticVeryFar);
 }

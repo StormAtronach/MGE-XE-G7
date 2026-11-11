@@ -58,7 +58,7 @@ pub fn apply_plugin_metadata_with_identity(path: &Path, builder: &mut OverridesB
     match parse_distantland_section(&text) {
         Ok(Some(metadata)) => {
             info!("Applying plugin metadata: {}", path.display());
-            builder.begin_source(path.display().to_string());
+            builder.begin_plugin_source(path.display().to_string());
             metadata.apply(builder);
         }
         Ok(None) => {}

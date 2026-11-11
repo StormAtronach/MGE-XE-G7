@@ -488,8 +488,9 @@ fn run_generation(
                 }
             }
         }
-        Ok(builder.finish())
+        Ok(builder.finish_with_report())
     })?;
+    let (overrides, override_report) = overrides;
 
     let usage_result = run_stage(GenerationStage::ParsePlugins, reporter, || {
         let stage_span = info_span!(
@@ -539,6 +540,9 @@ fn run_generation(
         ))
     })?;
     let (mut usage_info, plugin_identities, grass_plugin_identities, grass_warnings, _projections, light_sources) = usage_result;
+    // The log of the mesh overrides: which keys matched a mesh of an object of this load order.
+    let object_meshes: hashbrown::HashSet<&str> = usage_info.objects.values().map(|object| object.mesh).collect();
+    override_report.log(&overrides, &object_meshes);
     identities.set_plugins(plugin_identities);
     identities.set_grass_plugins(grass_plugin_identities);
     warnings.extend(grass_warnings.into_iter().map(GenerationWarning::from));

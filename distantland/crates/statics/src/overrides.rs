@@ -1,6 +1,7 @@
 //! Static override data model and merge builder for `.ovr` and plugin metadata inputs.
 
 mod parse;
+mod report;
 
 use std::fs;
 use std::io::{self, Cursor};
@@ -14,6 +15,7 @@ use distantland_foundation::identity::FileIdentity;
 use tracing::warn;
 
 use parse::parse_override_reader;
+pub use report::{OverrideReport, ReportLevel, ReportSource, SourceKind};
 
 /// Deduplication key for a dynamic-visibility group: `(kind tag, id, ranges)`.
 type DedupKey = (u8, String, Vec<(i32, i32)>);
@@ -33,6 +35,10 @@ pub struct OverridesBuilder {
     result: StaticOverrides,
     dedup: DedupMap,
     sources: Vec<String>,
+    /// The kind of each source, in the order of `sources`.
+    source_kinds: Vec<SourceKind>,
+    /// The mesh keys that each source gave, in the order of `sources`.
+    source_mesh_keys: Vec<Vec<String>>,
     mesh_sources: HashMap<String, usize>,
     name_sources: HashMap<String, usize>,
     interior_sources: HashMap<Uncased<'static>, usize>,
@@ -44,8 +50,20 @@ impl OverridesBuilder {
         Self::default()
     }
 
+    /// Starts a source of a global list: a list that the settings name, an `.ovr` file, text.
     pub(crate) fn begin_source(&mut self, label: impl Into<String>) {
+        self.begin_source_of(label, SourceKind::GlobalList);
+    }
+
+    /// Starts the source of a plugin's `-metadata.toml`.
+    pub(crate) fn begin_plugin_source(&mut self, label: impl Into<String>) {
+        self.begin_source_of(label, SourceKind::PluginMetadata);
+    }
+
+    fn begin_source_of(&mut self, label: impl Into<String>, kind: SourceKind) {
         self.sources.push(label.into());
+        self.source_kinds.push(kind);
+        self.source_mesh_keys.push(Vec::new());
     }
 
     pub(crate) fn current_source_label(&self) -> &str {
@@ -77,11 +95,30 @@ impl OverridesBuilder {
     ///
     /// MGE-XE uses 1-based dynamic-visibility indices, with 0 reserved for ordinary
     /// statics, so indices are assigned here once all sources are merged.
-    pub fn finish(mut self) -> StaticOverrides {
+    pub fn finish(self) -> StaticOverrides {
+        self.finish_with_report().0
+    }
+
+    /// [`OverridesBuilder::finish`], with the report of the sources and of the source that won
+    /// for each mesh key, for the log of the run ([`OverrideReport::log`]).
+    pub fn finish_with_report(mut self) -> (StaticOverrides, OverrideReport) {
         for (i, group) in self.result.dynamic_vis.groups.iter_mut().enumerate() {
             group.index = (i + 1) as u16;
         }
-        self.result
+        let sources = self
+            .sources
+            .into_iter()
+            .zip(self.source_kinds)
+            .zip(self.source_mesh_keys)
+            .map(|((label, kind), keys)| {
+                // A key that a source gives twice counts once.
+                let mut seen = hashbrown::HashSet::new();
+                let mesh_keys = keys.into_iter().filter(|key| seen.insert(key.clone())).collect();
+                ReportSource { label, kind, mesh_keys }
+            })
+            .collect();
+        let report = OverrideReport { sources, winners: self.mesh_sources };
+        (self.result, report)
     }
 
     fn current_source_index(&self) -> usize {
@@ -104,6 +141,9 @@ impl OverridesBuilder {
                 self.source_label(source),
                 self.source_label(prev_source)
             );
+        }
+        if let Some(keys) = self.source_mesh_keys.last_mut() {
+            keys.push(key.clone());
         }
         self.mesh_sources.insert(key.clone(), source);
         self.result.mesh_overrides.insert(key, value);
