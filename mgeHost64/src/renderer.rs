@@ -94,6 +94,11 @@ mod part {
     pub const STATICS: &str = "distant statics";
     pub const SHADOW_STATICS: &str = "distant statics: the shadow layers";
     pub const MIRROR_STATICS: &str = "distant statics: the reflection";
+    pub const MIRROR_LAND: &str = "distant land: the reflection";
+    /// The game's draws of the glare of the sun (class 8), which go when a post shader draws its
+    /// own sun.
+    pub const SUN_GLARE: &str = "the game's sun glare";
+    pub const CAUSTICS_DRY_CUT: &str = "sea caustics: the cut of the dry spaces";
     pub const UNDER_MENU: &str = "the kept picture under a menu";
     pub const OUT_OF_VIEW: &str = "the water plane is out of view";
     pub const NO_LIGHTS: &str = "no distant lights";
@@ -3900,6 +3905,7 @@ impl Extension for DistantLand {
             (Some(_), false) => {
                 pass_report::note_skipped(part::REFLECTION, "an interior, and reflect_interiors is off");
                 pass_report::note_skipped(part::REFLECTED_SKY, "no mirror");
+                pass_report::note_skipped(part::MIRROR_LAND, "no mirror");
                 pass_report::note_skipped(part::MIRROR_STATICS, "no mirror");
             }
             (None, _) => {}
@@ -3933,7 +3939,12 @@ impl Extension for DistantLand {
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
             // path) with `reflect_land`; an interior cell reflects its statics only.
-            if !scene.interior && self.reflect_land {
+            if scene.interior {
+                pass_report::note_skipped(part::MIRROR_LAND, "an interior");
+            } else if !self.reflect_land {
+                pass_report::note_skipped(part::MIRROR_LAND, "reflect_land is off");
+            } else {
+                pass_report::note_ran(part::MIRROR_LAND);
                 mirror_pass.set_pipeline(gpu.mirror_pipeline_for(scene));
                 mirror_pass.set_bind_group(0, views.group(view::MIRROR), &[]);
                 mirror_pass.set_bind_group(1, &gpu.group, &[]);
@@ -4523,8 +4534,17 @@ impl Extension for DistantLand {
 
     /// The water plane of MGE XE in place of the water plane of the game.
     fn draw_class(&mut self, class: u32, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
-        if class != 10 {
-            return;
+        match class {
+            10 => {}
+            // The glare of the sun is watched only when a post shader draws its own sun
+            // (`FrameParameters::watched`): its draws go, and nothing is drawn in their place.
+            8 => {
+                pass_report::on_request(&[part::SUN_GLARE]);
+                pass_report::note_skipped(part::SUN_GLARE, "a post shader draws its own sun");
+                return;
+            }
+            // No other class is watched.
+            _ => return,
         }
         pass_report::on_request(&[part::WATER_PLANE]);
         if skipped("water") {
@@ -4654,6 +4674,7 @@ impl DistantLand {
             part::REFLECTION,
             part::REFLECTED_SKY,
             part::STATICS,
+            part::MIRROR_LAND,
             part::MIRROR_STATICS,
         ] {
             pass_report::note_skipped(name, reason);
@@ -4729,6 +4750,7 @@ impl DistantLand {
             part::REFLECTION,
             part::REFLECTION_FILL,
             part::REFLECTED_SKY,
+            part::MIRROR_LAND,
             part::MIRROR_STATICS,
         ] {
             pass_report::note_skipped(name, reason);
