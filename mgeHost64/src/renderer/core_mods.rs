@@ -40,7 +40,7 @@
 //!   [`WATER_INTERFACE`]. Their home: the plane of the water only. The surfaces of the water
 //!   volumes and the dry spaces keep the built-ins, as Direct3D 9 has a core file of its own
 //!   for the volumes. The library is [`WATER_LIBRARY`]. Only the built-in `water_color` and
-//!   `underwater_color` show the terms of `MGE_XE_WATER_DEBUG`.
+//!   `underwater_color` show the terms of the debug view `water`.
 //!
 //! A hook may call the other hooks of its file, also those that the file leaves to the
 //! built-ins. A hook that never ends stops the GPU: the renderer does not limit a hook.
@@ -365,7 +365,7 @@ impl CoreMods {
                     used.push(format!("XE Mod Water.wgsl ({})", if defined.is_empty() { "no hook".to_string() } else { defined.join(", ") }));
                     mods.report.push("core mod: XE Mod Water.wgsl: the plane of the water takes its hooks; the water volumes and the dry spaces keep the built-in water".to_string());
                     if defined.iter().any(|hook| *hook == "water_color" || *hook == "underwater_color") {
-                        mods.report.push("core mod: XE Mod Water.wgsl: MGE_XE_WATER_DEBUG shows no terms of its water colour (the terms are those of the built-in)".to_string());
+                        mods.report.push("core mod: XE Mod Water.wgsl: the debug view water shows no terms of its water colour (the terms are those of the built-in)".to_string());
                     }
                 }
                 Err(problem) => mods.report.push(format!("core mod: XE Mod Water.wgsl: {problem}; the built-in water is used")),
@@ -789,7 +789,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks());
         assert!(mods.report().iter().any(|line| line.contains("XE Mod Water.wgsl (water_color)")), "{:?}", mods.report());
         assert!(mods.report().iter().any(|line| line.contains("the water volumes and the dry spaces keep the built-in water")), "{:?}", mods.report());
-        assert!(mods.report().iter().any(|line| line.contains("MGE_XE_WATER_DEBUG shows no terms")), "{:?}", mods.report());
+        assert!(mods.report().iter().any(|line| line.contains("the debug view water shows no terms")), "{:?}", mods.report());
     }
 
     #[test]

@@ -37,6 +37,8 @@ use std::time::{Duration, Instant};
 mod blend;
 mod caustics;
 mod core_mods;
+mod debug_view;
+use debug_view::DebugView;
 mod distant_lights;
 mod gpu_time;
 mod menu_keep;
@@ -128,13 +130,9 @@ pub struct Settings {
     pub water_wave_height: f32,
     /// In cells.
     pub interior_fog_end: f32,
-    /// The debug views of a run ([`SETTINGS_DEBUG_LIGHT`]).
+    /// The debug views of a run ([`debug_view::SETTINGS_DEBUG_LIGHT`]).
     pub debug: u32,
 }
-
-/// `Settings::debug`: the debug view of the light (`mge.render.lightDebug`,
-/// `FixedFunctionShader::lightDebug`).
-const SETTINGS_DEBUG_LIGHT: u32 = 1;
 
 impl Settings {
     /// The version of the record that this build reads, the one `Deviceless::sendSettings`
@@ -449,8 +447,17 @@ pub fn run(mut arguments: Vec<String>) {
     // A replay draws the files that are there. A game session makes them again first when
     // they do not match the job of mgeXE.toml, as the IPC host mode does.
     let live = arguments.iter().any(|argument| argument == "--live");
+    // A replay's view comes only from its arguments, which the crate does not take.
+    let debug_view = DebugView::from_arguments(&mut arguments, !live).unwrap_or_else(|problem| {
+        eprintln!("debug view: {problem}");
+        std::process::exit(2);
+    });
     // The distant land starts after the log of the helper is set up: its lines are in it.
-    nirender_wgpu::run_with(arguments, move || -> Option<Box<dyn Extension>> { Some(Box::new(DistantLand::start(Path::new("."), live))) });
+    nirender_wgpu::run_with(arguments, move || -> Option<Box<dyn Extension>> {
+        let mut land = DistantLand::start(Path::new("."), live);
+        land.debug_view = debug_view;
+        Some(Box::new(land))
+    });
 }
 
 /// The fog distances of a frame ([`DistantLand::fog_ranges`]).
@@ -816,10 +823,10 @@ pub struct DistantLand {
     clustered_lights: bool,
     /// The tune `lights world` or `lights engine`: [`FrameParameters::world_lights`].
     world_lights: bool,
-    /// The tune `lights debug on` or `off`: a draw lit for each pixel shows only the light it
-    /// takes (`frame.values[12].x`), without its material, its textures and the fog: a seam of
-    /// the lights is a step at the edge of a shape.
-    light_debug: bool,
+    /// The debug view of the frame. Its lights view: a draw lit for each pixel shows only the
+    /// light it takes (`frame.values[12].x`), without its material, its textures and the fog:
+    /// a seam of the lights is a step at the edge of a shape.
+    debug_view: DebugView,
     /// The world of the frame is in an interior cell.
     interior: bool,
     /// The cell of the frame is an exterior, or an interior that is like one: the fact of the
@@ -1305,7 +1312,7 @@ impl DistantLand {
             ),
             clustered_lights: settings.clustered_lights,
             world_lights: false,
-            light_debug: false,
+            debug_view: DebugView::default(),
             interior: false,
             like_exterior: true,
             distant_cell: true,
@@ -2451,11 +2458,11 @@ fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
         }
     }
     if frame.values[12].x > 0.5 && light_term_set {
-        // The debug view of the lights (the tune `lights debug on`).
+        // The debug view of the lights (the debug view `lights`).
         return vec4f(light_term, alpha);
     }
     if frame.values[10].z > 0.5 {
-        // The debug view of the shadow layers (MGE_XE_SHADOW_LAYERS=1).
+        // The debug view of the shadow layers (the debug view `shadow-layers`).
         if shadow_layer < -0.5 {
             return vec4f(0.3, 0.3, 0.3, out.a);
         }
@@ -2625,6 +2632,7 @@ impl Extension for DistantLand {
         let near_volumes = std::mem::replace(&mut self.volumes_drawn, false);
         if let Some(water) = self.water.as_mut() {
             water.start_frame();
+            water.debug = self.debug_view.water_term();
         }
         self.far_water.clear();
         self.volumes_ready = self.water_on && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_some();
@@ -2669,6 +2677,7 @@ impl Extension for DistantLand {
         }
         // The shaders that a mod loaded or changed since the last frame.
         if let Some(post) = self.post.as_mut() {
+            post.set_debug(scene, self.debug_view.post_term());
             for name in std::mem::take(&mut self.shader_states_new) {
                 if let Some(state) = self.shader_states.iter().find(|state| state.name == name) {
                     let root = self.root.clone();
@@ -2690,9 +2699,14 @@ impl Extension for DistantLand {
         let mut values = [[0.0f32; 4]; 32];
         let mut texture = None;
         self.shadow_in_frame = false;
+        if let Some(shadow) = self.shadow.as_mut() {
+            shadow.set_debug(&self.debug_view);
+        }
         if distant && self.like_exterior && self.shadows_enabled && self.shadow_day > 0.0 {
             if self.shadow.is_none() {
-                self.shadow = Some(timed("the shadow map's pipelines", || Shadow::new(scene, self.shadow_resolution)));
+                let mut shadow = timed("the shadow map's pipelines", || Shadow::new(scene, self.shadow_resolution));
+                shadow.set_debug(&self.debug_view);
+                self.shadow = Some(shadow);
             }
             let light_vec = shadow::light_vector(scene.sun_direction);
             if let (Some(shadow), Some(e), Some(light_vec)) = (self.shadow.as_mut(), self.environment, light_vec) {
@@ -2705,7 +2719,7 @@ impl Extension for DistantLand {
             }
         }
         self.shade = self.per_pixel();
-        values[12][0] = if self.light_debug { 1.0 } else { 0.0 };
+        values[12][0] = if self.debug_view.lights() { 1.0 } else { 0.0 };
         values[11][0] = self.tunables.get(tunables::WATER_LIGHT_COLOUR);
         FrameParameters {
             fog_range: distant.then(|| self.environment.map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))),
@@ -2728,13 +2742,10 @@ impl Extension for DistantLand {
             lights: self.volume_point_lights && near_volumes && self.volumes_ready,
             clustered_lights: self.clustered_lights,
             world_lights: self.world_lights,
-            // The view of the frame (1: the lights view): the renderer keeps the shader keys that
-            // remove invisible work off while a view of their input is on. The debug-views work
-            // sets this from its one view state.
-            debug_view: if self.light_debug { 1 } else { 0 },
             // The far cascade of the shadow map: what it reaches animates in the game.
             shadow_reach: if self.shadow_in_frame { shadow::RADII[1] } else { 0.0 },
             full_tier_max: Some(self.full_tier_max),
+            debug_view: self.debug_view.view.id(),
         }
     }
 
@@ -2930,11 +2941,15 @@ impl Extension for DistantLand {
                 match mode.trim() {
                     "world" => self.world_lights = true,
                     "engine" => self.world_lights = false,
-                    "debug on" => self.light_debug = true,
-                    "debug off" => self.light_debug = false,
-                    other => println!("tune: lights {other}: not world, engine, debug on or debug off"),
+                    other => println!("tune: lights {other}: not world or engine"),
                 }
-                println!("tune: lights {}, debug {}", if self.world_lights { "world" } else { "engine" }, if self.light_debug { "on" } else { "off" });
+                println!("tune: lights {}", if self.world_lights { "world" } else { "engine" });
+                return;
+            }
+            // `debug view <name> [term]`, `debug view off`, `debug lines <name> on|off`: the
+            // debug view of the frame (`debug_view.rs`).
+            if let Some(text) = core::str::from_utf8(bytes).ok().and_then(|text| text.trim().strip_prefix("debug ")) {
+                println!("{}", self.debug_view.tune(text.trim()));
                 return;
             }
             // `statics report <label>`: the work of the distant statics since the last report.
@@ -4054,11 +4069,8 @@ impl DistantLand {
         let before = self.settings_applied;
         self.settings_applied = Some(settings);
         let on = |flag: u32| settings.flags & flag != 0;
-        // The debug view of the light, as `mge.render.lightDebug` sets it (the tune `lights
-        // debug` sets the same view between two records).
-        if before.is_none_or(|b| b.debug != settings.debug) {
-            self.light_debug = settings.debug & SETTINGS_DEBUG_LIGHT != 0;
-        }
+        // The lights view, as `mge.render.lightDebug` sets it.
+        self.debug_view.settings_word(settings.debug);
         let loaded = self.gpu.is_some() || self.loading.is_some();
         self.enabled = on(USE_DISTANT_LAND) && loaded;
         self.water_on = (on(USE_DISTANT_LAND) || on(USE_DISTANT_WATER)) && loaded;
@@ -4755,6 +4767,7 @@ mod environment_tests {
 
 #[cfg(test)]
 mod settings_tests {
+    use super::debug_view::SETTINGS_DEBUG_LIGHT;
     use super::*;
 
     #[test]

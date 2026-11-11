@@ -9,11 +9,7 @@ use std::rc::Rc;
 
 use nirender_wgpu::{SceneView, wgpu};
 
-/// `MGE_XE_SHADOW_DEBUG` and `MGE_XE_SHADOW_LAYERS`, read once: the shadows are made again
-/// at a change of the resolution.
-static SHADOW_DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-static SHADOW_LAYERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
+use super::debug_view::DebugView;
 use super::multiply;
 
 /// The constants of `XE Mod Shadow Data.fx`: the built-in values of a core mod's
@@ -117,10 +113,9 @@ pub struct Shadow {
     _blur_uniforms: [wgpu::Buffer; 2],
     debug_pipeline: wgpu::RenderPipeline,
     debug_group: wgpu::BindGroup,
+    /// The debug view `shadow-map`: the map drawn small over the frame.
     pub debug: bool,
-    /// `MGE_XE_SHADOW_LAYERS=1`: the draw shader colours each pixel by the layer of the
-    /// shadow map that serves it (red the first, green the second, blue outside both, grey
-    /// a draw without the shadow test), darker where the map shadows the pixel.
+    /// The debug view `shadow-layers` ([`super::debug_view::View::ShadowLayers`]).
     pub layers_debug: bool,
     /// The matrices of the two layers for this frame, with the layout of Direct3D.
     pub viewproj: [[f32; 16]; 2],
@@ -337,8 +332,8 @@ impl Shadow {
             _blur_uniforms: blur_uniforms,
             debug_pipeline,
             debug_group,
-            debug: *SHADOW_DEBUG.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_SHADOW_DEBUG") == Some(true)),
-            layers_debug: *SHADOW_LAYERS.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_SHADOW_LAYERS") == Some(true)),
+            debug: false,
+            layers_debug: false,
             viewproj: [[0.0; 16]; 2],
             frames: 0,
         }
@@ -405,6 +400,12 @@ impl Shadow {
             pass.set_bind_group(0, &self.blur_groups[step], &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+
+    /// The shadow map's debug views as the frame's view has them.
+    pub fn set_debug(&mut self, view: &DebugView) {
+        self.debug = view.shadow_map();
+        self.layers_debug = view.shadow_layers();
     }
 
     /// The atlas in the lower left of the picture, for a test.
