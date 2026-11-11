@@ -747,7 +747,7 @@ fn water_shader(surface: WaterSurface) -> vec4f {
 /// entry points of a surface, the function `water_shader`, and the shadow hooks of the session
 /// (`core_mods.rs`).
 fn shader_with(water: &str, shadow_hooks: &str) -> String {
-    format!("{}{}{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, shading::CAUSTICS, VOLUME, nirender_wgpu::spot::WGSL, water, shadow_hooks)
+    format!("{}{}{}{}{}{}{}{}{}", super::super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, shading::WATER_NORMAL, shading::CAUSTICS, VOLUME, nirender_wgpu::spot::WGSL, water, shadow_hooks)
         .replace("LIGHT_REACH_MAX", &format!("{:?}", nirender_wgpu::LIGHT_REACH_MAX))
 }
 

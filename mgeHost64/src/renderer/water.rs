@@ -46,16 +46,18 @@ mod volume;
 mod dry;
 pub use dry::read_masks;
 pub use volume::{FarWater, Look, VolumeLight, VolumeLook, marked as volume_marked};
-pub(super) use shading::{CAUSTICS, caustic_strength};
+pub(super) use shading::{CAUSTICS, WATER_NORMAL, caustic_strength};
 
 /// The shader of the surfaces of the water volumes with the standard look and `shadow_hooks`.
 pub(super) fn volume_source(shadow_hooks: &str) -> String {
     volume::standard_source(shadow_hooks)
 }
 
-/// The shader of the plane: the shared shading and the entry points of the plane.
-fn shader() -> String {
-    format!("{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, PLANE)
+/// The shader of the plane: the shared shading, the entry points of the plane, the struct and
+/// the library of the water hooks, and `water_hooks`: the water hooks of the session
+/// (`core_mods.rs`).
+pub(super) fn plane_source(water_hooks: &str) -> String {
+    format!("{}{}{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, super::core_mods::WATER_INTERFACE, PLANE, water_hooks)
 }
 
 /// The entry points of the plane, after the shared shading.
@@ -129,28 +131,97 @@ fn plane_color(in: Out) -> vec4f {
     if water.size.z > 0.0 && in.clip_w > water.size.z {
         discard;
     }
-    var eye_vec = in.world - u.eye.xyz;
-    let dist = length(eye_vec);
-    eye_vec /= dist;
+    var p: WaterPixel;
+    let eye_vec = in.world - u.eye.xyz;
+    p.distance = length(eye_vec);
+    p.eye_vec = eye_vec / p.distance;
     // The position of the pixel in the picture. The offsets of the shader are in the
     // projected space: here they are divided by the clip w of the pixel.
-    let uv = in.position.xy / water.size.xy;
-    let w = in.clip_w;
-    if water.modes.y > 0.5 {
-        return underwater(uv, w, in.texcoords, in.world.xy, eye_vec, dist);
+    p.uv = in.position.xy / water.size.xy;
+    p.clip_w = in.clip_w;
+    p.texcoords = in.texcoords;
+    p.world = in.world;
+    // With the dynamic waves the reflection is read at the point that is not above the plane.
+    p.reflect_uv = p.uv;
+    p.reflect_w = p.clip_w;
+    if water.wave.w > 0.5 {
+        p.reflect_w = in.clamped.z;
+        p.reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / p.reflect_w, 0.5 - 0.5 * in.clamped.y / p.reflect_w);
     }
+    if water.modes.y > 0.5 {
+        return underwater_color(p);
+    }
+    if water.modes.x == 9.0 {
+        // A look at the waves, for a test (MGE_XE_WATER_DEBUG 9). Red: the height that the
+        // vertices read. Green: the same read for the pixel.
+        let here = textureSampleLevel(waves, wave_sampler, vec3f(in.world.xy / 1104.0, 0.4 * water.time.x), 0.0).a;
+        return vec4f(in.probe, here, 0.0, 1.0);
+    }
+    return water_color(p);
+}
+
+// The library of the water hooks (`core_mods.rs`, `WATER_LIBRARY`), with the functions of the
+// shared shading: the picture, the distance of the ground and the values of the frame.
+fn picture_at(uv: vec2f) -> vec3f {
+    return textureSample(picture, clamp_sampler, uv).rgb;
+}
+fn ground_distance_at(uv: vec2f) -> f32 {
+    return ground_at(uv, true);
+}
+fn water_time() -> f32 {
+    return water.time.x;
+}
+fn water_sun_direction() -> vec3f {
+    return water.sun_pos.xyz;
+}
+fn water_sun_visibility() -> f32 {
+    return water.sun_pos.w;
+}
+fn water_sun_color() -> vec3f {
+    return water.sun_color.rgb;
+}
+fn water_wind() -> vec2f {
+    return water.wind.xy;
+}
+fn water_sky_color() -> vec3f {
+    return water.sky_col.rgb;
+}
+fn water_fog_color() -> vec3f {
+    return u.fog_color.rgb;
+}
+fn water_eye() -> vec3f {
+    return u.eye.xyz;
+}
+fn water_ambient_color() -> vec3f {
+    return u.ambient.rgb;
+}
+fn water_texel() -> vec2f {
+    return 1.0 / water.size.xy;
+}
+fn water_wave_height() -> f32 {
+    return water.wave.z;
+}
+fn water_is_interior() -> bool {
+    return water.modes.z > 0.5;
+}
+";
+
+/// The built-in `water_color` (`WaterPS`): a hook of `XE Mod Water` (`core_mods.rs`), the
+/// colour of the plane seen from above. It shows the terms of `MGE_XE_WATER_DEBUG`.
+pub(super) const WATER_COLOR: &str = "
+// WaterPS: the colour of the water at a pixel seen from above.
+fn water_color(p: WaterPixel) -> vec4f {
+    let eye_vec = p.eye_vec;
+    let dist = p.distance;
+    let uv = p.uv;
+    let w = p.clip_w;
     let fog = fog_water(eye_vec, dist);
-    let normal = water_normal(in.texcoords, dist, in.world.xy);
+    let normal = water_normal(p.texcoords, dist, p.world.xy);
     let reffactor = (water.sun_col.w * dist + 0.1) * normal.xy;
     let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0), true, 1.0);
     let refracted = below.color;
-    // With the dynamic waves the reflection is read at the point that is not above the plane.
-    var reflect_uv = uv;
-    var reflect_w = w;
-    if water.wave.w > 0.5 {
-        reflect_w = in.clamped.z;
-        reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / reflect_w, 0.5 - 0.5 * in.clamped.y / reflect_w);
-    }
+    let reflect_uv = p.reflect_uv;
+    let reflect_w = p.reflect_w;
     // A flat look at the water makes the blur taller: 1 from straight above, and at most
     // the number of the parameter.
     let stretch = clamp(1.0 / max(abs(eye_vec.z), 0.05), 1.0, max(water.projection.z, 1.0));
@@ -179,14 +250,38 @@ fn plane_color(in: Out) -> vec4f {
         return vec4f(normal * 0.5 + 0.5, 1.0);
     } else if water.modes.x == 8.0 {
         return vec4f(vec3f(w / 10000.0), 1.0);
-    } else if water.modes.x == 9.0 {
-        // Red: the height that the vertices read. Green: the same read for the pixel.
-        let here = textureSampleLevel(waves, wave_sampler, vec3f(in.world.xy / 1104.0, 0.4 * water.time.x), 0.0).a;
-        return vec4f(in.probe, here, 0.0, 1.0);
     }
     return vec4f(result, 1.0);
 }
 ";
+
+/// The built-in `underwater_color` (`UnderwaterPS`): a hook of `XE Mod Water` (`core_mods.rs`),
+/// the plane seen from under the water. The surfaces of the water volumes call `underwater`
+/// itself.
+pub(super) const UNDERWATER_COLOR: &str = "
+// UnderwaterPS: the plane seen from under the water.
+fn underwater_color(p: WaterPixel) -> vec4f {
+    return underwater(p.uv, p.clip_w, p.texcoords, p.world.xy, p.eye_vec, p.distance);
+}
+";
+
+/// The values of the sun and of the wind for the water shader: `sun_col` of the built-in
+/// shading (the sun's colour times the sunlight factor of `sunVis`, and the wind factor in w),
+/// then `sunCol` and `windVec` of Direct3D 9 as they are, for the water hooks. `sun_color` has
+/// the light multiplier of the weather in it.
+fn sun_and_wind(sun_color: [f32; 3], sun_vis: f32, wind: [f32; 2]) -> [[f32; 4]; 3] {
+    let sunlight = 1.0 - (1.0 - sun_vis).powi(2);
+    let wind_factor = ((wind[0] * wind[0] + wind[1] * wind[1]).sqrt() + 1.5) / 140.0;
+    let [r, g, b] = sun_color;
+    [[r * sunlight, g * sunlight, b * sunlight, wind_factor], [r, g, b, 0.0], [wind[0], wind[1], 0.0, 0.0]]
+}
+
+/// The modes of the water shader: the debug term (`MGE_XE_WATER_DEBUG`), 1 under the water,
+/// and 1 in a plain interior (not an exterior, not an interior that behaves like one), for
+/// `water_is_interior` of the water hooks.
+fn modes(debug: f32, underwater: bool, like_exterior: bool) -> [f32; 4] {
+    [debug, if underwater { 1.0 } else { 0.0 }, if like_exterior { 0.0 } else { 1.0 }, 0.0]
+}
 
 /// What the water needs from the environment and the frame.
 pub struct WaterFrame {
@@ -329,8 +424,9 @@ impl Water {
     /// Makes the plane, the pipeline and the reflection target. `waves` is the DDS file of
     /// the wave texture, a volume of 32-bit pixels. `view_layout` is that of the view group
     /// (`view.rs`), group 0 of each pipeline of the water.
-    /// `shadow_hooks`: the shadow hooks of the session, for the surfaces of the water volumes.
-    pub fn new(scene: &SceneView, waves: &[u8], view_layout: &wgpu::BindGroupLayout, shadow_hooks: &str) -> Result<Water, String> {
+    /// `core_mods`: the hooks of the session, the water hooks for the plane and the shadow hooks
+    /// for the surfaces of the water volumes.
+    pub fn new(scene: &SceneView, waves: &[u8], view_layout: &wgpu::BindGroupLayout, core_mods: &super::core_mods::CoreMods) -> Result<Water, String> {
         let device = scene.device;
         let waves = wave_texture(scene, waves)?;
         let (vertices, indexes) = coarse_disc();
@@ -387,7 +483,7 @@ impl Water {
         // The light of the frame, for the surfaces of water volumes.
         entries.extend(volume::Volumes::light_layout_entries());
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("water"), entries: &entries });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(plane_source(core_mods.water_hooks()).into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water"), bind_group_layouts: &[Some(view_layout), Some(&layout)], immediate_size: 0 });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
         let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -423,7 +519,7 @@ impl Water {
         let pipeline_cut = make_pipeline(wgpu::PolygonMode::Fill, dry::outside());
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let volume_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let volumes = volume::Volumes::new(scene, view_layout, &layout, shadow_hooks);
+        let volumes = volume::Volumes::new(scene, view_layout, &layout, core_mods.shadow_hooks());
         let dry = dry::Dry::new(scene, view_layout, &layout);
         // Between two levels too: the blur that is sharp at the waterline reads the levels
         // of the reflection. Each other read names the first level.
@@ -715,16 +811,16 @@ impl Water {
         let picture = if picture { scene.picture? } else { &self.flat };
         let dynamic = frame.wave_height.zip(ripples);
         let eye = scene.eye.map(|v| v as f32);
-        let sunlight = 1.0 - (1.0 - frame.sun_vis).powi(2);
-        let wind_factor = ((frame.wind[0] * frame.wind[0] + frame.wind[1] * frame.wind[1]).sqrt() + 1.5) / 140.0;
+        let [sun_col, sun_color, wind] = sun_and_wind(frame.sun_color, frame.sun_vis, frame.wind);
+        let wind_factor = sun_col[3];
         let uniforms = Uniforms {
             view: scene.view,
             world: [eye[0], eye[1], frame.water_level, 0.0],
             time: [frame.time, 0.0, 0.0, 0.0],
             sun_pos: [frame.sun_pos[0], frame.sun_pos[1], frame.sun_pos[2], frame.sun_vis],
-            sun_col: [frame.sun_color[0] * sunlight, frame.sun_color[1] * sunlight, frame.sun_color[2] * sunlight, wind_factor],
+            sun_col,
             sky_col: [frame.sky_color[0], frame.sky_color[1], frame.sky_color[2], frame.nice_weather],
-            modes: [self.debug, if frame.underwater { 1.0 } else { 0.0 }, 0.0, 0.0],
+            modes: modes(self.debug, frame.underwater, frame.like_exterior),
             projection: {
                 let [a, b] = nirender_wgpu::depth::terms(&scene.projection);
                 [a, b, frame.blur_tune[2], 0.0]
@@ -757,6 +853,8 @@ impl Water {
                 };
                 [land_a, land_b, plane_a, plane_b]
             },
+            sun_color,
+            wind,
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
         let light_entries = self.volumes.light_entries(scene, light);
@@ -976,6 +1074,64 @@ pub(super) fn fill_colour(horizon: bool, fog_color: [f32; 4], sun_color: [f32; 3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::core_mods::{self, CoreMods};
+
+    /// At night the sun's colour of the hooks is the colour of the game (`sunCol`), not 0 as
+    /// the built-in's colour with the sunlight factor is: a mod tells an exterior at night from
+    /// an interior by it. The wind is `windVec` as it is.
+    #[test]
+    fn the_hooks_read_the_sun_colour_and_the_wind_of_the_game() {
+        let [sun_col, sun_color, wind] = sun_and_wind([0.1, 0.12, 0.2], 0.0, [3.0, -4.0]);
+        assert_eq!(&sun_col[..3], &[0.0, 0.0, 0.0]);
+        assert!(sun_color[0] > 0.003 && sun_color[..3] == [0.1, 0.12, 0.2]);
+        assert_eq!(sun_col[3], (5.0 + 1.5) / 140.0);
+        assert_eq!(&wind[..2], &[3.0, -4.0]);
+        // By day the built-in's colour takes the sunlight factor of the visibility.
+        let [sun_col, ..] = sun_and_wind([0.5, 0.5, 0.5], 0.5, [0.0, 0.0]);
+        assert_eq!(sun_col[0], 0.5 * 0.75);
+        let source = plane_source(CoreMods::built_in().water_hooks());
+        assert!(source.contains("fn water_sun_color() -> vec3f {\n    return water.sun_color.rgb;") && source.contains("return water.wind.xy;"));
+    }
+
+    /// `water_is_interior` is true in a plain interior only: an exterior and an interior that
+    /// behaves like one (`IntLikeExterior`) both have `like_exterior`.
+    #[test]
+    fn the_hooks_know_a_plain_interior() {
+        // `like_exterior` of the water frame: false in a plain interior, true in an exterior and
+        // in an interior that behaves like one.
+        for (case, like_exterior, interior) in [("plain interior", false, 1.0), ("exterior", true, 0.0), ("interior like an exterior", true, 0.0)] {
+            assert_eq!(modes(0.0, false, like_exterior)[2], interior, "{case}");
+        }
+        assert_eq!(modes(2.0, true, false), [2.0, 1.0, 1.0, 0.0]);
+        let source = plane_source(CoreMods::built_in().water_hooks());
+        assert!(source.contains("fn water_is_interior() -> bool {\n    return water.modes.z > 0.5;"));
+    }
+
+    /// The plane gives the library of the water hooks with the signatures of the interface.
+    #[test]
+    fn the_plane_gives_the_library_of_the_water_hooks() {
+        let source = plane_source(CoreMods::built_in().water_hooks());
+        assert_eq!(core_mods::library_differences(core_mods::WATER_LIBRARY, &source), Vec::<String>::new());
+    }
+
+    /// The water hooks of a mod join the plane only: the surfaces of the water volumes and the
+    /// dry spaces keep the built-in normal, and have no water colour of a mod.
+    #[test]
+    fn the_water_hooks_of_a_mod_join_the_plane_only() {
+        let homes = [core_mods::Home { name: "water plane", check: |hooks| crate::renderer::shader_check::check("water plane", &plane_source(hooks)).map(|_| ()) }];
+        let mods = CoreMods::of_files(&[("Water.wgsl", &core_mods::marker_water_file())], &[], &homes);
+        let plane = plane_source(mods.water_hooks());
+        assert!(plane.contains("fn mod_marker("), "the mod's hook is not in the plane");
+        crate::renderer::shader_check::check("water plane with the marker", &plane).unwrap();
+        let built_in = CoreMods::built_in();
+        let others = [("volume", volume::standard_source(mods.shadow_hooks())), ("dry", dry::shader())];
+        for (name, source) in others {
+            assert!(!source.contains("mod_marker") && !source.contains("fn water_color("), "{name}");
+            assert_eq!(source.matches("fn water_normal(").count(), 1, "{name}");
+            assert!(source.contains(WATER_NORMAL), "{name}: not the built-in normal");
+        }
+        assert_eq!(volume::standard_source(mods.shadow_hooks()), volume::standard_source(built_in.shadow_hooks()));
+    }
 
     #[test]
     fn a_plain_interior_fills_with_the_sun_and_the_ambient_of_the_device() {
@@ -992,7 +1148,7 @@ mod tests {
     #[test]
     fn the_shaders_of_the_water_are_valid() {
         let check = crate::renderer::shader_check::check;
-        let module = check("water", &shader()).unwrap();
+        let module = check("water", &plane_source(super::super::core_mods::CoreMods::built_in().water_hooks())).unwrap();
         for entry in ["vs", "fs"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
