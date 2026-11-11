@@ -478,6 +478,15 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_STALL_LOG=1` (d3d8.dll): a line in mgeXE.log for each scan of the vis groups with
   the time the cell worker stalled for it; without it, a line only when a scan or its waits
   take 2 ms or more.
+- `MGE_XE_DRAW_STATE_LOG=<n>` (d3d8.dll, Direct3D 9 only; 1 to 600): a window of n frames
+  starts at a press of the Pause key while the game has the focus, or when the file
+  `mge-draw-state.trigger` is in the game folder (d3d8.dll deletes it; it looks at each 30th
+  frame). Each draw of the game in the window writes a `draw-state frame <f> scene <s> draw <d>:`
+  line to mgeXE.log: the primitives, the vertex format, whether a shader is bound, the depth,
+  cull, stencil, blend, alpha test, colour mask, fog and lighting states, the lights that are
+  on (bits), the normalize, specular and ambient states, the material, and the texture, colour,
+  alpha, coordinate index and transform states of stages 0 to 3. Lines at the start and the end
+  of the window count its frames and draws. Unset or 0, nothing is logged.
 - `NIRENDER_HOST_EXE`: not a switch of a player. d3d8.dll sets it to `numidium.exe` of the
   game folder before it loads the plugin, which starts the program it names as the helper
   (the plugin's README has the other `NIRENDER_*` variables).
