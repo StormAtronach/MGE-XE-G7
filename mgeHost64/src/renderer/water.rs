@@ -268,7 +268,8 @@ fn underwater_color(p: WaterPixel) -> vec4f {
 /// The values of the sun and of the wind for the water shader: `sun_col` of the built-in
 /// shading (the sun's colour times the sunlight factor of `sunVis`, and the wind factor in w),
 /// then `sunCol` and `windVec` of Direct3D 9 as they are, for the water hooks. `sun_color` has
-/// the light multiplier of the weather in it.
+/// the light multiplier of the weather in it, also with per-pixel lighting off (Direct3D 9
+/// applies it only with per-pixel lighting on).
 fn sun_and_wind(sun_color: [f32; 3], sun_vis: f32, wind: [f32; 2]) -> [[f32; 4]; 3] {
     let sunlight = 1.0 - (1.0 - sun_vis).powi(2);
     let wind_factor = ((wind[0] * wind[0] + wind[1] * wind[1]).sqrt() + 1.5) / 140.0;

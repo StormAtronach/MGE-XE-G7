@@ -158,12 +158,14 @@ struct WaterPixel {
 ///   waves;
 /// - the values of the frame, each the variable of Direct3D 9 that it stands for: the time
 ///   (`time`), the direction to the sun (`sunPos`), its visibility (`sunVis`), its colour
-///   (`sunCol`: with the light multiplier of the weather, without the sunlight factor), the
-///   wind (`windVec`), the sky colour (`skyCol`), the far fog colour (`fogColFar`), the place
-///   of the eye (`eyePos`), the ambient light (`sunAmb`: the sun's ambient and the scene's
-///   together, with the multiplier), 1 over the size of the picture (`rcpRes`), and the height
-///   of the dynamic waves (`waveHeight`, 0 without them). A value that the built-in derives
-///   from these (the sunlight factor, the wind factor) is not in the library.
+///   (`sunCol`: without the sunlight factor), the wind (`windVec`), the sky colour (`skyCol`),
+///   the far fog colour (`fogColFar`), the place of the eye (`eyePos`), the ambient light
+///   (`sunAmb`: the sun's ambient and the scene's together), 1 over the size of the picture
+///   (`rcpRes`), and the height of the dynamic waves (`waveHeight`, 0 without them). The sun
+///   colour and the ambient light have the light multipliers of the weather in them. Direct3D 9
+///   applies these multipliers only with per-pixel lighting on (the default); the wgpu
+///   renderer applies them always. A value that the built-in derives from these (the sunlight
+///   factor, the wind factor) is not in the library.
 /// - `water_is_interior()`: true in a plain interior, false in an exterior and in an interior
 ///   that behaves like one. A mod tells an interior by this fact, not by `sunCol > 0.003`;
 ///   the raw `water_sun_color()` stays for a faithful port.
