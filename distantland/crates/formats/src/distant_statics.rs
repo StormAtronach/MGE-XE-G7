@@ -522,9 +522,19 @@ pub fn read_static_tables(prefix: &[u8], file_len: u64) -> io::Result<StaticTabl
         file_len,
         "component table",
     )?;
-    let palette_range = checked_file_range(header.palette_table_offset, header.palette_table_size, file_len, "palette table")?;
+    let palette_range = checked_file_range(
+        header.palette_table_offset,
+        header.palette_table_size,
+        file_len,
+        "palette table",
+    )?;
     let texture_range = checked_file_range(header.texture_blob_offset, header.texture_blob_size, file_len, "texture blob")?;
-    let geometry_range = checked_file_range(header.geometry_blob_offset, header.geometry_blob_size, file_len, "geometry blob")?;
+    let geometry_range = checked_file_range(
+        header.geometry_blob_offset,
+        header.geometry_blob_size,
+        file_len,
+        "geometry blob",
+    )?;
 
     if header.static_table_offset != HEADER_SIZE as u64 {
         return Err(invalid_data(format!(
@@ -615,7 +625,11 @@ pub fn read_static_tables(prefix: &[u8], file_len: u64) -> io::Result<StaticTabl
             subsets.push(subset);
         }
         expected_subset = subset_end;
-        statics.push(TableStatic { record, static_type, subsets });
+        statics.push(TableStatic {
+            record,
+            static_type,
+            subsets,
+        });
     }
 
     if expected_subset != header.subset_count {
@@ -851,7 +865,15 @@ fn table_subset(
     }
     *geometry_cursor = index_range.end;
 
-    Ok(TableSubset { record, texture, water_look, components, palette, vertex_range, index_range })
+    Ok(TableSubset {
+        record,
+        texture,
+        water_look,
+        components,
+        palette,
+        vertex_range,
+        index_range,
+    })
 }
 
 /// The vertices and triangles of one subset whose ranges [`read_static_tables`] checked; each
@@ -864,20 +886,32 @@ fn decode_geometry(
 ) -> io::Result<(Vec<PackedVertex>, Vec<[u16; 3]>)> {
     let record = subset.record;
     let vertices = if static_type == StaticType::StaticGrass {
-        read_pod_table::<PackedGrassVertex>(bytes, subset.vertex_range.clone(), record.vertex_count, "grass vertex payload")?
-            .iter()
-            .map(|&vertex| PackedVertex {
-                position: vertex.position,
-                normal: vertex.normal,
-                color: vertex.color,
-                uv: vertex.uv,
-            })
-            .collect()
+        read_pod_table::<PackedGrassVertex>(
+            bytes,
+            subset.vertex_range.clone(),
+            record.vertex_count,
+            "grass vertex payload",
+        )?
+        .iter()
+        .map(|&vertex| PackedVertex {
+            position: vertex.position,
+            normal: vertex.normal,
+            color: vertex.color,
+            uv: vertex.uv,
+        })
+        .collect()
     } else {
-        read_pod_table::<PackedVertex>(bytes, subset.vertex_range.clone(), record.vertex_count, "static vertex payload")?.into_owned()
+        read_pod_table::<PackedVertex>(
+            bytes,
+            subset.vertex_range.clone(),
+            record.vertex_count,
+            "static vertex payload",
+        )?
+        .into_owned()
     };
     let triangles =
-        read_pod_table::<[u16; 3]>(bytes, subset.index_range.clone(), record.triangle_count, "triangle payload")?.into_owned();
+        read_pod_table::<[u16; 3]>(bytes, subset.index_range.clone(), record.triangle_count, "triangle payload")?
+            .into_owned();
     for (triangle_index, triangle) in triangles.iter().enumerate() {
         for index in triangle {
             if u32::from(*index) >= record.vertex_count {

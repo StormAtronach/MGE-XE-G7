@@ -143,7 +143,10 @@ fn water_card(ui: &mut Ui, settings: &mut WaterSettings, enablement: DistantEnab
                 tooltip(
                     ui.add_enabled(
                         settings.blur_reflections,
-                        egui::Checkbox::new(&mut settings.blur_contact_hardening, t!("distant.water.blur_contact_hardening")),
+                        egui::Checkbox::new(
+                            &mut settings.blur_contact_hardening,
+                            t!("distant.water.blur_contact_hardening"),
+                        ),
                     ),
                     t!("distant.water.blur_contact_hardening_tip"),
                 );
@@ -537,7 +540,8 @@ impl GuiApp {
                 ui,
                 t!("distant.full_tier_max").as_ref(),
                 true,
-                egui::DragValue::new(&mut self.settings.mge.views.full_tier_max).range(mge_config::FULL_TIER_MAX_RANGE.0..=mge_config::FULL_TIER_MAX_RANGE.1),
+                egui::DragValue::new(&mut self.settings.mge.views.full_tier_max)
+                    .range(mge_config::FULL_TIER_MAX_RANGE.0..=mge_config::FULL_TIER_MAX_RANGE.1),
             ),
             t!("distant.full_tier_max_tip"),
         );
@@ -545,9 +549,21 @@ impl GuiApp {
         let enabled = self.settings.mge.distant_land.enabled;
         let grass = &mut self.settings.mge.distant_land.grass;
         for (value, label, tip) in [
-            (&mut grass.soft_end, t!("distant.grass_soft_end"), t!("distant.grass_soft_end_tip")),
-            (&mut grass.vertex_color_sway, t!("distant.grass_vertex_color_sway"), t!("distant.grass_vertex_color_sway_tip")),
-            (&mut grass.wrap_lighting, t!("distant.grass_wrap_lighting"), t!("distant.grass_wrap_lighting_tip")),
+            (
+                &mut grass.soft_end,
+                t!("distant.grass_soft_end"),
+                t!("distant.grass_soft_end_tip"),
+            ),
+            (
+                &mut grass.vertex_color_sway,
+                t!("distant.grass_vertex_color_sway"),
+                t!("distant.grass_vertex_color_sway_tip"),
+            ),
+            (
+                &mut grass.wrap_lighting,
+                t!("distant.grass_wrap_lighting"),
+                t!("distant.grass_wrap_lighting_tip"),
+            ),
         ] {
             tooltip(ui.add_enabled(enabled, egui::Checkbox::new(value, label)), tip);
         }

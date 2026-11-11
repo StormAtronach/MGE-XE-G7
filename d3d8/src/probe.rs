@@ -2,7 +2,7 @@
 //! where the logic and its tests are): the read of the cached answer in `DllMain`, and the
 //! check of the key with the probe when it changed, when the plugin or the game first asks.
 
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 
 /// A C string as a Rust string, or `fallback` for a null pointer.
 ///
@@ -81,7 +81,13 @@ pub unsafe extern "C" fn mge_probe_check(
     lines_capacity: usize,
 ) -> u32 {
     // SAFETY: the caller's pointers, as documented.
-    let (exe, path, key) = unsafe { (text_of(exe, "numidium.exe"), text_of(path, "mgeXE-renderer-probe.txt"), text_of(key, "")) };
+    let (exe, path, key) = unsafe {
+        (
+            text_of(exe, "numidium.exe"),
+            text_of(path, "mgeXE-renderer-probe.txt"),
+            text_of(key, ""),
+        )
+    };
     let outcome = mge_probe::check(&exe, &path, &key, exit_gpu, u64::from(seconds));
     // SAFETY: as documented.
     unsafe {

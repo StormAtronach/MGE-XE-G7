@@ -23,11 +23,11 @@ use std::fs;
 use anyhow::{Context, Result};
 
 use super::{GenerationSettings, OutputPaths};
-use crate::mge_xe::lights::{
-    LIGHTS_HEADER_SIZE, LIGHTS_MAGIC, LIGHTS_VERSION, LIGHT_CELL as CELL, LIGHT_SOURCE_SIZE, LIGHT_STEP as STEP,
-    LIGHT_TEXEL_SIZE, LIGHT_TILE as TILE,
-};
 use crate::UsageInfo;
+use crate::mge_xe::lights::{
+    LIGHT_CELL as CELL, LIGHT_SOURCE_SIZE, LIGHT_STEP as STEP, LIGHT_TEXEL_SIZE, LIGHT_TILE as TILE, LIGHTS_HEADER_SIZE,
+    LIGHTS_MAGIC, LIGHTS_VERSION,
+};
 
 /// `tes3::esp::LightFlags`.
 const NEGATIVE: u32 = 0x4;
@@ -59,7 +59,9 @@ pub(crate) struct LightsOutput {
 
 /// The light sources of the exterior, sorted by their place.
 pub(crate) fn light_sources(usage: &UsageInfo) -> Vec<LightSource> {
-    let Some(references) = usage.exterior_references() else { return Vec::new() };
+    let Some(references) = usage.exterior_references() else {
+        return Vec::new();
+    };
     let mut sources: Vec<LightSource> = references
         .values()
         .filter(|reference| !reference.deleted)
@@ -119,7 +121,9 @@ fn bake(usage: &UsageInfo, sources: &[LightSource]) -> BTreeMap<(i32, i32), Vec<
     }
     let mut tiles = BTreeMap::new();
     for (grid, near) in by_cell {
-        let Some(land) = usage.terrain_cells.get(&grid) else { continue };
+        let Some(land) = usage.terrain_cells.get(&grid) else {
+            continue;
+        };
         let origin = [grid.0 as f32 * CELL, grid.1 as f32 * CELL];
         let mut values = Vec::with_capacity(TILE * TILE);
         let mut lit = false;
@@ -144,7 +148,11 @@ pub(crate) fn build(sources: &[LightSource], usage: &UsageInfo, settings: &Gener
     if !settings.distant_lights {
         return None;
     }
-    let tiles = if settings.bake_lights { bake(usage, sources) } else { BTreeMap::new() };
+    let tiles = if settings.bake_lights {
+        bake(usage, sources)
+    } else {
+        BTreeMap::new()
+    };
 
     let mut bytes = Vec::with_capacity(
         LIGHTS_HEADER_SIZE + sources.len() * LIGHT_SOURCE_SIZE + tiles.len() * (8 + TILE * TILE * LIGHT_TEXEL_SIZE),
@@ -177,7 +185,11 @@ pub(crate) fn build(sources: &[LightSource], usage: &UsageInfo, settings: &Gener
             bytes.push(255);
         }
     }
-    Some(LightsOutput { bytes, source_count: sources.len(), tile_count: tiles.len() })
+    Some(LightsOutput {
+        bytes,
+        source_count: sources.len(),
+        tile_count: tiles.len(),
+    })
 }
 
 /// True when the file on disk is the one that `output` would write (or there is none, and
@@ -200,10 +212,12 @@ pub(crate) fn publish(paths: &OutputPaths, output: Option<&LightsOutput>) -> Res
         Some(output) => {
             let temporary = paths.lights_path.with_extension("data.tmp");
             fs::write(&temporary, &output.bytes).with_context(|| format!("Failed to write {}", temporary.display()))?;
-            fs::rename(&temporary, &paths.lights_path).with_context(|| format!("Failed to replace {}", paths.lights_path.display()))?;
+            fs::rename(&temporary, &paths.lights_path)
+                .with_context(|| format!("Failed to replace {}", paths.lights_path.display()))?;
         }
         None => {
-            fs::remove_file(&paths.lights_path).with_context(|| format!("Failed to remove {}", paths.lights_path.display()))?;
+            fs::remove_file(&paths.lights_path)
+                .with_context(|| format!("Failed to remove {}", paths.lights_path.display()))?;
         }
     }
     Ok(true)
@@ -214,7 +228,13 @@ mod tests {
     use super::*;
 
     fn source(position: [f32; 3], radius: f32, color: [u8; 3]) -> LightSource {
-        LightSource { position, radius, color, flags: 0, has_mesh: true }
+        LightSource {
+            position,
+            radius,
+            color,
+            flags: 0,
+            has_mesh: true,
+        }
     }
 
     #[test]
@@ -239,8 +259,15 @@ mod tests {
     /// What this writer writes, the reader of the renderer reads (`parse_lights`).
     #[test]
     fn the_renderers_reader_reads_what_this_writes() {
-        let sources = [source([1.0, 2.0, 3.0], 100.0, [255, 0, 0]), source([-5.0, 0.0, 9.0], 50.0, [0, 0, 255])];
-        let settings = GenerationSettings { distant_lights: true, bake_lights: false, ..Default::default() };
+        let sources = [
+            source([1.0, 2.0, 3.0], 100.0, [255, 0, 0]),
+            source([-5.0, 0.0, 9.0], 50.0, [0, 0, 255]),
+        ];
+        let settings = GenerationSettings {
+            distant_lights: true,
+            bake_lights: false,
+            ..Default::default()
+        };
         let output = build(&sources, &UsageInfo::default(), &settings).unwrap();
         let lights = crate::mge_xe::lights::parse_lights(&output.bytes).unwrap();
         assert_eq!(lights.source_count as usize, output.source_count);

@@ -1,6 +1,6 @@
 use crate::schema::{
-    Alignment, Anisotropy, AntiAliasing, FogMode, PerPixelMode, ScreenshotFormat, ScreenshotSuffix, Settings, StaticsResidency, VSync,
-    WEATHER_NAMES, ZBufferFormat,
+    Alignment, Anisotropy, AntiAliasing, FogMode, PerPixelMode, ScreenshotFormat, ScreenshotSuffix, Settings,
+    StaticsResidency, VSync, WEATHER_NAMES, ZBufferFormat,
 };
 
 #[cfg(feature = "contract-test")]
@@ -370,7 +370,9 @@ impl Settings {
                     .ok_or_else(|| format!("{path} has unknown runtime enum value {value}"))?
             }
             "distant_land.per_pixel_light_fade" => self.distant_land.per_pixel_light_fade = number_bool(value, path)?,
-            "distant_land.per_pixel_original_lights" => self.distant_land.per_pixel_original_lights = number_bool(value, path)?,
+            "distant_land.per_pixel_original_lights" => {
+                self.distant_land.per_pixel_original_lights = number_bool(value, path)?
+            }
             "distant_land.per_pixel_light_fade_radius" => {
                 self.distant_land.per_pixel_light_fade_radius = finite_f32(value, path)?
             }

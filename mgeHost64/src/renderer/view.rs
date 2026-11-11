@@ -243,7 +243,9 @@ struct Calls {
 
 impl Calls {
     fn new(places: usize) -> Calls {
-        Calls { placed: vec![None; places] }
+        Calls {
+            placed: vec![None; places],
+        }
     }
 }
 
@@ -329,7 +331,13 @@ pub enum SetPart {
 }
 
 impl SetPart {
-    pub const ALL: [SetPart; 5] = [SetPart::ViewGroups, SetPart::Statics, SetPart::Grass, SetPart::Glows, SetPart::Post];
+    pub const ALL: [SetPart; 5] = [
+        SetPart::ViewGroups,
+        SetPart::Statics,
+        SetPart::Grass,
+        SetPart::Glows,
+        SetPart::Post,
+    ];
 }
 
 /// An error scope of the device with the filter out-of-memory, as [`within_scope`] sees it. The
@@ -352,19 +360,33 @@ pub struct DeviceScope<'a> {
 
 impl<'a> DeviceScope<'a> {
     pub fn new(device: &'a wgpu::Device) -> DeviceScope<'a> {
-        DeviceScope { device, scope: None, thread: std::thread::current().id() }
+        DeviceScope {
+            device,
+            scope: None,
+            thread: std::thread::current().id(),
+        }
     }
 }
 
 impl OomScope for DeviceScope<'_> {
     fn push(&mut self) {
-        debug_assert_eq!(self.thread, std::thread::current().id(), "an error scope is pushed on the thread that pops it");
+        debug_assert_eq!(
+            self.thread,
+            std::thread::current().id(),
+            "an error scope is pushed on the thread that pops it"
+        );
         self.scope = Some(self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory));
     }
 
     fn pop_failed(&mut self) -> bool {
-        debug_assert_eq!(self.thread, std::thread::current().id(), "an error scope is popped on the thread that pushed it");
-        self.scope.take().is_some_and(|scope| pollster::block_on(scope.pop()).is_some())
+        debug_assert_eq!(
+            self.thread,
+            std::thread::current().id(),
+            "an error scope is popped on the thread that pushed it"
+        );
+        self.scope
+            .take()
+            .is_some_and(|scope| pollster::block_on(scope.pop()).is_some())
     }
 }
 
@@ -532,7 +554,9 @@ impl TierViews {
     /// so two calls cannot share one. A second call of one set by one kind is refused as a
     /// repeat.
     fn take(places: usize, calls: &mut Calls, spares: &mut SpareTable, frame: u64, place: Option<u8>, repeat: u8) -> Claim {
-        let Some(place) = place.filter(|&place| usize::from(place) < places) else { return Claim::Refused };
+        let Some(place) = place.filter(|&place| usize::from(place) < places) else {
+            return Claim::Refused;
+        };
         if repeat == 0 {
             if calls.placed[usize::from(place)] == Some(frame) {
                 return Claim::Repeated;
@@ -724,7 +748,17 @@ impl EnvironmentWatch {
     pub fn line(&self) -> String {
         format!(
             "environment records: {}; simulation time {:.1} to {:.1} s; wind first ({:.2}, {:.2}), last ({:.2}, {:.2}), x from {:.2} to {:.2}, y from {:.2} to {:.2}",
-            self.records, self.time_first, self.time_last, self.wind_first[0], self.wind_first[1], self.wind_last[0], self.wind_last[1], self.wind_min[0], self.wind_max[0], self.wind_min[1], self.wind_max[1]
+            self.records,
+            self.time_first,
+            self.time_last,
+            self.wind_first[0],
+            self.wind_first[1],
+            self.wind_last[0],
+            self.wind_last[1],
+            self.wind_min[0],
+            self.wind_max[0],
+            self.wind_min[1],
+            self.wind_max[1]
         )
     }
 }
@@ -746,23 +780,47 @@ impl ViewBinding {
         let mut entries = vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(size_of::<View>() as u64) },
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(size_of::<View>() as u64),
+            },
             count: None,
         }];
         entries.extend(LightBinding::layout_entries(1));
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("view"), entries: &entries });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("view"),
+            entries: &entries,
+        });
         let buffers = (0..TIER_FIRST).map(|_| Some(Self::make_buffer(device))).collect();
-        ViewBinding { layout, buffers, groups: Vec::new(), generation: None }
+        ViewBinding {
+            layout,
+            buffers,
+            groups: Vec::new(),
+            generation: None,
+        }
     }
 
     fn make_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor { label: Some("view"), size: size_of::<View>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view"),
+            size: size_of::<View>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
     }
 
     fn make_group(&self, device: &wgpu::Device, light: &LightBinding, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
-        let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }];
+        let mut entries = vec![wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }];
         entries.extend(light.entries(1));
-        device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("view"), layout: &self.layout, entries: &entries })
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("view"),
+            layout: &self.layout,
+            entries: &entries,
+        })
     }
 
     /// Makes the groups again when the baked light has changed since they were made: the fixed
@@ -772,7 +830,11 @@ impl ViewBinding {
             return;
         }
         self.generation = Some(light.generation);
-        let groups = self.buffers.iter().map(|buffer| buffer.as_ref().map(|buffer| self.make_group(device, light, buffer))).collect();
+        let groups = self
+            .buffers
+            .iter()
+            .map(|buffer| buffer.as_ref().map(|buffer| self.make_group(device, light, buffer)))
+            .collect();
         self.groups = groups;
     }
 
@@ -869,13 +931,16 @@ mod tests {
             view[12 + k] = -(0..3).map(|r| eye[r] * rot[r * 3 + k]).sum::<f64>() as f32;
         }
         view[15] = 1.0;
-        let projection = [0.9774, 0.0, 0.0, 0.0, 0.0, 1.7376, 0.0, 0.0, 0.0, 0.0, 1.0001, 1.0, 0.0, 0.0, -1.0001, 0.0];
+        let projection = [
+            0.9774, 0.0, 0.0, 0.0, 0.0, 1.7376, 0.0, 0.0, 0.0, 0.0, 1.0001, 1.0, 0.0, 0.0, -1.0001, 0.0,
+        ];
         let eye32 = eye.map(|e| e as f32);
         let m = relative(&view, &projection, eye32);
         let world = [19760.0f64, -73930.0, 230.0];
         // The shader: the position less the eye in f32, then the matrix.
         let d: [f32; 3] = core::array::from_fn(|i| world[i] as f32 - eye32[i]);
-        let clip: [f64; 4] = core::array::from_fn(|i| (0..3).map(|k| d[k] as f64 * m[k * 4 + i] as f64).sum::<f64>() + m[12 + i] as f64);
+        let clip: [f64; 4] =
+            core::array::from_fn(|i| (0..3).map(|k| d[k] as f64 * m[k * 4 + i] as f64).sum::<f64>() + m[12 + i] as f64);
         // The same in f64 from the absolute position.
         let vs: [f64; 3] = core::array::from_fn(|k| (0..3).map(|r| (world[r] - eye[r]) * rot[r * 3 + k]).sum());
         let exact = [vs[0] * 0.9774, vs[1] * 1.7376, vs[2] * 1.0001 - 1.0001, vs[2]];
@@ -883,7 +948,12 @@ mod tests {
         // The view translation rounds to f32 (about 0.004 units); the depth stays within
         // what 0.01 units of distance give at this range.
         let slope = 1.0001 / (vs[2] * vs[2]);
-        assert!((depth(&clip) - depth(&exact)).abs() < 0.01 * slope, "{} {}", depth(&clip), depth(&exact));
+        assert!(
+            (depth(&clip) - depth(&exact)).abs() < 0.01 * slope,
+            "{} {}",
+            depth(&clip),
+            depth(&exact)
+        );
     }
 
     /// A view of a camera at `eye`, turned 30 degrees about z and tilted 25 degrees about x, with the rotation that made it
@@ -911,13 +981,19 @@ mod tests {
     /// eyes are at 74000 units from the origin (the grass flicker, records entry 45) and at 368000 units.
     #[test]
     fn the_relative_matrix_keeps_the_depth_far_from_the_origin_and_the_absolute_product_does_not() {
-        let projection = [0.9774, 0.0, 0.0, 0.0, 0.0, 1.7376, 0.0, 0.0, 0.0, 0.0, 1.0001, 1.0, 0.0, 0.0, -1.0001, 0.0];
+        let projection = [
+            0.9774, 0.0, 0.0, 0.0, 0.0, 1.7376, 0.0, 0.0, 0.0, 0.0, 1.0001, 1.0, 0.0, 0.0, -1.0001, 0.0,
+        ];
         for eye in [[19724.25f64, -74050.5, 353.75], [-6500.25, -368500.5, 353.75]] {
             let (view, rot) = tilted_view(eye);
             let eye32 = eye.map(|e| e as f32);
             let m = relative(&view, &projection, eye32);
             // The old shader: `view_projection` made in f32, times the absolute position in f32.
-            let view_projection: [f32; 16] = core::array::from_fn(|i| (0..4).map(|k| view[i / 4 * 4 + k] as f64 * projection[k * 4 + i % 4] as f64).sum::<f64>() as f32);
+            let view_projection: [f32; 16] = core::array::from_fn(|i| {
+                (0..4)
+                    .map(|k| view[i / 4 * 4 + k] as f64 * projection[k * 4 + i % 4] as f64)
+                    .sum::<f64>() as f32
+            });
             for offset in [[36.0f64, 120.0, -123.75], [-60.0, 90.0, -30.0]] {
                 let world: [f64; 3] = core::array::from_fn(|i| eye[i] + offset[i]);
                 let vs: [f64; 3] = core::array::from_fn(|k| (0..3).map(|r| (world[r] - eye[r]) * rot[r * 3 + k]).sum());
@@ -926,9 +1002,14 @@ mod tests {
                 let tolerance = 0.01 * 1.0001 / (vs[2] * vs[2]);
 
                 let d: [f32; 3] = core::array::from_fn(|i| world[i] as f32 - eye32[i]);
-                let clip: [f64; 4] = core::array::from_fn(|i| (0..3).map(|k| d[k] as f64 * m[k * 4 + i] as f64).sum::<f64>() + m[12 + i] as f64);
+                let clip: [f64; 4] = core::array::from_fn(|i| {
+                    (0..3).map(|k| d[k] as f64 * m[k * 4 + i] as f64).sum::<f64>() + m[12 + i] as f64
+                });
                 let relative_error = (clip[2] / clip[3] - depth).abs();
-                assert!(relative_error < tolerance, "eye {eye:?} offset {offset:?}: the relative matrix is off by {relative_error}, the limit is {tolerance}");
+                assert!(
+                    relative_error < tolerance,
+                    "eye {eye:?} offset {offset:?}: the relative matrix is off by {relative_error}, the limit is {tolerance}"
+                );
 
                 let absolute: [f32; 4] = core::array::from_fn(|i| {
                     let mut sum = 0.0f32;
@@ -938,7 +1019,10 @@ mod tests {
                     sum + view_projection[12 + i]
                 });
                 let absolute_error = (absolute[2] as f64 / absolute[3] as f64 - depth).abs();
-                assert!(absolute_error > tolerance, "eye {eye:?} offset {offset:?}: the absolute product is off by only {absolute_error}, so this test cannot see the fault");
+                assert!(
+                    absolute_error > tolerance,
+                    "eye {eye:?} offset {offset:?}: the absolute product is off by only {absolute_error}, so this test cannot see the fault"
+                );
             }
         }
     }
@@ -980,7 +1064,10 @@ mod tests {
         assert_eq!(tier.claim(4, Some(0), 0), Some(0));
         assert_eq!(tier.claim(4, Some(2), 0), Some(2));
         assert_eq!((tier.calls, tier.calls_after), (4, 2));
-        assert_eq!((tier.refused, tier.repeated, tier.refused_after, tier.repeated_after), (0, 0, 0, 0));
+        assert_eq!(
+            (tier.refused, tier.repeated, tier.refused_after, tier.repeated_after),
+            (0, 0, 0, 0)
+        );
     }
 
     /// A view with no place, or a place above the cap, gets no call. A repeat of a place in one
@@ -1003,7 +1090,10 @@ mod tests {
         // There is no count cap on the spares: the 5th to the 8th repeat of one place in a frame
         // each have a spare of their own.
         let later: Vec<Option<usize>> = (3..=6).map(|repeat| tier.claim(7, Some(1), repeat)).collect();
-        assert_eq!(later, vec![Some(PLACES + 4), Some(PLACES + 5), Some(PLACES + 6), Some(PLACES + 7)]);
+        assert_eq!(
+            later,
+            vec![Some(PLACES + 4), Some(PLACES + 5), Some(PLACES + 6), Some(PLACES + 7)]
+        );
         // The calls at the end of the world count apart and take the same spares.
         assert_eq!(tier.claim_after(7, Some(1), 0), Some(1));
         assert_eq!(tier.claim_after(7, Some(1), 1), Some(PLACES));
@@ -1013,14 +1103,20 @@ mod tests {
         assert_eq!((tier.calls_after, tier.refused_after, tier.repeated_after), (3, 1, 0));
         assert_eq!((tier.spare_calls, tier.spare_peak), (10, 8));
         // The next frame serves the place again, with its own set, and the spares start again.
-        assert_eq!((tier.claim(8, Some(1), 0), tier.claim_after(8, Some(1), 0)), (Some(1), Some(1)));
+        assert_eq!(
+            (tier.claim(8, Some(1), 0), tier.claim_after(8, Some(1), 0)),
+            (Some(1), Some(1))
+        );
         assert_eq!(tier.claim(8, Some(1), 1), Some(PLACES));
         // A second call of the same kind on the place's own set is a repeat that was not counted by
         // the host: refused apart.
         assert_eq!(tier.claim(8, Some(1), 0), None);
         assert_eq!(tier.repeated, 1);
         let line = tier.line();
-        assert!(line.contains("refused") && line.contains("11 calls took a spare set"), "{line}");
+        assert!(
+            line.contains("refused") && line.contains("11 calls took a spare set"),
+            "{line}"
+        );
     }
 
     /// A place at or above the number of places that the player allows is refused, and the number
@@ -1170,10 +1266,18 @@ mod tests {
     #[test]
     fn a_creation_in_a_scope_that_caught_an_error_is_dropped() {
         let drops = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut failing = FakeScope { error: true, pushed: 0, popped: 0 };
+        let mut failing = FakeScope {
+            error: true,
+            pushed: 0,
+            popped: 0,
+        };
         assert!(within_scope(&mut failing, || Probe(drops.clone())).is_none());
         assert_eq!((failing.pushed, failing.popped, drops.get()), (1, 1, 1));
-        let mut clean = FakeScope { error: false, pushed: 0, popped: 0 };
+        let mut clean = FakeScope {
+            error: false,
+            pushed: 0,
+            popped: 0,
+        };
         let kept = within_scope(&mut clean, || Probe(drops.clone()));
         assert!(kept.is_some());
         assert_eq!((clean.pushed, clean.popped, drops.get()), (1, 1, 1));
@@ -1192,7 +1296,11 @@ mod tests {
             if !tier.admit(live, wanted, budget) {
                 return false;
             }
-            let mut scope = FakeScope { error, pushed: 0, popped: 0 };
+            let mut scope = FakeScope {
+                error,
+                pushed: 0,
+                popped: 0,
+            };
             match within_scope(&mut scope, || Probe(drops.clone())) {
                 Some(_probe) => {
                     made += 1;
@@ -1288,8 +1396,10 @@ mod tests {
         static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
         let mut light = LightBinding::new(&device, &queue);
         let mut views = ViewBinding::new(&device);
         assert!(!views.is_ready());
@@ -1334,7 +1444,9 @@ mod tests {
         assert!(line.contains("simulation time 10.0 to 13.0 s"), "{line}");
         assert!(line.contains("x from 0.00 to 0.50, y from -0.10 to 0.10"), "{line}");
         // The lines of a session are few.
-        let logged = (0..40).filter(|step| watch.note(20.0 + *step as f32, [*step as f32, 0.0])).count();
+        let logged = (0..40)
+            .filter(|step| watch.note(20.0 + *step as f32, [*step as f32, 0.0]))
+            .count();
         assert_eq!(logged as u32 + 2, WIND_LINES);
         assert!(!watch.note(99.0, [100.0, 0.0]));
     }

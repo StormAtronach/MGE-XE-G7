@@ -172,7 +172,10 @@ mod tests {
             &DEFAULT_DOCUMENT[..start],
             &DEFAULT_DOCUMENT[end..]
         )
-        .replace("chain = [\"SSAO Fast\", \"Sunshafts\", \"Bloom Fine\"]", "chain = [\"Bloom\"]");
+        .replace(
+            "chain = [\"SSAO Fast\", \"Sunshafts\", \"Bloom Fine\"]",
+            "chain = [\"Bloom\"]",
+        );
         fs::write(&path, &source).unwrap();
 
         let mut document = ConfigDocument::open(&path);
@@ -394,10 +397,26 @@ mod tests {
             let root = test_root(&format!("texture-slots-{written}"));
             let path = root.join(FILE_NAME);
             fs::create_dir_all(&root).unwrap();
-            fs::write(&path, DEFAULT_DOCUMENT.replace("renderer_texture_slots = 0", &format!("renderer_texture_slots = {written}"))).unwrap();
+            fs::write(
+                &path,
+                DEFAULT_DOCUMENT.replace("renderer_texture_slots = 0", &format!("renderer_texture_slots = {written}")),
+            )
+            .unwrap();
             let document = ConfigDocument::open(&path);
-            assert_eq!(document.settings().runtime.renderer_texture_slots, read, "written {written}: {:?}", document.warnings());
-            assert_eq!(document.warnings().iter().any(|warning| warning.path == "runtime.renderer_texture_slots"), read != written, "written {written}");
+            assert_eq!(
+                document.settings().runtime.renderer_texture_slots,
+                read,
+                "written {written}: {:?}",
+                document.warnings()
+            );
+            assert_eq!(
+                document
+                    .warnings()
+                    .iter()
+                    .any(|warning| warning.path == "runtime.renderer_texture_slots"),
+                read != written,
+                "written {written}"
+            );
             fs::remove_dir_all(root).unwrap();
         }
     }

@@ -39,11 +39,11 @@ const DRY_LEVEL_MARGIN: f32 = 40.0;
 
 mod shading;
 use shading::Uniforms;
-mod volume;
 mod dry;
+mod volume;
 pub use dry::read_masks;
-pub use volume::{FarWater, Look, VolumeLight, VolumeLook, marked as volume_marked};
 pub(super) use shading::{CAUSTICS, WATER_NORMAL, caustic_strength};
+pub use volume::{FarWater, Look, VolumeLight, VolumeLook, marked as volume_marked};
 
 /// The shader of the surfaces of the water volumes with the standard look and `shadow_hooks`.
 pub(super) fn volume_source(shadow_hooks: &str) -> String {
@@ -54,7 +54,15 @@ pub(super) fn volume_source(shadow_hooks: &str) -> String {
 /// the library of the water hooks, and `water_hooks`: the water hooks of the session
 /// (`core_mods.rs`).
 pub(super) fn plane_source(water_hooks: &str) -> String {
-    format!("{}{}{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::wgsl(), shading::COMMON, super::core_mods::WATER_INTERFACE, PLANE, water_hooks)
+    format!(
+        "{}{}{}{}{}{}",
+        super::view::wgsl(),
+        nirender_wgpu::depth::wgsl(),
+        shading::COMMON,
+        super::core_mods::WATER_INTERFACE,
+        PLANE,
+        water_hooks
+    )
 }
 
 /// The entry points of the plane, after the shared shading.
@@ -271,14 +279,23 @@ fn sun_and_wind(sun_color: [f32; 3], sun_vis: f32, wind: [f32; 2]) -> [[f32; 4];
     let sunlight = 1.0 - (1.0 - sun_vis).powi(2);
     let wind_factor = ((wind[0] * wind[0] + wind[1] * wind[1]).sqrt() + 1.5) / 140.0;
     let [r, g, b] = sun_color;
-    [[r * sunlight, g * sunlight, b * sunlight, wind_factor], [r, g, b, 0.0], [wind[0], wind[1], 0.0, 0.0]]
+    [
+        [r * sunlight, g * sunlight, b * sunlight, wind_factor],
+        [r, g, b, 0.0],
+        [wind[0], wind[1], 0.0, 0.0],
+    ]
 }
 
 /// The modes of the water shader: the debug term (the debug view `water`), 1 under the water,
 /// and 1 in a plain interior (not an exterior, not an interior that behaves like one), for
 /// `water_is_interior` of the water hooks.
 fn modes(debug: f32, underwater: bool, like_exterior: bool) -> [f32; 4] {
-    [debug, if underwater { 1.0 } else { 0.0 }, if like_exterior { 0.0 } else { 1.0 }, 0.0]
+    [
+        debug,
+        if underwater { 1.0 } else { 0.0 },
+        if like_exterior { 0.0 } else { 1.0 },
+        0.0,
+    ]
 }
 
 /// What the water needs from the environment and the frame.
@@ -344,7 +361,11 @@ fn disc(segments: usize, rings: usize, radius: impl Fn(usize) -> f32) -> (Vec<[f
         for s in 0..segments {
             let s2 = (s + 1) % segments;
             indexes.extend_from_slice(&[(base + s) as u16, (segments + base + s) as u16, (base + s2) as u16]);
-            indexes.extend_from_slice(&[(segments + base + s) as u16, (segments + base + s2) as u16, (base + s2) as u16]);
+            indexes.extend_from_slice(&[
+                (segments + base + s) as u16,
+                (segments + base + s2) as u16,
+                (base + s2) as u16,
+            ]);
         }
     }
     (vertices, indexes)
@@ -428,22 +449,47 @@ impl Water {
     /// (`view.rs`), group 0 of each pipeline of the water.
     /// `core_mods`: the hooks of the session, the water hooks for the plane and the shadow hooks
     /// for the surfaces of the water volumes.
-    pub fn new(scene: &SceneView, waves: &[u8], view_layout: &wgpu::BindGroupLayout, core_mods: &super::core_mods::CoreMods) -> Result<Water, String> {
+    pub fn new(
+        scene: &SceneView,
+        waves: &[u8],
+        view_layout: &wgpu::BindGroupLayout,
+        core_mods: &super::core_mods::CoreMods,
+    ) -> Result<Water, String> {
         let device = scene.device;
         let waves = wave_texture(scene, waves)?;
         let (vertices, indexes) = coarse_disc();
         let (fine_vertices, fine_indexes) = fine_disc();
         use wgpu::util::DeviceExt;
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("water"), contents: bytemuck::cast_slice(&vertices), usage: wgpu::BufferUsages::VERTEX });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("water"), contents: bytemuck::cast_slice(&indexes), usage: wgpu::BufferUsages::INDEX });
-        let fine_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("water fine"), contents: bytemuck::cast_slice(&fine_vertices), usage: wgpu::BufferUsages::VERTEX });
-        let fine_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("water fine"), contents: bytemuck::cast_slice(&fine_indexes), usage: wgpu::BufferUsages::INDEX });
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water"),
+            contents: bytemuck::cast_slice(&indexes),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let fine_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water fine"),
+            contents: bytemuck::cast_slice(&fine_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let fine_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water fine"),
+            contents: bytemuck::cast_slice(&fine_indexes),
+            usage: wgpu::BufferUsages::INDEX,
+        });
         let flat = device
             .create_texture_with_data(
                 scene.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("water flat ripples"),
-                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -459,68 +505,144 @@ impl Water {
         let texture = |binding, sample_type, dimension| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture { sample_type, view_dimension: dimension, multisampled: false },
+            ty: wgpu::BindingType::Texture {
+                sample_type,
+                view_dimension: dimension,
+                multisampled: false,
+            },
             count: None,
         };
-        let sampler = |binding, kind| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(kind), count: None };
+        let sampler = |binding, kind| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(kind),
+            count: None,
+        };
         let mut entries = vec![
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-                texture(1, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                sampler(2, wgpu::SamplerBindingType::Filtering),
-                // The vertices read the wave texture too, with the dynamic waves.
-                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..texture(3, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3) },
-                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..sampler(4, wgpu::SamplerBindingType::Filtering) },
-                texture(5, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(6, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
-                texture(7, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(8, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2),
-                texture(9, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
-                texture(10, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
+                count: None,
+            },
+            texture(
+                1,
+                wgpu::TextureSampleType::Float { filterable: true },
+                wgpu::TextureViewDimension::D2,
+            ),
+            sampler(2, wgpu::SamplerBindingType::Filtering),
+            // The vertices read the wave texture too, with the dynamic waves.
+            wgpu::BindGroupLayoutEntry {
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ..texture(
+                    3,
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::TextureViewDimension::D3,
+                )
+            },
+            wgpu::BindGroupLayoutEntry {
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ..sampler(4, wgpu::SamplerBindingType::Filtering)
+            },
+            texture(
+                5,
+                wgpu::TextureSampleType::Float { filterable: true },
+                wgpu::TextureViewDimension::D2,
+            ),
+            texture(6, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
+            texture(
+                7,
+                wgpu::TextureSampleType::Float { filterable: true },
+                wgpu::TextureViewDimension::D2,
+            ),
+            texture(
+                8,
+                wgpu::TextureSampleType::Float { filterable: true },
+                wgpu::TextureViewDimension::D2,
+            ),
+            texture(9, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
+            texture(10, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
         ];
         // The light of the frame, for the surfaces of water volumes.
         entries.extend(volume::Volumes::light_layout_entries());
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("water"), entries: &entries });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water"), source: wgpu::ShaderSource::Wgsl(plane_source(core_mods.water_hooks()).into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water"), bind_group_layouts: &[Some(view_layout), Some(&layout)], immediate_size: 0 });
-        let attributes = wgpu::vertex_attr_array![0 => Float32x3];
-        let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
-            },
-            primitive: wgpu::PrimitiveState { cull_mode: None, polygon_mode, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: scene.depth_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
-                stencil,
-                bias: Default::default(),
-            }),
-            multisample: scene.multisample(false),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
-            }),
-            multiview_mask: None,
-            cache: None,
+            entries: &entries,
         });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("water"),
+            source: wgpu::ShaderSource::Wgsl(plane_source(core_mods.water_hooks()).into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("water"),
+            bind_group_layouts: &[Some(view_layout), Some(&layout)],
+            immediate_size: 0,
+        });
+        let attributes = wgpu::vertex_attr_array![0 => Float32x3];
+        let make_pipeline = |polygon_mode: wgpu::PolygonMode, stencil: wgpu::StencilState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("water"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 12,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    polygon_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: scene.depth_format,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
+                    stencil,
+                    bias: Default::default(),
+                }),
+                multisample: scene.multisample(false),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: scene.target_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::COLOR,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let pipeline = make_pipeline(wgpu::PolygonMode::Fill, Default::default());
-        let pipeline_lines = device.features().contains(wgpu::Features::POLYGON_MODE_LINE).then(|| make_pipeline(wgpu::PolygonMode::Line, Default::default()));
+        let pipeline_lines = device
+            .features()
+            .contains(wgpu::Features::POLYGON_MODE_LINE)
+            .then(|| make_pipeline(wgpu::PolygonMode::Line, Default::default()));
         // Drawn only outside the dry spaces.
         let pipeline_cut = make_pipeline(wgpu::PolygonMode::Fill, dry::outside());
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let volume_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water volume"), size: size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("water"),
+            size: size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let volume_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("water volume"),
+            size: size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let volumes = volume::Volumes::new(scene, view_layout, &layout, core_mods.shadow_hooks());
         let dry = dry::Dry::new(scene, view_layout, &layout);
         // Between two levels too: the blur that is sharp at the waterline reads the levels
@@ -544,7 +666,11 @@ impl Water {
         let target = |format, levels| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("water reflection"),
-                size: wgpu::Extent3d { width: REFLECTION_SIZE, height: REFLECTION_SIZE, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: REFLECTION_SIZE,
+                    height: REFLECTION_SIZE,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: levels,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -555,16 +681,30 @@ impl Water {
         };
         let reflection = target(scene.target_format, REFLECTION_LEVELS);
         let reflection_view = reflection.create_view(&Default::default());
-        let reflection_levels: Vec<wgpu::TextureView> =
-            (0..REFLECTION_LEVELS).map(|level| reflection.create_view(&wgpu::TextureViewDescriptor { base_mip_level: level, mip_level_count: Some(1), ..Default::default() })).collect();
+        let reflection_levels: Vec<wgpu::TextureView> = (0..REFLECTION_LEVELS)
+            .map(|level| {
+                reflection.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: level,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
         let depth_texture = target(scene.depth_format, 1);
         let reflection_depth = depth_texture.create_view(&Default::default());
-        let reflection_depth_read = depth_texture.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+        let reflection_depth_read = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
         // A depth texture takes no write of the queue: a pass clears it to 1.
         let no_land = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("water no land"),
-                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -573,14 +713,19 @@ impl Water {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water no land") });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("water no land"),
+        });
         nirender_wgpu::gpu::note_other_pass();
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("water no land"),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &no_land,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)), store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)),
+                    store: wgpu::StoreOp::Store,
+                }),
                 stencil_ops: None,
             }),
             timestamp_writes: None,
@@ -591,7 +736,14 @@ impl Water {
         // The levels of the reflection: each from the level before.
         let level_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water reflection level"),
-            entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
+            entries: &[
+                texture(
+                    0,
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::TextureViewDimension::D2,
+                ),
+                sampler(1, wgpu::SamplerBindingType::Filtering),
+            ],
         });
         let level_groups: Vec<wgpu::BindGroup> = reflection_levels[..reflection_levels.len() - 1]
             .iter()
@@ -599,24 +751,52 @@ impl Water {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("water reflection level"),
                     layout: &level_layout,
-                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&clamp_sampler) }],
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(source),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&clamp_sampler),
+                        },
+                    ],
                 })
             })
             .collect();
-        let level_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water reflection level"), source: wgpu::ShaderSource::Wgsl(LEVEL_SHADER.into()) });
-        let level_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water reflection level"), bind_group_layouts: &[Some(&level_layout)], immediate_size: 0 });
+        let level_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("water reflection level"),
+            source: wgpu::ShaderSource::Wgsl(LEVEL_SHADER.into()),
+        });
+        let level_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("water reflection level"),
+            bind_group_layouts: &[Some(&level_layout)],
+            immediate_size: 0,
+        });
         let level_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water reflection level"),
             layout: Some(&level_pipeline_layout),
-            vertex: wgpu::VertexState { module: &level_module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            vertex: wgpu::VertexState {
+                module: &level_module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: None,
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &level_module,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: scene.target_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview_mask: None,
             cache: None,
@@ -669,7 +849,14 @@ impl Water {
     /// those of the main view, with the layout of Direct3D; the frustum is taken from the eye
     /// (no near plane), so the test only keeps more. A projection without perspective keeps
     /// the plane.
-    pub fn plane_in_view(view: &[f32; 16], projection: &[f32; 16], eye_z: f32, water_level: f32, wave_height: f32, far: f32) -> bool {
+    pub fn plane_in_view(
+        view: &[f32; 16],
+        projection: &[f32; 16],
+        eye_z: f32,
+        water_level: f32,
+        wave_height: f32,
+        far: f32,
+    ) -> bool {
         if projection[11] == 0.0 || projection[0] == 0.0 || projection[5] == 0.0 {
             return true;
         }
@@ -717,7 +904,12 @@ impl Water {
     /// Starts the pass of the reflection: cleared to the colour of the horizon. Returns the
     /// pass and the mirrored view with the far projection. The caller draws the distant
     /// land, then calls `reflect_sky`, then ends the pass and submits the encoder.
-    pub fn begin_reflection(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, frame: &WaterFrame) -> (wgpu::RenderPass<'static>, [f32; 16], [f32; 16]) {
+    pub fn begin_reflection(
+        &mut self,
+        scene: &SceneView,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &WaterFrame,
+    ) -> (wgpu::RenderPass<'static>, [f32; 16], [f32; 16]) {
         let clear = scene.fog_color;
         nirender_wgpu::gpu::note_other_pass();
         let pass = encoder
@@ -727,12 +919,26 @@ impl Water {
                     view: &self.reflection_levels[0],
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: 1.0 }), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear[0] as f64,
+                            g: clear[1] as f64,
+                            b: clear[2] as f64,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.reflection_depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)), store: wgpu::StoreOp::Store }),
-                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Store,
+                    }),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -757,7 +963,15 @@ impl Water {
             nirender_wgpu::gpu::note_other_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("water reflection level"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -776,9 +990,20 @@ impl Water {
     /// [`fill_colour`]. With the blur that is sharp at the waterline, each level gets the
     /// colour, and the depth of the mirror says that all is far.
     pub fn fill_reflection(&mut self, scene: &SceneView, frame: &WaterFrame) {
-        let color = fill_colour(frame.underwater || frame.like_exterior, scene.fog_color, scene.sun_color, scene.ambient);
-        let levels = if frame.blur_reflections && frame.blur_contact { self.reflection_levels.len() } else { 1 };
-        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water reflection fill") });
+        let color = fill_colour(
+            frame.underwater || frame.like_exterior,
+            scene.fog_color,
+            scene.sun_color,
+            scene.ambient,
+        );
+        let levels = if frame.blur_reflections && frame.blur_contact {
+            self.reflection_levels.len()
+        } else {
+            1
+        };
+        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("water reflection fill"),
+        });
         for (index, level) in self.reflection_levels[..levels].iter().enumerate() {
             nirender_wgpu::gpu::note_other_pass();
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -787,12 +1012,26 @@ impl Water {
                     view: level,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: color[0] as f64, g: color[1] as f64, b: color[2] as f64, a: 1.0 }), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: color[0] as f64,
+                            g: color[1] as f64,
+                            b: color[2] as f64,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: (index == 0 && levels > 1).then(|| wgpu::RenderPassDepthStencilAttachment {
                     view: &self.reflection_depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)), store: wgpu::StoreOp::Store }),
-                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(nirender_wgpu::depth::clear(1.0)),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Store,
+                    }),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -804,7 +1043,13 @@ impl Water {
     }
 
     /// The sky of the game in the reflection: its draws again, mirrored, above the water.
-    pub fn reflect_sky(&self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay, frame: &WaterFrame) {
+    pub fn reflect_sky(
+        &self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        replay: &mut dyn Replay,
+        frame: &WaterFrame,
+    ) {
         if frame.underwater {
             return;
         }
@@ -820,7 +1065,12 @@ impl Water {
                 samples: 1,
                 flip_cull: true,
                 // With the dynamic waves the plane can be lower by half of the wave height.
-                clip_plane: Some([0.0, 0.0, 1.0, -(frame.mirror_level as f64) + 0.5 * frame.wave_height.unwrap_or(0.0) as f64]),
+                clip_plane: Some([
+                    0.0,
+                    0.0,
+                    1.0,
+                    -(frame.mirror_level as f64) + 0.5 * frame.wave_height.unwrap_or(0.0) as f64,
+                ]),
                 opaque_only: false,
                 translucent_only: false,
                 force_depth_test: true,
@@ -846,7 +1096,15 @@ impl Water {
     /// height. The values go into `uniforms`. [`None`] without the depth, or without the
     /// picture unless `picture` is false (a draw that does not read it: the count of the dry
     /// spaces).
-    fn frame_group(&self, scene: &SceneView, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, uniforms_buffer: &wgpu::Buffer, picture: bool, light: Option<&VolumeLight>) -> Option<wgpu::BindGroup> {
+    fn frame_group(
+        &self,
+        scene: &SceneView,
+        frame: &WaterFrame,
+        ripples: Option<&super::ripples::Ripples>,
+        uniforms_buffer: &wgpu::Buffer,
+        picture: bool,
+        light: Option<&VolumeLight>,
+    ) -> Option<wgpu::BindGroup> {
         let depth = scene.depth?;
         let picture = if picture { scene.picture? } else { &self.flat };
         let dynamic = frame.wave_height.zip(ripples);
@@ -865,17 +1123,29 @@ impl Water {
                 let [a, b] = nirender_wgpu::depth::terms(&scene.projection);
                 [a, b, frame.blur_tune[2], 0.0]
             },
-            size: [scene.target_size.0 as f32, scene.target_size.1 as f32, frame.view_end.unwrap_or(0.0), match (frame.blur_reflections, frame.blur_contact) {
-                (false, _) => 0.0,
-                (true, false) => 1.0,
-                (true, true) => 2.0,
-            }],
-            wave: dynamic.map_or([0.0; 4], |(height, ripples)| [ripples.origin[0], ripples.origin[1], height, 1.0]),
+            size: [
+                scene.target_size.0 as f32,
+                scene.target_size.1 as f32,
+                frame.view_end.unwrap_or(0.0),
+                match (frame.blur_reflections, frame.blur_contact) {
+                    (false, _) => 0.0,
+                    (true, false) => 1.0,
+                    (true, true) => 2.0,
+                },
+            ],
+            wave: dynamic.map_or([0.0; 4], |(height, ripples)| {
+                [ripples.origin[0], ripples.origin[1], height, 1.0]
+            }),
             mirror: {
                 let projection = Self::far_projection(scene, frame.draw_distance);
                 // The cone of the mirror: wider with more wind, as the waves are.
                 let [a, b] = nirender_wgpu::depth::terms(&projection);
-                [a, b, scene.projection[0], frame.blur_tune[0] + frame.blur_tune[1] * wind_factor]
+                [
+                    a,
+                    b,
+                    scene.projection[0],
+                    frame.blur_tune[0] + frame.blur_tune[1] * wind_factor,
+                ]
             },
             land: {
                 // The depth of the distant land, and the clip depth of the plane: the near plane
@@ -898,37 +1168,86 @@ impl Water {
         };
         scene.queue.write_buffer(uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
         let light_entries = self.volumes.light_entries(scene, light);
-        let group = nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
-            label: Some("water"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniforms_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.reflection_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.clamp_sampler) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.waves) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.wave_sampler) },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(picture) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(depth) },
-                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.rain_view())) },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(dynamic.map_or(&self.flat, |(_, ripples)| ripples.player_view())) },
-                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&self.reflection_depth_read) },
-                wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(scene.before_depth.unwrap_or(&self.no_land)) },
-                light_entries[0].clone(),
-                light_entries[1].clone(),
-                light_entries[2].clone(),
-                light_entries[3].clone(),
-                light_entries[4].clone(),
-                light_entries[5].clone(),
-            ],
-        });
+        let group = nirender_wgpu::gpu::frame_group(
+            scene.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("water"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniforms_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.reflection_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.clamp_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&self.waves),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&self.wave_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(picture),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(
+                            dynamic.map_or(&self.flat, |(_, ripples)| ripples.rain_view()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(
+                            dynamic.map_or(&self.flat, |(_, ripples)| ripples.player_view()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::TextureView(&self.reflection_depth_read),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: wgpu::BindingResource::TextureView(scene.before_depth.unwrap_or(&self.no_land)),
+                    },
+                    light_entries[0].clone(),
+                    light_entries[1].clone(),
+                    light_entries[2].clone(),
+                    light_entries[3].clone(),
+                    light_entries[4].clone(),
+                    light_entries[5].clone(),
+                ],
+            },
+        );
         Some(group)
     }
 
     /// Draws the plane in place of the water plane of the game. `view` is the group of the
     /// game view. `ripples` has the textures of the dynamic waves; they count when the frame
     /// has a wave height.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>) {
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms, true, None) else { return };
+    pub fn draw(
+        &mut self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        view: &wgpu::BindGroup,
+        frame: &WaterFrame,
+        ripples: Option<&super::ripples::Ripples>,
+    ) {
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.uniforms, true, None) else {
+            return;
+        };
         let dynamic = frame.wave_height.zip(ripples);
         // The dry spaces cut the plane, but not from under the water (`renderStageWater`).
         let cut = self.dry.any() && !frame.underwater;
@@ -947,10 +1266,18 @@ impl Water {
             pass.set_pipeline(&self.pipeline_cut);
             pass.set_stencil_reference(0);
         } else {
-            pass.set_pipeline(if scene.wireframe { self.pipeline_lines.as_ref().unwrap_or(&self.pipeline) } else { &self.pipeline });
+            pass.set_pipeline(if scene.wireframe {
+                self.pipeline_lines.as_ref().unwrap_or(&self.pipeline)
+            } else {
+                &self.pipeline
+            });
         }
         // The finer disc with the dynamic waves: the waves move its vertices.
-        let (vertices, indexes, index_count) = if dynamic.is_some() { (&self.fine_vertices, &self.fine_indexes, self.fine_index_count) } else { (&self.vertices, &self.indexes, self.index_count) };
+        let (vertices, indexes, index_count) = if dynamic.is_some() {
+            (&self.fine_vertices, &self.fine_indexes, self.fine_index_count)
+        } else {
+            (&self.vertices, &self.indexes, self.index_count)
+        };
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..index_count, 0, 0..1);
@@ -973,14 +1300,30 @@ impl Water {
     /// the game view. `before_plane`: the sea plane of the frame comes after these surfaces.
     /// Returns the number drawn.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_volumes(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, held: &[nirender_wgpu::HeldDraw], far: &[FarWater], look: &VolumeLook, looks: &std::collections::HashMap<u32, Look>, light: &VolumeLight, before_plane: bool) -> usize {
+    pub fn draw_volumes(
+        &mut self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        view: &wgpu::BindGroup,
+        frame: &WaterFrame,
+        ripples: Option<&super::ripples::Ripples>,
+        held: &[nirender_wgpu::HeldDraw],
+        far: &[FarWater],
+        look: &VolumeLook,
+        looks: &std::collections::HashMap<u32, Look>,
+        light: &VolumeLight,
+        before_plane: bool,
+    ) -> usize {
         if far.is_empty() && !held.iter().any(|h| volume::marked(h.facts.specular_power)) {
             return 0;
         }
-        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light)) else { return 0 };
+        let Some(group) = self.frame_group(scene, frame, ripples, &self.volume_uniforms, true, Some(light)) else {
+            return 0;
+        };
         // The dry spaces cut the surfaces near the camera, but not from under the water.
         let dry = (self.dry.any() && !frame.underwater).then_some(&self.dry);
-        self.volumes.draw(scene, pass, view, &group, held, far, look, looks, dry, before_plane)
+        self.volumes
+            .draw(scene, pass, view, &group, held, far, look, looks, dry, before_plane)
     }
 
     /// The stencil test of a pixel outside the dry spaces, for a pass that the count cuts.
@@ -994,9 +1337,22 @@ impl Water {
     /// is. Reads the depth of the game only: the caustics multiply the picture by a blend.
     /// `view` is the group of the game view.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_sea_caustics(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, frame: &WaterFrame, ripples: Option<&super::ripples::Ripples>, caustics: &mut super::caustics::Caustics, caustics_frame: &super::caustics::CausticsFrame) {
+    pub fn draw_sea_caustics(
+        &mut self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        view: &wgpu::BindGroup,
+        frame: &WaterFrame,
+        ripples: Option<&super::ripples::Ripples>,
+        caustics: &mut super::caustics::Caustics,
+        caustics_frame: &super::caustics::CausticsFrame,
+    ) {
         let Some(depth) = scene.depth else { return };
-        let group = self.dry.any().then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None)).flatten();
+        let group = self
+            .dry
+            .any()
+            .then(|| self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None))
+            .flatten();
         pass.set_bind_group(0, view, &[]);
         if let Some(group) = group.as_ref() {
             pass.set_bind_group(1, group, &[]);
@@ -1057,7 +1413,11 @@ pub(super) fn wave_texture(scene: &SceneView, dds: &[u8]) -> Result<wgpu::Textur
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some("water waves"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: depth },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: depth,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
@@ -1079,7 +1439,11 @@ pub(super) fn flat_wave_texture(scene: &SceneView) -> wgpu::TextureView {
         scene.queue,
         &wgpu::TextureDescriptor {
             label: Some("water waves, flat"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
@@ -1126,10 +1490,22 @@ mod tests {
         let eye = [0.0, 0.0, eye_z];
         let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let view = [
-            right[0], up[0], forward[0], 0.0,
-            right[1], up[1], forward[1], 0.0,
-            right[2], up[2], forward[2], 0.0,
-            -dot(right, eye), -dot(up, eye), -dot(forward, eye), 1.0,
+            right[0],
+            up[0],
+            forward[0],
+            0.0,
+            right[1],
+            up[1],
+            forward[1],
+            0.0,
+            right[2],
+            up[2],
+            forward[2],
+            0.0,
+            -dot(right, eye),
+            -dot(up, eye),
+            -dot(forward, eye),
+            1.0,
         ];
         let y_scale = 1.0 / (37.5f32).to_radians().tan();
         let (near, far) = (1.0, 100_000.0);
@@ -1192,7 +1568,10 @@ mod tests {
         let [sun_col, ..] = sun_and_wind([0.5, 0.5, 0.5], 0.5, [0.0, 0.0]);
         assert_eq!(sun_col[0], 0.5 * 0.75);
         let source = plane_source(CoreMods::built_in().water_hooks());
-        assert!(source.contains("fn water_sun_color() -> vec3f {\n    return water.sun_color.rgb;") && source.contains("return water.wind.xy;"));
+        assert!(
+            source.contains("fn water_sun_color() -> vec3f {\n    return water.sun_color.rgb;")
+                && source.contains("return water.wind.xy;")
+        );
     }
 
     /// `water_is_interior` is true in a plain interior only: an exterior and an interior that
@@ -1201,7 +1580,11 @@ mod tests {
     fn the_hooks_know_a_plain_interior() {
         // `like_exterior` of the water frame: false in a plain interior, true in an exterior and
         // in an interior that behaves like one.
-        for (case, like_exterior, interior) in [("plain interior", false, 1.0), ("exterior", true, 0.0), ("interior like an exterior", true, 0.0)] {
+        for (case, like_exterior, interior) in [
+            ("plain interior", false, 1.0),
+            ("exterior", true, 0.0),
+            ("interior like an exterior", true, 0.0),
+        ] {
             assert_eq!(modes(0.0, false, like_exterior)[2], interior, "{case}");
         }
         assert_eq!(modes(2.0, true, false), [2.0, 1.0, 1.0, 0.0]);
@@ -1213,26 +1596,41 @@ mod tests {
     #[test]
     fn the_plane_gives_the_library_of_the_water_hooks() {
         let source = plane_source(CoreMods::built_in().water_hooks());
-        assert_eq!(core_mods::library_differences(core_mods::WATER_LIBRARY, &source), Vec::<String>::new());
+        assert_eq!(
+            core_mods::library_differences(core_mods::WATER_LIBRARY, &source),
+            Vec::<String>::new()
+        );
     }
 
     /// The water hooks of a mod join the plane only: the surfaces of the water volumes and the
     /// dry spaces keep the built-in normal, and have no water colour of a mod.
     #[test]
     fn the_water_hooks_of_a_mod_join_the_plane_only() {
-        let homes = [core_mods::Home { name: "water plane", check: |hooks| crate::renderer::shader_check::check("water plane", &plane_source(hooks)).map(|_| ()) }];
+        let homes = [core_mods::Home {
+            name: "water plane",
+            check: |hooks| crate::renderer::shader_check::check("water plane", &plane_source(hooks)).map(|_| ()),
+        }];
         let mods = CoreMods::of_files(&[("Water.wgsl", &core_mods::marker_water_file())], &[], &homes);
         let plane = plane_source(mods.water_hooks());
         assert!(plane.contains("fn mod_marker("), "the mod's hook is not in the plane");
         crate::renderer::shader_check::check("water plane with the marker", &plane).unwrap();
         let built_in = CoreMods::built_in();
-        let others = [("volume", volume::standard_source(mods.shadow_hooks())), ("dry", dry::shader())];
+        let others = [
+            ("volume", volume::standard_source(mods.shadow_hooks())),
+            ("dry", dry::shader()),
+        ];
         for (name, source) in others {
-            assert!(!source.contains("mod_marker") && !source.contains("fn water_color("), "{name}");
+            assert!(
+                !source.contains("mod_marker") && !source.contains("fn water_color("),
+                "{name}"
+            );
             assert_eq!(source.matches("fn water_normal(").count(), 1, "{name}");
             assert!(source.contains(WATER_NORMAL), "{name}: not the built-in normal");
         }
-        assert_eq!(volume::standard_source(mods.shadow_hooks()), volume::standard_source(built_in.shadow_hooks()));
+        assert_eq!(
+            volume::standard_source(mods.shadow_hooks()),
+            volume::standard_source(built_in.shadow_hooks())
+        );
     }
 
     #[test]
@@ -1250,7 +1648,11 @@ mod tests {
     #[test]
     fn the_shaders_of_the_water_are_valid() {
         let check = crate::renderer::shader_check::check;
-        let module = check("water", &plane_source(super::super::core_mods::CoreMods::built_in().water_hooks())).unwrap();
+        let module = check(
+            "water",
+            &plane_source(super::super::core_mods::CoreMods::built_in().water_hooks()),
+        )
+        .unwrap();
         for entry in ["vs", "fs"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
@@ -1274,5 +1676,4 @@ mod tests {
         let before = vertices[vertices.len() - 300][0];
         assert!(before > 8192.0 && before < 9600.0, "{before}");
     }
-
 }

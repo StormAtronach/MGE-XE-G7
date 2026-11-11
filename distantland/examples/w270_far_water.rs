@@ -61,19 +61,32 @@ fn main() -> Result<()> {
     let statics = load_statics(&statics_folder)?;
     let keys = record_keys(&load_state(&options.folder)?);
     if keys.len() != statics.len() {
-        bail!("generation_state.bin names {} records, the shards hold {} statics", keys.len(), statics.len());
+        bail!(
+            "generation_state.bin names {} records, the shards hold {} statics",
+            keys.len(),
+            statics.len()
+        );
     }
 
-    let water_subsets: usize = statics.iter().map(|mesh| mesh.subsets.iter().filter(|s| s.water != 0).count()).sum();
+    let water_subsets: usize = statics
+        .iter()
+        .map(|mesh| mesh.subsets.iter().filter(|s| s.water != 0).count())
+        .sum();
     println!(
         "distant land {}: {} statics, {} with water subsets ({} water subsets), {} exterior placements",
         options.folder.display(),
         statics.len(),
-        statics.iter().filter(|mesh| mesh.subsets.iter().any(|s| s.water != 0)).count(),
+        statics
+            .iter()
+            .filter(|mesh| mesh.subsets.iter().any(|s| s.water != 0))
+            .count(),
         water_subsets,
         usage.exterior.len()
     );
-    let (cell_x, cell_y) = ((options.point.x / CELL).floor() as i32, (options.point.y / CELL).floor() as i32);
+    let (cell_x, cell_y) = (
+        (options.point.x / CELL).floor() as i32,
+        (options.point.y / CELL).floor() as i32,
+    );
     println!(
         "point ({:.0}, {:.0}, {:.0}) in cell ({cell_x}, {cell_y}); radius {:.0}; plane level {:.1}; loaded cells x {}..{}, y {}..{}",
         options.point.x,
@@ -147,7 +160,11 @@ fn main() -> Result<()> {
                 place.y,
                 place.z,
                 reference.scale,
-                if loaded { "in the loaded cells" } else { "outside the loaded cells" },
+                if loaded {
+                    "in the loaded cells"
+                } else {
+                    "outside the loaded cells"
+                },
                 world.len(),
                 subset.triangles.len()
             );

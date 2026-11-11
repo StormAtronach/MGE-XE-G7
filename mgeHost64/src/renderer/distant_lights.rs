@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
-use distantland::mge_xe::lights::{parse_lights, LIGHT_TEXEL_SIZE, LIGHT_TILE};
+use distantland::mge_xe::lights::{LIGHT_TEXEL_SIZE, LIGHT_TILE, parse_lights};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
@@ -70,7 +70,9 @@ fn baked_light(world: vec3f) -> vec3f {
 
 /// [`BAKED_WGSL`] for the bind group `group`, with the bindings from `first` ([`LightBinding::layout_entries`]).
 pub fn baked_wgsl_at(group: u32, first: u32) -> String {
-    (0..4).fold(BAKED_WGSL.replace("GROUP", &group.to_string()), |code, i| code.replace(&format!("B{i}"), &(first + i).to_string()))
+    (0..4).fold(BAKED_WGSL.replace("GROUP", &group.to_string()), |code, i| {
+        code.replace(&format!("B{i}"), &(first + i).to_string())
+    })
 }
 
 #[repr(C)]
@@ -100,19 +102,32 @@ impl LightBinding {
         let texture_entry = |binding: u32, sample_type: wgpu::TextureSampleType| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            ty: wgpu::BindingType::Texture {
+                sample_type,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count: None,
         };
         [
             wgpu::BindGroupLayoutEntry {
                 binding: first,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
             texture_entry(first + 1, wgpu::TextureSampleType::Float { filterable: true }),
             texture_entry(first + 2, wgpu::TextureSampleType::Sint),
-            wgpu::BindGroupLayoutEntry { binding: first + 3, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: first + 3,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ]
     }
 
@@ -120,15 +135,30 @@ impl LightBinding {
     /// layout.
     pub fn entries(&self, first: u32) -> [wgpu::BindGroupEntry<'_>; 4] {
         [
-            wgpu::BindGroupEntry { binding: first, resource: self.uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: first + 1, resource: wgpu::BindingResource::TextureView(&self.tiles) },
-            wgpu::BindGroupEntry { binding: first + 2, resource: wgpu::BindingResource::TextureView(&self.index) },
-            wgpu::BindGroupEntry { binding: first + 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            wgpu::BindGroupEntry {
+                binding: first,
+                resource: self.uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: first + 1,
+                resource: wgpu::BindingResource::TextureView(&self.tiles),
+            },
+            wgpu::BindGroupEntry {
+                binding: first + 2,
+                resource: wgpu::BindingResource::TextureView(&self.index),
+            },
+            wgpu::BindGroupEntry {
+                binding: first + 3,
+                resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
         ]
     }
 
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> LightBinding {
-        let map = MapUniforms { origin: [0.0, 0.0, 1.0, 1.0], values: [0.0, TILES_IN_ROW as f32, 0.0, 0.0] };
+        let map = MapUniforms {
+            origin: [0.0, 0.0, 1.0, 1.0],
+            values: [0.0, TILES_IN_ROW as f32, 0.0, 0.0],
+        };
         let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant lights, baked"),
             contents: bytemuck::bytes_of(&map),
@@ -140,9 +170,32 @@ impl LightBinding {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let tiles = texture(device, queue, "distant lights, the tiles", 1, 1, wgpu::TextureFormat::Rgba8Unorm, &[0; 4]);
-        let index = texture(device, queue, "distant lights, the tile of each cell", 1, 1, wgpu::TextureFormat::R32Sint, &(-1i32).to_le_bytes());
-        LightBinding { uniforms, sampler, tiles, index, generation: 0, map }
+        let tiles = texture(
+            device,
+            queue,
+            "distant lights, the tiles",
+            1,
+            1,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &[0; 4],
+        );
+        let index = texture(
+            device,
+            queue,
+            "distant lights, the tile of each cell",
+            1,
+            1,
+            wgpu::TextureFormat::R32Sint,
+            &(-1i32).to_le_bytes(),
+        );
+        LightBinding {
+            uniforms,
+            sampler,
+            tiles,
+            index,
+            generation: 0,
+            map,
+        }
     }
 
     /// The tiles of a file: one texture with the tiles in rows, and one with the tile of each
@@ -151,8 +204,14 @@ impl LightBinding {
         if file.tiles.is_empty() {
             return;
         }
-        let (min_x, min_y) = file.tiles.iter().fold((i32::MAX, i32::MAX), |(x, y), cell| (x.min(cell.0), y.min(cell.1)));
-        let (max_x, max_y) = file.tiles.iter().fold((i32::MIN, i32::MIN), |(x, y), cell| (x.max(cell.0), y.max(cell.1)));
+        let (min_x, min_y) = file
+            .tiles
+            .iter()
+            .fold((i32::MAX, i32::MAX), |(x, y), cell| (x.min(cell.0), y.min(cell.1)));
+        let (max_x, max_y) = file
+            .tiles
+            .iter()
+            .fold((i32::MIN, i32::MIN), |(x, y), cell| (x.max(cell.0), y.max(cell.1)));
         let (width, height) = ((max_x - min_x + 1) as u32, (max_y - min_y + 1) as u32);
         let mut index = vec![-1i32; (width * height) as usize];
         for (tile, cell) in file.tiles.iter().enumerate() {
@@ -173,9 +232,25 @@ impl LightBinding {
                 atlas[to..to + (TILE * TEXEL) as usize].copy_from_slice(&source[from..from + (TILE * TEXEL) as usize]);
             }
         }
-        let tiles = texture(device, queue, "distant lights, the tiles", atlas_width, atlas_height, wgpu::TextureFormat::Rgba8Unorm, &atlas);
+        let tiles = texture(
+            device,
+            queue,
+            "distant lights, the tiles",
+            atlas_width,
+            atlas_height,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &atlas,
+        );
         let index_bytes: Vec<u8> = index.iter().flat_map(|value| value.to_le_bytes()).collect();
-        let index = texture(device, queue, "distant lights, the tile of each cell", width, height, wgpu::TextureFormat::R32Sint, &index_bytes);
+        let index = texture(
+            device,
+            queue,
+            "distant lights, the tile of each cell",
+            width,
+            height,
+            wgpu::TextureFormat::R32Sint,
+            &index_bytes,
+        );
         (self.tiles, self.index) = (tiles, index);
         self.generation += 1;
         self.map.origin = [min_x as f32, min_y as f32, width as f32, height as f32];
@@ -188,13 +263,25 @@ impl LightBinding {
     }
 }
 
-fn texture(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, width: u32, height: u32, format: wgpu::TextureFormat, data: &[u8]) -> wgpu::TextureView {
+fn texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    data: &[u8],
+) -> wgpu::TextureView {
     device
         .create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -223,7 +310,12 @@ struct LightsFile {
 fn read(path: &Path) -> Result<LightsFile, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let lights = parse_lights(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(LightsFile { sources: lights.sources, source_count: lights.source_count, tiles: lights.tiles, texels: lights.texels })
+    Ok(LightsFile {
+        sources: lights.sources,
+        source_count: lights.source_count,
+        tiles: lights.tiles,
+        texels: lights.texels,
+    })
 }
 
 const CULL_SHADER: &str = "
@@ -439,7 +531,12 @@ impl Glows {
             mapped_at_creation: false,
         });
         let uniform_buffer = |label: &str, size: usize| {
-            device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: size as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: size as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
         };
         let cull_uniforms = uniform_buffer("distant lights, cull", size_of::<CullUniforms>());
         let values = uniform_buffer("distant lights, glows", size_of::<GlowUniforms>());
@@ -447,18 +544,46 @@ impl Glows {
             label: Some("distant lights, cull"),
             layout: &self.cull_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: cull_uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.source_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: list.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: args.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: cull_uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.source_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: list.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: args.as_entire_binding(),
+                },
             ],
         });
         let draw_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant lights, glows"),
             layout: &self.draw_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: values.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: list.as_entire_binding() }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: values.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: list.as_entire_binding(),
+                },
+            ],
         });
-        GlowSet { cull_group, cull_uniforms, args, draw_group, values, bytes: set_bytes(self.sources) }
+        GlowSet {
+            cull_group,
+            cull_uniforms,
+            args,
+            draw_group,
+            values,
+            bytes: set_bytes(self.sources),
+        }
     }
 }
 
@@ -474,8 +599,17 @@ impl DistantLights {
     /// main view's set: for the tests of the views of their own.
     #[cfg(test)]
     pub fn with_glows(scene: &SceneView, view_layout: &wgpu::BindGroupLayout, sources: u32) -> DistantLights {
-        let file = LightsFile { sources: vec![0; sources as usize * 32], source_count: sources, tiles: Vec::new(), texels: Vec::new() };
-        DistantLights { loading: None, glows: Some(make_glows(scene, &file, view_layout)), frames: 0 }
+        let file = LightsFile {
+            sources: vec![0; sources as usize * 32],
+            source_count: sources,
+            tiles: Vec::new(),
+            texels: Vec::new(),
+        };
+        DistantLights {
+            loading: None,
+            glows: Some(make_glows(scene, &file, view_layout)),
+            frames: 0,
+        }
     }
 
     /// Starts the read of `<folder>\lights.data`.
@@ -485,14 +619,22 @@ impl DistantLights {
         thread::spawn(move || {
             let _ = sender.send(read(&path));
         });
-        DistantLights { loading: Some(receiver), glows: None, frames: 0 }
+        DistantLights {
+            loading: Some(receiver),
+            glows: None,
+            frames: 0,
+        }
     }
 
     /// The answer of the thread that reads the file, once it is there. A thread that ended
     /// without an answer (a panic) is a failed read, not a read still to come.
     fn take_file(&mut self, synchronous: bool) -> Option<Result<LightsFile, String>> {
         let receiver = self.loading.as_ref()?;
-        let answer = if synchronous { receiver.recv().map_err(|_| TryRecvError::Disconnected) } else { receiver.try_recv() };
+        let answer = if synchronous {
+            receiver.recv().map_err(|_| TryRecvError::Disconnected)
+        } else {
+            receiver.try_recv()
+        };
         match answer {
             Ok(result) => {
                 self.loading = None;
@@ -508,7 +650,13 @@ impl DistantLights {
 
     /// Takes the file when it has been read: the baked light into `binding`, and the glows,
     /// whose pipeline takes the view group of `view_layout`.
-    pub fn poll(&mut self, scene: &SceneView, binding: &mut LightBinding, view_layout: &wgpu::BindGroupLayout, synchronous: bool) {
+    pub fn poll(
+        &mut self,
+        scene: &SceneView,
+        binding: &mut LightBinding,
+        view_layout: &wgpu::BindGroupLayout,
+        synchronous: bool,
+    ) {
         let Some(result) = self.take_file(synchronous) else { return };
         let file = match result {
             Ok(file) => file,
@@ -517,10 +665,16 @@ impl DistantLights {
                 return;
             }
         };
-        println!("distant lights: {} light sources, {} lit cells baked", file.source_count, file.tiles.len());
+        println!(
+            "distant lights: {} light sources, {} lit cells baked",
+            file.source_count,
+            file.tiles.len()
+        );
         binding.set_tiles(scene.device, scene.queue, &file);
         if file.source_count > 0 {
-            self.glows = Some(super::timed("the distant lights' pipeline", || make_glows(scene, &file, view_layout)));
+            self.glows = Some(super::timed("the distant lights' pipeline", || {
+                make_glows(scene, &file, view_layout)
+            }));
         }
     }
 
@@ -555,12 +709,16 @@ impl DistantLights {
 
     /// The bytes of the sets of the views of their own that exist (all sets but the main view's).
     pub fn views_bytes(&self) -> u64 {
-        self.glows.as_ref().map_or(0, |glows| glows.sets.iter().skip(1).flatten().map(|set| set.bytes).sum())
+        self.glows
+            .as_ref()
+            .map_or(0, |glows| glows.sets.iter().skip(1).flatten().map(|set| set.bytes).sum())
     }
 
     /// True when the set `set` has its buffers.
     pub fn has_set(&self, set: usize) -> bool {
-        self.glows.as_ref().is_some_and(|glows| glows.sets.get(set).is_some_and(Option::is_some))
+        self.glows
+            .as_ref()
+            .is_some_and(|glows| glows.sets.get(set).is_some_and(Option::is_some))
     }
 
     /// True when the file has glows: a view of its own can have a set.
@@ -572,7 +730,9 @@ impl DistantLights {
     /// the main view's (0) or a view of its own's, which [`DistantLights::ensure_set`] made.
     pub fn prepare(&mut self, scene: &SceneView, frame: &GlowFrame, set: usize) {
         let Some(glows) = self.glows.as_ref() else { return };
-        let Some(buffers) = glows.sets.get(set).and_then(Option::as_ref) else { return };
+        let Some(buffers) = glows.sets.get(set).and_then(Option::as_ref) else {
+            return;
+        };
         let cull = CullUniforms {
             planes: frame.planes,
             eye: frame.eye,
@@ -581,17 +741,28 @@ impl DistantLights {
         };
         scene.queue.write_buffer(&buffers.cull_uniforms, 0, bytemuck::bytes_of(&cull));
         // Six corners for each glow; the cull adds the glows.
-        scene.queue.write_buffer(&buffers.args, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
+        scene
+            .queue
+            .write_buffer(&buffers.args, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
         let values = GlowUniforms {
             range: [frame.eye[3], 0.0, 0.0, 0.0],
             glow: [frame.glow[0], frame.glow[1], frame.glow[2], 64.0],
             screen: [frame.screen[0], frame.screen[1], frame.screen[2], 0.0],
         };
         scene.queue.write_buffer(&buffers.values, 0, bytemuck::bytes_of(&values));
-        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant lights, cull") });
-        let at = scene.commands.stamps().begin(&mut encoder, "distant lights: the glow cull", nirender_wgpu::stamps::StampKind::Detail);
+        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("distant lights, cull"),
+        });
+        let at = scene.commands.stamps().begin(
+            &mut encoder,
+            "distant lights: the glow cull",
+            nirender_wgpu::stamps::StampKind::Detail,
+        );
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("distant lights, cull"), timestamp_writes: None });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("distant lights, cull"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(&glows.cull);
             pass.set_bind_group(0, &buffers.cull_group, &[]);
             pass.dispatch_workgroups(glows.sources.div_ceil(256), 1, 1);
@@ -608,8 +779,14 @@ impl DistantLights {
     /// buffers and `samples` the samples of the pass.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, view: &wgpu::BindGroup, set: usize, samples: u32) {
         let Some(glows) = self.glows.as_ref() else { return };
-        let Some(buffers) = glows.sets.get(set).and_then(Option::as_ref) else { return };
-        pass.set_pipeline(if samples == glows.samples { &glows.draw } else { &glows.draw_picture });
+        let Some(buffers) = glows.sets.get(set).and_then(Option::as_ref) else {
+            return;
+        };
+        pass.set_pipeline(if samples == glows.samples {
+            &glows.draw
+        } else {
+            &glows.draw_picture
+        });
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, &buffers.draw_group, &[]);
         pass.draw_indirect(&buffers.args, 0);
@@ -626,7 +803,11 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
     let entry = |binding: u32, stage: wgpu::ShaderStages, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: stage,
-        ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None },
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
         count: None,
     };
     let compute = wgpu::ShaderStages::COMPUTE;
@@ -639,8 +820,15 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
             entry(3, compute, wgpu::BufferBindingType::Storage { read_only: false }),
         ],
     });
-    let cull_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant lights, cull"), source: wgpu::ShaderSource::Wgsl(CULL_SHADER.into()) });
-    let cull_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant lights, cull"), bind_group_layouts: &[Some(&cull_layout)], immediate_size: 0 });
+    let cull_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("distant lights, cull"),
+        source: wgpu::ShaderSource::Wgsl(CULL_SHADER.into()),
+    });
+    let cull_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("distant lights, cull"),
+        bind_group_layouts: &[Some(&cull_layout)],
+        immediate_size: 0,
+    });
     let cull = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("distant lights, cull"),
         layout: Some(&cull_pipeline_layout),
@@ -652,21 +840,47 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
     let draw_stages = wgpu::ShaderStages::VERTEX_FRAGMENT;
     let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("distant lights, glows"),
-        entries: &[entry(0, draw_stages, wgpu::BufferBindingType::Uniform), entry(1, wgpu::ShaderStages::VERTEX, wgpu::BufferBindingType::Storage { read_only: true })],
+        entries: &[
+            entry(0, draw_stages, wgpu::BufferBindingType::Uniform),
+            entry(
+                1,
+                wgpu::ShaderStages::VERTEX,
+                wgpu::BufferBindingType::Storage { read_only: true },
+            ),
+        ],
     });
     let source = format!("{}{GLOW_SHADER}", super::view::wgsl());
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant lights, glows"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("distant lights, glows"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
     // Group 0: the view group of the view; group 1: the glows.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant lights, glows"), bind_group_layouts: &[Some(view_layout), Some(&draw_layout)], immediate_size: 0 });
-    let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("distant lights, glows"),
+        bind_group_layouts: &[Some(view_layout), Some(&draw_layout)],
+        immediate_size: 0,
+    });
+    let add = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    };
     // The glows of the frame go into the pass of the game (its samples); a view of its own into
     // a rendered texture has one sample.
     let make_draw = |multisample: wgpu::MultisampleState| {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("distant lights, glows"),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: scene.depth_format,
                 depth_write_enabled: Some(false),
@@ -691,7 +905,17 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
     };
     let draw = make_draw(scene.multisample(false));
     let draw_picture = make_draw(Default::default());
-    let mut glows = Glows { cull, draw, samples: scene.samples, draw_picture, source_buffer, cull_layout, draw_layout, sets: Vec::new(), sources: file.source_count };
+    let mut glows = Glows {
+        cull,
+        draw,
+        samples: scene.samples,
+        draw_picture,
+        source_buffer,
+        cull_layout,
+        draw_layout,
+        sets: Vec::new(),
+        sources: file.source_count,
+    };
     let main = glows.make_set(device);
     glows.sets.push(Some(main));
     glows
@@ -715,7 +939,11 @@ mod tests {
     #[test]
     fn a_read_thread_that_ends_without_an_answer_is_a_failed_read() {
         let (sender, receiver) = channel();
-        let mut lights = DistantLights { loading: Some(receiver), glows: None, frames: 0 };
+        let mut lights = DistantLights {
+            loading: Some(receiver),
+            glows: None,
+            frames: 0,
+        };
         assert!(lights.take_file(false).is_none());
         assert!(lights.loading.is_some());
         drop(sender);
@@ -730,7 +958,11 @@ mod tests {
     fn the_shaders_of_the_lights_are_valid() {
         let check = crate::renderer::shader_check::check;
         check("distant lights, cull", CULL_SHADER).unwrap();
-        check("distant lights, glows", &format!("{}{GLOW_SHADER}", super::super::view::wgsl())).unwrap();
+        check(
+            "distant lights, glows",
+            &format!("{}{GLOW_SHADER}", super::super::view::wgsl()),
+        )
+        .unwrap();
     }
 
     #[test]

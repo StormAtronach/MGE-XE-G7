@@ -723,7 +723,11 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(sources, vec![0x10, 0x20]);
-        assert_eq!(closed, vec![0x1002, 0x1001], "the duplicates of the update event and of the mapping are closed, the last first");
+        assert_eq!(
+            closed,
+            vec![0x1002, 0x1001],
+            "the duplicates of the update event and of the mapping are closed, the last first"
+        );
     }
 
     #[test]
@@ -731,7 +735,10 @@ mod tests {
         let (result, sources, closed) = duplicate_with_failure_at(0);
 
         let handles = result.unwrap();
-        assert_eq!((handles.shared_mem32, handles.update_event32, handles.complete_event32), (0x1001, 0x1002, 0x1003));
+        assert_eq!(
+            (handles.shared_mem32, handles.update_event32, handles.complete_event32),
+            (0x1001, 0x1002, 0x1003)
+        );
         assert_eq!(sources, vec![0x10, 0x20, 0x30]);
         assert!(closed.is_empty());
     }

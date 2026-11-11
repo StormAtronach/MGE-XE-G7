@@ -40,7 +40,10 @@ pub struct Ranges {
 
 impl Ranges {
     pub fn new(capacity: u32) -> Ranges {
-        Ranges { free: if capacity > 0 { vec![(0, capacity)] } else { Vec::new() }, capacity }
+        Ranges {
+            free: if capacity > 0 { vec![(0, capacity)] } else { Vec::new() },
+            capacity,
+        }
     }
 
     pub fn alloc(&mut self, length: u32) -> Option<u32> {
@@ -120,17 +123,32 @@ pub struct Pools {
 
 impl Pools {
     pub fn new(textures: usize, device: &wgpu::Device) -> Pools {
-        Pools { pools: (0..textures).map(|_| None).collect(), max_bytes: device.limits().max_buffer_size, pending: Vec::new(), bytes: 0 }
+        Pools {
+            pools: (0..textures).map(|_| None).collect(),
+            max_bytes: device.limits().max_buffer_size,
+            pending: Vec::new(),
+            bytes: 0,
+        }
     }
 
     /// The vertex and index buffers of a texture, when it has a pool.
     pub fn buffers(&self, texture: u32) -> Option<(&wgpu::Buffer, &wgpu::Buffer)> {
-        self.pools.get(texture as usize)?.as_ref().map(|pool| (&pool.vertices, &pool.indexes))
+        self.pools
+            .get(texture as usize)?
+            .as_ref()
+            .map(|pool| (&pool.vertices, &pool.indexes))
     }
 
     /// Puts the vertices and the indexes of a subset into the pool of its texture. [`None`] when
     /// the pool cannot grow to hold it (the largest buffer of the device).
-    pub fn put(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, texture: u32, vertices: &[u8], indexes: &[u8]) -> Option<Slot> {
+    pub fn put(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: u32,
+        vertices: &[u8],
+        indexes: &[u8],
+    ) -> Option<Slot> {
         let vertex_count = (vertices.len() as u64 / VERTEX) as u32;
         let index_count = (indexes.len() as u32 / 2 + 1) & !1;
         let pool = self.pools.get_mut(texture as usize)?;
@@ -149,14 +167,30 @@ impl Pools {
         let base_vertex = match pool.vertex_ranges.alloc(vertex_count) {
             Some(start) => start,
             None => {
-                let grown = grow(device, queue, &mut pool.vertices, &mut pool.vertex_ranges, vertex_count, VERTEX, self.max_bytes)?;
+                let grown = grow(
+                    device,
+                    queue,
+                    &mut pool.vertices,
+                    &mut pool.vertex_ranges,
+                    vertex_count,
+                    VERTEX,
+                    self.max_bytes,
+                )?;
                 self.bytes += grown;
                 pool.vertex_ranges.alloc(vertex_count)?
             }
         };
         let first_index = match pool.index_ranges.alloc(index_count) {
             Some(start) => start,
-            None => match grow(device, queue, &mut pool.indexes, &mut pool.index_ranges, index_count, 2, self.max_bytes) {
+            None => match grow(
+                device,
+                queue,
+                &mut pool.indexes,
+                &mut pool.index_ranges,
+                index_count,
+                2,
+                self.max_bytes,
+            ) {
                 Some(grown) => {
                     self.bytes += grown;
                     pool.index_ranges.alloc(index_count)?
@@ -175,15 +209,30 @@ impl Pools {
             padded.extend_from_slice(&[0, 0]);
             queue.write_buffer(&pool.indexes, first_index as u64 * 2, &padded);
         }
-        Some(Slot { texture, base_vertex, first_index, vertex_count, index_count })
+        Some(Slot {
+            texture,
+            base_vertex,
+            first_index,
+            vertex_count,
+            index_count,
+        })
     }
 
     /// Room in the pool of a texture for this many more vertices and indexes (the indexes of
     /// each subset made even), in one growth to that size and not in doublings: for the
     /// subsets that are all asked for at once (`distant_land.statics_residency = "all"`). A
     /// subset that then finds no free range of its size grows the pool as before.
-    pub fn reserve(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, texture: u32, vertex_count: u32, index_count: u32) {
-        let Some(pool) = self.pools.get_mut(texture as usize) else { return };
+    pub fn reserve(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: u32,
+        vertex_count: u32,
+        index_count: u32,
+    ) {
+        let Some(pool) = self.pools.get_mut(texture as usize) else {
+            return;
+        };
         if pool.is_none() {
             // Multiples of 4 units, as `grow_to` makes them.
             let vertex_capacity = FIRST_VERTICES.max((vertex_count + 3) & !3);
@@ -201,13 +250,29 @@ impl Pools {
         let (free_vertices, free_indexes) = (pool.vertex_ranges.free_units(), pool.index_ranges.free_units());
         if vertex_count > free_vertices {
             let capacity = pool.vertex_ranges.capacity() as u64 + (vertex_count - free_vertices) as u64;
-            if let Some(grown) = grow_to(device, queue, &mut pool.vertices, &mut pool.vertex_ranges, capacity, VERTEX, self.max_bytes) {
+            if let Some(grown) = grow_to(
+                device,
+                queue,
+                &mut pool.vertices,
+                &mut pool.vertex_ranges,
+                capacity,
+                VERTEX,
+                self.max_bytes,
+            ) {
                 self.bytes += grown;
             }
         }
         if index_count > free_indexes {
             let capacity = pool.index_ranges.capacity() as u64 + (index_count - free_indexes) as u64;
-            if let Some(grown) = grow_to(device, queue, &mut pool.indexes, &mut pool.index_ranges, capacity, 2, self.max_bytes) {
+            if let Some(grown) = grow_to(
+                device,
+                queue,
+                &mut pool.indexes,
+                &mut pool.index_ranges,
+                capacity,
+                2,
+                self.max_bytes,
+            ) {
                 self.bytes += grown;
             }
         }
@@ -248,7 +313,15 @@ fn pool_buffer(device: &wgpu::Device, size: u64, usage: wgpu::BufferUsages) -> w
 /// `needed` does not fit in that. Not twice the size: a pool of the merged subsets of one
 /// texture reaches gigabytes, and a doubling then leaves as much unused (records entry 166).
 /// Gives the bytes added.
-fn grow(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &mut wgpu::Buffer, ranges: &mut Ranges, needed: u32, unit: u64, max_bytes: u64) -> Option<u64> {
+fn grow(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &mut wgpu::Buffer,
+    ranges: &mut Ranges,
+    needed: u32,
+    unit: u64,
+    max_bytes: u64,
+) -> Option<u64> {
     let old = ranges.capacity() as u64;
     let wanted = old + (old / 4).max(needed as u64);
     if wanted.min(max_bytes / unit).min(u32::MAX as u64) < old + needed as u64 {
@@ -268,14 +341,28 @@ fn aligned_capacity(capacity: u64, unit: u64, max_bytes: u64) -> u32 {
 
 /// A buffer for a pool of `capacity` units (at most the largest buffer of the device), with
 /// the bytes of the old one. Gives the bytes added; [`None`] when it would not be larger.
-fn grow_to(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &mut wgpu::Buffer, ranges: &mut Ranges, capacity: u64, unit: u64, max_bytes: u64) -> Option<u64> {
+fn grow_to(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &mut wgpu::Buffer,
+    ranges: &mut Ranges,
+    capacity: u64,
+    unit: u64,
+    max_bytes: u64,
+) -> Option<u64> {
     let old = ranges.capacity();
     let capacity = aligned_capacity(capacity, unit, max_bytes);
     if capacity <= old {
         return None;
     }
-    let larger = pool_buffer(device, capacity as u64 * unit, buffer.usage() & (wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX));
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, a pool grows") });
+    let larger = pool_buffer(
+        device,
+        capacity as u64 * unit,
+        buffer.usage() & (wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX),
+    );
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("distant statics, a pool grows"),
+    });
     encoder.copy_buffer_to_buffer(buffer, 0, &larger, 0, old as u64 * unit);
     nirender_wgpu::gpu::submit(queue, [encoder.finish()]);
     *buffer = larger;
@@ -512,7 +599,9 @@ pub struct Culling {
 
 /// True when the device can choose and draw the statics from the GPU.
 pub fn supported(device: &wgpu::Device) -> bool {
-    device.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
+    device
+        .features()
+        .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
 }
 
 impl Culling {
@@ -520,7 +609,11 @@ impl Culling {
         let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
             count: None,
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -529,7 +622,11 @@ impl Culling {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 storage(1, true),
@@ -542,8 +639,15 @@ impl Culling {
                 storage(8, false),
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("distant statics, cull"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("distant statics, cull"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("distant statics, cull"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("distant statics, cull"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let make = |entry: &str| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("distant statics, cull"),
@@ -556,7 +660,11 @@ impl Culling {
         };
         let places_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant statics, the places"),
-            contents: if places.is_empty() { bytemuck::bytes_of(&[0u32; 8]) } else { bytemuck::cast_slice(places) },
+            contents: if places.is_empty() {
+                bytemuck::bytes_of(&[0u32; 8])
+            } else {
+                bytemuck::cast_slice(places)
+            },
             usage: wgpu::BufferUsages::STORAGE,
         });
         let subsets = device.create_buffer(&wgpu::BufferDescriptor {
@@ -570,13 +678,26 @@ impl Culling {
             contents: bytemuck::bytes_of(&[1u32; 4]),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
-        Culling { layout, cull: make("cull"), compact: make("compact"), places: places_buffer, subsets, groups, world: None, textures }
+        Culling {
+            layout,
+            cull: make("cull"),
+            compact: make("compact"),
+            places: places_buffer,
+            subsets,
+            groups,
+            world: None,
+            textures,
+        }
     }
 
     /// The state of the vis groups: a value for each group, 0 for a hidden one; empty for all
     /// shown.
     pub fn set_groups(&mut self, device: &wgpu::Device, shown: &[u8]) {
-        let values: Vec<u32> = if shown.is_empty() { vec![1; 4] } else { shown.iter().map(|&s| s as u32).collect() };
+        let values: Vec<u32> = if shown.is_empty() {
+            vec![1; 4]
+        } else {
+            shown.iter().map(|&s| s as u32).collect()
+        };
         self.groups = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("distant statics, the vis groups"),
             contents: bytemuck::cast_slice(&values),
@@ -584,7 +705,12 @@ impl Culling {
         });
         // The bind groups name the buffer: they are made again.
         if let Some(world) = self.world.take() {
-            self.world = Some(self.make_world(device, world.name, &[], Some((world.list, world.buckets, world.ranges, world.length))));
+            self.world = Some(self.make_world(
+                device,
+                world.name,
+                &[],
+                Some((world.list, world.buckets, world.ranges, world.length)),
+            ));
         }
     }
 
@@ -602,7 +728,13 @@ impl Culling {
         self.world = Some(self.make_world(device, name.to_vec(), places, None));
     }
 
-    fn make_world(&self, device: &wgpu::Device, name: Vec<u8>, places: &[(u32, u32)], kept: Option<(wgpu::Buffer, wgpu::Buffer, Vec<(u32, u32)>, u32)>) -> WorldList {
+    fn make_world(
+        &self,
+        device: &wgpu::Device,
+        name: Vec<u8>,
+        places: &[(u32, u32)],
+        kept: Option<(wgpu::Buffer, wgpu::Buffer, Vec<(u32, u32)>, u32)>,
+    ) -> WorldList {
         let (list, buckets, ranges, length) = kept.unwrap_or_else(|| {
             let mut ranges = vec![(0u32, 0u32); self.textures.max(1)];
             for (at, &(texture, _)) in places.iter().enumerate() {
@@ -615,7 +747,11 @@ impl Culling {
             let indexes: Vec<u32> = places.iter().map(|&(_, place)| place).collect();
             let list = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("distant statics, the places of a world space"),
-                contents: if indexes.is_empty() { bytemuck::bytes_of(&[0u32; 4]) } else { bytemuck::cast_slice(&indexes) },
+                contents: if indexes.is_empty() {
+                    bytemuck::bytes_of(&[0u32; 4])
+                } else {
+                    bytemuck::cast_slice(&indexes)
+                },
                 usage: wgpu::BufferUsages::STORAGE,
             });
             let pairs: Vec<[u32; 2]> = ranges.iter().map(|&(start, length)| [start, length]).collect();
@@ -626,39 +762,110 @@ impl Culling {
             });
             (list, buckets, ranges, indexes.len() as u32)
         });
-        let sets = (0..FIXED_SETS).map(|_| Some(self.make_set(device, &list, &buckets, ranges.len(), length))).collect();
-        WorldList { name, list, buckets, ranges, length, sets }
+        let sets = (0..FIXED_SETS)
+            .map(|_| Some(self.make_set(device, &list, &buckets, ranges.len(), length)))
+            .collect();
+        WorldList {
+            name,
+            list,
+            buckets,
+            ranges,
+            length,
+            sets,
+        }
     }
 
     /// The buffers of one set of a world list: the values, the flags of the places, the draws
     /// and the counts. The flags and the draws have a slot for each place (24 bytes).
-    fn make_set(&self, device: &wgpu::Device, list: &wgpu::Buffer, buckets: &wgpu::Buffer, textures: usize, length: u32) -> SetBuffers {
+    fn make_set(
+        &self,
+        device: &wgpu::Device,
+        list: &wgpu::Buffer,
+        buckets: &wgpu::Buffer,
+        textures: usize,
+        length: u32,
+    ) -> SetBuffers {
         let slots = u64::from(length.max(1));
-        let make = |label: &str, size: u64, usage: wgpu::BufferUsages| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
-        let uniforms = make("distant statics, cull values", size_of::<CullUniforms>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
-        let flags = make("distant statics, the triangles of each place", slots * 4, wgpu::BufferUsages::STORAGE);
-        let draws = make("distant statics, the draws", slots * 20, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT);
+        let make = |label: &str, size: u64, usage: wgpu::BufferUsages| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let uniforms = make(
+            "distant statics, cull values",
+            size_of::<CullUniforms>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        let flags = make(
+            "distant statics, the triangles of each place",
+            slots * 4,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let draws = make(
+            "distant statics, the draws",
+            slots * 20,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+        );
         let counts = make(
             "distant statics, the draws of each texture and the counts",
             (textures + STATS) as u64 * 4,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
         );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("distant statics, cull of a world"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.places.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.subsets.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.groups.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: list.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: buckets.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: flags.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: draws.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: counts.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.places.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.subsets.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.groups.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: list.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: buckets.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: flags.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: draws.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: counts.as_entire_binding(),
+                },
             ],
         });
-        SetBuffers { uniforms, draws, counts, group, bytes: set_bytes(length, textures) }
+        SetBuffers {
+            uniforms,
+            draws,
+            counts,
+            group,
+            bytes: set_bytes(length, textures),
+        }
     }
 
     /// Makes the buffers of the set `set` in the list of the world space, when it has none: a
@@ -688,31 +895,42 @@ impl Culling {
 
     /// True when the set `set` has its buffers in the list of the world space.
     pub fn has_set(&self, set: usize) -> bool {
-        self.world.as_ref().is_some_and(|world| world.sets.get(set).is_some_and(Option::is_some))
+        self.world
+            .as_ref()
+            .is_some_and(|world| world.sets.get(set).is_some_and(Option::is_some))
     }
 
     /// The bytes that a new set would take in the list of the world space now; 0 without a
     /// world.
     pub fn next_set_bytes(&self) -> u64 {
-        self.world.as_ref().map_or(0, |world| set_bytes(world.length, world.ranges.len()))
+        self.world
+            .as_ref()
+            .map_or(0, |world| set_bytes(world.length, world.ranges.len()))
     }
 
     /// The bytes of the sets of the views of their own that exist (all sets from
     /// [`FIXED_SETS`] on).
     pub fn views_bytes(&self) -> u64 {
-        self.world.as_ref().map_or(0, |world| world.sets.iter().skip(FIXED_SETS).flatten().map(|set| set.bytes).sum())
+        self.world.as_ref().map_or(0, |world| {
+            world.sets.iter().skip(FIXED_SETS).flatten().map(|set| set.bytes).sum()
+        })
     }
 
     /// Runs the compute passes of a set in a command buffer of their own, before the commands
     /// of the frame that draw them.
     pub fn run(&self, scene: &nirender_wgpu::SceneView, set: usize, uniforms: &CullUniforms) {
-        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull") });
+        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("distant statics, cull"),
+        });
         let name = match set {
             0 => "distant statics: the GPU cull of the view",
             1 => "distant statics: the GPU cull of the mirror",
             _ => "distant statics: the GPU cull of a shadow layer",
         };
-        let at = scene.commands.stamps().begin(&mut encoder, name, nirender_wgpu::stamps::StampKind::Detail);
+        let at = scene
+            .commands
+            .stamps()
+            .begin(&mut encoder, name, nirender_wgpu::stamps::StampKind::Detail);
         self.encode(scene.queue, &mut encoder, set, uniforms);
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
@@ -722,12 +940,17 @@ impl Culling {
     /// commands that draw the set.
     pub fn encode(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, set: usize, uniforms: &CullUniforms) {
         let Some(world) = self.world.as_ref() else { return };
-        let Some(buffers) = world.sets.get(set).and_then(Option::as_ref) else { return };
+        let Some(buffers) = world.sets.get(set).and_then(Option::as_ref) else {
+            return;
+        };
         let mut values = *uniforms;
         values.counts[0] = world.length;
         values.counts[1] = world.ranges.len() as u32;
         queue.write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&values));
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("distant statics, cull"), timestamp_writes: None });
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("distant statics, cull"),
+            timestamp_writes: None,
+        });
         pass.set_bind_group(0, &buffers.group, &[]);
         if world.length > 0 {
             pass.set_pipeline(&self.cull);
@@ -739,15 +962,28 @@ impl Culling {
 
     /// Records the draws of a set: one indirect call for each texture with places. `bind`
     /// sets the texture of a texture and gives false when it has no pool.
-    pub fn draw(&self, set: usize, pass: &mut wgpu::RenderPass<'static>, mut bind: impl FnMut(&mut wgpu::RenderPass<'static>, u32) -> bool) -> u32 {
+    pub fn draw(
+        &self,
+        set: usize,
+        pass: &mut wgpu::RenderPass<'static>,
+        mut bind: impl FnMut(&mut wgpu::RenderPass<'static>, u32) -> bool,
+    ) -> u32 {
         let Some(world) = self.world.as_ref() else { return 0 };
-        let Some(buffers) = world.sets.get(set).and_then(Option::as_ref) else { return 0 };
+        let Some(buffers) = world.sets.get(set).and_then(Option::as_ref) else {
+            return 0;
+        };
         let mut calls = 0;
         for (texture, &(start, length)) in world.ranges.iter().enumerate() {
             if length == 0 || !bind(pass, texture as u32) {
                 continue;
             }
-            pass.multi_draw_indexed_indirect_count(&buffers.draws, start as u64 * 20, &buffers.counts, texture as u64 * 4, length);
+            pass.multi_draw_indexed_indirect_count(
+                &buffers.draws,
+                start as u64 * 20,
+                &buffers.counts,
+                texture as u64 * 4,
+                length,
+            );
             calls += 1;
         }
         calls
@@ -764,7 +1000,9 @@ impl Culling {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("distant statics, cull counts") });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("distant statics, cull counts"),
+        });
         for (at, buffers) in world.sets.iter().enumerate() {
             let Some(buffers) = buffers else { continue };
             let start = world.ranges.len() as u64 * 4;
@@ -774,7 +1012,9 @@ impl Culling {
         nirender_wgpu::gpu::submit(queue, [encoder.finish()]);
         read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        let Ok(data) = read.slice(..).get_mapped_range() else { return Vec::new() };
+        let Ok(data) = read.slice(..).get_mapped_range() else {
+            return Vec::new();
+        };
         let words: &[u32] = bytemuck::cast_slice(&data);
         words.chunks(STATS).map(|chunk| core::array::from_fn(|i| chunk[i])).collect()
     }

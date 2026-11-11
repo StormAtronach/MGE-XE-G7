@@ -27,7 +27,14 @@ fn main() {
         "build" => cmd_build(&root, mode),
         // The archive is a release build, as the builds of each day: it packs fast, and it
         // has the same binaries that the tests ran. `--max-perf` is for a final release.
-        "dist" => cmd_dist(&root, if matches!(mode, BuildMode::MaxPerf) { BuildMode::MaxPerf } else { BuildMode::Release }),
+        "dist" => cmd_dist(
+            &root,
+            if matches!(mode, BuildMode::MaxPerf) {
+                BuildMode::MaxPerf
+            } else {
+                BuildMode::Release
+            },
+        ),
         "deploy" => cmd_deploy(&root, mode, morrowind_dir),
         "compdb" => cmd_compdb(&root),
         _ => print_usage(),
@@ -345,7 +352,9 @@ fn cmd_build(root: &Path, mode: BuildMode) {
 /// that NIRENDER_PLUGIN_DIR names; a relative value is from the workspace root, as in
 /// d3d8/build.rs, so that the two read one folder.
 fn plugin_dir(root: &Path) -> PathBuf {
-    env::var("NIRENDER_PLUGIN_DIR").map(|value| root.join(value)).unwrap_or_else(|_| root.parent().unwrap().join("nirender-plugin"))
+    env::var("NIRENDER_PLUGIN_DIR")
+        .map(|value| root.join(value))
+        .unwrap_or_else(|_| root.parent().unwrap().join("nirender-plugin"))
 }
 
 /// The Lua files of the nirender mod that a player's install needs: `main.lua` and the files
@@ -373,8 +382,12 @@ fn loaded_lua(text: &str) -> Vec<String> {
         for (at, _) in text.match_indices(call) {
             let rest = text[at + call.len()..].trim_start();
             let rest = rest.strip_prefix('(').unwrap_or(rest).trim_start();
-            let Some(quote) = rest.chars().next().filter(|c| matches!(c, '"' | '\'')) else { continue };
-            let Some(name) = rest[1..].strip_prefix("nirender.") else { continue };
+            let Some(quote) = rest.chars().next().filter(|c| matches!(c, '"' | '\'')) else {
+                continue;
+            };
+            let Some(name) = rest[1..].strip_prefix("nirender.") else {
+                continue;
+            };
             let Some(end) = name.find(quote) else { continue };
             if end > 0 {
                 names.push(format!("{}.lua", name[..end].replace('.', "/")));
@@ -419,7 +432,10 @@ fn collect_plugin(root: &Path, out_dir: &Path, build: bool) -> bool {
         return false;
     }
     for name in reached_lua(|name| fs::read_to_string(source.join(name)).ok()) {
-        assert!(SHIPPED_LUA.contains(&name.as_str()), "main.lua reaches {name}, which SHIPPED_LUA of xtask does not name");
+        assert!(
+            SHIPPED_LUA.contains(&name.as_str()),
+            "main.lua reaches {name}, which SHIPPED_LUA of xtask does not name"
+        );
     }
     let lib = out_dir.join("Data Files/MWSE/lib");
     let mods = out_dir.join("Data Files/MWSE/mods/nirender");
@@ -476,7 +492,10 @@ fn cmd_dist(root: &Path, mode: BuildMode) {
     copy_readme(root, &staging);
     // The wgpu renderer needs the nirender plugin: the archive carries it.
     if !collect_plugin(root, &staging, true) {
-        eprintln!("error: the nirender plugin was not found at {} (set NIRENDER_PLUGIN_DIR)", plugin_dir(root).display());
+        eprintln!(
+            "error: the nirender plugin was not found at {} (set NIRENDER_PLUGIN_DIR)",
+            plugin_dir(root).display()
+        );
         process::exit(1);
     }
 
@@ -574,7 +593,11 @@ fn resolve_from_local_toml(root: &Path) -> Option<PathBuf> {
 /// Ship the repo root README next to the binaries, renamed: the destination is a
 /// shared Morrowind directory where a bare README.md would collide with other mods.
 fn copy_readme(root: &Path, dest: &Path) {
-    let readmes = [("README.md", "MGE XE Readme.md"), ("RENDERER.md", "MGE XE Renderer Readme.md"), ("mgeHost64/POST_SHADERS.md", "MGE XE Post Shaders Readme.md")];
+    let readmes = [
+        ("README.md", "MGE XE Readme.md"),
+        ("RENDERER.md", "MGE XE Renderer Readme.md"),
+        ("mgeHost64/POST_SHADERS.md", "MGE XE Post Shaders Readme.md"),
+    ];
     for (name, shipped) in readmes {
         let src = root.join(name);
         if src.exists() {
@@ -667,7 +690,10 @@ mod tests {
     #[test]
     fn every_spelling_of_a_load_is_found() {
         assert_eq!(loaded_lua(r#"dofile("Data Files/MWSE/mods/nirender/a.lua")"#), vec!["a.lua"]);
-        assert_eq!(loaded_lua(r#"dofile([[Data Files\MWSE\mods\nirender\b.lua]])"#), vec!["b.lua"]);
+        assert_eq!(
+            loaded_lua(r#"dofile([[Data Files\MWSE\mods\nirender\b.lua]])"#),
+            vec!["b.lua"]
+        );
         assert_eq!(loaded_lua(r#"require("nirender.c")"#), vec!["c.lua"]);
         assert_eq!(loaded_lua(r#"require 'nirender.d'"#), vec!["d.lua"]);
         assert_eq!(loaded_lua(r#"include("nirender.sub.e")"#), vec!["sub/e.lua"]);
@@ -687,7 +713,10 @@ mod tests {
         };
         assert_eq!(reached_lua(read), vec!["main.lua", "failure.lua", "late.lua"]);
         // A file that is not there is still named: the list must say it.
-        assert_eq!(reached_lua(|name| (name == "main.lua").then(|| String::from(r#"require("nirender.gone")"#))), vec!["main.lua", "gone.lua"]);
+        assert_eq!(
+            reached_lua(|name| (name == "main.lua").then(|| String::from(r#"require("nirender.gone")"#))),
+            vec!["main.lua", "gone.lua"]
+        );
     }
 
     /// The plugin's own files against the list: main.lua must be there, or the test says so.
@@ -696,12 +725,19 @@ mod tests {
     fn the_plugins_main_lua_reaches_only_shipped_files() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let source = plugin_dir(root).join("mod/MWSE/mods/nirender");
-        assert!(source.join("main.lua").exists(), "no main.lua at {}: set NIRENDER_PLUGIN_DIR", source.display());
+        assert!(
+            source.join("main.lua").exists(),
+            "no main.lua at {}: set NIRENDER_PLUGIN_DIR",
+            source.display()
+        );
         for name in reached_lua(|name| fs::read_to_string(source.join(name)).ok()) {
             assert!(SHIPPED_LUA.contains(&name.as_str()), "main.lua reaches {name}");
         }
         for name in SHIPPED_LUA {
-            assert!(source.join(name).exists(), "SHIPPED_LUA names {name}, which the mod does not have");
+            assert!(
+                source.join(name).exists(),
+                "SHIPPED_LUA names {name}, which the mod does not have"
+            );
         }
     }
 }

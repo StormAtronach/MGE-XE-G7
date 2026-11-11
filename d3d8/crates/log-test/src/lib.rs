@@ -23,7 +23,12 @@ mod tests {
         let path = std::env::temp_dir().join(format!("mge-log-test-{}.log", std::process::id()));
         let text = CString::new(path.to_str().unwrap()).unwrap();
         // SAFETY: a NUL-terminated path that lives through the call.
-        assert_eq!(unsafe { mge_log_test_write(text.as_ptr()) }, 0, "the log at {} did not open", path.display());
+        assert_eq!(
+            unsafe { mge_log_test_write(text.as_ptr()) },
+            0,
+            "the log at {} did not open",
+            path.display()
+        );
         let bytes = std::fs::read(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         String::from_utf8(bytes).unwrap()
@@ -42,7 +47,10 @@ mod tests {
         assert_eq!(lines[0].len(), 4091);
         assert!(lines[0].bytes().all(|byte| byte == b'x'));
         assert_eq!(lines[1], "short 7");
-        assert_eq!(lines[2], "  41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F 50     ABCDEFGHIJKLMNOP");
+        assert_eq!(
+            lines[2],
+            "  41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F 50     ABCDEFGHIJKLMNOP"
+        );
         assert_eq!(lines[3], "  51 52 53 54     QRST");
     }
 
@@ -50,7 +58,12 @@ mod tests {
     fn run(path: &std::path::Path, line: &str) {
         let (path_text, line_text) = (CString::new(path.to_str().unwrap()).unwrap(), CString::new(line).unwrap());
         // SAFETY: NUL-terminated strings that live through the call.
-        assert_eq!(unsafe { mge_log_test_run(path_text.as_ptr(), line_text.as_ptr()) }, 0, "the log at {} did not open", path.display());
+        assert_eq!(
+            unsafe { mge_log_test_run(path_text.as_ptr(), line_text.as_ptr()) },
+            0,
+            "the log at {} did not open",
+            path.display()
+        );
     }
 
     /// The log keeps the run before as `.1`, in place of the one before that; the first run
@@ -99,7 +112,9 @@ mod tests {
         // SAFETY: NUL-terminated strings that live through the call.
         assert_eq!(unsafe { mge_log_test_plugin_text(path_text.as_ptr(), text.as_ptr()) }, 0);
         let written = std::fs::read_to_string(&path).unwrap();
-        let expected = format!("before\r\nnirender: own device: made\r\nnirender: stream: two\r\nnirender: lines\r\nnirender: {long}\r\nafter\r\n");
+        let expected = format!(
+            "before\r\nnirender: own device: made\r\nnirender: stream: two\r\nnirender: lines\r\nnirender: {long}\r\nafter\r\n"
+        );
         assert_eq!(written, expected);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -114,7 +129,10 @@ mod tests {
         assert_eq!(unsafe { mge_log_test_two_threads(path_text.as_ptr(), 2000) }, 0);
         let written = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = written.split_terminator("\r\n").collect();
-        let plugin = lines.iter().filter(|line| **line == "nirender: plugin line of the cell worker").count();
+        let plugin = lines
+            .iter()
+            .filter(|line| **line == "nirender: plugin line of the cell worker")
+            .count();
         let own = lines.iter().filter(|line| **line == "own line of MGE XE").count();
         assert_eq!((plugin, own, lines.len()), (2000, 2000, 4000), "a line mixed with another");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
