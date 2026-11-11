@@ -21,7 +21,7 @@ pub(in crate::renderer) struct Uniforms {
     pub sun_col: [f32; 4],
     /// The sky colour, and the good weather value.
     pub sky_col: [f32; 4],
-    /// x: the debug term (`MGE_XE_WATER_DEBUG`); y: 1 under water; z: 1 in a plain interior
+    /// x: the debug term (the debug view `water`); y: 1 under water; z: 1 in a plain interior
     /// (`water_is_interior` of the water hooks).
     pub modes: [f32; 4],
     /// The two numbers of the depth of the projection of the game, for the distance of a
@@ -430,7 +430,7 @@ fn underwater(uv: vec2f, w: f32, texcoords: vec4f, world_xy: vec2f, eye_vec: vec
     let seen = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
     let refracted = mix(u.fog_color.rgb, seen, exp(-dist / 500.0));
     let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w, 1.0);
-    // A look at one term, for a test: MGE_XE_WATER_DEBUG, as above the water (1 and 2), and
+    // A look at one term, for a test: the debug view `water`, as above the water (1 and 2), and
     // 10 for the picture of the game before the fog of the water is mixed into it.
     if water.modes.x == 1.0 {
         return vec4f(reflected, 1.0);
