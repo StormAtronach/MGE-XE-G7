@@ -31,7 +31,9 @@
 //!   Data`).
 //! - `XE Mod Shadow Data`: no code, the line `//! values: shade = 0.4, shade_color = 1.0 0.97
 //!   0.81, esm_c = 60, esm_bias = 0.12` (each key may be left out). The scale of the map's depth
-//!   stays out: it matches the map's format.
+//!   stays out: it matches the map's format. A value out of its range drops the file and the
+//!   Shadow file with it: `shade` 0.01 or more, each number of `shade_color` 0 to 1, `esm_c`
+//!   above 0 and at most 88, `esm_bias` any number.
 
 use nirender_wgpu::wgpu::naga;
 
@@ -150,6 +152,18 @@ impl ShadowValues {
                 other => return Err(format!("the value `{other}` is not known (shade, shade_color, esm_c, esm_bias)")),
             }
         }
+        // `shadowSunEstimate` divides by the shade plus the light, which is 0 at night: 0/0 at a
+        // shade of 0.
+        if values.shade < 0.01 {
+            return Err(format!("the value shade = {} is out of its range: 0.01 or more", values.shade));
+        }
+        if values.shade_color.iter().any(|part| !(0.0..=1.0).contains(part)) {
+            let [r, g, b] = values.shade_color;
+            return Err(format!("the value shade_color = {r} {g} {b} is out of its range: 0 to 1 in each number"));
+        }
+        if !(values.esm_c > 0.0 && values.esm_c <= 88.0) {
+            return Err(format!("the value esm_c = {} is out of its range: above 0, at most 88", values.esm_c));
+        }
         Ok(values)
     }
 }
@@ -193,7 +207,8 @@ impl CoreMods {
     /// [`load`](Self::load) without the switch and the print.
     fn read(read: &dyn Fn(&str) -> Option<Vec<u8>>, shadow_homes: &[Home]) -> CoreMods {
         let mut mods = CoreMods::built_in();
-        let file = |name: &str, extension: &str| read(&format!("{FOLDER}/XE Mod {name}.{extension}")).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        // A byte order mark, which an editor on Windows can put first, is not part of the text.
+        let file = |name: &str, extension: &str| read(&format!("{FOLDER}/XE Mod {name}.{extension}")).map(|bytes| String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string());
         for name in DIRECT3D9_FILES {
             if file(name, "wgsl").is_none() && file(name, "fx").is_some() {
                 mods.report.push(format!("core mod: XE Mod {name}.fx is for Direct3D 9; the wgpu renderer reads XE Mod {name}.wgsl, and there is none"));
@@ -273,10 +288,19 @@ fn shadow_mod(shadow_file: Option<&str>, data_file: Option<&str>, homes: &[Home]
     Ok(ShadowMod { hooks, values, defined, values_line })
 }
 
-/// The `//! key: value` lines at the start of a file: the first is the interface, the others
-/// are keys of `allowed`.
+/// The `//! key: value` lines at the start of a file, with blank lines between them: the first
+/// is the interface, the others are keys of `allowed`. A `//!` line after the first line of
+/// code is an error, so that no value is lost without a word.
 fn header(text: &str, allowed: &[&str]) -> Result<Vec<(String, String)>, String> {
-    let mut lines = text.lines().map_while(|line| line.strip_prefix("//!"));
+    let mut rest = text.lines().map(str::trim).skip_while(|line| line.is_empty()).filter(|line| !line.is_empty()).peekable();
+    let mut header_lines = Vec::new();
+    while let Some(line) = rest.next_if(|line| line.starts_with("//!")) {
+        header_lines.push(&line[3..]);
+    }
+    if let Some(late) = rest.find(|line| line.starts_with("//!")) {
+        return Err(format!("the line `{late}` comes after the code: the `//!` lines come first"));
+    }
+    let mut lines = header_lines.into_iter();
     let interface = lines.next().and_then(|line| line.split_once(':')).filter(|(key, _)| key.trim() == "interface").map(|(_, value)| value.trim().to_string());
     match interface {
         None => return Err(format!("no line `//! interface: {INTERFACE}` at its start")),
@@ -497,6 +521,9 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             (good_shadow.clone(), format!("{}//! values: shade = dark\n", header_line()), "XE Mod Shadow Data.wgsl: `dark` of the value shade is not a number"),
             (good_shadow.clone(), format!("{}//! values: depth = 1\n", header_line()), "the value `depth` is not known"),
             (good_shadow.clone(), format!("{}//! values: shade_color = 1 1\n", header_line()), "the value shade_color has 2 numbers, not 3"),
+            (good_shadow.clone(), format!("{}//! values: shade = 0\n", header_line()), "the value shade = 0 is out of its range: 0.01 or more"),
+            (good_shadow.clone(), format!("{}//! values: shade_color = 1 2 0\n", header_line()), "the value shade_color = 1 2 0 is out of its range: 0 to 1 in each number"),
+            (good_shadow.clone(), format!("{}//! values: esm_c = 88.5\n", header_line()), "the value esm_c = 88.5 is out of its range: above 0, at most 88"),
             (good_shadow.clone(), format!("{}//! values: shade = 0.8\nfn mod_x() {{}}\nfn shadow_esm(dz: f32) -> f32 {{ return dz; }}\n", header_line()), "XE Mod Shadow Data.wgsl: the function `shadow_esm`"),
             (format!("{}fn helper() {{}}\n", header_line()), good_data.clone(), "XE Mod Shadow.wgsl: the function `helper`"),
         ] {
@@ -512,6 +539,25 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         let mods = mods_of(&[("Water.fx", "technique T {}"), ("Sky.fx", "technique T {}"), ("Sky.wgsl", "not read yet")], &HOMES);
         assert_eq!(mods.report()[0], "core mod: XE Mod Water.fx is for Direct3D 9; the wgpu renderer reads XE Mod Water.wgsl, and there is none");
         assert_eq!(mods.report().len(), 2, "{:?}", mods.report());
+    }
+
+    /// Blank lines between the `//!` lines keep the values; a `//!` line after the code drops
+    /// the file with a word; a byte order mark before the first line is not read.
+    #[test]
+    fn the_header_takes_blank_lines_and_a_byte_order_mark() {
+        let data = format!("\n{}\n//! values: shade = 0.8\n", header_line());
+        let mods = mods_of(&[("Shadow Data.wgsl", &data)], &HOMES);
+        assert_eq!(mods.shadow_values().shade, 0.8, "{:?}", mods.report());
+        let late = format!("{}fn mod_x() {{}}\n//! values: shade = 0.8\n", header_line());
+        let mods = mods_of(&[("Shadow Data.wgsl", &late)], &HOMES);
+        assert_eq!(mods.shadow_values(), ShadowValues::default());
+        assert!(mods.report()[0].contains("the line `//! values: shade = 0.8` comes after the code"), "{:?}", mods.report());
+        let marked = format!("\u{feff}{}//! values: shade = 0.8\n", header_line());
+        let mods = mods_of(&[("Shadow Data.wgsl", &marked)], &HOMES);
+        assert_eq!(mods.shadow_values().shade, 0.8, "{:?}", mods.report());
+        let marked = format!("\u{feff}{}{SHADOW_ESM}", header_line());
+        let mods = mods_of(&[("Shadow.wgsl", &marked)], &HOMES);
+        assert!(!mods.shadow_hooks().contains('\u{feff}') && mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)"), "{:?}", mods.report());
     }
 
     #[test]
