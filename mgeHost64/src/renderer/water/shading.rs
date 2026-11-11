@@ -21,7 +21,8 @@ pub(in crate::renderer) struct Uniforms {
     pub sun_col: [f32; 4],
     /// The sky colour, and the good weather value.
     pub sky_col: [f32; 4],
-    /// x: the debug term (`MGE_XE_WATER_DEBUG`); y: 1 under water.
+    /// x: the debug term (`MGE_XE_WATER_DEBUG`); y: 1 under water; z: 1 in a plain interior
+    /// (`water_is_interior` of the water hooks).
     pub modes: [f32; 4],
     /// The two numbers of the depth of the projection of the game, for the distance of a
     /// pixel from its depth; then the most height for its width of the blur that is sharp
@@ -42,6 +43,12 @@ pub(in crate::renderer) struct Uniforms {
     /// for the distance of a pixel of its depth; then those of the clip depth of the plane:
     /// the near plane of the game and the far plane of the distant land.
     pub land: [f32; 4],
+    /// The colour of the sun with the light multiplier of the weather and no sunlight factor:
+    /// the variable `sunCol` of Direct3D 9, for the water hooks (`water_sun_color`).
+    pub sun_color: [f32; 4],
+    /// The wind of the weather in x and y: the variable `windVec` of Direct3D 9, for the water
+    /// hooks (`water_wind`).
+    pub wind: [f32; 4],
 }
 
 /// The caustics: the light that the waves of a surface focus on what is under it. One
@@ -91,6 +98,8 @@ struct Water {
     wave: vec4f,
     mirror: vec4f,
     land: vec4f,
+    sun_color: vec4f,
+    wind: vec4f,
 }
 @group(1) @binding(0) var<uniform> water: Water;
 @group(1) @binding(1) var reflection: texture_2d<f32>;
@@ -129,22 +138,25 @@ fn fog_water(direction: vec3f, distance: f32) -> vec4f {
     return vec4f(added, fog);
 }
 
-// getFinalWaterNormal: two reads of the wave texture, the far one past 8000 units.
-fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
-    let t = 0.4 * water.time.x;
-    let far = textureSample(waves, wave_sampler, vec3f(texcoords.xy, t)).rg;
-    var close = textureSample(waves, wave_sampler, vec3f(texcoords.zw, t)).rg;
+// The volume of the waves at `coords` (x and y the place, z the time).
+fn wave_at(coords: vec3f) -> vec4f {
+    return textureSample(waves, wave_sampler, coords);
+}
+
+// `normal` with the ripples of the rain (at the close wave coordinates `close`) and of the
+// player (at the place `world_xy`) added; unchanged without the dynamic waves. The ripples of
+// the rain repeat over the water. Those of the player are in the world around the player, and
+// nothing outside of their texture (a border of 0).
+fn ripples_on(normal: vec2f, close: vec2f, world_xy: vec2f) -> vec2f {
+    var out = normal;
     if water.wave.w > 0.5 {
-        // The ripples of the rain repeat over the water. Those of the player are in the
-        // world around the player, and nothing outside of their texture (a border of 0).
-        close += textureSampleLevel(rain, wave_sampler, texcoords.zw, 0.0).ba;
+        out += textureSampleLevel(rain, wave_sampler, close, 0.0).ba;
         let at = (world_xy - water.wave.xy) / 1280.0;
         if all(at >= vec2f(0.0)) && all(at <= vec2f(1.0)) {
-            close += textureSampleLevel(player_waves, clamp_sampler, at, 0.0).ba;
+            out += textureSampleLevel(player_waves, clamp_sampler, at, 0.0).ba;
         }
     }
-    let n = 2.0 * mix(close, far, clamp(distance / 8000.0, 0.0, 1.0)) - 1.0;
-    return normalize(vec3f(n, 1.0));
+    return out;
 }
 
 // The distance along the view of the camera at a point of the picture, from the depth of
@@ -435,17 +447,32 @@ fn underwater(uv: vec2f, w: f32, texcoords: vec4f, world_xy: vec2f, eye_vec: vec
 }
 ";
 
+/// The built-in `water_normal` (`getFinalWaterNormal`): a hook of `XE Mod Water`
+/// (`core_mods.rs`). The plane takes it or the hook of a core mod; the surfaces of the water
+/// volumes and the dry spaces always take it.
+pub(in crate::renderer) const WATER_NORMAL: &str = "
+// getFinalWaterNormal: two reads of the wave texture, the far one past 8000 units.
+fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
+    let t = 0.4 * water.time.x;
+    let far = wave_at(vec3f(texcoords.xy, t)).rg;
+    var close = wave_at(vec3f(texcoords.zw, t)).rg;
+    close = ripples_on(close, texcoords.zw, world_xy);
+    let n = 2.0 * mix(close, far, clamp(distance / 8000.0, 0.0, 1.0)) - 1.0;
+    return normalize(vec3f(n, 1.0));
+}
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_water_struct_has_the_size_of_its_wgsl() {
-        // A matrix and eleven vectors of four numbers.
-        assert_eq!(size_of::<Uniforms>(), 4 * (16 + 11 * 4));
+        // A matrix and thirteen vectors of four numbers.
+        assert_eq!(size_of::<Uniforms>(), 4 * (16 + 13 * 4));
         let water = &COMMON[COMMON.find("struct Water {").unwrap()..];
         let water = &water[..water.find('}').unwrap()];
-        assert_eq!(water.matches(": vec4f,").count(), 11);
+        assert_eq!(water.matches(": vec4f,").count(), 13);
         assert_eq!(water.matches(": mat4x4f,").count(), 1);
     }
 }

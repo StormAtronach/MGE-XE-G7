@@ -1202,6 +1202,12 @@ fn shadow_homes() -> [core_mods::Home; 3] {
     ]
 }
 
+/// The shader that calls the water hooks: the plane of the water. The surfaces of the water
+/// volumes and the dry spaces keep the built-ins.
+fn water_homes() -> [core_mods::Home; 1] {
+    [core_mods::Home { name: "water plane", check: |hooks| shader_check::check("water plane", &water::plane_source(hooks)).map(|_| ()) }]
+}
+
 /// The casters of the shadow map: `ShadowVS` and `ShadowPS` of `XE Shadowmap.fx` for the
 /// land. It has the view group only (the matrix of the layer in `view_projection`).
 const LAND_SHADOW_SHADER: &str = "
@@ -1269,7 +1275,7 @@ impl DistantLand {
     pub fn start(root: &Path, live: bool) -> DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
-        let core_mods = core_mods::CoreMods::load(&|name| data_file(root, name), &shadow_homes());
+        let core_mods = core_mods::CoreMods::load(&|name| data_file(root, name), &shadow_homes(), &water_homes());
         // The places of the full tier: the player's setting, or the environment variable for a
         // test, which may go up to the code's bound (one place for each view slot).
         let full_tier_max = std::env::var("MGE_XE_FULL_TIER_MAX")
@@ -2594,7 +2600,7 @@ impl Extension for DistantLand {
         let water_cell = self.water_on && self.environment.is_some_and(|e| e.has_water != 0) && (water_land || scene.interior);
         if (water_cell || (self.water_on && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
             let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
-            match timed("the water's pipelines", || Water::new(scene, &self.waves, &views.layout, self.core_mods.shadow_hooks())) {
+            match timed("the water's pipelines", || Water::new(scene, &self.waves, &views.layout, &self.core_mods)) {
                 Ok(water) => self.water = Some(water),
                 Err(problem) => {
                     println!("water: {problem}; no water");
@@ -4492,6 +4498,15 @@ mod shader_tests {
 
     /// Each home of the shadow hooks takes the built-in hooks, and the world shader has each
     /// hook once.
+    /// Each home of the shadow hooks gives their library with the signatures of the interface.
+    #[test]
+    fn the_homes_of_the_shadow_hooks_give_their_library() {
+        let hooks = core_mods::CoreMods::built_in();
+        for (name, source) in [("world", world_source(hooks.shadow_hooks())), ("grass", statics::grass_source(hooks.shadow_hooks())), ("water volume", water::volume_source(hooks.shadow_hooks()))] {
+            assert_eq!(core_mods::library_differences(core_mods::SHADOW_LIBRARY, &source), Vec::<String>::new(), "{name}");
+        }
+    }
+
     #[test]
     fn the_homes_of_the_shadow_hooks_take_the_built_ins() {
         let hooks = core_mods::CoreMods::built_in();
