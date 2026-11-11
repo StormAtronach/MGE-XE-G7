@@ -10,6 +10,9 @@
 use std::path::Path;
 use std::process::Command;
 
+/// The variable that `.cargo/config.toml` sets to the folder of the work tree.
+const TREE_VARIABLE: &str = "BUILD_ID_TREE";
+
 /// The output of `git` with `args` in the current folder, or [`None`] when git is not there
 /// or the folder is not a repository.
 fn git(args: &[&str]) -> Option<String> {
@@ -31,7 +34,15 @@ pub fn commit() -> String {
 /// HEAD, the branch it names or the packed refs change, that is at a commit or a checkout.
 /// Not the index: an IDE's `git status` rewrites it, and the whole C++ of d3d8 would build
 /// again. So the `-dirty` mark is as of the last commit or checkout, not of the last edit.
+///
+/// The script also runs again when the work tree changes: [`TREE_VARIABLE`] holds the folder of
+/// the tree (the `[env]` table of `.cargo/config.toml`). Two work trees of one repository can
+/// share a target folder, and then one build script output serves both. The git folder of a
+/// work tree is outside the tree, so cargo keeps the watched paths absolute: they name the git
+/// files of the first tree, and without the variable a build of the second tree kept the
+/// commit of the first. `tools/build_id_tree.py` of nirender-plugin tests this.
 pub fn watch_commit() {
+    println!("cargo:rerun-if-env-changed={TREE_VARIABLE}");
     let Some(git_dir) = git(&["rev-parse", "--path-format=absolute", "--git-dir"]) else {
         return;
     };

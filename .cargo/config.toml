@@ -29,3 +29,8 @@ rustflags = ["-Ctarget-cpu=pentium4"]
 # anything depends on it.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-Ctarget-cpu=x86-64-v2", "-Clink-arg=/STACK:8388608"]
+
+# The folder of this work tree, for the build id (build_support/build_id.rs): its build scripts
+# run again when another tree uses the same target folder.
+[env]
+BUILD_ID_TREE = { value = ".", relative = true }
