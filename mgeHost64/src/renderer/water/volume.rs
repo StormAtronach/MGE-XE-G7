@@ -846,6 +846,9 @@ struct Key {
     coordinates: [Option<u64>; 2],
     /// The water shader: 0 the standard one, else one of a mod ([`Volumes::modules`]).
     shader: u16,
+    /// The debug view `water` is on: the module of the shader with `WATER_DEBUG`
+    /// ([`Volumes::set_debug`]).
+    debug: bool,
 }
 
 /// The depth state of a held shape as the game's z-buffer property asks for it: the test, the
@@ -895,6 +898,13 @@ pub(super) struct Volumes {
     /// The shader with each water shader: the standard one first, then those of mods, by
     /// their names in `shaders`. A name whose file is missing or fails has the standard one.
     modules: Vec<wgpu::ShaderModule>,
+    /// The text of each module, for its module of the debug view `water`.
+    sources: Vec<String>,
+    /// The modules of the debug view, by their shader, made at their first draw while the view
+    /// is on, and dropped with the view. None inside: the text has no one `WATER_DEBUG` line.
+    debug_modules: HashMap<u16, Option<wgpu::ShaderModule>>,
+    /// The debug view `water` is on in this frame.
+    debug: bool,
     shaders: HashMap<String, u16>,
     /// The shadow hooks of the session (`core_mods.rs`), for the shaders of mods.
     shadow_hooks: String,
@@ -946,9 +956,10 @@ impl Volumes {
         shadow_hooks: &str,
     ) -> Volumes {
         let device = scene.device;
+        let source = standard_source(shadow_hooks);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water volume"),
-            source: wgpu::ShaderSource::Wgsl(standard_source(shadow_hooks).into()),
+            source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
         });
         let mesh_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("water volume mesh"),
@@ -1094,6 +1105,9 @@ impl Volumes {
         });
         Volumes {
             modules: vec![module],
+            sources: vec![source],
+            debug_modules: HashMap::new(),
+            debug: false,
             shaders: HashMap::new(),
             shadow_hooks: shadow_hooks.to_string(),
             mesh_layout,
@@ -1246,6 +1260,7 @@ impl Volumes {
                     label: Some(&label),
                     source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
                 }));
+                self.sources.push(source.clone());
                 (self.modules.len() - 1) as u16
             }
             Err(_) => 0,
@@ -1347,9 +1362,37 @@ impl Volumes {
         (buffer, group)
     }
 
+    /// The debug view `water` in this frame. A frame without it drops the modules and the
+    /// pipelines of the view.
+    pub fn set_debug(&mut self, on: bool) {
+        if on == self.debug {
+            return;
+        }
+        self.debug = on;
+        if !on {
+            self.debug_modules.clear();
+            self.pipelines.retain(|key, _| !key.debug);
+        }
+    }
+
     fn pipeline(&mut self, device: &wgpu::Device, key: Key) -> &wgpu::RenderPipeline {
+        if key.debug && !self.debug_modules.contains_key(&key.shader) {
+            let text = shading::debug_source(&self.sources[key.shader as usize]);
+            let module = text.map(|text| {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("water volume, debug view"),
+                    source: wgpu::ShaderSource::Wgsl(text.into()),
+                })
+            });
+            self.debug_modules.insert(key.shader, module);
+        }
+        // A shader whose text has no debug line draws the view with its own module.
+        let debug_module = key
+            .debug
+            .then(|| self.debug_modules.get(&key.shader).and_then(Option::as_ref))
+            .flatten();
         let (module, layout, target_format, depth_format, multisample) = (
-            &self.modules[key.shader as usize],
+            debug_module.unwrap_or(&self.modules[key.shader as usize]),
             &self.pipeline_layout,
             self.target_format,
             self.depth_format,
@@ -1688,6 +1731,7 @@ impl Volumes {
                     stencil: None,
                     coordinates: [None; 2],
                     shader,
+                    debug: self.debug,
                 };
                 pass.set_pipeline(self.pipeline(scene.device, key));
                 // A water shader of a mod has the base texture of the baked mesh.
@@ -1762,6 +1806,7 @@ impl Volumes {
                     stencil,
                     coordinates,
                     shader,
+                    debug: self.debug,
                 };
                 pass.set_pipeline(self.pipeline(scene.device, key));
                 let mesh = if shader == 0 {

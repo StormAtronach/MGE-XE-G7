@@ -1437,12 +1437,12 @@ impl DistantLand {
         kept
     }
 
-    /// The frame draws the reflection (or its one colour): the frame is under water (the
-    /// surfaces of water volumes read it from below), or a shader of the session reads it
-    /// ([`DistantLand::reflection_kept`]), or the plane can be in the main view
-    /// ([`Water::plane_in_view`], to the end of the plane in the frame).
+    /// The frame draws the reflection (or its one colour): [`Water::reflection_kept_everywhere`], or
+    /// the plane can be in the main view ([`Water::plane_in_view`], to the end of the plane in
+    /// the frame).
     fn reflection_needed(&self, scene: &SceneView, frame: &WaterFrame) -> bool {
-        if frame.underwater || self.reflection_kept.is_some() {
+        let water_view = self.debug_view.water_term() != 0.0;
+        if Water::reflection_kept_everywhere(frame.underwater, self.reflection_kept.is_some(), water_view) {
             return true;
         }
         let far = frame.view_end.unwrap_or(self.draw_distance);
@@ -3034,7 +3034,7 @@ impl Extension for DistantLand {
         let near_volumes = std::mem::replace(&mut self.volumes_drawn, false);
         if let Some(water) = self.water.as_mut() {
             water.start_frame();
-            water.debug = self.debug_view.water_term();
+            water.set_debug(scene, self.debug_view.water_term());
         }
         self.far_water.clear();
         self.volumes_ready =

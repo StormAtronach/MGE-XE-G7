@@ -88,6 +88,11 @@ pub(super) const COMMON: &str = "
 // The view group (`view.rs`, group 0) comes before this code: the game view in `u`, with the
 // camera, the exponential fog (`u.fog.xy`), the far fog colour (`u.fog_color`) and the
 // scattering (`u.sky.w` 1 when it is on). The values of the water are in `water`, group 1.
+
+// The debug view `water`: false in normal play. The pipelines of the view are made from this
+// text with true on this line (`debug_source`); the term of the view is `water.modes.x`.
+const WATER_DEBUG: bool = false;
+
 struct Water {
     view: mat4x4f,
     world: vec4f,
@@ -434,12 +439,14 @@ fn underwater(uv: vec2f, w: f32, texcoords: vec4f, world_xy: vec2f, eye_vec: vec
     let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w, 1.0);
     // A look at one term, for a test: the debug view `water`, as above the water (1 and 2), and
     // 10 for the picture of the game before the fog of the water is mixed into it.
-    if water.modes.x == 1.0 {
-        return vec4f(reflected, 1.0);
-    } else if water.modes.x == 2.0 {
-        return vec4f(refracted, 1.0);
-    } else if water.modes.x == 10.0 {
-        return vec4f(seen, 1.0);
+    if WATER_DEBUG {
+        if water.modes.x == 1.0 {
+            return vec4f(reflected, 1.0);
+        } else if water.modes.x == 2.0 {
+            return vec4f(refracted, 1.0);
+        } else if water.modes.x == 10.0 {
+            return vec4f(seen, 1.0);
+        }
     }
     // With the total reflection of the inside of the water.
     let fresnel = pow(clamp(1.12 - 0.65 * dot(-eye_vec, normal), 0.0, 1.0), 8.0);
@@ -508,6 +515,19 @@ fn without_comments(wgsl: &str) -> String {
     out
 }
 
+/// The line of the shared shading that names the debug view `water` ([`COMMON`]).
+const WATER_DEBUG_LINE: &str = "const WATER_DEBUG: bool = false;";
+
+/// The text of a water shader for the debug view `water`: the text with true on its one
+/// `WATER_DEBUG` line. None when the text does not have that line exactly once: a missed line
+/// would give a view equal to normal play, with no error.
+pub(super) fn debug_source(source: &str) -> Option<String> {
+    if source.matches(WATER_DEBUG_LINE).count() != 1 {
+        return None;
+    }
+    Some(source.replacen(WATER_DEBUG_LINE, "const WATER_DEBUG: bool = true;", 1))
+}
+
 /// The words of a WGSL text: its names and numbers.
 fn words(wgsl: &str) -> impl Iterator<Item = &str> {
     wgsl.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -565,5 +585,19 @@ mod tests {
         let water = &water[..water.find('}').unwrap()];
         assert_eq!(water.matches(": vec4f,").count(), 13);
         assert_eq!(water.matches(": mat4x4f,").count(), 1);
+    }
+
+    /// The text of the debug view changes the one `WATER_DEBUG` line; a text without it, or with
+    /// it twice, has no debug text.
+    #[test]
+    fn the_debug_text_changes_the_one_water_debug_line() {
+        let source = debug_source(COMMON).expect("the line is there once");
+        assert_eq!(source.matches("const WATER_DEBUG: bool = true;").count(), 1);
+        assert_eq!(
+            source.replacen("const WATER_DEBUG: bool = true;", WATER_DEBUG_LINE, 1),
+            COMMON
+        );
+        assert_eq!(debug_source(&COMMON.replace(WATER_DEBUG_LINE, "")), None);
+        assert_eq!(debug_source(&format!("{COMMON}{COMMON}")), None);
     }
 }
