@@ -16,11 +16,7 @@ come in a later part of the work.
   same name as the `.fx` file of Direct3D 9. A mod can ship both files side by side: Direct3D 9
   reads the `.fx`, wgpu reads the `.wgsl`.
 - **The first line.** The file starts with the line `//! interface: mge-xe-core 1`. A file
-  without this line, or with another number, is not used. The `//!` lines must be the first
-  lines of the file, with nothing between them: after a blank line, a `//!` line is a plain
-  comment. In `XE Mod Shadow Data.wgsl` that means the values are left out, with no log line.
-- **The encoding.** Save the file as UTF-8 without a byte order mark (BOM). With a BOM, the
-  interface line is not found.
+  without this line, or with another number, is not used.
 - **Hooks only.** A file holds only:
   - hook functions, with the exact signature of interface 1;
   - functions, constants and structs of its own, whose names start with `mod_`.
