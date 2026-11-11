@@ -9,9 +9,6 @@
 
 use nirender_wgpu::{Replay, ReplayView, SceneView, wgpu};
 
-/// `MGE_XE_WATER_DEBUG`, read once: the water is made again at each change of the size.
-static WATER_DEBUG: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-
 use super::multiply;
 
 /// The size of the reflection, as the Direct3D 9 path has it.
@@ -70,7 +67,7 @@ struct Out {
     // With the dynamic waves: the clip x, y and w of the point at or under the plane, for
     // the place of the reflection (screenposclamp).
     @location(3) clamped: vec3f,
-    // For a test (MGE_XE_WATER_DEBUG 9): the height that the vertex read in the wave texture.
+    // For a test (the debug view `water 9`): the height that the vertex read in the wave texture.
     @location(4) probe: f32,
 }
 
@@ -152,7 +149,7 @@ fn plane_color(in: Out) -> vec4f {
         return underwater_color(p);
     }
     if water.modes.x == 9.0 {
-        // A look at the waves, for a test (MGE_XE_WATER_DEBUG 9). Red: the height that the
+        // A look at the waves, for a test (the debug view `water 9`). Red: the height that the
         // vertices read. Green: the same read for the pixel.
         let here = textureSampleLevel(waves, wave_sampler, vec3f(in.world.xy / 1104.0, 0.4 * water.time.x), 0.0).a;
         return vec4f(in.probe, here, 0.0, 1.0);
@@ -207,7 +204,7 @@ fn water_is_interior() -> bool {
 ";
 
 /// The built-in `water_color` (`WaterPS`): a hook of `XE Mod Water` (`core_mods.rs`), the
-/// colour of the plane seen from above. It shows the terms of `MGE_XE_WATER_DEBUG`.
+/// colour of the plane seen from above. It shows the terms of the debug view `water`.
 pub(super) const WATER_COLOR: &str = "
 // WaterPS: the colour of the water at a pixel seen from above.
 fn water_color(p: WaterPixel) -> vec4f {
@@ -233,7 +230,7 @@ fn water_color(p: WaterPixel) -> vec4f {
     var result = mix(refracted, reflected, fresnel);
     result += sun_glint(eye_vec, normal, fog.a);
     result = mix(result, refracted, below.shore * fog.a);
-    // A look at one term, for a test: MGE_XE_WATER_DEBUG.
+    // A look at one term, for a test: the debug view `water`.
     if water.modes.x == 1.0 {
         return vec4f(reflected, 1.0);
     } else if water.modes.x == 2.0 {
@@ -277,7 +274,7 @@ fn sun_and_wind(sun_color: [f32; 3], sun_vis: f32, wind: [f32; 2]) -> [[f32; 4];
     [[r * sunlight, g * sunlight, b * sunlight, wind_factor], [r, g, b, 0.0], [wind[0], wind[1], 0.0, 0.0]]
 }
 
-/// The modes of the water shader: the debug term (`MGE_XE_WATER_DEBUG`), 1 under the water,
+/// The modes of the water shader: the debug term (the debug view `water`), 1 under the water,
 /// and 1 in a plain interior (not an exterior, not an interior that behaves like one), for
 /// `water_is_interior` of the water hooks.
 fn modes(debug: f32, underwater: bool, like_exterior: bool) -> [f32; 4] {
@@ -415,8 +412,9 @@ pub struct Water {
     no_land: wgpu::TextureView,
     /// True when the reflection of this frame is made.
     reflected: bool,
-    /// MGE_XE_WATER_DEBUG: a look at one term of the shader.
-    debug: f32,
+    /// The term of the debug view `water` (0: off), set for each frame: a look at one term
+    /// of the shader.
+    pub debug: f32,
     pub frames: u64,
     pub reflections: u64,
 }
@@ -648,7 +646,7 @@ impl Water {
             reflection_depth_read,
             no_land,
             reflected: false,
-            debug: *WATER_DEBUG.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_WATER_DEBUG", 0.0)),
+            debug: 0.0,
             frames: 0,
             reflections: 0,
         })

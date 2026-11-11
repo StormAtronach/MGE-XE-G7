@@ -13,9 +13,6 @@
 
 use nirender_wgpu::{SceneView, wgpu};
 
-/// `MGE_XE_POST_DEBUG`, read once: the chain is made again at a change of the shaders.
-static POST_DEBUG: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-
 /// The variables that MGE XE gives a shader (section 2 of the specification), as one
 /// uniform. The matrices are the rows of Direct3D, so that `mview[row][col]` of HLSL is
 /// `u.mview[row][col]` here.
@@ -4545,7 +4542,7 @@ struct Quad {
 }
 ";
 
-/// A look at a term, for a test: MGE_XE_POST_DEBUG 1 tints the result, 2 shows the linear
+/// A look at a term, for a test: the debug view `post 1` tints the result, `post 2` shows the linear
 /// depth over 10000 units as grey.
 const DEBUG_BLIT_SHADER: &str = "
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -4764,6 +4761,7 @@ pub struct Post {
     depth_layout: wgpu::BindGroupLayout,
     blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
+    /// The term of the debug view `post` (0: off): [`Post::set_debug`].
     debug: f32,
     debug_pipeline: wgpu::RenderPipeline,
     debug_layout: wgpu::BindGroupLayout,
@@ -4895,7 +4893,7 @@ impl Post {
             entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
-        let debug = *POST_DEBUG.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_POST_DEBUG", 0.0));
+        let debug = 0.0f32;
         let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post debug"),
             entries: &[
@@ -4907,7 +4905,7 @@ impl Post {
         let debug_pipeline = full_screen_pipeline(device, "post debug", DEBUG_BLIT_SHADER, &debug_layout, scene.target_format);
         let debug_uniform = {
             use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("post debug"), contents: bytemuck::cast_slice(&[debug, 0.0, 0.0, 0.0]), usage: wgpu::BufferUsages::UNIFORM })
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("post debug"), contents: bytemuck::cast_slice(&[debug, 0.0, 0.0, 0.0]), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST })
         };
         let no_values = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post no values"), size: (MOD_SLOTS * 16) as u64, usage: wgpu::BufferUsages::UNIFORM, mapped_at_creation: false });
         let mut post = Post {
@@ -5165,6 +5163,15 @@ impl Post {
     pub fn set_hdr(&mut self, on: bool, reaction: f32) {
         self.hdr_on = on;
         self.hdr_reaction = reaction;
+    }
+
+    /// The term of the debug view `post` (0: off). The uniform is written only when the term
+    /// changes; the write lands before the frame's one submit.
+    pub fn set_debug(&mut self, scene: &SceneView, term: f32) {
+        if term != self.debug {
+            self.debug = term;
+            scene.queue.write_buffer(&self.debug_uniform, 0, bytemuck::cast_slice(&[term, 0.0, 0.0, 0.0]));
+        }
     }
 
     /// No shader is on.
