@@ -5642,7 +5642,6 @@ pub struct Post {
     /// Direct3D 9.
     needs_hdr: bool,
     hdr_on: bool,
-    pub frames: u64,
     pub shaders_run: u64,
     /// The frames that made the depth frame (a shader of the chain read it).
     pub depth_frames: u64,
@@ -5884,7 +5883,6 @@ impl Post {
             no_sun_glare: false,
             needs_hdr: false,
             hdr_on: true,
-            frames: 0,
             shaders_run: 0,
             depth_frames: 0,
         };
@@ -6256,16 +6254,14 @@ impl Post {
         environment_flags: u32,
         distant: Option<[f32; 2]>,
         main_point: [f32; 4],
-    ) {
-        let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else {
-            return;
-        };
+    ) -> Result<(), nirender_wgpu::pass_report::Skip> {
+        let picture = scene.picture.ok_or("no copy of the picture")?;
+        let depth = scene.depth.ok_or("no copy of the depth")?;
         if self.is_empty() {
-            return;
+            return Err("the chain has no shader");
         }
         let device = scene.device;
         view.size_textures(device, scene.target_size);
-        self.frames += 1;
         // The adaptation point of the frame, from the picture before the chain: the main view
         // measures it, a view of its own reads the main view's.
         let mut variables = *variables;
@@ -6509,7 +6505,7 @@ impl Post {
             pass.set_pipeline(&self.debug_pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
-            return;
+            return Ok(());
         }
         // The result into the picture of the frame.
         if let Some(index) = last {
@@ -6535,6 +6531,7 @@ impl Post {
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
+        Ok(())
     }
 }
 
