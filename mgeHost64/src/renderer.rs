@@ -62,8 +62,43 @@ use distantland::mge_xe::distant_terrain::{
     TERRAIN_MATERIAL_FLAGS_FILE_NAME, TERRAIN_PATCH_ALBEDO_FILE_NAME, TerrainFile, load_terrain_file,
 };
 use mge_config::{ConfigDocument, FILE_NAME};
+use nirender_wgpu::pass_report::{self, Skip};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::util::DeviceExt;
+
+/// The skips of the post chain and of the views of their own that more than one place gives.
+const NO_POST: Skip = "no post state";
+const NO_STATICS: Skip = "no distant statics";
+const SIZE_RULE: Skip = "refused by the size rule of the views of their own";
+const OUT_OF_MEMORY: Skip = "out of memory";
+const NOT_IN_OPTIONS: Skip = "not in the options of the view";
+const ORTHOGRAPHIC: Skip = "an orthographic projection";
+
+/// The names of this extension's parts in the pass report (`nirender_wgpu::pass_report`): a
+/// part's pass or its debug group where it has one. A view of its own notes the same names; the
+/// report keys them by the kind of the view.
+mod part {
+    pub const TERRAIN: &str = "distant land";
+    pub const STATICS_CULL: &str = "distant statics: the GPU cull of all sets";
+    pub const GLOW_CULL: &str = "distant lights: the glow cull";
+    pub const GLOWS: &str = "distant lights";
+    pub const SHADOW_MAP: &str = "shadow map";
+    pub const REFLECTION: &str = "water reflection";
+    pub const REFLECTION_FILL: &str = "water reflection fill";
+    pub const REFLECTED_SKY: &str = "water reflection: the sky";
+    pub const GRASS: &str = "grass";
+    pub const WATER_PLANE: &str = "water plane";
+    pub const VOLUMES: &str = "water volumes";
+    pub const SEA_CAUSTICS: &str = "sea caustics";
+    pub const DYNAMIC_WAVES: &str = "dynamic waves";
+    pub const UNDER_MENU: &str = "the kept picture under a menu";
+    pub const OUT_OF_VIEW: &str = "the water plane is out of view";
+    pub const NO_LIGHTS: &str = "no distant lights";
+    pub const NOT_MADE: &str = "the bindings are not made yet";
+    pub const NO_ENVIRONMENT: &str = "no environment record";
+    /// The crate's name of the post chain's span (`Player::post_process`).
+    pub const POST: &str = "the post chain (extension)";
+}
 use nirender_wgpu::{
     Additions, DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay,
     SceneView, Status, TableShade,
@@ -1080,7 +1115,6 @@ pub struct DistantLand {
     problem: Option<String>,
     started: Instant,
     meshes_drawn: u64,
-    frames: u64,
     /// The views of their own with the land and the statics of the full tier.
     tier_views: view::TierViews,
     /// The wind and the time that the environment records carried, for the report.
@@ -1594,7 +1628,6 @@ impl DistantLand {
             problem: None,
             started: Instant::now(),
             meshes_drawn: 0,
-            frames: 0,
             tier_views: view::TierViews::new(full_tier_max),
             environment_watch: view::EnvironmentWatch::default(),
             post_main: None,
@@ -1750,8 +1783,7 @@ impl DistantLand {
 impl Drop for DistantLand {
     fn drop(&mut self) {
         println!(
-            "distant land: {} frames with terrain, {} mesh draws, fog distances {}",
-            self.frames,
+            "distant land: {} terrain mesh draws, fog distances {}",
             self.meshes_drawn,
             if self.environment.is_some() {
                 "from the game with each frame"
@@ -1779,27 +1811,14 @@ impl Drop for DistantLand {
             self.views_live_bytes() as f64 / 1e6,
             self.tier_views.peak_live as f64 / 1e6
         );
-        println!("blend: {} frames", self.blend.as_ref().map_or(0, |blend| blend.frames));
         println!(
-            "distant lights: {} frames with glows",
-            self.lights.as_ref().map_or(0, |lights| lights.frames)
-        );
-        println!(
-            "water: {} frames, {} reflections, {} frames without the reflection (the plane out of view), {} frames with caustics, {} surfaces of water volumes, {} far water draws",
-            self.water.as_ref().map_or(0, |w| w.frames),
-            self.water.as_ref().map_or(0, |w| w.reflections),
-            self.water.as_ref().map_or(0, |w| w.reflections_skipped),
-            self.caustics.as_ref().map_or(0, |c| c.frames),
+            "water: {} surfaces of water volumes, {} far water draws",
             self.water.as_ref().map_or(0, |w| w.volumes_drawn()),
             self.water.as_ref().map_or(0, |w| w.far_drawn())
         );
         if let Some(ripples) = self.ripples.as_ref() {
-            println!(
-                "dynamic waves: {} frames, {} steps, {} drops",
-                ripples.frames, ripples.steps, ripples.drops_made
-            );
+            println!("dynamic waves: {} steps, {} drops", ripples.steps, ripples.drops_made);
         }
-        println!("shadow map: {} frames", self.shadow.as_ref().map_or(0, |s| s.frames));
         println!(
             "post: {} frames, {} shaders run, the depth frame in {} frames",
             self.post.as_ref().map_or(0, |p| p.frames),
@@ -3026,8 +3045,7 @@ impl Extension for DistantLand {
             water.debug = self.debug_view.water_term();
         }
         self.far_water.clear();
-        self.volumes_ready =
-            self.water_on && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_some();
+        self.volumes_ready = self.water_on && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_ok();
         // In a water volume its top is the level of the water of the frame: the sea plane is
         // not cut there.
         let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
@@ -3036,7 +3054,11 @@ impl Extension for DistantLand {
         // land off: Direct3D 9 simulates the waves when `isDistantCell` is false, under
         // `DYNAMIC_RIPPLES` alone (`DistantLand::renderStage0`, its else branch). Here the
         // water is the only reader, so it follows the water.
-        if self.water_on && self.ripples_enabled {
+        if !self.water_on {
+            pass_report::note_skipped(part::DYNAMIC_WAVES, "the water is off");
+        } else if !self.ripples_enabled {
+            pass_report::note_skipped(part::DYNAMIC_WAVES, "the dynamic waves are off");
+        } else {
             if let Some(e) = self.environment {
                 let ripples = self
                     .ripples
@@ -3052,6 +3074,8 @@ impl Extension for DistantLand {
                         player_height: e.player_height,
                     },
                 );
+            } else {
+                pass_report::note_skipped(part::DYNAMIC_WAVES, "no environment record");
             }
         }
         // The chain of post shaders runs in an interior and with distant land off too, as it
@@ -3104,25 +3128,31 @@ impl Extension for DistantLand {
         if let Some(shadow) = self.shadow.as_mut() {
             shadow.set_debug(&self.debug_view);
         }
-        if distant && self.like_exterior && self.shadows_enabled && self.shadow_day > 0.0 {
+        if let Some(reason) = self.shadow_skip(distant) {
+            pass_report::note_skipped(part::SHADOW_MAP, reason);
+        } else {
             if self.shadow.is_none() {
                 let mut shadow = timed("the shadow map's pipelines", || Shadow::new(scene, self.shadow_resolution));
                 shadow.set_debug(&self.debug_view);
                 self.shadow = Some(shadow);
             }
             let light_vec = shadow::light_vector(scene.sun_direction);
-            if let (Some(shadow), Some(e), Some(light_vec)) = (self.shadow.as_mut(), self.environment, light_vec) {
-                let eye = scene.eye.map(|v| v as f32);
-                let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
-                shadow.set_frame(eye, eye_vec, light_vec);
-                values = shadow.frame_values(
-                    e.sun_vis,
-                    &scene.view,
-                    eye[2] > e.sea_plane(),
-                    &self.core_mods.shadow_values(),
-                );
-                texture = Some(shadow.atlas_view.clone());
-                self.shadow_in_frame = true;
+            match (self.shadow.as_mut(), self.environment, light_vec) {
+                (Some(shadow), Some(e), Some(light_vec)) => {
+                    let eye = scene.eye.map(|v| v as f32);
+                    let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
+                    shadow.set_frame(eye, eye_vec, light_vec);
+                    values = shadow.frame_values(
+                        e.sun_vis,
+                        &scene.view,
+                        eye[2] > e.sea_plane(),
+                        &self.core_mods.shadow_values(),
+                    );
+                    texture = Some(shadow.atlas_view.clone());
+                    self.shadow_in_frame = true;
+                }
+                (_, None, _) => pass_report::note_skipped(part::SHADOW_MAP, "no environment record"),
+                _ => pass_report::note_skipped(part::SHADOW_MAP, "the sun has no direction"),
             }
         }
         self.shade = self.per_pixel();
@@ -3557,6 +3587,7 @@ impl Extension for DistantLand {
 
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
         if self.menu_reuse {
+            Self::note_world_skipped(self.shadow_in_frame, part::UNDER_MENU, true);
             return false;
         }
         self.near_fog = None;
@@ -3584,24 +3615,31 @@ impl Extension for DistantLand {
             self.gpu_time_made = true;
             self.gpu_time = gpu_time::GpuTime::new(scene.device, scene.queue);
         }
-        if !self.enabled || !self.distant_cell {
+        if let Some(reason) = self.distant_skip() {
+            Self::note_world_skipped(self.shadow_in_frame, reason, false);
             // A cell without the distant land: the reflection of the water is one colour,
             // as `clearReflection` of the Direct3D 9 path has it.
-            if let Some(frame) = self.water_frame(scene) {
-                let needed = self.reflection_needed(scene, &frame);
-                if let Some(water) = self.water.as_mut() {
-                    if needed {
-                        water.fill_reflection(scene, &frame);
-                    } else {
-                        water.reflections_skipped += 1;
+            match self.water_frame(scene) {
+                Ok(frame) => {
+                    let needed = self.reflection_needed(scene, &frame);
+                    if let Some(water) = self.water.as_mut() {
+                        if needed {
+                            water.fill_reflection(scene, &frame);
+                        } else {
+                            pass_report::note_skipped(part::REFLECTION_FILL, part::OUT_OF_VIEW);
+                        }
                     }
                 }
+                Err(reason) => pass_report::note_skipped(part::REFLECTION_FILL, reason),
             }
             return false;
         }
         self.poll_lights(scene);
         self.finish_load(scene);
-        let Some(gpu) = self.gpu.as_ref() else { return false };
+        let Some(gpu) = self.gpu.as_ref() else {
+            Self::note_world_skipped(self.shadow_in_frame, "no terrain on the GPU", true);
+            return false;
+        };
 
         let projection = self.land_projection(scene);
         let eye = scene.eye.map(|v| v as f32);
@@ -3628,6 +3666,7 @@ impl Extension for DistantLand {
         // record); before the first record, the sun's colour serves.
         let night = self.night(scene);
         let Some(binding) = self.light_binding.as_mut() else {
+            Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
         };
         binding.set_strength(
@@ -3639,9 +3678,11 @@ impl Extension for DistantLand {
             },
         );
         let Some(views) = self.view_binding.as_ref() else {
+            Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
         };
         let Some(main_group) = views.group(view::MAIN) else {
+            Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
         };
         views.write(scene.queue, view::MAIN, &main_view);
@@ -3650,13 +3691,16 @@ impl Extension for DistantLand {
         let mut drawn = 0;
         // The terrain is for an exterior; an interior cell has the statics of its own world
         // space over the clear colour.
-        if !scene.interior && !skipped("terrain") {
-            pass.push_debug_group("distant land");
-            drawn = gpu.draw_meshes(scene, pass, main_group, &planes);
-            pass.pop_debug_group();
+        match Self::terrain_skip(scene) {
+            None => {
+                pass.push_debug_group("distant land");
+                drawn = gpu.draw_meshes(scene, pass, main_group, &planes);
+                pass.pop_debug_group();
+                pass_report::note_ran(part::TERRAIN);
+            }
+            Some(reason) => pass_report::note_skipped(part::TERRAIN, reason),
         }
         self.meshes_drawn += drawn;
-        self.frames += 1;
         self.near_fog = Some(near_fog);
 
         // The places of the distant statics for the sets of this frame (the main view, the
@@ -3682,7 +3726,10 @@ impl Extension for DistantLand {
                     });
                 }
             }
-            if let (Some(_), Some(frame)) = (self.water.as_ref().filter(|_| self.reflect_statics), water_frame.as_ref()) {
+            if let (Some(_), Some(frame)) = (
+                self.water.as_ref().filter(|_| self.reflect_statics),
+                water_frame.as_ref().ok(),
+            ) {
                 let mirrored_view = multiply(&Water::mirror(frame.mirror_level), &scene.view);
                 let projection = Water::far_projection(scene, frame.draw_distance);
                 sets.push(statics::CullSet {
@@ -3693,14 +3740,30 @@ impl Extension for DistantLand {
                 });
             }
             statics.set_waiting(self.arrival.is_some());
-            statics.prepare(scene, &sets);
+            pass_report::note_result(part::STATICS_CULL, statics.prepare(scene, &sets));
+        } else {
+            pass_report::note_skipped(part::STATICS_CULL, "no distant statics");
         }
         // The glows of the distant lights at night, past the handoff to the game.
-        let glows = night > 0.0 && !scene.interior;
-        if glows {
+        let is_night = night > 0.0;
+        let glows_skip = if !is_night {
+            Some("not night")
+        } else if scene.interior {
+            Some("an interior")
+        } else {
+            None
+        };
+        let glows = glows_skip.is_none();
+        if let Some(reason) = glows_skip {
+            pass_report::note_skipped(part::GLOW_CULL, reason);
+            pass_report::note_skipped(part::GLOWS, reason);
+        } else {
             let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
-            if let Some(lights) = self.lights.as_mut() {
-                lights.prepare(scene, &frame, 0);
+            match self.lights.as_mut() {
+                Some(lights) => {
+                    pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, 0));
+                }
+                None => pass_report::note_skipped(part::GLOW_CULL, part::NO_LIGHTS),
             }
         }
 
@@ -3771,9 +3834,24 @@ impl Extension for DistantLand {
         let mirrored = !scene.interior || self.reflect_interior;
         // A frame whose plane is out of view and that has no other reader draws no
         // reflection: the texture keeps its last content, which nothing reads in it.
-        let reflection_frame = water_frame.as_ref().filter(|frame| self.reflection_needed(scene, frame));
-        if let (Some(water), Some(_), None) = (self.water.as_mut(), water_frame.as_ref(), reflection_frame) {
-            water.reflections_skipped += 1;
+        let reflection_frame = match water_frame.as_ref() {
+            Ok(frame) if self.reflection_needed(scene, frame) => Some(frame),
+            Ok(_) => {
+                Self::note_reflection_skipped(part::OUT_OF_VIEW);
+                None
+            }
+            Err(reason) => {
+                Self::note_reflection_skipped(reason);
+                None
+            }
+        };
+        match (reflection_frame, mirrored) {
+            (Some(_), true) => pass_report::note_skipped(part::REFLECTION_FILL, "the mirror is drawn"),
+            (Some(_), false) => {
+                pass_report::note_skipped(part::REFLECTION, "an interior, and reflect_interiors is off");
+                pass_report::note_skipped(part::REFLECTED_SKY, "no mirror");
+            }
+            (None, _) => {}
         }
         if let (Some(water), Some(frame), false) = (self.water.as_mut(), reflection_frame, mirrored) {
             water.fill_reflection(scene, frame);
@@ -3840,6 +3918,8 @@ impl Extension for DistantLand {
             }
             if self.reflect_sky {
                 water.reflect_sky(scene, &mut mirror_pass, replay, frame);
+            } else {
+                pass_report::note_skipped(part::REFLECTED_SKY, "reflect_sky is off");
             }
             drop(mirror_pass);
             water.finish_reflection(&mut encoder);
@@ -3873,10 +3953,16 @@ impl Extension for DistantLand {
                 self.far_water = statics.far_water(eye, &planes, loaded);
             }
         }
-        if let Some(lights) = self.lights.as_mut().filter(|_| glows) {
-            pass.push_debug_group("distant lights");
-            lights.draw(pass, main_group, 0, scene.samples);
-            pass.pop_debug_group();
+        if glows {
+            match self.lights.as_mut() {
+                Some(lights) => {
+                    pass.push_debug_group("distant lights");
+                    let drawn = lights.draw(pass, main_group, 0, scene.samples);
+                    pass.pop_debug_group();
+                    pass_report::note_result(part::GLOWS, drawn);
+                }
+                None => pass_report::note_skipped(part::GLOWS, part::NO_LIGHTS),
+            }
         }
         true
     }
@@ -3896,42 +3982,77 @@ impl Extension for DistantLand {
         pass: &mut wgpu::RenderPass<'static>,
         _replay: &mut dyn Replay,
     ) -> bool {
-        if self.menu_reuse || !self.enabled || !self.distant_cell {
+        let blocked = if self.menu_reuse {
+            Some(part::UNDER_MENU)
+        } else {
+            self.distant_skip()
+        };
+        if let Some(reason) = blocked {
+            Self::note_view_skipped(parts, reason);
             return false;
         }
         // A view with an orthographic projection (the local map's camera) gets no land: its
         // depth terms are not those of a perspective one.
         if !is_perspective(&scene.projection) {
             self.tier_views.orthographic += 1;
+            Self::note_view_skipped(parts, ORTHOGRAPHIC);
             return false;
         }
-        let ready = self.gpu.is_some() && self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready);
-        let Some(k) = ready
-            .then(|| {
-                self.tier_views
-                    .claim(scene.frame, scene.view_key.place, scene.view_key.repeat)
-            })
-            .flatten()
-        else {
-            self.tier_views.unserved += u64::from(!ready);
-            return false;
+        let not_ready = if self.gpu.is_none() {
+            Some("no terrain on the GPU")
+        } else if !self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready) {
+            Some(part::NOT_MADE)
+        } else {
+            None
+        };
+        let claimed = match not_ready {
+            Some(reason) => Err(reason),
+            None => self
+                .tier_views
+                .claim(scene.frame, scene.view_key.place, scene.view_key.repeat),
+        };
+        let k = match claimed {
+            Ok(k) => k,
+            Err(reason) => {
+                self.tier_views.unserved += u64::from(not_ready.is_some());
+                Self::note_view_skipped(parts, reason);
+                return false;
+            }
         };
         self.note_place_holder(k, scene.view_key.slot);
-        if !self.ensure_view_groups(scene, k) {
+        if let Err(reason) = self.ensure_view_groups(scene, k) {
             self.tier_views.unserved += 1;
+            Self::note_view_skipped(parts, reason);
             return false;
         }
         // What this call makes for its set is made before the draws, within the size rule and an
         // out-of-memory scope: a part that is refused leaves the call without it.
         let statics_ready = parts.contains(Additions::STATICS) && !skipped("statics") && self.ensure_statics_set(scene, k);
         let night = self.night(scene);
-        let glows_ready =
-            parts.contains(Additions::GLOWS) && night > 0.0 && !scene.interior && self.ensure_glow_set(scene, k);
+        let is_night = night > 0.0;
+        let glows_skip = if !parts.contains(Additions::GLOWS) {
+            Some(NOT_IN_OPTIONS)
+        } else if !is_night {
+            Some("not night")
+        } else if scene.interior {
+            Some("an interior")
+        } else {
+            self.ensure_glow_set(scene, k).err()
+        };
+        let glows_ready = glows_skip.is_none();
+        if let Some(reason) = glows_skip {
+            pass_report::note_skipped(part::GLOW_CULL, reason);
+            pass_report::note_skipped(part::GLOWS, reason);
+        }
         let (Some(gpu), Some(views)) = (self.gpu.as_ref(), self.view_binding.as_ref()) else {
+            Self::note_view_drawn_skipped(parts, glows_ready, part::NOT_MADE);
             return false;
         };
         let group = view::tier(k);
-        let Some(view_group) = views.group(group) else { return false };
+        let Some(view_group) = views.group(group) else {
+            Self::note_view_drawn_skipped(parts, glows_ready, part::NOT_MADE);
+            return false;
+        };
         let projection = self.land_projection(scene);
         let own = -scene.projection[14] / scene.projection[10];
         if self.tier_views.note_near(own) {
@@ -3949,12 +4070,21 @@ impl Extension for DistantLand {
         let eye_range = [eye[0], eye[1], eye[2], view_range];
         let mut drew = false;
         // The terrain is for an exterior, as in the main view.
-        if parts.contains(Additions::LAND) && !scene.interior && !skipped("terrain") {
-            pass.push_debug_group("distant land (view of its own)");
-            let drawn = gpu.draw_meshes(scene, pass, view_group, &planes);
-            pass.pop_debug_group();
-            self.tier_views.land_draws += drawn;
-            drew |= drawn > 0;
+        let terrain_skip = if parts.contains(Additions::LAND) {
+            Self::terrain_skip(scene)
+        } else {
+            Some(NOT_IN_OPTIONS)
+        };
+        match terrain_skip {
+            None => {
+                pass.push_debug_group("distant land (view of its own)");
+                let drawn = gpu.draw_meshes(scene, pass, view_group, &planes);
+                pass.pop_debug_group();
+                self.tier_views.land_draws += drawn;
+                drew |= drawn > 0;
+                pass_report::note_ran(part::TERRAIN);
+            }
+            Some(reason) => pass_report::note_skipped(part::TERRAIN, reason),
         }
         if statics_ready {
             let fog_end = self.environment.map_or(self.settings_fog.1, |e| e.fog_end);
@@ -3996,12 +4126,16 @@ impl Extension for DistantLand {
         if glows_ready {
             let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
             if let Some(lights) = self.lights.as_mut().filter(|lights| lights.has_glows()) {
-                lights.prepare(scene, &frame, k + 1);
+                pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, k + 1));
                 pass.push_debug_group("distant lights (view of its own)");
-                lights.draw(pass, view_group, k + 1, scene.samples);
+                let glowed = lights.draw(pass, view_group, k + 1, scene.samples);
                 pass.pop_debug_group();
+                pass_report::note_result(part::GLOWS, glowed);
                 self.tier_views.glow_calls += 1;
                 drew = true;
+            } else {
+                pass_report::note_skipped(part::GLOW_CULL, part::NO_LIGHTS);
+                pass_report::note_skipped(part::GLOWS, part::NO_LIGHTS);
             }
         }
         drew
@@ -4019,31 +4153,42 @@ impl Extension for DistantLand {
         pass: &mut wgpu::RenderPass<'static>,
         _replay: &mut dyn Replay,
     ) {
-        if self.menu_reuse || !self.enabled || !self.distant_cell || !parts.contains(Additions::GRASS) || skipped("grass") {
+        if let Some(reason) = self.view_grass_skip(scene, parts) {
+            pass_report::note_skipped(part::GRASS, reason);
             return;
         }
-        if !is_perspective(&scene.projection) || self.statics.is_none() {
-            return;
-        }
-        let ready = self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready);
-        let Some(k) = ready
-            .then(|| {
-                self.tier_views
-                    .claim_after(scene.frame, scene.view_key.place, scene.view_key.repeat)
-            })
-            .flatten()
-        else {
-            return;
+        let claimed = if self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready) {
+            self.tier_views
+                .claim_after(scene.frame, scene.view_key.place, scene.view_key.repeat)
+        } else {
+            Err(part::NOT_MADE)
+        };
+        let k = match claimed {
+            Ok(k) => k,
+            Err(reason) => {
+                pass_report::note_skipped(part::GRASS, reason);
+                return;
+            }
         };
         self.note_place_holder(k, scene.view_key.slot);
-        if !self.ensure_view_groups(scene, k) || !self.ensure_grass_set(scene, k) {
+        if let Err(reason) = self
+            .ensure_view_groups(scene, k)
+            .and_then(|()| self.ensure_grass_set(scene, k))
+        {
+            pass_report::note_skipped(part::GRASS, reason);
             return;
         }
-        let Some(views) = self.view_binding.as_ref() else { return };
+        let Some(views) = self.view_binding.as_ref() else {
+            pass_report::note_skipped(part::GRASS, part::NOT_MADE);
+            return;
+        };
         views.write(scene.queue, view::tier_game(k), &self.frame_view(scene, &scene.projection));
         let mut frame = self.grass_frame(scene);
         frame.shadow = None;
-        let Some(statics) = self.statics.as_mut() else { return };
+        let Some(statics) = self.statics.as_mut() else {
+            pass_report::note_skipped(part::GRASS, NO_STATICS);
+            return;
+        };
         pass.push_debug_group("grass (view of its own)");
         let did = statics.draw_grass_view(scene, pass, &frame, k);
         pass.pop_debug_group();
@@ -4063,19 +4208,32 @@ impl Extension for DistantLand {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
     ) {
-        if self.menu_reuse
-            || !parts.contains(Additions::POST_COVER)
-            || !self.chain_wanted()
-            || scene.picture.is_none()
-            || scene.depth.is_none()
-        {
+        let blocked = if self.menu_reuse {
+            Some(part::UNDER_MENU)
+        } else if !parts.contains(Additions::POST_COVER) {
+            Some(NOT_IN_OPTIONS)
+        } else if let Some(reason) = self.chain_skip() {
+            Some(reason)
+        } else if scene.picture.is_none() {
+            Some("no copy of the picture")
+        } else if scene.depth.is_none() {
+            Some("no copy of the depth")
+        } else {
+            None
+        };
+        if let Some(reason) = blocked {
+            pass_report::note_skipped(part::POST, reason);
             return;
         }
-        let Some(k) = self
+        let k = match self
             .tier_views
             .claim_post(scene.frame, scene.view_key.place, scene.view_key.repeat)
-        else {
-            return;
+        {
+            Ok(k) => k,
+            Err(reason) => {
+                pass_report::note_skipped(part::POST, reason);
+                return;
+            }
         };
         self.note_place_holder(k, scene.view_key.slot);
         if !self.run_view_post(k, scene, encoder, target) {
@@ -4091,19 +4249,24 @@ impl Extension for DistantLand {
     /// depth of the game, as `renderStage1` of the Direct3D 9 path draws it.
     fn after_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
         if self.menu_reuse {
+            pass_report::note_skipped(part::GRASS, part::UNDER_MENU);
             return;
         }
         // The grass of a cell with a world space, a plain interior cell among them, as
         // `renderStage1` of the Direct3D 9 path has it.
-        if !self.enabled || !self.distant_cell {
+        if let Some(reason) = self.distant_skip() {
+            pass_report::note_skipped(part::GRASS, reason);
             return;
         }
         if self.statics.is_none() {
+            pass_report::note_skipped(part::GRASS, NO_STATICS);
             return;
         }
         let frame = self.grass_frame(scene);
         let Some(statics) = self.statics.as_mut() else { return };
-        if !skipped("grass") {
+        if skipped("grass") {
+            pass_report::note_skipped(part::GRASS, "left out by MGE_XE_SKIP");
+        } else {
             statics.draw_grass(scene, pass, &frame);
         }
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
@@ -4116,6 +4279,7 @@ impl Extension for DistantLand {
     fn post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         // Under a menu: the kept picture, until a click; the frame after it draws again.
         if self.menu_reuse {
+            pass_report::note_skipped(part::POST, part::UNDER_MENU);
             if let Some(keep) = self.menu_keep.as_ref() {
                 keep.show(scene, encoder, target);
             }
@@ -4127,7 +4291,13 @@ impl Extension for DistantLand {
         if self.menu_keeping {
             let mut keep = self.menu_keep.take().unwrap_or_else(|| menu_keep::MenuKeep::new(scene));
             let kept = keep.target(scene);
-            let chain = self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty());
+            let chain = match self.chain_skip() {
+                None => true,
+                Some(reason) => {
+                    pass_report::note_skipped(part::POST, reason);
+                    false
+                }
+            };
             if !(chain && self.run_post(scene, encoder, &kept)) {
                 if let Some(picture) = scene.picture {
                     keep.copy(scene, encoder, picture, &kept);
@@ -4140,7 +4310,8 @@ impl Extension for DistantLand {
         }
         // A frame without a chain runs this call only to take a picture before the interface
         // (`picture_without_ui_wanted`): the picture of the game stays as it is.
-        if !self.chain_wanted() {
+        if let Some(reason) = self.chain_skip() {
+            pass_report::note_skipped(part::POST, reason);
             return;
         }
         self.run_post(scene, encoder, target);
@@ -4175,15 +4346,25 @@ impl Extension for DistantLand {
         held: &[nirender_wgpu::HeldDraw],
         _replay: &mut dyn Replay,
     ) {
-        let Some(frame) = self.volume_frame(scene) else { return };
+        pass_report::on_request(&[part::VOLUMES, part::SEA_CAUSTICS]);
+        let frame = match self.volume_frame(scene) {
+            Ok(frame) => frame,
+            Err(reason) => {
+                pass_report::note_skipped(part::VOLUMES, reason);
+                pass_report::note_skipped(part::SEA_CAUSTICS, reason);
+                return;
+            }
+        };
         // The caustics under the sea first, on the picture of the game: the surfaces of volumes
         // then go over them.
-        if self.sea_caustics() {
+        if let Some(reason) = self.sea_caustics_skip() {
+            pass_report::note_skipped(part::SEA_CAUSTICS, reason);
+        } else {
             // The caustics of the sea are under the sea: in a water volume the level of the
             // frame is the top of the volume, and the ground below it outside the volume
             // would take them. The volume's own caustics are on its surface.
             let sea = self.environment.map(|e| e.sea_plane());
-            let caustics_frame = self.water_frame(scene).zip(sea).map(|(w, sea)| caustics::CausticsFrame {
+            let caustics_frame = self.water_frame(scene).ok().zip(sea).map(|(w, sea)| caustics::CausticsFrame {
                 water_level: sea,
                 time: w.time,
                 sun_vis: w.sun_vis,
@@ -4199,17 +4380,23 @@ impl Extension for DistantLand {
                     })
                 });
                 caustics.intensity = intensity;
-                if let Some(game_view) = views.group(view::GAME) {
-                    water.draw_sea_caustics(
-                        scene,
-                        pass,
-                        game_view,
-                        &frame,
-                        self.ripples.as_ref(),
-                        caustics,
-                        &caustics_frame,
-                    );
+                match views.group(view::GAME) {
+                    Some(game_view) => {
+                        let drawn = water.draw_sea_caustics(
+                            scene,
+                            pass,
+                            game_view,
+                            &frame,
+                            self.ripples.as_ref(),
+                            caustics,
+                            &caustics_frame,
+                        );
+                        pass_report::note_result(part::SEA_CAUSTICS, drawn);
+                    }
+                    None => pass_report::note_skipped(part::SEA_CAUSTICS, part::NOT_MADE),
                 }
+            } else {
+                pass_report::note_skipped(part::SEA_CAUSTICS, "no water facts or no view groups");
             }
         }
         let far = std::mem::take(&mut self.far_water);
@@ -4244,7 +4431,14 @@ impl Extension for DistantLand {
         held: &[nirender_wgpu::HeldDraw],
         _replay: &mut dyn Replay,
     ) {
-        let Some(frame) = self.volume_frame(scene) else { return };
+        pass_report::on_request(&[part::VOLUMES]);
+        let frame = match self.volume_frame(scene) {
+            Ok(frame) => frame,
+            Err(reason) => {
+                pass_report::note_skipped(part::VOLUMES, reason);
+                return;
+            }
+        };
         if self.draw_surfaces(scene, pass, &frame, held, &[], false) > 0 {
             self.volumes_drawn = true;
         }
@@ -4252,16 +4446,30 @@ impl Extension for DistantLand {
 
     /// The water plane of MGE XE in place of the water plane of the game.
     fn draw_class(&mut self, class: u32, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
-        if class != 10 || skipped("water") {
+        if class != 10 {
+            return;
+        }
+        pass_report::on_request(&[part::WATER_PLANE]);
+        if skipped("water") {
+            pass_report::note_skipped(part::WATER_PLANE, "left out by MGE_XE_SKIP");
             return;
         }
         // In a water volume whose surface was drawn, that surface is the water: the plane at
         // the top of the volume is not drawn.
         let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
-        let frame = self.water_frame(scene).filter(|_| !(in_volume && self.volumes_drawn));
+        let frame = match self.water_frame(scene) {
+            Ok(_) if in_volume && self.volumes_drawn => Err("the surface of the water volume is the water"),
+            frame => frame,
+        };
         let game_view = self.view_binding.as_ref().and_then(|views| views.group(view::GAME));
-        if let (Some(water), Some(frame), Some(game_view)) = (self.water.as_mut(), frame.as_ref(), game_view) {
-            water.draw(scene, pass, game_view, frame, self.ripples.as_ref());
+        match (self.water.as_mut(), frame, game_view) {
+            (_, Err(reason), _) => pass_report::note_skipped(part::WATER_PLANE, reason),
+            (_, Ok(_), None) => pass_report::note_skipped(part::WATER_PLANE, part::NOT_MADE),
+            (None, Ok(_), Some(_)) => pass_report::note_skipped(part::WATER_PLANE, "no water state"),
+            (Some(water), Ok(frame), Some(game_view)) => {
+                let drawn = water.draw(scene, pass, game_view, &frame, self.ripples.as_ref());
+                pass_report::note_result(part::WATER_PLANE, drawn);
+            }
         }
         // The debug view of the shadow map again: the water is drawn over that corner.
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
@@ -4316,9 +4524,138 @@ impl DistantLand {
         }
     }
 
+    /// Why the frame draws no distant land, or nothing when it does.
+    fn distant_skip(&self) -> Option<Skip> {
+        if !self.enabled {
+            return Some("distant land is off");
+        }
+        if !self.distant_cell {
+            return Some("a cell without distant land");
+        }
+        None
+    }
+
+    /// Why the frame has no shadow map, or nothing when it has one. `distant`: distant land in
+    /// the frame, with its terrain on the GPU.
+    fn shadow_skip(&self, distant: bool) -> Option<Skip> {
+        if !distant {
+            return Some("no distant land in the frame");
+        }
+        if !self.like_exterior {
+            return Some("a cell that is not like an exterior");
+        }
+        if !self.shadows_enabled {
+            return Some("the shadows are off");
+        }
+        if self.shadow_day > 0.0 {
+            None
+        } else {
+            Some("no daylight for the shadows")
+        }
+    }
+
+    /// Why the terrain of `scene` is not drawn, or nothing when it is.
+    fn terrain_skip(scene: &SceneView) -> Option<Skip> {
+        if scene.interior {
+            return Some("an interior");
+        }
+        if skipped("terrain") {
+            return Some("left out by MGE_XE_SKIP");
+        }
+        None
+    }
+
+    /// The parts of the world's start of the main view did not run, for `reason`: the shadow map
+    /// too when the frame call chose it (`shadow_in_frame`), the reflection's fill with
+    /// `with_fill`.
+    fn note_world_skipped(shadow_in_frame: bool, reason: Skip, with_fill: bool) {
+        for name in [
+            part::TERRAIN,
+            part::STATICS_CULL,
+            part::GLOW_CULL,
+            part::GLOWS,
+            part::REFLECTION,
+            part::REFLECTED_SKY,
+        ] {
+            pass_report::note_skipped(name, reason);
+        }
+        if shadow_in_frame {
+            pass_report::note_skipped(part::SHADOW_MAP, reason);
+        }
+        if with_fill {
+            pass_report::note_skipped(part::REFLECTION_FILL, reason);
+        }
+    }
+
+    /// The parts of the world's start of a view of its own did not run, for `reason`; a part that
+    /// the view's options do not have, for that.
+    fn note_view_skipped(parts: Additions, reason: Skip) {
+        let of = |flag| if parts.contains(flag) { reason } else { NOT_IN_OPTIONS };
+        pass_report::note_skipped(part::TERRAIN, of(Additions::LAND));
+        pass_report::note_skipped(part::GLOW_CULL, of(Additions::GLOWS));
+        pass_report::note_skipped(part::GLOWS, of(Additions::GLOWS));
+    }
+
+    /// The draws of a view of its own did not run, for `reason`, after its glows were chosen
+    /// (`glows_ready`) or said why not.
+    fn note_view_drawn_skipped(parts: Additions, glows_ready: bool, reason: Skip) {
+        let terrain = if parts.contains(Additions::LAND) {
+            reason
+        } else {
+            NOT_IN_OPTIONS
+        };
+        pass_report::note_skipped(part::TERRAIN, terrain);
+        if glows_ready {
+            pass_report::note_skipped(part::GLOW_CULL, reason);
+            pass_report::note_skipped(part::GLOWS, reason);
+        }
+    }
+
+    /// Why a view of its own draws no grass before its place is claimed, or nothing.
+    fn view_grass_skip(&self, scene: &SceneView, parts: Additions) -> Option<Skip> {
+        if self.menu_reuse {
+            return Some(part::UNDER_MENU);
+        }
+        if let Some(reason) = self.distant_skip() {
+            return Some(reason);
+        }
+        if !parts.contains(Additions::GRASS) {
+            return Some(NOT_IN_OPTIONS);
+        }
+        if skipped("grass") {
+            return Some("left out by MGE_XE_SKIP");
+        }
+        if !is_perspective(&scene.projection) {
+            return Some(ORTHOGRAPHIC);
+        }
+        if self.statics.is_none() {
+            return Some(NO_STATICS);
+        }
+        None
+    }
+
+    /// No reflection of the water in the frame, for `reason`.
+    fn note_reflection_skipped(reason: Skip) {
+        for name in [part::REFLECTION, part::REFLECTION_FILL, part::REFLECTED_SKY] {
+            pass_report::note_skipped(name, reason);
+        }
+    }
+
     /// The chain of post shaders is on and has a shader.
     fn chain_wanted(&self) -> bool {
-        self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty())
+        self.chain_skip().is_none()
+    }
+
+    /// Why the frame has no chain of post shaders, or nothing when it has one.
+    fn chain_skip(&self) -> Option<Skip> {
+        if !self.post_enabled {
+            return Some("the post shaders are off");
+        }
+        match self.post.as_ref() {
+            None => Some(NO_POST),
+            Some(post) if post.is_empty() => Some("the chain has no shader"),
+            Some(_) => None,
+        }
     }
 
     /// A picture file without the interface of the game is asked for. The renderer takes it
@@ -4366,12 +4703,20 @@ impl DistantLand {
     /// The chain of post shaders into `target`, with the values of the frame. False without
     /// the chain or the environment.
     fn run_post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) -> bool {
-        let Some((variables, flags, distant)) = self.post_inputs(scene) else {
+        let (variables, flags, distant) = match self.post_inputs(scene) {
+            Ok(inputs) => inputs,
+            Err(reason) => {
+                pass_report::note_skipped(part::POST, reason);
+                return false;
+            }
+        };
+        let Some(post) = self.post.as_mut() else {
+            pass_report::note_skipped(part::POST, NO_POST);
             return false;
         };
-        let Some(post) = self.post.as_mut() else { return false };
         let main = self.post_main.get_or_insert_with(|| post::PostView::main(scene.device));
         post.run(main, scene, encoder, target, &variables, flags, distant, [1.0; 4]);
+        pass_report::note_ran(part::POST);
         // The adaptation point of the main view, now and then: a picture with the post chain
         // must not move it (the null test of the post of the views of their own).
         self.main_post_runs += 1;
@@ -4395,8 +4740,12 @@ impl DistantLand {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
     ) -> bool {
-        let Some((variables, flags, distant)) = self.post_inputs(scene) else {
-            return false;
+        let (variables, flags, distant) = match self.post_inputs(scene) {
+            Ok(inputs) => inputs,
+            Err(reason) => {
+                pass_report::note_skipped(part::POST, reason);
+                return false;
+            }
         };
         let main_point = self.post_main.as_ref().map_or([1.0; 4], post::PostView::hdr_point);
         // A new state, or one for another size of the picture, makes textures: the size rule
@@ -4404,12 +4753,16 @@ impl DistantLand {
         // makes nothing.
         let wanted = self.post_bytes_needed(place, scene.target_size);
         if wanted > 0 && !self.admit_views(scene.device, wanted) {
+            pass_report::note_skipped(part::POST, SIZE_RULE);
             return false;
         }
         if self.post_places.len() <= place {
             self.post_places.resize_with(place + 1, || None);
         }
-        let Some(post) = self.post.as_mut() else { return false };
+        let Some(post) = self.post.as_mut() else {
+            pass_report::note_skipped(part::POST, NO_POST);
+            return false;
+        };
         let made = self.post_places[place].is_none();
         let view = self.post_places[place].get_or_insert_with(|| post::PostView::place(scene.device));
         if wanted > 0 {
@@ -4424,11 +4777,13 @@ impl DistantLand {
                     "distant land: the post state of place {place} could not be made: out of memory ({:.2} MB wanted); no new set of the views of their own is made until one is freed",
                     wanted as f64 / 1e6
                 );
+                pass_report::note_skipped(part::POST, OUT_OF_MEMORY);
                 return false;
             }
         } else {
             post.run(view, scene, encoder, target, &variables, flags, distant, main_point);
         }
+        pass_report::note_ran(part::POST);
         if made && self.post_view_lines < 12 {
             self.post_view_lines += 1;
             let bytes = self.post_places[place].as_ref().map_or(0, post::PostView::bytes);
@@ -4455,10 +4810,10 @@ impl DistantLand {
     }
 
     /// The values of the post chain for a scene: its variables, the flags of the environment and the
-    /// terms of the distant stage's depth. `None` without the environment.
-    fn post_inputs(&self, scene: &SceneView) -> Option<(post::Variables, u32, Option<[f32; 2]>)> {
+    /// terms of the distant stage's depth. Without the environment, the reason.
+    fn post_inputs(&self, scene: &SceneView) -> Result<(post::Variables, u32, Option<[f32; 2]>), Skip> {
         let land_terms = nirender_wgpu::depth::terms(&self.land_projection(scene));
-        let e = self.environment?;
+        let e = self.environment.ok_or(part::NO_ENVIRONMENT)?;
         let FogRanges {
             start: fog_start,
             end: fog_end,
@@ -4539,7 +4894,7 @@ impl DistantLand {
         // it. The numbers are those of the projection of `before_world`. With distant land
         // off there is no distant stage, and the depth of the game stands in for it.
         let distant = (self.enabled && !underwater).then_some(land_terms);
-        Some((variables, flags, distant))
+        Ok((variables, flags, distant))
     }
 
     /// The facts of the cell of the frame, from the scene and from the environment. The
@@ -4560,10 +4915,25 @@ impl DistantLand {
     /// The caustics under the sea are drawn in this frame: an exterior with water and the
     /// setting above 0. The held stage draws them, where the count of the dry spaces is.
     fn sea_caustics(&self) -> bool {
-        !self.interior
-            && self.caustics_intensity > 0.0
-            && self.environment.is_some_and(|e| e.has_water != 0)
-            && self.water.is_some()
+        self.sea_caustics_skip().is_none()
+    }
+
+    /// Why the frame has no caustics under the sea, or nothing when it has them.
+    fn sea_caustics_skip(&self) -> Option<Skip> {
+        if self.interior {
+            return Some("an interior");
+        }
+        let has_intensity = self.caustics_intensity > 0.0;
+        if !has_intensity {
+            return Some("the caustics' intensity is 0");
+        }
+        if !self.environment.is_some_and(|e| e.has_water != 0) {
+            return Some("no water in the cell");
+        }
+        if self.water.is_none() {
+            return Some("no water state");
+        }
+        None
     }
 
     /// Draws the surfaces of water volumes among `held` and the far water `far`, with the look
@@ -4615,7 +4985,10 @@ impl DistantLand {
             },
             sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
         };
-        let Some(water) = self.water.as_mut() else { return 0 };
+        let Some(water) = self.water.as_mut() else {
+            pass_report::note_skipped(part::VOLUMES, "no water state");
+            return 0;
+        };
         // The water shaders of mods that the looks name, the first time one is named: from
         // `Data Files/shaders/water/<name>.wgsl`.
         let mut names: Vec<String> = far.iter().filter_map(|w| w.look.shader_name()).collect();
@@ -4644,6 +5017,7 @@ impl DistantLand {
             }
         }
         let Some(game_view) = self.view_binding.as_ref().and_then(|views| views.group(view::GAME)) else {
+            pass_report::note_skipped(part::VOLUMES, part::NOT_MADE);
             return 0;
         };
         water.draw_volumes(
@@ -4661,10 +5035,13 @@ impl DistantLand {
         )
     }
 
-    /// What the water needs from the environment of the frame, or [`None`] without water in
-    /// the cell, without the land, or without the environment.
-    fn water_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
-        let e = self.environment.filter(|e| e.has_water != 0)?;
+    /// What the water needs from the environment of the frame, or why there is nothing: no
+    /// water in the cell, no land, no environment.
+    fn water_frame(&self, scene: &SceneView) -> Result<WaterFrame, Skip> {
+        let e = self.environment.ok_or(part::NO_ENVIRONMENT)?;
+        if e.has_water == 0 {
+            return Err("no water in the cell");
+        }
         self.water_frame_of(scene, e)
     }
 
@@ -4766,12 +5143,12 @@ impl DistantLand {
     }
 
     /// What the surfaces of water volumes need: as `water_frame`, in a cell without water too.
-    fn volume_frame(&self, scene: &SceneView) -> Option<WaterFrame> {
-        self.water_frame_of(scene, self.environment?)
+    fn volume_frame(&self, scene: &SceneView) -> Result<WaterFrame, Skip> {
+        self.water_frame_of(scene, self.environment.ok_or(part::NO_ENVIRONMENT)?)
     }
 
-    fn water_frame_of(&self, scene: &SceneView, e: Environment) -> Option<WaterFrame> {
-        self.water.as_ref()?;
+    fn water_frame_of(&self, scene: &SceneView, e: Environment) -> Result<WaterFrame, Skip> {
+        self.water.as_ref().ok_or("no water state")?;
         // The draws of the game end at the fog end of an interior, and under the water: the
         // plane ends there too (the clip plane of `renderStageWater`). With distant land off
         // they end at the far plane of the game, its view range: Direct3D 9 moves that plane
@@ -4789,7 +5166,7 @@ impl DistantLand {
             // `sunVis` 0 on Direct3D 9), the sky colour and the far fog colour are the
             // colour of the horizon of the game (its fog colour), no scattering.
             let fog = [scene.fog_color[0], scene.fog_color[1], scene.fog_color[2]];
-            return Some(WaterFrame {
+            return Ok(WaterFrame {
                 water_level: e.surface_level(),
                 mirror_level: e.mirror_level(),
                 underwater,
@@ -4812,9 +5189,9 @@ impl DistantLand {
                 blur_tune: self.tunables.blur(),
             });
         }
-        self.gpu.as_ref()?;
+        self.gpu.as_ref().ok_or("no terrain on the GPU")?;
         let sun_pos = e.sun_pos;
-        Some(WaterFrame {
+        Ok(WaterFrame {
             water_level: e.surface_level(),
             mirror_level: e.mirror_level(),
             underwater,
@@ -5083,9 +5460,9 @@ impl DistantLand {
         set: usize,
         wanted: u64,
         make: impl FnOnce(&mut DistantLand) -> T,
-    ) -> Option<T> {
+    ) -> Result<T, Skip> {
         if !self.admit_views(device, wanted) {
-            return None;
+            return Err(SIZE_RULE);
         }
         let made = view::within_scope(&mut view::DeviceScope::new(device), || make(self));
         // The heap's use has changed: the next sample is a new one.
@@ -5098,33 +5475,32 @@ impl DistantLand {
                 wanted as f64 / 1e6
             );
         }
-        made
+        made.ok_or(OUT_OF_MEMORY)
     }
 
-    /// Makes the two view groups of the set `k` when they are not there. False when the call must
+    /// Makes the two view groups of the set `k` when they are not there. Answers why the call must
     /// draw without them.
-    fn ensure_view_groups(&mut self, scene: &SceneView, k: usize) -> bool {
+    fn ensure_view_groups(&mut self, scene: &SceneView, k: usize) -> Result<(), Skip> {
         let present = self
             .view_binding
             .as_ref()
             .is_some_and(|views| views.group(view::tier(k)).is_some() && views.group(view::tier_game(k)).is_some());
         if present {
-            return true;
+            return Ok(());
         }
         let device = scene.device;
-        let made = self.make_for_set(device, k, 2 * size_of::<view::View>() as u64, |land| {
+        self.make_for_set(device, k, 2 * size_of::<view::View>() as u64, |land| {
             let (Some(views), Some(light)) = (land.view_binding.as_mut(), land.light_binding.as_ref()) else {
-                return false;
+                return Err(part::NOT_MADE);
             };
             if !views.ensure_set(device, light, k) {
-                return false;
+                return Err("the view groups of the set could not be made");
             }
             if let Some(statics) = land.statics.as_mut() {
                 statics.set_view_set(views, k);
             }
-            true
-        });
-        made.unwrap_or(false)
+            Ok(())
+        })?
     }
 
     /// Makes the statics sets of the set `k` (the cull buffers, the uniforms and the group of
@@ -5140,7 +5516,7 @@ impl DistantLand {
         match self.make_for_set(device, k, wanted, |land| {
             land.statics.as_mut().and_then(|statics| statics.ensure_view_set(device, k))
         }) {
-            Some(Some(made)) => {
+            Ok(Some(made)) => {
                 println!(
                     "distant land: the statics set of place {} is made: {:.2} MB for its cull buffers ({:.2} MB in all for the views of their own)",
                     k,
@@ -5154,20 +5530,20 @@ impl DistantLand {
         }
     }
 
-    /// Makes the glow set of the set `k` when it is not there. False when the call must draw
-    /// without glows.
-    fn ensure_glow_set(&mut self, scene: &SceneView, k: usize) -> bool {
+    /// Makes the glow set of the set `k` when it is not there. The error is the reason when the
+    /// call must draw without glows.
+    fn ensure_glow_set(&mut self, scene: &SceneView, k: usize) -> Result<(), Skip> {
         let Some(lights) = self.lights.as_ref().filter(|lights| lights.has_glows()) else {
-            return false;
+            return Err(part::NO_LIGHTS);
         };
         if lights.has_set(k + 1) {
-            return true;
+            return Ok(());
         }
         let (wanted, device) = (lights.next_set_bytes(), scene.device);
         match self.make_for_set(device, k, wanted, |land| {
             land.lights.as_mut().map_or(0, |lights| lights.ensure_set(device, k + 1))
         }) {
-            Some(made) => {
+            Ok(made) => {
                 println!(
                     "distant land: the glow set of place {} is made: {:.2} MB ({:.2} MB in all for the views of their own)",
                     k,
@@ -5175,26 +5551,26 @@ impl DistantLand {
                     (self.tier_views.bytes + made) as f64 / 1e6
                 );
                 self.tier_views.bytes += made;
-                true
+                Ok(())
             }
-            None => false,
+            Err(reason) => Err(reason),
         }
     }
 
-    /// Makes the grass set of the set `k` when it is not there. False when the call must draw
-    /// without grass.
-    fn ensure_grass_set(&mut self, scene: &SceneView, k: usize) -> bool {
+    /// Makes the grass set of the set `k` when it is not there. The error is the reason when the
+    /// call must draw without grass.
+    fn ensure_grass_set(&mut self, scene: &SceneView, k: usize) -> Result<(), Skip> {
         let Some(wanted) = self.statics.as_ref().map(|statics| statics.grass_set_bytes_needed(k)) else {
-            return false;
+            return Err(NO_STATICS);
         };
         if wanted == 0 {
-            return true;
+            return Ok(());
         }
         let device = scene.device;
         match self.make_for_set(device, k, wanted, |land| {
             land.statics.as_mut().map_or(0, |statics| statics.ensure_grass_set(device, k))
         }) {
-            Some(made) => {
+            Ok(made) => {
                 println!(
                     "distant land: the grass set of place {} is made: {:.2} MB ({:.2} MB in all for the views of their own)",
                     k,
@@ -5202,9 +5578,9 @@ impl DistantLand {
                     (self.tier_views.bytes + made) as f64 / 1e6
                 );
                 self.tier_views.bytes += made;
-                true
+                Ok(())
             }
-            None => false,
+            Err(reason) => Err(reason),
         }
     }
 
