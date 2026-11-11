@@ -443,13 +443,14 @@ pub fn run(mut arguments: Vec<String>) {
     }
     // The probe asks the backends and nothing else: no distant land.
     if arguments.iter().any(|argument| argument == "--probe") {
-        nirender_wgpu::run_with(arguments, None);
+        nirender_wgpu::run_with(arguments, || None);
         return;
     }
     // A replay draws the files that are there. A game session makes them again first when
     // they do not match the job of mgeXE.toml, as the IPC host mode does.
     let live = arguments.iter().any(|argument| argument == "--live");
-    nirender_wgpu::run_with(arguments, Some(Box::new(DistantLand::start(Path::new("."), live))));
+    // The distant land starts after the log of the helper is set up: its lines are in it.
+    nirender_wgpu::run_with(arguments, move || -> Option<Box<dyn Extension>> { Some(Box::new(DistantLand::start(Path::new("."), live))) });
 }
 
 /// The fog distances of a frame ([`DistantLand::fog_ranges`]).
