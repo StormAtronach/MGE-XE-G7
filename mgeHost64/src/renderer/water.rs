@@ -417,6 +417,9 @@ pub struct Water {
     pub debug: f32,
     pub frames: u64,
     pub reflections: u64,
+    /// The frames whose reflection was not drawn: [`Water::plane_in_view`] false, and no
+    /// reader of the reflection in the frame.
+    pub reflections_skipped: u64,
 }
 
 impl Water {
@@ -649,7 +652,45 @@ impl Water {
             debug: 0.0,
             frames: 0,
             reflections: 0,
+            reflections_skipped: 0,
         })
+    }
+
+    /// True when the WGSL of a shader that joins the water's library reads the reflection
+    /// ([`shading::REFLECTION_READERS`]).
+    pub fn shader_reads_reflection(wgsl: &str) -> bool {
+        shading::reads_reflection(wgsl)
+    }
+
+    /// True when a pixel of the plane can be in the view: the view's frustum, cut at `far`,
+    /// reaches the heights that the plane takes. The plane is a disc around the camera at
+    /// `water_level` less 1.1, and the dynamic waves move it by at most half of
+    /// `wave_height`; it reaches past the far end of every view. `view` and `projection` are
+    /// those of the main view, with the layout of Direct3D; the frustum is taken from the eye
+    /// (no near plane), so the test only keeps more. A projection without perspective keeps
+    /// the plane.
+    pub fn plane_in_view(view: &[f32; 16], projection: &[f32; 16], eye_z: f32, water_level: f32, wave_height: f32, far: f32) -> bool {
+        if projection[11] == 0.0 || projection[0] == 0.0 || projection[5] == 0.0 {
+            return true;
+        }
+        // The heights of the plane, with a margin of 2 units for the rounding.
+        let margin = 0.5 * wave_height.abs() + 2.0;
+        let lowest = water_level - 1.1 - margin;
+        let highest = water_level - 1.0 + margin;
+        // The world z of the view's axes: right, up, forward.
+        let (right, up, forward) = (view[8], view[9], view[10]);
+        // The sides of the frustum at a view depth of 1 (the projection may be off centre).
+        let xs = [(-1.0 - projection[8]) / projection[0], (1.0 - projection[8]) / projection[0]];
+        let ys = [(-1.0 - projection[9]) / projection[5], (1.0 - projection[9]) / projection[5]];
+        let (mut low, mut high) = (eye_z, eye_z);
+        for x in xs {
+            for y in ys {
+                let z = eye_z + far * (forward + x * right + y * up);
+                low = low.min(z);
+                high = high.max(z);
+            }
+        }
+        low <= highest && high >= lowest
     }
 
     /// The matrix that mirrors the world in the plane z = `mirror_level`, with the layout of
@@ -1074,6 +1115,68 @@ pub(super) fn fill_colour(horizon: bool, fog_color: [f32; 4], sun_color: [f32; 3
 mod tests {
     use super::*;
     use crate::renderer::core_mods::{self, CoreMods};
+
+    /// A view of Direct3D (row vectors) from `eye`, turned up from the horizon by `pitch`
+    /// degrees, looking north; and a projection of 75 degrees up and down, 16:9.
+    fn camera(eye_z: f32, pitch: f32) -> ([f32; 16], [f32; 16]) {
+        let p = pitch.to_radians();
+        let forward = [0.0, p.cos(), p.sin()];
+        let right = [1.0, 0.0, 0.0];
+        let up = [0.0, -p.sin(), p.cos()];
+        let eye = [0.0, 0.0, eye_z];
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let view = [
+            right[0], up[0], forward[0], 0.0,
+            right[1], up[1], forward[1], 0.0,
+            right[2], up[2], forward[2], 0.0,
+            -dot(right, eye), -dot(up, eye), -dot(forward, eye), 1.0,
+        ];
+        let y_scale = 1.0 / (37.5f32).to_radians().tan();
+        let (near, far) = (1.0, 100_000.0);
+        let mut projection = [0.0; 16];
+        projection[0] = y_scale * 9.0 / 16.0;
+        projection[5] = y_scale;
+        projection[10] = far / (far - near);
+        projection[11] = 1.0;
+        projection[14] = -near * far / (far - near);
+        (view, projection)
+    }
+
+    #[test]
+    fn the_plane_is_in_view_unless_the_frustum_misses_its_heights() {
+        let far = 100_000.0;
+        let in_view = |eye_z: f32, pitch: f32, waves: f32| {
+            let (view, projection) = camera(eye_z, pitch);
+            Water::plane_in_view(&view, &projection, eye_z, 0.0, waves, far)
+        };
+        // Above the water: looking down, level, or a little up, the lower side of the
+        // frustum reaches the plane.
+        assert!(in_view(500.0, -45.0, 0.0));
+        assert!(in_view(500.0, 0.0, 0.0));
+        assert!(in_view(500.0, 30.0, 0.0), "the lowest ray goes 7.5 degrees down");
+        // Looking up past half of the view angle: every ray climbs.
+        assert!(!in_view(500.0, 40.0, 0.0));
+        assert!(!in_view(500.0, 90.0, 0.0));
+        // Just above the plane at a grazing angle: the dynamic waves' margin keeps it.
+        assert!(!in_view(20.0, 40.0, 0.0));
+        assert!(in_view(20.0, 40.0, 60.0));
+        // Under the plane and looking down: out of view (a frame under water keeps the
+        // reflection by its own rule).
+        assert!(!in_view(-500.0, -40.0, 0.0));
+        assert!(in_view(-500.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn the_end_of_the_plane_and_other_projections() {
+        // Looking down a little from high up, the frustum ends before it reaches the water.
+        let (view, projection) = camera(20_000.0, -30.0);
+        assert!(Water::plane_in_view(&view, &projection, 20_000.0, 0.0, 0.0, 100_000.0));
+        assert!(!Water::plane_in_view(&view, &projection, 20_000.0, 0.0, 0.0, 1_000.0));
+        // A projection without perspective keeps the plane.
+        let mut orthographic = projection;
+        orthographic[11] = 0.0;
+        assert!(Water::plane_in_view(&view, &orthographic, 20_000.0, 0.0, 0.0, 1_000.0));
+    }
 
     /// At night the sun's colour of the hooks is the colour of the game (`sunCol`), not 0 as
     /// the built-in's colour with the sunlight factor is: a mod tells an exterior at night from
