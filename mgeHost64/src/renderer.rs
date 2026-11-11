@@ -3457,7 +3457,7 @@ impl Extension for DistantLand {
             statics.draw_grass(scene, pass, &frame);
         }
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
-            shadow.draw_debug(pass);
+            shadow.draw_debug(pass, scene.samples);
         }
     }
 
@@ -3593,7 +3593,7 @@ impl Extension for DistantLand {
         }
         // The debug view of the shadow map again: the water is drawn over that corner.
         if let Some(shadow) = self.shadow.as_ref().filter(|shadow| shadow.debug) {
-            shadow.draw_debug(pass);
+            shadow.draw_debug(pass, scene.samples);
         }
     }
 

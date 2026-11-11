@@ -112,6 +112,8 @@ pub struct Shadow {
     /// The uniforms of the blur groups, kept alive with them.
     _blur_uniforms: [wgpu::Buffer; 2],
     debug_pipeline: wgpu::RenderPipeline,
+    /// The sample count of [`Shadow::debug_pipeline`]: that of the main view.
+    debug_samples: u32,
     debug_group: wgpu::BindGroup,
     /// The debug view `shadow-map`: the map drawn small over the frame.
     pub debug: bool,
@@ -272,7 +274,8 @@ impl Shadow {
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
-        let make_pipeline = |label: &str, source: &str, format: wgpu::TextureFormat, depth: Option<wgpu::DepthStencilState>| {
+        // `samples`: the sample count of the pass the pipeline draws into.
+        let make_pipeline = |label: &str, source: &str, format: wgpu::TextureFormat, depth: Option<wgpu::DepthStencilState>, samples: u32| {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -281,7 +284,7 @@ impl Shadow {
                 vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, cull_mode: None, ..Default::default() },
                 depth_stencil: depth,
-                multisample: Default::default(),
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some("fs"),
@@ -292,12 +295,14 @@ impl Shadow {
                 cache: None,
             })
         };
-        let blur_pipeline = make_pipeline("shadow blur", BLUR_SHADER, wgpu::TextureFormat::R16Float, None);
+        // The blur draws into the atlas (1 sample); the debug view draws into the main pass.
+        let blur_pipeline = make_pipeline("shadow blur", BLUR_SHADER, wgpu::TextureFormat::R16Float, None, 1);
         let debug_pipeline = make_pipeline(
             "shadow debug",
             DEBUG_SHADER,
             scene.target_format,
             Some(wgpu::DepthStencilState { format: scene.depth_format, depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always), stencil: Default::default(), bias: Default::default() }),
+            scene.samples,
         );
         let uniform = |values: [f32; 4]| {
             use wgpu::util::DeviceExt;
@@ -331,6 +336,7 @@ impl Shadow {
             blur_groups,
             _blur_uniforms: blur_uniforms,
             debug_pipeline,
+            debug_samples: scene.samples,
             debug_group,
             debug: false,
             layers_debug: false,
@@ -408,8 +414,13 @@ impl Shadow {
         self.layers_debug = view.shadow_layers();
     }
 
-    /// The atlas in the lower left of the picture, for a test.
-    pub fn draw_debug(&self, pass: &mut wgpu::RenderPass<'static>) {
+    /// The atlas in the lower left of the picture, for a test. `samples`: the sample count of
+    /// the pass. A pass with another count than the main view's (a rendered picture) gets no
+    /// atlas.
+    pub fn draw_debug(&self, pass: &mut wgpu::RenderPass<'static>, samples: u32) {
+        if samples != self.debug_samples {
+            return;
+        }
         pass.set_pipeline(&self.debug_pipeline);
         pass.set_bind_group(0, &self.debug_group, &[]);
         pass.draw(0..4, 0..1);
