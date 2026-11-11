@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 
 mod blend;
 mod caustics;
+mod core_mods;
 mod distant_lights;
 mod gpu_time;
 mod menu_keep;
@@ -830,6 +831,9 @@ pub struct DistantLand {
     distant_cell: bool,
     /// The light for each pixel of this frame, or [`None`].
     shade: Option<PerPixel>,
+    /// The core mods of the session (`Data Files/shaders/core-mods`): the hooks of the shaders
+    /// and the values of the shadow.
+    core_mods: core_mods::CoreMods,
     /// The sun of the frame for the shadow of a draw: the direction the light goes in and
     /// its colour, from the scene's sun (the weather's sky light, the plugin's scene record),
     /// [`None`] when the scene has none. A draw's own directional light never serves: it can
@@ -1167,6 +1171,37 @@ fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
     places.iter().find_map(|place| std::fs::read(place).ok())
 }
 
+/// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`).
+fn draw_shader_text(shadow_hooks: &str) -> String {
+    format!("{DRAW_SHADER}{shadow_hooks}")
+}
+
+/// The world shader with the text of this extension and the shadow hooks, as the host joins
+/// them (`extension_shaders` of `nirender_wgpu`).
+fn world_source(shadow_hooks: &str) -> String {
+    nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{}\n", draw_shader_text(shadow_hooks)))
+}
+
+/// The world shader as the device checks it, in both texture tiers: tier A with the binding
+/// arrays of its request, tier C with the request of every adapter.
+fn check_world_source(shadow_hooks: &str) -> Result<(), String> {
+    let source = world_source(shadow_hooks);
+    let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
+    shader_check::check_with("the world shader, tier a", &source, tier_a)?;
+    shader_check::check("the world shader, tier c", &nirender_wgpu::tier_c_shader_source(&source))?;
+    Ok(())
+}
+
+/// The shaders that call the shadow hooks: the draws of the game, the grass, the surfaces of
+/// the water volumes.
+fn shadow_homes() -> [core_mods::Home; 3] {
+    [
+        core_mods::Home { name: "world shader", check: check_world_source },
+        core_mods::Home { name: "grass", check: |hooks| shader_check::check("grass", &statics::grass_source(hooks)).map(|_| ()) },
+        core_mods::Home { name: "water volume", check: |hooks| shader_check::check("water volume", &water::volume_source(hooks)).map(|_| ()) },
+    ]
+}
+
 /// The casters of the shadow map: `ShadowVS` and `ShadowPS` of `XE Shadowmap.fx` for the
 /// land. It has the view group only (the matrix of the layer in `view_projection`).
 const LAND_SHADOW_SHADER: &str = "
@@ -1234,6 +1269,7 @@ impl DistantLand {
     pub fn start(root: &Path, live: bool) -> DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
+        let core_mods = core_mods::CoreMods::load(&|name| data_file(root, name), &shadow_homes());
         // The places of the full tier: the player's setting, or the environment variable for a
         // test, which may go up to the code's bound (one place for each view slot).
         let full_tier_max = std::env::var("MGE_XE_FULL_TIER_MAX")
@@ -1267,6 +1303,7 @@ impl DistantLand {
             like_exterior: true,
             distant_cell: true,
             shade: None,
+            core_mods,
             scene_sun: None,
             shadow_day: 1.0,
             synchronous: false,
@@ -1394,7 +1431,7 @@ impl DistantLand {
             } else {
                 // Data of another version: `load` gives the problem, and no statics start.
                 if statics_wanted && version_problem(&folder).is_none() {
-                    land.statics = Some(statics::Statics::start(&document, folder.clone()));
+                    land.statics = Some(statics::Statics::start(&document, folder.clone(), land.core_mods.shadow_hooks()));
                     land.lights = Some(distant_lights::DistantLights::start(&folder));
                 }
                 thread::spawn(move || {
@@ -1424,7 +1461,7 @@ impl DistantLand {
         if let Some(folder) = folder.filter(|folder| version_problem(folder).is_none()) {
             let document = ConfigDocument::open(self.root.join(FILE_NAME));
             self.lights = Some(distant_lights::DistantLights::start(&folder));
-            let mut statics = statics::Statics::start(&document, folder);
+            let mut statics = statics::Statics::start(&document, folder, self.core_mods.shadow_hooks());
             statics.set_groups(&self.vis_groups);
             statics.set_places(self.tier_views.places());
             self.statics = Some(statics);
@@ -2171,23 +2208,36 @@ var<private> shadow_hit: f32;
 var<private> light_term: vec3f;
 var<private> light_term_set: bool;
 
-// shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
-// the pixel; a positive number when the map has nothing nearer to the sun.
-fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
-    let rcp = frame.values[8].w;
+// The library of the shadow hooks (`core_mods.rs`): the shadow map of the frame in the
+// texture of the extension, and its values.
+fn shadow_map_depth(layer: u32, uv: vec2f) -> f32 {
+    if layer == 0u {
+        return textureSample(extension_texture, extension_sampler, vec2f(uv.x * 0.5, uv.y)).r;
+    }
+    return textureSample(extension_texture, extension_sampler, vec2f(0.5 + uv.x * 0.5, uv.y)).r;
+}
+fn shadow_texel() -> f32 {
+    return frame.values[8].w;
+}
+fn shadow_esm_scale() -> f32 {
+    return frame.values[8].z;
+}
+fn shadow_esm_values() -> vec2f {
+    return frame.values[8].xy;
+}
+
+// The layer that has the pixel for the debug view of the layers: 1 or 2, and 0 outside both,
+// by the margin of the built-in `shadow_delta`.
+fn shadow_layer_of(s0: vec3f, s1: vec3f) -> f32 {
+    let rcp = shadow_texel();
     let margin = vec3f(1.0 - 8.0 * rcp, 1.0 - 8.0 * rcp, 1.0);
     if all(abs(s0) < margin) {
-        shadow_layer = 1.0;
-        let uv = vec2f(0.5 + 0.5 * s0.x, 0.5 - 0.5 * s0.y);
-        return textureSample(extension_texture, extension_sampler, vec2f(uv.x * 0.5, uv.y)).r / frame.values[8].z - s0.z;
+        return 1.0;
     }
     if all(abs(s1) < margin) {
-        shadow_layer = 2.0;
-        let uv = vec2f(0.5 + 0.5 * s1.x, 0.5 - 0.5 * s1.y);
-        return textureSample(extension_texture, extension_sampler, vec2f(0.5 + uv.x * 0.5, uv.y)).r / frame.values[8].z - s1.z;
+        return 2.0;
     }
-    shadow_layer = 0.0;
-    return 1e-6;
+    return 0.0;
 }
 
 // The diffuse and the ambient light that one light gives a pixel at `p` with `normal`.
@@ -2257,10 +2307,13 @@ fn extension_shade(in: VertexOut) -> vec4f {
         s0 = vec4f(s0.xy, s0.z / s0.w, s0.w);
         s1 = vec4f(s1.xy, s1.z / s1.w, s1.w);
         let dz = shadow_delta(s0.xyz, s1.xyz);
+        if frame.values[10].z > 0.5 {
+            shadow_layer = shadow_layer_of(s0.xyz, s1.xyz);
+        }
         if dz < 0.0 {
             shadow_hit = 1.0;
             // shadowESM, and the fade at the edge of the outer layer.
-            var v = (1.0 - clamp(exp(frame.values[8].x * dz + frame.values[8].y), 0.0, 1.0)) * light;
+            var v = shadow_esm(dz) * light;
             let fade = clamp(25.0 * (1.0 - abs(s1.xy)), vec2f(0.0), vec2f(1.0));
             shadow_v = v * fade.x * fade.y;
         }
@@ -2541,7 +2594,7 @@ impl Extension for DistantLand {
         let water_cell = self.water_on && self.environment.is_some_and(|e| e.has_water != 0) && (water_land || scene.interior);
         if (water_cell || (self.water_on && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
             let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
-            match timed("the water's pipelines", || Water::new(scene, &self.waves, &views.layout)) {
+            match timed("the water's pipelines", || Water::new(scene, &self.waves, &views.layout, self.core_mods.shadow_hooks())) {
                 Ok(water) => self.water = Some(water),
                 Err(problem) => {
                     println!("water: {problem}; no water");
@@ -2635,7 +2688,7 @@ impl Extension for DistantLand {
                 let eye = scene.eye.map(|v| v as f32);
                 let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
                 shadow.set_frame(eye, eye_vec, light_vec);
-                values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > e.sea_plane());
+                values = shadow.frame_values(e.sun_vis, &scene.view, eye[2] > e.sea_plane(), &self.core_mods.shadow_values());
                 texture = Some(shadow.atlas_view.clone());
                 self.shadow_in_frame = true;
             }
@@ -2671,7 +2724,7 @@ impl Extension for DistantLand {
     }
 
     fn draw_shader(&self) -> Option<String> {
-        Some(DRAW_SHADER.to_string())
+        Some(draw_shader_text(self.core_mods.shadow_hooks()))
     }
 
     /// Packs the lights of a world draw for the light of a pixel. A point light stays as the
@@ -3762,6 +3815,7 @@ impl DistantLand {
         let outdoors = self.like_exterior && !scene.interior;
         let light = water::VolumeLight {
             shadow,
+            shadow_values: self.core_mods.shadow_values(),
             lights: scene.lights.as_ref().filter(|_| self.volume_point_lights),
             caustics: if self.volume_caustics && outdoors { water::caustic_strength(self.caustics_intensity, frame.sun_vis, frame.fog_color_far) } else { 0.0 },
             sun_direction: scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]),
@@ -4325,6 +4379,7 @@ impl DistantLand {
                 edge: self.tunables.get(tunables::GRASS_SHADOW) > 1.5,
             })
             .filter(|_| self.tunables.get(tunables::GRASS_SHADOW) > 0.5),
+            shadow_values: self.core_mods.shadow_values(),
             look: self.grass_look,
         }
     }
@@ -4432,10 +4487,21 @@ mod shader_tests {
     /// adapter.
     #[test]
     fn the_world_shader_with_the_extension_is_valid() {
-        let source = nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{DRAW_SHADER}\n"));
-        let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
-        shader_check::check_with("shader.wgsl with the extension, tier a", &source, tier_a).unwrap();
-        shader_check::check("shader.wgsl with the extension, tier c", &nirender_wgpu::tier_c_shader_source(&source)).unwrap();
+        check_world_source(core_mods::CoreMods::built_in().shadow_hooks()).unwrap();
+    }
+
+    /// Each home of the shadow hooks takes the built-in hooks, and the world shader has each
+    /// hook once.
+    #[test]
+    fn the_homes_of_the_shadow_hooks_take_the_built_ins() {
+        let hooks = core_mods::CoreMods::built_in();
+        for home in shadow_homes() {
+            (home.check)(hooks.shadow_hooks()).unwrap_or_else(|problem| panic!("{}: {problem}", home.name));
+        }
+        let source = world_source(hooks.shadow_hooks());
+        assert_eq!(source.matches("fn shadow_delta(").count(), 1);
+        assert_eq!(source.matches("fn shadow_esm(").count(), 1);
+        assert!(!DRAW_SHADER.contains("fn shadow_delta(") && !DRAW_SHADER.contains("fn shadow_esm("));
     }
 
     /// The cone of a spot light has one home, `nirender_wgpu::spot`: the draw part calls it in
@@ -4445,7 +4511,7 @@ mod shader_tests {
     fn the_draw_shader_takes_the_cone_of_the_crate() {
         assert_eq!(DRAW_SHADER.matches("spot_cone(light, ").count(), 2, "one call in each form of light_terms");
         assert!(!DRAW_SHADER.contains("fn spot_cone") && !DRAW_SHADER.contains("light.cone.x"));
-        let source = nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{DRAW_SHADER}\n"));
+        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks());
         assert_eq!(source.matches(nirender_wgpu::spot::WGSL).count(), 1);
         assert_eq!(source.matches("fn spot_cone").count(), 1);
     }
@@ -5113,7 +5179,7 @@ mod set_free_tests {
     fn a_free_of_a_set_calls_the_free_of_every_part_and_ends_the_hold() {
         let (mut land, root) = land_with_no_data("calls");
         let document = ConfigDocument::open(root.join(FILE_NAME));
-        land.statics = Some(statics::Statics::start(&document, root.join("no-statics")));
+        land.statics = Some(statics::Statics::start(&document, root.join("no-statics"), land.core_mods.shadow_hooks()));
         land.tier_views.creation_failed();
         assert!(land.tier_views.held(), "an out-of-memory error holds the views");
 

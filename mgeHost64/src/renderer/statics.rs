@@ -1418,6 +1418,8 @@ pub struct GrassFrame {
     pub planes: [[f32; 4]; 6],
     /// The shadow map of the frame, when the frame has one.
     pub shadow: Option<GrassShadow>,
+    /// The values of the shadow: the built-in ones or those of a core mod.
+    pub shadow_values: super::core_mods::ShadowValues,
     /// The looks of Remiros' Groundcover (`[distant_land.grass]`): 1 on, for the soft end,
     /// the vertex colour sway and the wrap lighting.
     pub look: [f32; 4],
@@ -1472,6 +1474,11 @@ struct GrassUniforms {
 
 /// The grass shader (`XE Mod Grass.fx`, with the looks of Remiros' Groundcover as options).
 const GRASS_SHADER: &str = include_str!("statics/grass.wgsl");
+
+/// The grass shader with the shadow hooks of the session (`core_mods.rs`).
+pub(super) fn grass_source(shadow_hooks: &str) -> String {
+    format!("{}{GRASS_SHADER}{shadow_hooks}", super::view::wgsl())
+}
 
 /// The values of a set (group 1 of the statics shaders), and the share of a subset that is in.
 const SET_WGSL: &str = "
@@ -1718,6 +1725,8 @@ pub struct Statics {
     /// sample): the `beginAlphaToCoverage` of the Direct3D 9 path around the statics and the
     /// grass.
     alpha_to_coverage: bool,
+    /// The shadow hooks of the session for the grass shader (`core_mods.rs`).
+    shadow_hooks: String,
     loading: Option<Receiver<Result<Loaded, CatalogError>>>,
     catalog: Option<Arc<Catalog>>,
     gpu: Option<Gpu>,
@@ -1866,8 +1875,10 @@ pub struct Statics {
 
 impl Statics {
     /// Reads the settings and starts the load of the catalog and of the textures.
-    pub fn start(document: &ConfigDocument, folder: PathBuf) -> Statics {
-        let (statics, sender) = Statics::waiting(document);
+    /// `shadow_hooks`: the shadow hooks of the session, for the grass shader.
+    pub fn start(document: &ConfigDocument, folder: PathBuf, shadow_hooks: &str) -> Statics {
+        let (mut statics, sender) = Statics::waiting(document);
+        statics.shadow_hooks = shadow_hooks.to_string();
         let settings = statics.settings;
         thread::spawn(move || {
             let result = read_catalog(&folder, &settings).map(|catalog| {
@@ -1896,6 +1907,7 @@ impl Statics {
         let statics = Statics {
             settings,
             alpha_to_coverage: document.settings().graphics.transparency_antialiasing,
+            shadow_hooks: super::core_mods::CoreMods::built_in().shadow_hooks().to_string(),
             loading: Some(receiver),
             catalog: None,
             gpu: None,
@@ -2564,7 +2576,7 @@ impl Statics {
         }
         self.device = Some(scene.device.clone());
         self.queue = Some(scene.queue.clone());
-        self.gpu = Some(super::timed("the distant statics' GPU objects", || make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage)));
+        self.gpu = Some(super::timed("the distant statics' GPU objects", || make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage, &self.shadow_hooks)));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();
         let for_reader = catalog.clone();
@@ -2846,8 +2858,8 @@ impl Statics {
             wind: frame.wind,
             foot: frame.foot,
             shadow_layers: frame.shadow.as_ref().map_or([[0.0; 16]; 2], |shadow| shadow.layers),
-            esm: [super::shadow::ESM_C, super::shadow::ESM_BIAS, super::shadow::ESM_SCALE, frame.shadow.as_ref().map_or(0.0, |shadow| shadow.rcp)],
-            shade: [super::shadow::SHADE_COLOR[0], super::shadow::SHADE_COLOR[1], super::shadow::SHADE_COLOR[2], super::shadow::SHADE],
+            esm: frame.shadow_values.esm(frame.shadow.as_ref().map_or(0.0, |shadow| shadow.rcp)),
+            shade: frame.shadow_values.shade(),
             shadow: frame.shadow.as_ref().map_or([0.0; 4], |shadow| {
                 let c = frame.sun_color;
                 [1.0, super::shadow::sun_light([c[0], c[1], c[2]], shadow.sun_vis, shadow.day), shadow.above_sea as u32 as f32, shadow.edge as u32 as f32]
@@ -3772,7 +3784,7 @@ fn archive_textures(folder: &Path, names: &[String], textures: &mut [Option<Vec<
     }
 }
 
-fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLayout, alpha_to_coverage: bool) -> Gpu {
+fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLayout, alpha_to_coverage: bool, shadow_hooks: &str) -> Gpu {
     let device = scene.device;
     let catalog = &loaded.catalog;
     let make_uniforms = || {
@@ -4073,7 +4085,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
             .create_view(&Default::default()),
     );
     let grass_group = make_grass_group(device, &grass_layout, &grass_uniforms, &sampler, &no_shadow, &grass_shadow_sampler);
-    let grass_source = format!("{}{GRASS_SHADER}", super::view::wgsl());
+    let grass_source = grass_source(shadow_hooks);
     let grass_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("grass"), source: wgpu::ShaderSource::Wgsl(grass_source.into()) });
     let grass_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("grass"),
@@ -4176,7 +4188,7 @@ fn make_grass_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, unifo
 
 #[cfg(test)]
 mod shader_tests {
-    use super::{GRASS_SHADER, SET_WGSL, SHADER, SHADOW_SHADER};
+    use super::{SET_WGSL, SHADER, SHADOW_SHADER};
 
     /// The shaders of the distant statics compile as the device checks them: the statics of
     /// a set, their caster of the shadow map, and the grass.
@@ -4186,7 +4198,7 @@ mod shader_tests {
         let view = crate::renderer::view::wgsl();
         check("distant statics", &format!("{view}{SET_WGSL}{SHADER}{}", crate::renderer::FOG_FUNCTION)).unwrap();
         check("distant statics shadow", &format!("{view}{SET_WGSL}{SHADOW_SHADER}")).unwrap();
-        check("grass", &format!("{view}{GRASS_SHADER}")).unwrap();
+        check("grass", &super::grass_source(crate::renderer::core_mods::CoreMods::built_in().shadow_hooks())).unwrap();
     }
 }
 
@@ -4671,7 +4683,7 @@ mod tests {
     fn the_statics_load_counts_while_the_catalog_is_on_its_way() {
         let folder = std::env::temp_dir().join(format!("statics-loading-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(&document, folder);
+        let mut statics = super::Statics::start(&document, folder, crate::renderer::core_mods::CoreMods::built_in().shadow_hooks());
         statics.settings.statics = true;
         assert!(statics.loading());
         statics.settings.statics = false;
@@ -4687,7 +4699,7 @@ mod tests {
     fn a_loader_thread_that_ends_without_an_answer_is_a_failed_load() {
         let folder = std::env::temp_dir().join(format!("statics-disconnected-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(&document, folder);
+        let mut statics = super::Statics::start(&document, folder, crate::renderer::core_mods::CoreMods::built_in().shadow_hooks());
         statics.settings.statics = true;
         let (sender, receiver) = std::sync::mpsc::channel();
         statics.loading = Some(receiver);
@@ -4709,7 +4721,7 @@ mod tests {
         let mut land = super::super::DistantLand::start(&root, false);
         land.loading = None;
         land.generation = None;
-        land.statics = Some(super::Statics::start(&document, root.join("distantland")));
+        land.statics = Some(super::Statics::start(&document, root.join("distantland"), crate::renderer::core_mods::CoreMods::built_in().shadow_hooks()));
         land.arrival = Some((std::time::Instant::now(), 2));
         assert!(land.messages().is_empty());
         assert!(land.arrival.is_some(), "the catalog is on its way");
@@ -4729,7 +4741,7 @@ mod tests {
     fn a_reader_thread_that_ends_turns_the_statics_off_and_ends_the_wait() {
         let folder = std::env::temp_dir().join(format!("statics-reader-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(&document, folder);
+        let mut statics = super::Statics::start(&document, folder, crate::renderer::core_mods::CoreMods::built_in().shadow_hooks());
         let (_sender, receiver) = std::sync::mpsc::channel();
         statics.arrivals = Some(receiver);
         statics.requested.insert(7);

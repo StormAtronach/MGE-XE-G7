@@ -468,6 +468,10 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_SHADOW_LAYERS=1`: each pixel coloured by the layer of the shadow map that serves
   it: red the first, green the second, blue outside both, grey a draw without the shadow
   test; darker where the map shadows it.
+- `MGE_XE_CORE_MODS=0`: no core mod (`Data Files/shaders/core-mods/XE Mod <name>.wgsl`, the
+  WGSL hook files of `mgeHost64/src/renderer/core_mods.rs`) joins the shaders: the built-in
+  hooks only. The baseline gate of the plugin sets it for its replays. The log names the files
+  in use, or each file that is dropped and why, in its `core mods:` and `core mod:` lines.
 - `MGE_XE_BOX_SECONDS=<n>`: a message box of d3d8.dll, of the helper or of the plugin
   closes itself after n seconds, and its text is in that part's log as `box:` lines
   (always); unset or 0, the box waits for the click. The test runner sets 5.

@@ -103,19 +103,22 @@ const WRAP_W: f32 = 0.6;
 const WRAP_N: f32 = 1.5;
 const BACK_LIGHT: f32 = 0.4;
 
-// shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
-// the pixel; a positive number when the map has nothing nearer to the sun.
-fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
-    let margin = vec3f(1.0 - 8.0 * g.esm.w, 1.0 - 8.0 * g.esm.w, 1.0);
-    if all(abs(s0) < margin) {
-        let uv = vec2f(0.5 + 0.5 * s0.x, 0.5 - 0.5 * s0.y);
-        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r / g.esm.z - s0.z;
+// The library of the shadow hooks (`core_mods.rs`): the shadow map of the frame and its
+// values. The hooks join this shader after its text.
+fn shadow_map_depth(layer: u32, uv: vec2f) -> f32 {
+    if layer == 0u {
+        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r;
     }
-    if all(abs(s1) < margin) {
-        let uv = vec2f(0.5 + 0.5 * s1.x, 0.5 - 0.5 * s1.y);
-        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r / g.esm.z - s1.z;
-    }
-    return 1e-6;
+    return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r;
+}
+fn shadow_texel() -> f32 {
+    return g.esm.w;
+}
+fn shadow_esm_scale() -> f32 {
+    return g.esm.z;
+}
+fn shadow_esm_values() -> vec2f {
+    return g.esm.xy;
 }
 
 // grassDisplacement: the wind in four waves, and the grass that the player pushes away. The
@@ -233,7 +236,7 @@ override ALPHA_TO_COVERAGE: bool = false;
     // The shadow, as GrassPS: shadowESM times the light of the sun, towards shadecolor.
     if g.shadow.x > 0.5 {
         let dz = shadow_delta(in.shadow0, in.shadow1);
-        var v = (1.0 - clamp(exp(g.esm.x * dz + g.esm.y), 0.0, 1.0)) * light;
+        var v = shadow_esm(dz) * light;
         if g.shadow.w > 0.5 {
             // As the ground under the blade (RenderShadowsPS): the fade at the edge of the
             // outer layer, and the fog weakens the shadow.
