@@ -442,6 +442,10 @@ The line sources: `lights`, `shadow-boxes`, `bounds`, `lua`.
   arguments: a tune or a Settings record in the capture does not change it, so one capture
   serves every view.
 
+Retired: the start-time switches `MGE_XE_SHADOW_LAYERS`, `MGE_XE_SHADOW_DEBUG`,
+`MGE_XE_WATER_DEBUG` and `MGE_XE_POST_DEBUG`. The helper does not read them. When one is
+set, the log gets one line that names it.
+
 ## When something is wrong
 
 Report it at <https://github.com/StormAtronach/nirender-plugin/issues>. The form there

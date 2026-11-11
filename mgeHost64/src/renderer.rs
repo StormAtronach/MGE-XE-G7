@@ -455,6 +455,9 @@ pub fn run(mut arguments: Vec<String>) {
     // The distant land starts after the log of the helper is set up: its lines are in it.
     nirender_wgpu::run_with(arguments, move || -> Option<Box<dyn Extension>> {
         let mut land = DistantLand::start(Path::new("."), live);
+        if let Some(line) = debug_view::retired_switches_line(|name| nirender_wgpu::switches::text(name).is_some()) {
+            println!("{line}");
+        }
         land.debug_view = debug_view;
         Some(Box::new(land))
     });
