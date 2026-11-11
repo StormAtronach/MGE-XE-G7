@@ -112,6 +112,27 @@ enum RunMode {
     Ensure { return_if_current: bool },
 }
 
+/// What a run writes about the mesh overrides in its log.
+#[derive(Debug, PartialEq, Eq)]
+enum OverrideLog {
+    /// The report of the overrides ([`crate::statics::OverrideReport::lines`]).
+    Report,
+    /// One line: the overrides apply at the next generation.
+    NextGeneration,
+}
+
+impl RunMode {
+    /// The report describes the distant land on disk. A start that generates runs the check
+    /// first and the generation after it, and only the generation writes the report. The check
+    /// writes it when the data is current, because no generation follows then.
+    fn override_log(&self, inputs_current: bool) -> OverrideLog {
+        match self {
+            RunMode::Inspect if !inputs_current => OverrideLog::NextGeneration,
+            RunMode::Inspect | RunMode::Publish | RunMode::Ensure { .. } => OverrideLog::Report,
+        }
+    }
+}
+
 enum GenerationAuthority {
     /// Ordinary publish path used by `generate`.
     Publish(Option<storage::authority::WriterSession>),
@@ -545,9 +566,10 @@ fn run_generation(
     })?;
     let (mut usage_info, plugin_identities, grass_plugin_identities, grass_warnings, _projections, light_sources) =
         usage_result;
-    // The log of the mesh overrides: which keys matched a mesh of an object of this load order.
+    // The report of the mesh overrides: which keys matched a mesh of an object of this load
+    // order. The run writes it after the unit diff (`RunMode::override_log`).
     let object_meshes: hashbrown::HashSet<&str> = usage_info.objects.values().map(|object| object.mesh).collect();
-    override_report.log(&overrides, &object_meshes);
+    let override_lines = override_report.lines(&overrides, &object_meshes);
     identities.set_plugins(plugin_identities);
     identities.set_grass_plugins(grass_plugin_identities);
     warnings.extend(grass_warnings.into_iter().map(GenerationWarning::from));
@@ -789,6 +811,10 @@ fn run_generation(
     };
     // The light file is not in the units: a missing or old one is written without a rebuild.
     let lights_current = lights::is_current(&output_paths, lights.as_ref());
+    match run_mode.override_log(input_status.current) {
+        OverrideLog::Report => crate::statics::OverrideReport::write_log(&override_lines),
+        OverrideLog::NextGeneration => info!("Mesh overrides apply at the next generation: the distant land is not current"),
+    }
     match run_mode {
         RunMode::Inspect => {
             let mut status = input_status;
