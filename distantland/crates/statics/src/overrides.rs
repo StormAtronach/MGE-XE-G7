@@ -117,7 +117,10 @@ impl OverridesBuilder {
                 ReportSource { label, kind, mesh_keys }
             })
             .collect();
-        let report = OverrideReport { sources, winners: self.mesh_sources };
+        let report = OverrideReport {
+            sources,
+            winners: self.mesh_sources,
+        };
         (self.result, report)
     }
 

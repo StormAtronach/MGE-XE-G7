@@ -9,7 +9,12 @@ use super::post::{Pass, Shader, Variable, full};
 
 /// A variable with one place: a value, or a vector of the length of `default`.
 const fn v(name: &'static str, default: &'static [f32]) -> Variable {
-    Variable { name, slots: 1, per: default.len() as u32, default }
+    Variable {
+        name,
+        slots: 1,
+        per: default.len() as u32,
+        default,
+    }
 }
 
 /// The two variables of `jop_common.fx`: each shader that includes the file has them.
@@ -19,8 +24,25 @@ const VIEWPORT: Variable = v("viewportSize", &[0.8]);
 /// The place of the category `final`, plus the `priorityAdjust` of the file.
 const FINAL: i64 = 9_000_000;
 
-const fn shader(name: &'static str, source: &'static str, passes: &'static [Pass], adjust: i64, textures: &'static [&'static str], variables: &'static [Variable]) -> Shader {
-    Shader { name, source, passes, disable_flags: 0, no_sun_glare: false, priority: FINAL + adjust, textures, requires_hdr: false, variables }
+const fn shader(
+    name: &'static str,
+    source: &'static str,
+    passes: &'static [Pass],
+    adjust: i64,
+    textures: &'static [&'static str],
+    variables: &'static [Variable],
+) -> Shader {
+    Shader {
+        name,
+        source,
+        passes,
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: FINAL + adjust,
+        textures,
+        requires_hdr: false,
+        variables,
+    }
 }
 
 /// `jop_common.fx`. The names of the functions are those of the file.
@@ -980,16 +1002,48 @@ pub const SHADERS: &[Shader] = &[
         &[full("adjust")],
         36,
         &[],
-        &[ASPECT, VIEWPORT, v("brightness", &[0.0]), v("contrast", &[1.0]), v("saturation", &[0.0]), v("brightnessOffset", &[0.0]), v("contrastOffset", &[0.0]), v("saturationOffset", &[0.0]), v("hue", &[0.0])],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("brightness", &[0.0]),
+            v("contrast", &[1.0]),
+            v("saturation", &[0.0]),
+            v("brightnessOffset", &[0.0]),
+            v("contrastOffset", &[0.0]),
+            v("saturationOffset", &[0.0]),
+            v("hue", &[0.0]),
+        ],
     ),
-    shader("jop_blackwhite", BLACKWHITE, &[full("blackAndWhite")], 450, &[], &[v("threshold", &[0.5]), v("max_threshold", &[3.0])]),
-    shader("jop_charcoal", CHARCOAL, &[full("main")], 80, &["jop/charcoal.tga"], &[ASPECT, VIEWPORT, v("hatchStrength", &[0.2]), v("hatchSize", &[1.0])]),
+    shader(
+        "jop_blackwhite",
+        BLACKWHITE,
+        &[full("blackAndWhite")],
+        450,
+        &[],
+        &[v("threshold", &[0.5]), v("max_threshold", &[3.0])],
+    ),
+    shader(
+        "jop_charcoal",
+        CHARCOAL,
+        &[full("main")],
+        80,
+        &["jop/charcoal.tga"],
+        &[ASPECT, VIEWPORT, v("hatchStrength", &[0.2]), v("hatchSize", &[1.0])],
+    ),
     shader(
         "jop_composite",
         COMPOSITE,
         &[full("composite")],
         500,
-        &["jop/composite_tex.dds", "jop/vignette/vig_sketch.tga", "jop/vignette/vig_char.tga", "jop/vignette/vig_water.tga", "jop/vignette/vig_oil.tga", PERLIN, "jop/pencil_tile.tga"],
+        &[
+            "jop/composite_tex.dds",
+            "jop/vignette/vig_sketch.tga",
+            "jop/vignette/vig_char.tga",
+            "jop/vignette/vig_water.tga",
+            "jop/vignette/vig_oil.tga",
+            PERLIN,
+            "jop/pencil_tile.tga",
+        ],
         &[
             ASPECT,
             VIEWPORT,
@@ -1008,10 +1062,57 @@ pub const SHADERS: &[Shader] = &[
             v("maxDistance", &[249.0]),
         ],
     ),
-    shader("jop_distort", DISTORT, &[full("main")], 65, &[PERLIN], &[ASPECT, VIEWPORT, v("distortionStrength", &[0.05])]),
-    shader("jop_dof", DOF, &[full("dof_blur_h"), full("dof_blur_v")], 2, &[], &[ASPECT, VIEWPORT, v("target_depth", &[5000000.0]), v("blur_strength", &[0.0]), v("focus_range", &[1000.0])]),
-    shader("jop_fog_bw", FOG_BW, &[full("main")], 60, &[], &[ASPECT, VIEWPORT, v("distance", &[250.0]), v("maxDistance", &[249.0]), v("bgColor", &[1.0])]),
-    shader("jop_fog_color", FOG_COLOR, &[full("main")], 81, &[PERLIN], &[ASPECT, VIEWPORT, v("distance", &[250.0]), v("maxDistance", &[249.0]), v("fogColor", &[0.5, 0.5, 0.5]), v("distortionStrength", &[0.05])]),
+    shader(
+        "jop_distort",
+        DISTORT,
+        &[full("main")],
+        65,
+        &[PERLIN],
+        &[ASPECT, VIEWPORT, v("distortionStrength", &[0.05])],
+    ),
+    shader(
+        "jop_dof",
+        DOF,
+        &[full("dof_blur_h"), full("dof_blur_v")],
+        2,
+        &[],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("target_depth", &[5000000.0]),
+            v("blur_strength", &[0.0]),
+            v("focus_range", &[1000.0]),
+        ],
+    ),
+    shader(
+        "jop_fog_bw",
+        FOG_BW,
+        &[full("main")],
+        60,
+        &[],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("distance", &[250.0]),
+            v("maxDistance", &[249.0]),
+            v("bgColor", &[1.0]),
+        ],
+    ),
+    shader(
+        "jop_fog_color",
+        FOG_COLOR,
+        &[full("main")],
+        81,
+        &[PERLIN],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("distance", &[250.0]),
+            v("maxDistance", &[249.0]),
+            v("fogColor", &[0.5, 0.5, 0.5]),
+            v("distortionStrength", &[0.05]),
+        ],
+    ),
     shader("jop_greyscale", GREYSCALE, &[full("greyscale")], 450, &[], &[]),
     shader(
         "jop_hatch",
@@ -1019,10 +1120,32 @@ pub const SHADERS: &[Shader] = &[
         &[full("hatch")],
         82,
         &["jop/Hatch1.tga", "jop/Hatch2.tga", PERLIN],
-        &[ASPECT, VIEWPORT, v("timeOffsetMulti", &[0.0]), v("distortionStrength", &[0.05]), v("fogDistance", &[100000.0]), v("hatchStrength", &[4.0]), v("hatchSize", &[0.1])],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("timeOffsetMulti", &[0.0]),
+            v("distortionStrength", &[0.05]),
+            v("fogDistance", &[100000.0]),
+            v("hatchStrength", &[4.0]),
+            v("hatchSize", &[0.1]),
+        ],
     ),
-    shader("jop_ink", INK, &[full("main")], 70, &[], &[v("contrast", &[1.0]), v("brightness", &[0.0])]),
-    shader("jop_kuwahara", KUWAHARA, &[full("paint"), full("main_blurH"), full("main_blurV")], 68, &[], &[ASPECT, VIEWPORT, v("radius", &[1.0]), v("blur_strength", &[1.0])]),
+    shader(
+        "jop_ink",
+        INK,
+        &[full("main")],
+        70,
+        &[],
+        &[v("contrast", &[1.0]), v("brightness", &[0.0])],
+    ),
+    shader(
+        "jop_kuwahara",
+        KUWAHARA,
+        &[full("paint"), full("main_blurH"), full("main_blurV")],
+        68,
+        &[],
+        &[ASPECT, VIEWPORT, v("radius", &[1.0]), v("blur_strength", &[1.0])],
+    ),
     shader(
         "jop_lut",
         LUT,
@@ -1042,14 +1165,35 @@ pub const SHADERS: &[Shader] = &[
         ],
         &[ASPECT, VIEWPORT, v("selectedLut", &[1.0])],
     ),
-    shader("jop_mottle", MOTTLE, &[full("main")], 159, &["jop/splash_watercolor.tga", "jop/splash_watercolor_2.tga", PERLIN], &[ASPECT, VIEWPORT, v("canvas_strength", &[0.3]), v("scale", &[1.0]), v("speed", &[0.3])]),
+    shader(
+        "jop_mottle",
+        MOTTLE,
+        &[full("main")],
+        159,
+        &["jop/splash_watercolor.tga", "jop/splash_watercolor_2.tga", PERLIN],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("canvas_strength", &[0.3]),
+            v("scale", &[1.0]),
+            v("speed", &[0.3]),
+        ],
+    ),
     shader(
         "jop_oil",
         OIL,
         &[full("edgedetecting"), full("splashblend")],
         70,
         &[],
-        &[ASPECT, VIEWPORT, v("vibrance", &[1.0]), v("threshold", &[0.04]), v("temperatureShiftStrength", &[0.5]), v("warmColor", &[1.0, 0.9, 0.7]), v("coolColor", &[0.7, 0.8, 1.0])],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("vibrance", &[1.0]),
+            v("threshold", &[0.04]),
+            v("temperatureShiftStrength", &[0.5]),
+            v("warmColor", &[1.0, 0.9, 0.7]),
+            v("coolColor", &[0.7, 0.8, 1.0]),
+        ],
     ),
     shader(
         "jop_outline",
@@ -1077,9 +1221,20 @@ pub const SHADERS: &[Shader] = &[
     shader(
         "jop_pastel",
         PASTEL,
-        &[full("main_blurH"), full("main_blurV"), full("main_pastel"), full("main_overlay")],
+        &[
+            full("main_blurH"),
+            full("main_blurV"),
+            full("main_pastel"),
+            full("main_overlay"),
+        ],
         100,
-        &["jop/luts/pastel.tga", "jop/pastelOverlay.tga", "jop/pastelOverlay2.tga", "jop/grain.tga", PERLIN],
+        &[
+            "jop/luts/pastel.tga",
+            "jop/pastelOverlay.tga",
+            "jop/pastelOverlay2.tga",
+            "jop/grain.tga",
+            PERLIN,
+        ],
         &[
             ASPECT,
             VIEWPORT,
@@ -1096,15 +1251,39 @@ pub const SHADERS: &[Shader] = &[
             v("overlay_range", &[1.0, 1.0, 1.0]),
         ],
     ),
-    shader("jop_quantize", QUANTIZE, &[full("main")], 38, &[], &[ASPECT, VIEWPORT, v("luminosityLevels", &[12.0]), v("hueLevels", &[20.0])]),
-    shader("jop_sharpen", SHARPEN, &[full("main")], 50, &[], &[ASPECT, VIEWPORT, v("sharpen_strength", &[0.0])]),
+    shader(
+        "jop_quantize",
+        QUANTIZE,
+        &[full("main")],
+        38,
+        &[],
+        &[ASPECT, VIEWPORT, v("luminosityLevels", &[12.0]), v("hueLevels", &[20.0])],
+    ),
+    shader(
+        "jop_sharpen",
+        SHARPEN,
+        &[full("main")],
+        50,
+        &[],
+        &[ASPECT, VIEWPORT, v("sharpen_strength", &[0.0])],
+    ),
     shader(
         "jop_splash",
         SPLASH,
         &[full("main")],
         120,
         &["jop/oilOverlay.tga", "jop/oilOverlay2.tga", PERLIN, "jop/oilOverlay3.tga"],
-        &[ASPECT, VIEWPORT, v("strength_1", &[0.4]), v("strength_2", &[0.3]), v("strength_3", &[0.1]), v("canvas_strength", &[0.0]), v("scroll_strength", &[0.1]), v("scale", &[1.0]), v("speed", &[0.2])],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("strength_1", &[0.4]),
+            v("strength_2", &[0.3]),
+            v("strength_3", &[0.1]),
+            v("canvas_strength", &[0.0]),
+            v("scroll_strength", &[0.1]),
+            v("scale", &[1.0]),
+            v("speed", &[0.2]),
+        ],
     ),
     shader("jop_vignette", VIGNETTE, &[full("vignette")], 0, &[], &[]),
     shader(
@@ -1113,7 +1292,22 @@ pub const SHADERS: &[Shader] = &[
         &[full("main")],
         370,
         &[PERLIN],
-        &[ASPECT, VIEWPORT, v("Saturation", &[0.2]), v("SaturationThreshold", &[0.1]), v("MinSaturation", &[0.2]), v("selectedLut", &[1.0]), v("LineThickness", &[0.0003])],
+        &[
+            ASPECT,
+            VIEWPORT,
+            v("Saturation", &[0.2]),
+            v("SaturationThreshold", &[0.1]),
+            v("MinSaturation", &[0.2]),
+            v("selectedLut", &[1.0]),
+            v("LineThickness", &[0.0003]),
+        ],
     ),
-    shader("jop_window", WINDOW, &[full("clamp_levels"), full("add_window")], 10000, &[], &[ASPECT, VIEWPORT, v("view_port_size", &[0.8])]),
+    shader(
+        "jop_window",
+        WINDOW,
+        &[full("clamp_levels"), full("add_window")],
+        10000,
+        &[],
+        &[ASPECT, VIEWPORT, v("view_port_size", &[0.8])],
+    ),
 ];

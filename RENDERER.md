@@ -416,6 +416,36 @@ renderer, and the renderer. The numbers are those of a usual frame (the median o
 half second). The time that the GPU and Windows use after that is not in the number. If the
 mouse pointer of the menus follows your hand late, send us this line.
 
+## Debug views
+
+A debug view shows one value of the renderer in the picture, for a developer's test. At most
+one shader view is on at a time. The line sources are a set beside it; this build has no line
+pass yet, so a line source has no effect.
+
+| Shader view | What it shows |
+| --- | --- |
+| `lights` | a draw lit for each pixel shows only the light it takes, without its material, its textures and the fog |
+| `shadow-layers` | each pixel coloured by the layer of the shadow map that serves it: red the first, green the second, blue outside both, grey a draw without the shadow test; darker where the map shadows it. Where the frame draws no shadow map, the view shows the normal picture: a plain interior, the night, the shadows off or distant land off. An interior that behaves like an exterior has the map |
+| `shadow-map` | the atlas of the shadow map in the lower left of the picture |
+| `water <term>` | one term of the built-in water shader, 1 to 10: the table and the rule for a core mod's `water_color` are in `docs/core-mods.md`, "The water debug views" |
+| `post <term>` | 1 tints the result of the post chain, 2 shows its linear depth over 10000 units as grey |
+
+The line sources: `lights`, `shadow-boxes`, `bounds`, `lua`.
+
+- In a game, from Lua: `nirender.debug.view(name, term)` (`nirender.debug.view("off")` for
+  none) and `nirender.debug.lines(name, on)`. Each sends a tune.
+- The tunes: `debug view <name> [term]`, `debug view off`, `debug lines <name> on|off`.
+- `mge.render.lightDebug = true` turns the `lights` view on, and `false` turns it off. A
+  Settings record that does not change the value leaves another view as it is.
+- In a replay: `--debug-view <name> [term]` and `--debug-lines <name,name>` of `numidium.exe
+  --replay` (and of the plugin's `tools/replay.py`). A replay takes its view only from these
+  arguments: a tune or a Settings record in the capture does not change it, so one capture
+  serves every view.
+
+Retired: the start-time switches `MGE_XE_SHADOW_LAYERS`, `MGE_XE_SHADOW_DEBUG`,
+`MGE_XE_WATER_DEBUG` and `MGE_XE_POST_DEBUG`. The helper does not read them. When one is
+set, the log gets one line that names it.
+
 ## When something is wrong
 
 Report it at <https://github.com/StormAtronach/nirender-plugin/issues>. The form there
@@ -458,16 +488,7 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 
 - `MGE_XE_SKIP=water,terrain,statics,grass,blend`: the parts named are not drawn, for a
   replay that tests one suspect at a time.
-- `MGE_XE_WATER_DEBUG=<n>`: the water shows one term of its shader: 1 the reflection, 2 the
-  refraction, 3 the depth under the water, 4 the Fresnel weight, 5 the fog, 6 the distance,
-  7 the normal, 8 the view depth, 9 the heights of the waves.
-- `MGE_XE_POST_DEBUG=<n>`: 1 tints the result of the post chain, 2 shows its linear depth
-  over 10000 units as grey.
 - `MGE_XE_FULL_TIER_MAX=<n>` (0 to 32, the view slots of the plugin; the setting of the file takes 0 to 8): how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`, in place of `views.full_tier_max` of `mgeXE.toml` (default 1; 0 refuses every request).
-- `MGE_XE_SHADOW_DEBUG=1`: the atlas of the shadow map in the lower left of the picture.
-- `MGE_XE_SHADOW_LAYERS=1`: each pixel coloured by the layer of the shadow map that serves
-  it: red the first, green the second, blue outside both, grey a draw without the shadow
-  test; darker where the map shadows it.
 - `MGE_XE_CORE_MODS=0`: no core mod (`Data Files/shaders/core-mods/XE Mod <name>.wgsl`, the
   WGSL hook files of `mgeHost64/src/renderer/core_mods.rs`) joins the shaders: the built-in
   hooks only. The baseline gate of the plugin sets it for its replays. The log names the files

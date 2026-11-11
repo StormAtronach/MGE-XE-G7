@@ -32,12 +32,16 @@ pub fn commit() -> String {
 /// Not the index: an IDE's `git status` rewrites it, and the whole C++ of d3d8 would build
 /// again. So the `-dirty` mark is as of the last commit or checkout, not of the last edit.
 pub fn watch_commit() {
-    let Some(git_dir) = git(&["rev-parse", "--path-format=absolute", "--git-dir"]) else { return };
+    let Some(git_dir) = git(&["rev-parse", "--path-format=absolute", "--git-dir"]) else {
+        return;
+    };
     watch(Path::new(&git_dir).join("HEAD"));
     // The branch file and the packed refs live in the common folder of the repository, also
     // for a work tree.
     let head = std::fs::read_to_string(Path::new(&git_dir).join("HEAD")).unwrap_or_default();
-    let Some(common) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) else { return };
+    let Some(common) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) else {
+        return;
+    };
     watch(Path::new(&common).join("packed-refs"));
     if let Some(reference) = head.strip_prefix("ref: ") {
         watch(Path::new(&common).join(reference.trim()));

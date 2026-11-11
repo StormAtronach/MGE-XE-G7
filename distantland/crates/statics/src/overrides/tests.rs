@@ -171,7 +171,9 @@ fn report_builder() -> OverridesBuilder {
 }
 
 fn report_meshes() -> hashbrown::HashSet<&'static str> {
-    ["pc\\x\\bridge_bot.nif", "x\\rock.nif", "x\\tower.nif", "x\\other.nif"].into_iter().collect()
+    ["pc\\x\\bridge_bot.nif", "x\\rock.nif", "x\\tower.nif", "x\\other.nif"]
+        .into_iter()
+        .collect()
 }
 
 /// Each source has its count of keys and of keys that match; a used key that states a tier
@@ -180,12 +182,31 @@ fn report_meshes() -> hashbrown::HashSet<&'static str> {
 fn the_report_names_each_used_key_with_its_type_and_its_source() {
     let (overrides, report) = report_builder().finish_with_report();
     let lines = report.lines(&overrides, &report_meshes());
-    let infos: Vec<&str> = lines.iter().filter(|(level, _)| *level == ReportLevel::Info).map(|(_, line)| line.as_str()).collect();
-    assert!(infos.contains(&"Mesh overrides of default.toml: 4 keys, 3 match a mesh of this load order"), "{infos:?}");
-    assert!(infos.contains(&"Mesh overrides of Mod-metadata.toml: 2 keys, 1 match a mesh of this load order"), "{infos:?}");
-    assert!(infos.contains(&"Mesh override pc\\x\\bridge_bot.nif: very_far, from default.toml"), "{infos:?}");
-    assert!(infos.contains(&"Mesh override x\\tower.nif: near, from Mod-metadata.toml"), "{infos:?}");
-    assert!(!infos.iter().any(|line| line.starts_with("Mesh override x\\rock.nif")), "{infos:?}");
+    let infos: Vec<&str> = lines
+        .iter()
+        .filter(|(level, _)| *level == ReportLevel::Info)
+        .map(|(_, line)| line.as_str())
+        .collect();
+    assert!(
+        infos.contains(&"Mesh overrides of default.toml: 4 keys, 3 match a mesh of this load order"),
+        "{infos:?}"
+    );
+    assert!(
+        infos.contains(&"Mesh overrides of Mod-metadata.toml: 2 keys, 1 match a mesh of this load order"),
+        "{infos:?}"
+    );
+    assert!(
+        infos.contains(&"Mesh override pc\\x\\bridge_bot.nif: very_far, from default.toml"),
+        "{infos:?}"
+    );
+    assert!(
+        infos.contains(&"Mesh override x\\tower.nif: near, from Mod-metadata.toml"),
+        "{infos:?}"
+    );
+    assert!(
+        !infos.iter().any(|line| line.starts_with("Mesh override x\\rock.nif")),
+        "{infos:?}"
+    );
     assert!(infos.contains(&"Mesh overrides in use: near 1, very_far 1"), "{infos:?}");
 }
 
@@ -202,7 +223,11 @@ fn an_unmatched_key_is_a_note_in_a_list_and_a_warning_in_a_plugin() {
         ReportLevel::Warning,
         "Mesh override x\\absent_in_mod.nif of Mod-metadata.toml matches no mesh of this load order: the plugin names a mesh it does not use".to_owned()
     )));
-    assert_eq!(lines.iter().filter(|(level, _)| *level == ReportLevel::Warning).count(), 1, "{lines:?}");
+    assert_eq!(
+        lines.iter().filter(|(level, _)| *level == ReportLevel::Warning).count(),
+        1,
+        "{lines:?}"
+    );
 }
 
 /// A key that a source gives twice counts once, and the later value wins.

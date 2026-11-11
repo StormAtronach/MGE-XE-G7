@@ -366,7 +366,7 @@ main view; group 1: uniform `Glow` (range, glow, screen) (VF), glow list (V);
 
 **"shadow blur"** and **"shadow debug"** (`renderer/shadow.rs`) share one layout: 0
 uniform (VF), 1 texture, 2 sampler (F). Blur: 2 groups, one per pass, R16Float. Debug: with
-`MGE_XE_SHADOW_DEBUG`.
+the debug view `shadow-map`.
 
 ### 4.4 Helper: water
 
@@ -427,7 +427,7 @@ Alpha blending, colour only.
 | 2 pass | 0 uniform pass information, 1 `lastshader`, 2 `lastpass`, 3-10 `pass0` to `pass7` | pass |
 
 **"post depth"** (R32Float), **"post blit"** and **"post hdr"** (one `blit_layout`), and
-**"post debug"** (`MGE_XE_POST_DEBUG`) are full-screen passes with one group each.
+**"post debug"** (the debug view `post`) are full-screen passes with one group each.
 
 ## 5. Conventions for a change
 

@@ -333,8 +333,14 @@ mod version_tests {
     #[test]
     fn the_version_byte_is_checked_against_this_version() {
         assert_eq!(check_version_byte(Some(&[MGE_DL_VERSION])), Ok(()));
-        assert_eq!(check_version_byte(Some(&[MGE_DL_VERSION - 1])), Err(VersionProblem::Older(MGE_DL_VERSION - 1)));
-        assert_eq!(check_version_byte(Some(&[MGE_DL_VERSION + 1])), Err(VersionProblem::Newer(MGE_DL_VERSION + 1)));
+        assert_eq!(
+            check_version_byte(Some(&[MGE_DL_VERSION - 1])),
+            Err(VersionProblem::Older(MGE_DL_VERSION - 1))
+        );
+        assert_eq!(
+            check_version_byte(Some(&[MGE_DL_VERSION + 1])),
+            Err(VersionProblem::Newer(MGE_DL_VERSION + 1))
+        );
         assert_eq!(check_version_byte(None), Err(VersionProblem::Missing));
         assert_eq!(check_version_byte(Some(&[])), Err(VersionProblem::Missing));
         assert_eq!(check_version_byte(Some(&[MGE_DL_VERSION, 0])), Err(VersionProblem::Missing));

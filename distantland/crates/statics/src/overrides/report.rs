@@ -55,7 +55,11 @@ impl OverrideReport {
             let matched = source.mesh_keys.iter().filter(|key| meshes.contains(key.as_str())).count();
             lines.push((
                 ReportLevel::Info,
-                format!("Mesh overrides of {}: {} keys, {matched} match a mesh of this load order", source.label, source.mesh_keys.len()),
+                format!(
+                    "Mesh overrides of {}: {} keys, {matched} match a mesh of this load order",
+                    source.label,
+                    source.mesh_keys.len()
+                ),
             ));
         }
 
@@ -71,7 +75,10 @@ impl OverrideReport {
         let mut by_type: Vec<(&str, usize)> = Vec::new();
         for (key, value, source) in &used {
             let what = statement(value);
-            lines.push((ReportLevel::Info, format!("Mesh override {key}: {what}, from {}", self.sources[*source].label)));
+            lines.push((
+                ReportLevel::Info,
+                format!("Mesh override {key}: {what}, from {}", self.sources[*source].label),
+            ));
             match by_type.iter_mut().find(|(name, _)| *name == what) {
                 Some((_, count)) => *count += 1,
                 None => by_type.push((what, 1)),

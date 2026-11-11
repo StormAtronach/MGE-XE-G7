@@ -90,7 +90,11 @@ fn main() -> Result<()> {
     let state = load_state(folder)?;
     let keys = record_keys(&state);
     if keys.len() != statics.len() {
-        bail!("generation_state.bin names {} records, the shards hold {} statics", keys.len(), statics.len());
+        bail!(
+            "generation_state.bin names {} records, the shards hold {} statics",
+            keys.len(),
+            statics.len()
+        );
     }
     println!(
         "distant land {}: {} statics, {} exterior placements, far limit {}, very far limit {}",
@@ -109,11 +113,20 @@ fn main() -> Result<()> {
 
     println!();
     println!("Statics whose record key holds a text:");
-    let mut found: Vec<(String, usize)> =
-        keys.iter().enumerate().map(|(index, key)| (key.render(), index)).filter(|(name, _)| options.matches(name)).collect();
+    let mut found: Vec<(String, usize)> = keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| (key.render(), index))
+        .filter(|(name, _)| options.matches(name))
+        .collect();
     found.sort();
     for (name, index) in &found {
-        print_static(&options, name, &statics[*index], scales.get(index).map(Vec::as_slice).unwrap_or_default());
+        print_static(
+            &options,
+            name,
+            &statics[*index],
+            scales.get(index).map(Vec::as_slice).unwrap_or_default(),
+        );
     }
     if found.is_empty() {
         println!("  none");
@@ -134,7 +147,10 @@ fn print_meshes(options: &Options) -> Result<()> {
         plugins: Some(Vec::new()),
     })?;
     let overrides = OverridesBuilder::new().finish();
-    println!("Meshes built by the generator's extraction, no overrides, far limit {}, very far limit {}:", options.far_min_size, options.very_far_min_size);
+    println!(
+        "Meshes built by the generator's extraction, no overrides, far limit {}, very far limit {}:",
+        options.far_min_size, options.very_far_min_size
+    );
     for mesh in &options.meshes {
         let key = mesh.to_ascii_lowercase().replace('/', "\\");
         let extraction = DistantStatic::from_nif_with_identity(&key, &vfs, 1.0, 0.0, false, 1.0, true, &overrides);
@@ -143,7 +159,10 @@ fn print_meshes(options: &Options) -> Result<()> {
                 let kind = distant_static.static_type as u32;
                 let radius = distant_static.bounding_sphere.radius;
                 let tier = options.tier_of(kind, radius).map_or("grass", |tier| TIER_NAMES[tier]);
-                println!("  {key}: {:?} (type {kind}), radius {radius:.1}, tier at scale 1 {tier}", distant_static.static_type);
+                println!(
+                    "  {key}: {:?} (type {kind}), radius {radius:.1}, tier at scale 1 {tier}",
+                    distant_static.static_type
+                );
             }
             None => println!("  {key}: not built (not found, or no visible shape)"),
         }
@@ -162,8 +181,14 @@ fn print_static(options: &Options, name: &str, mesh: &PackedDistantStatic, scale
             None => grass += 1,
         }
     }
-    let (low, high) = scales.iter().fold((f32::MAX, f32::MIN), |(low, high), &scale| (low.min(scale), high.max(scale)));
-    let scale_text = if scales.is_empty() { "none".to_owned() } else { format!("{low:.2} to {high:.2}") };
+    let (low, high) = scales
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(low, high), &scale| (low.min(scale), high.max(scale)));
+    let scale_text = if scales.is_empty() {
+        "none".to_owned()
+    } else {
+        format!("{low:.2} to {high:.2}")
+    };
     let tier_text = match options.tier_of(kind, radius) {
         Some(tier) => TIER_NAMES[tier],
         None => "grass",
@@ -178,7 +203,12 @@ fn print_static(options: &Options, name: &str, mesh: &PackedDistantStatic, scale
     );
 }
 
-fn print_merge_cells(options: &Options, state: &state_db::GenerationState, statics: &[PackedDistantStatic], keys: &[StaticRecordKey]) {
+fn print_merge_cells(
+    options: &Options,
+    state: &state_db::GenerationState,
+    statics: &[PackedDistantStatic],
+    keys: &[StaticRecordKey],
+) {
     // The merge cells of the meshes that hold a text, with those meshes.
     let mut cells: BTreeMap<(i32, i32), Vec<String>> = BTreeMap::new();
     for (mesh, mesh_cells) in &state.reverse.mesh_to_merge {
@@ -246,7 +276,9 @@ fn parse_options() -> Result<Options> {
         }
     }
     if texts.is_empty() && meshes.is_empty() {
-        bail!("usage: static_tier_lister <distantland dir> --match <text>... [--far r] [--very-far r], or --ini <path> --data <dir>... --mesh <path>...");
+        bail!(
+            "usage: static_tier_lister <distantland dir> --match <text>... [--far r] [--very-far r], or --ini <path> --data <dir>... --mesh <path>..."
+        );
     }
     Ok(Options {
         folder,
@@ -281,5 +313,9 @@ fn load_state(folder: &Path) -> Result<state_db::GenerationState> {
 
 /// The record key of every static, in the same shard-major order as the statics.
 fn record_keys(state: &state_db::GenerationState) -> Vec<StaticRecordKey> {
-    state.static_mesh_shards.iter().flat_map(|shard| shard.records.iter().cloned()).collect()
+    state
+        .static_mesh_shards
+        .iter()
+        .flat_map(|shard| shard.records.iter().cloned())
+        .collect()
 }

@@ -55,7 +55,7 @@ At its start the renderer writes one line for each event:
   dropped, and why;
 - `core mod: XE Mod Water.wgsl: the plane of the water takes its hooks; the water volumes and
   the dry spaces keep the built-in water`: the water file is in use;
-- `core mod: XE Mod Water.wgsl: MGE_XE_WATER_DEBUG shows no terms of its water colour (the
+- `core mod: XE Mod Water.wgsl: the debug view water shows no terms of its water colour (the
   terms are those of the built-in)`: the water file defines `water_color` or
   `underwater_color` (see "The water debug views");
 - `core mod: XE Mod <name>.fx is for Direct3D 9; the wgpu renderer reads XE Mod <name>.wgsl,
@@ -236,7 +236,7 @@ fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
 
 ## The water debug views
 
-The switch `MGE_XE_WATER_DEBUG=<number>` shows one term of the water shader in place of the
+The debug view `water <number>` shows one term of the water shader in place of the
 water's colour. The terms are those of the built-in `water_color` and `underwater_color`:
 
 | Number | Seen from above | Seen from under the water |
@@ -262,7 +262,7 @@ shading.
 
 - **A hook can hang the GPU,** as an `.fx` core mod can on Direct3D 9: for example a loop that
   never ends. The shader check cannot find this.
-- **The shadow layers view** (`MGE_XE_SHADOW_LAYERS=1`) colours each pixel by the layer that
+- **The shadow layers view** (the debug view `shadow-layers`) colours each pixel by the layer that
   the built-in margin picks. With a mod's `shadow_delta`, the view still shows the built-in
   choice, not the mod's.
 - **The water debug views** show the built-in terms only (see "The water debug views").

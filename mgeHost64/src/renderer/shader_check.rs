@@ -42,14 +42,25 @@ pub(crate) fn check_with(label: &str, source: &str, features: wgpu::Features) ->
     let capabilities = wgpu_naga_bridge::features_to_naga_capabilities(features, downlevel);
     let mut options = naga::front::wgsl::Options::new();
     options.capabilities = capabilities;
-    let module = naga::front::wgsl::Frontend::new_with_options(options).parse(source).map_err(|error| format!("{label}: {}", error.emit_to_string(source)))?;
+    let module = naga::front::wgsl::Frontend::new_with_options(options)
+        .parse(source)
+        .map_err(|error| format!("{label}: {}", error.emit_to_string(source)))?;
     let limits = limits();
-    let over_the_groups = module.global_variables.iter().filter_map(|(_, variable)| variable.binding.as_ref()).find(|binding| binding.group >= limits.max_bind_groups);
+    let over_the_groups = module
+        .global_variables
+        .iter()
+        .filter_map(|(_, variable)| variable.binding.as_ref())
+        .find(|binding| binding.group >= limits.max_bind_groups);
     if let Some(binding) = over_the_groups {
-        return Err(format!("{label}: the binding group {} is at or over the limit of {} groups", binding.group, limits.max_bind_groups));
+        return Err(format!(
+            "{label}: the binding group {} is at or over the limit of {} groups",
+            binding.group, limits.max_bind_groups
+        ));
     }
     let mut validator = wgpu_naga_bridge::create_validator(features, downlevel, naga::valid::ValidationFlags::all());
-    let info = validator.validate(&module).map_err(|error| format!("{label}: {}", error.emit_to_string(source)))?;
+    let info = validator
+        .validate(&module)
+        .map_err(|error| format!("{label}: {}", error.emit_to_string(source)))?;
     for (index, entry) in module.entry_points.iter().enumerate() {
         let uses = info.get_entry_point(index);
         let mut counts = Counts::default();
@@ -58,7 +69,9 @@ pub(crate) fn check_with(label: &str, source: &str, features: wgpu::Features) ->
                 counts.add(&module.types[variable.ty].inner, variable.space);
             }
         }
-        counts.within(&limits).map_err(|problem| format!("{label}, the entry point {}: {problem}", entry.name))?;
+        counts
+            .within(&limits)
+            .map_err(|problem| format!("{label}, the entry point {}: {problem}", entry.name))?;
     }
     Ok(module)
 }
@@ -79,7 +92,10 @@ impl Counts {
             // A binding array has its own limit on its elements, which the request takes from
             // the adapter: nothing to compare here.
             naga::TypeInner::BindingArray { .. } => {}
-            naga::TypeInner::Image { class: naga::ImageClass::Storage { .. }, .. } => self.storage_textures += 1,
+            naga::TypeInner::Image {
+                class: naga::ImageClass::Storage { .. },
+                ..
+            } => self.storage_textures += 1,
             naga::TypeInner::Image { .. } => self.sampled_textures += 1,
             naga::TypeInner::Sampler { .. } => self.samplers += 1,
             _ => match space {
@@ -92,10 +108,26 @@ impl Counts {
 
     fn within(&self, limits: &wgpu::Limits) -> Result<(), String> {
         let classes = [
-            (self.uniform_buffers, limits.max_uniform_buffers_per_shader_stage, "uniform buffers"),
-            (self.storage_buffers, limits.max_storage_buffers_per_shader_stage, "storage buffers"),
-            (self.sampled_textures, limits.max_sampled_textures_per_shader_stage, "sampled textures"),
-            (self.storage_textures, limits.max_storage_textures_per_shader_stage, "storage textures"),
+            (
+                self.uniform_buffers,
+                limits.max_uniform_buffers_per_shader_stage,
+                "uniform buffers",
+            ),
+            (
+                self.storage_buffers,
+                limits.max_storage_buffers_per_shader_stage,
+                "storage buffers",
+            ),
+            (
+                self.sampled_textures,
+                limits.max_sampled_textures_per_shader_stage,
+                "sampled textures",
+            ),
+            (
+                self.storage_textures,
+                limits.max_storage_textures_per_shader_stage,
+                "storage textures",
+            ),
             (self.samplers, limits.max_samplers_per_shader_stage, "samplers"),
         ];
         for (count, limit, name) in classes {
@@ -115,7 +147,9 @@ mod tests {
 
     #[test]
     fn a_shader_within_the_request_passes() {
-        let source = format!("{VERTEX}@group(0) @binding(0) var<uniform> u: vec4f;\n@fragment fn fs() -> @location(0) vec4f {{ return u; }}");
+        let source = format!(
+            "{VERTEX}@group(0) @binding(0) var<uniform> u: vec4f;\n@fragment fn fs() -> @location(0) vec4f {{ return u; }}"
+        );
         let module = check("plain", &source).unwrap();
         assert_eq!(module.entry_points.len(), 2);
     }
@@ -135,28 +169,45 @@ mod tests {
     #[test]
     fn a_feature_the_request_lacks_fails() {
         // 16-bit floats need SHADER_F16, which the request does not ask for.
-        let source = format!("enable f16;\n{VERTEX}@fragment fn fs() -> @location(0) vec4f {{ let h: f16 = 1.0h; return vec4f(f32(h)); }}");
+        let source = format!(
+            "enable f16;\n{VERTEX}@fragment fn fs() -> @location(0) vec4f {{ let h: f16 = 1.0h; return vec4f(f32(h)); }}"
+        );
         let problem = check("f16", &source).unwrap_err();
         assert!(problem.starts_with("f16:"), "{problem}");
         // The index of the primitive needs PRIMITIVE_INDEX.
-        let source = format!("{VERTEX}@fragment fn fs(@builtin(primitive_index) i: u32) -> @location(0) vec4f {{ return vec4f(f32(i)); }}");
+        let source = format!(
+            "{VERTEX}@fragment fn fs(@builtin(primitive_index) i: u32) -> @location(0) vec4f {{ return vec4f(f32(i)); }}"
+        );
         assert!(check("primitive", &source).is_err());
     }
 
     #[test]
     fn a_group_at_the_limit_fails() {
-        let source = format!("{VERTEX}@group(4) @binding(0) var<uniform> u: vec4f;\n@fragment fn fs() -> @location(0) vec4f {{ return u; }}");
+        let source = format!(
+            "{VERTEX}@group(4) @binding(0) var<uniform> u: vec4f;\n@fragment fn fs() -> @location(0) vec4f {{ return u; }}"
+        );
         let problem = check("groups", &source).unwrap_err();
-        assert!(problem.contains("the binding group 4 is at or over the limit of 4 groups"), "{problem}");
+        assert!(
+            problem.contains("the binding group 4 is at or over the limit of 4 groups"),
+            "{problem}"
+        );
     }
 
     #[test]
     fn more_storage_buffers_than_a_stage_allows_fail() {
-        let buffers: String = (0..9).map(|i| format!("@group(0) @binding({i}) var<storage, read> b{i}: array<f32>;\n")).collect();
+        let buffers: String = (0..9)
+            .map(|i| format!("@group(0) @binding({i}) var<storage, read> b{i}: array<f32>;\n"))
+            .collect();
         let sum: Vec<String> = (0..9).map(|i| format!("b{i}[0]")).collect();
-        let source = format!("{VERTEX}{buffers}@fragment fn fs() -> @location(0) vec4f {{ return vec4f({}); }}", sum.join(" + "));
+        let source = format!(
+            "{VERTEX}{buffers}@fragment fn fs() -> @location(0) vec4f {{ return vec4f({}); }}",
+            sum.join(" + ")
+        );
         let problem = check("storage", &source).unwrap_err();
-        assert!(problem.contains("the entry point fs: 9 storage buffers in one stage, the limit is 8"), "{problem}");
+        assert!(
+            problem.contains("the entry point fs: 9 storage buffers in one stage, the limit is 8"),
+            "{problem}"
+        );
         // The same buffers unused by the fragment stage count for nothing.
         let source = format!("{VERTEX}{buffers}@fragment fn fs() -> @location(0) vec4f {{ return vec4f(b0[0]); }}");
         check("one used", &source).unwrap();

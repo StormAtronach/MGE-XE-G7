@@ -515,7 +515,11 @@ fn run_generation(
                     let projections = projection::Projections::capture(usage_info, &job.settings, &overrides);
                     // The light sources need the ids of the references, which the remap after
                     // the capture turns into the names of meshes.
-                    let light_sources = if job.settings.distant_lights { lights::light_sources(usage_info) } else { Vec::new() };
+                    let light_sources = if job.settings.distant_lights {
+                        lights::light_sources(usage_info)
+                    } else {
+                        Vec::new()
+                    };
                     (projections, started.elapsed(), light_sources)
                 },
             )?;
@@ -539,7 +543,8 @@ fn run_generation(
             light_sources,
         ))
     })?;
-    let (mut usage_info, plugin_identities, grass_plugin_identities, grass_warnings, _projections, light_sources) = usage_result;
+    let (mut usage_info, plugin_identities, grass_plugin_identities, grass_warnings, _projections, light_sources) =
+        usage_result;
     // The log of the mesh overrides: which keys matched a mesh of an object of this load order.
     let object_meshes: hashbrown::HashSet<&str> = usage_info.objects.values().map(|object| object.mesh).collect();
     override_report.log(&overrides, &object_meshes);
@@ -575,7 +580,12 @@ fn run_generation(
     // The light sources and the baked light, before the pruning drops the references that no
     // distant static uses.
     let lights = {
-        let span = info_span!("stage.distant_lights", report = true, source_count = field::Empty, tile_count = field::Empty);
+        let span = info_span!(
+            "stage.distant_lights",
+            report = true,
+            source_count = field::Empty,
+            tile_count = field::Empty
+        );
         let _guard = span.enter();
         let lights = lights::build(&light_sources, &usage_info, &job.settings);
         if let Some(lights) = lights.as_ref() {
@@ -1154,16 +1164,25 @@ fn discover_override_files(job: &GenerationJob, vfs: &Vfs) -> Vec<std::path::Pat
         .or_else(|| vfs.data_dirs().first().and_then(|data| data.parent().map(Path::to_path_buf)));
     let Some(game) = game else { return Vec::new() };
     let listed: Vec<String> = job.settings.override_files.iter().map(|path| normalized(path)).collect();
-    let Ok(entries) = fs::read_dir(game.join("mge3")) else { return Vec::new() };
+    let Ok(entries) = fs::read_dir(game.join("mge3")) else {
+        return Vec::new();
+    };
     let mut found: Vec<std::path::PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
         .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| ["ovr", "toml"].iter().any(|wanted| extension.to_string_lossy().eq_ignore_ascii_case(wanted)))
+            path.extension().is_some_and(|extension| {
+                ["ovr", "toml"]
+                    .iter()
+                    .any(|wanted| extension.to_string_lossy().eq_ignore_ascii_case(wanted))
+            })
         })
-        .filter(|path| !listed.iter().any(|listed| listed.ends_with(&normalized_name(path)) && listed.contains("mge3")))
+        .filter(|path| {
+            !listed
+                .iter()
+                .any(|listed| listed.ends_with(&normalized_name(path)) && listed.contains("mge3"))
+        })
         .collect();
     found.sort_by_key(|path| normalized(path));
     found
@@ -1174,7 +1193,9 @@ fn normalized(path: &Path) -> String {
 }
 
 fn normalized_name(path: &Path) -> String {
-    path.file_name().map(|name| name.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 fn artifact_from_atlas_written(written: WrittenFile) -> Result<storage::state::RequiredArtifact> {

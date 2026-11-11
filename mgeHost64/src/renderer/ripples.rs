@@ -102,7 +102,13 @@ pub fn kept_part(shift_x: i32, shift_y: i32) -> Option<([u32; 2], [u32; 2], [u32
     let (xp, xn) = ((shift_x as i64).max(0), (-(shift_x as i64)).max(0));
     let (yp, yn) = ((shift_y as i64).max(0), (-(shift_y as i64)).max(0));
     let (width, height) = (size - xn - 1 - xp, size - yn - 1 - yp);
-    (width > 0 && height > 0).then(|| ([(1 + xp) as u32, (1 + yp) as u32], [(1 + xn) as u32, (1 + yn) as u32], [width as u32, height as u32]))
+    (width > 0 && height > 0).then(|| {
+        (
+            [(1 + xp) as u32, (1 + yp) as u32],
+            [(1 + xn) as u32, (1 + yn) as u32],
+            [width as u32, height as u32],
+        )
+    })
 }
 
 /// The three rectangles of a drop at the pixel (`x`, `y`): each with its corner, its size
@@ -112,13 +118,23 @@ pub fn drop_parts(x: i32, y: i32) -> Vec<([u32; 2], [u32; 2], f32)> {
     const STRONG: f32 = 96.0 / 255.0;
     const WEAK: f32 = 64.0 / 255.0;
     let size = SIZE as i32;
-    [(x - 2, x + 2, y - 1, y + 1, STRONG), (x - 1, x + 1, y - 2, y + 2, STRONG), (x - 1, x + 1, y - 1, y + 1, WEAK)]
-        .into_iter()
-        .filter_map(|(left, right, top, bottom, value)| {
-            let (left, right, top, bottom) = (left.max(0), right.min(size), top.max(0), bottom.min(size));
-            (left < right && top < bottom).then(|| ([left as u32, top as u32], [(right - left) as u32, (bottom - top) as u32], value))
+    [
+        (x - 2, x + 2, y - 1, y + 1, STRONG),
+        (x - 1, x + 1, y - 2, y + 2, STRONG),
+        (x - 1, x + 1, y - 1, y + 1, WEAK),
+    ]
+    .into_iter()
+    .filter_map(|(left, right, top, bottom, value)| {
+        let (left, right, top, bottom) = (left.max(0), right.min(size), top.max(0), bottom.min(size));
+        (left < right && top < bottom).then(|| {
+            (
+                [left as u32, top as u32],
+                [(right - left) as u32, (bottom - top) as u32],
+                value,
+            )
         })
-        .collect()
+    })
+    .collect()
 }
 
 /// The bits of a 16-bit float for a value that is 0 or an ordinary number.
@@ -144,7 +160,10 @@ pub struct Drops {
 
 impl Drops {
     pub fn new() -> Drops {
-        Drops { state: 0x9E37_79B9_7F4A_7C15, remaining: 0.0 }
+        Drops {
+            state: 0x9E37_79B9_7F4A_7C15,
+            remaining: 0.0,
+        }
     }
 
     /// The drops of a frame: `precipitation` is 1 for rain and snow, 1.5 for a
@@ -222,14 +241,27 @@ impl Ripples {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: wgpu::BufferSize::new(16) },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
                     count: None,
                 },
             ],
@@ -243,16 +275,28 @@ impl Ripples {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("ripples"), size: SLOTS * SLOT_BYTES, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ripples"),
+            size: SLOTS * SLOT_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let target = |label: &str| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
             let view = texture.create_view(&Default::default());
@@ -260,28 +304,60 @@ impl Ripples {
                 label: Some(label),
                 layout: &layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &uniforms, offset: 0, size: wgpu::BufferSize::new(16) }) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &uniforms,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(16),
+                        }),
+                    },
                 ],
             });
             Target { texture, view, group }
         };
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("ripples"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ripples"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ripples"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ripples"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let pipeline = |entry: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("ripples"),
                 layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
                 depth_stencil: None,
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some(entry),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -305,7 +381,9 @@ impl Ripples {
             frames: 0,
         };
         // A new texture has no defined content for a copy or a read: all four start flat.
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ripples start") });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("ripples start"),
+        });
         for target in ripples.rain.iter().chain(ripples.player.iter()) {
             clear(&mut encoder, &target.view);
         }
@@ -335,10 +413,18 @@ impl Ripples {
         self.frames += 1;
         // The steps of the frame, for both simulations.
         let steps = steps_of(&mut self.remaining, frame_time);
-        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ripples") });
-        let at = scene.commands.stamps().begin(&mut encoder, "ripples: the simulation", nirender_wgpu::stamps::StampKind::Detail);
+        let mut encoder = scene
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ripples") });
+        let at = scene.commands.stamps().begin(
+            &mut encoder,
+            "ripples: the simulation",
+            nirender_wgpu::stamps::StampKind::Detail,
+        );
         // The first slot is for the step passes: they read no uniform.
-        scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&[0.0f32, 0.0, inputs.time, 0.0]));
+        scene
+            .queue
+            .write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&[0.0f32, 0.0, inputs.time, 0.0]));
 
         // The rain.
         if inputs.like_exterior {
@@ -347,10 +433,27 @@ impl Ripples {
                     let pixel = [0u16, half_bits(value), half_bits(value), 0];
                     let pixels: Vec<u16> = (0..size[0] * size[1]).flat_map(|_| pixel).collect();
                     scene.queue.write_texture(
-                        wgpu::TexelCopyTextureInfo { texture: &self.rain[self.rain_now].texture, mip_level: 0, origin: wgpu::Origin3d { x: corner[0], y: corner[1], z: 0 }, aspect: wgpu::TextureAspect::All },
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &self.rain[self.rain_now].texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d {
+                                x: corner[0],
+                                y: corner[1],
+                                z: 0,
+                            },
+                            aspect: wgpu::TextureAspect::All,
+                        },
                         bytemuck::cast_slice(&pixels),
-                        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: None },
-                        wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(size[0] * 8),
+                            rows_per_image: None,
+                        },
+                        wgpu::Extent3d {
+                            width: size[0],
+                            height: size[1],
+                            depth_or_array_layers: 1,
+                        },
                     );
                 }
                 self.rain_used = true;
@@ -359,7 +462,13 @@ impl Ripples {
             // A flat texture stays flat: no steps before the first drop.
             if self.rain_used {
                 for _ in 0..steps {
-                    self.pass(&mut encoder, &self.step_pipeline, &self.rain[self.rain_now].group, &self.rain[1 - self.rain_now].view, 0);
+                    self.pass(
+                        &mut encoder,
+                        &self.step_pipeline,
+                        &self.rain[self.rain_now].group,
+                        &self.rain[1 - self.rain_now].view,
+                        0,
+                    );
                     self.rain_now = 1 - self.rain_now;
                 }
                 self.steps += steps as u64;
@@ -382,9 +491,31 @@ impl Ripples {
             clear(&mut encoder, &self.player[1].view);
             if let Some((from, to, size)) = kept_part(shift_x, shift_y) {
                 encoder.copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo { texture: &self.player[0].texture, mip_level: 0, origin: wgpu::Origin3d { x: from[0], y: from[1], z: 0 }, aspect: wgpu::TextureAspect::All },
-                    wgpu::TexelCopyTextureInfo { texture: &self.player[1].texture, mip_level: 0, origin: wgpu::Origin3d { x: to[0], y: to[1], z: 0 }, aspect: wgpu::TextureAspect::All },
-                    wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.player[0].texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: from[0],
+                            y: from[1],
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.player[1].texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: to[0],
+                            y: to[1],
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
                 );
             }
             // The passes go from the buffer to the state and back.
@@ -396,34 +527,82 @@ impl Ripples {
                     // rate does not make fewer waves.
                     let w = -(i as f32) / steps as f32 / SIZE as f32;
                     let slot = 1 + i as u64;
-                    scene.queue.write_buffer(&self.uniforms, slot * SLOT_BYTES, bytemuck::cast_slice(&[w * shift_x as f32 + 0.5, w * shift_y as f32 + 0.5, inputs.time, 0.0]));
-                    self.pass(&mut encoder, &self.player_pipeline, &self.player[source].group, &self.player[1 - source].view, (slot * SLOT_BYTES) as u32);
+                    scene.queue.write_buffer(
+                        &self.uniforms,
+                        slot * SLOT_BYTES,
+                        bytemuck::cast_slice(&[w * shift_x as f32 + 0.5, w * shift_y as f32 + 0.5, inputs.time, 0.0]),
+                    );
+                    self.pass(
+                        &mut encoder,
+                        &self.player_pipeline,
+                        &self.player[source].group,
+                        &self.player[1 - source].view,
+                        (slot * SLOT_BYTES) as u32,
+                    );
                     source = 1 - source;
                 }
             }
             for _ in 0..steps {
-                self.pass(&mut encoder, &self.step_pipeline, &self.player[source].group, &self.player[1 - source].view, 0);
+                self.pass(
+                    &mut encoder,
+                    &self.step_pipeline,
+                    &self.player[source].group,
+                    &self.player[1 - source].view,
+                    0,
+                );
                 source = 1 - source;
             }
             self.steps += steps as u64;
             if source != 0 {
                 encoder.copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo { texture: &self.player[1].texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    wgpu::TexelCopyTextureInfo { texture: &self.player[0].texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.player[1].texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.player[0].texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: SIZE,
+                        height: SIZE,
+                        depth_or_array_layers: 1,
+                    },
                 );
             }
-            self.origin = [pixel.0 as f32 * WORLD_PIXEL - 0.5 * WORLD_SIZE, pixel.1 as f32 * WORLD_PIXEL - 0.5 * WORLD_SIZE];
+            self.origin = [
+                pixel.0 as f32 * WORLD_PIXEL - 0.5 * WORLD_SIZE,
+                pixel.1 as f32 * WORLD_PIXEL - 0.5 * WORLD_SIZE,
+            ];
         }
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
     }
 
-    fn pass(&self, encoder: &mut wgpu::CommandEncoder, pipeline: &wgpu::RenderPipeline, source: &wgpu::BindGroup, target: &wgpu::TextureView, offset: u32) {
+    fn pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        source: &wgpu::BindGroup,
+        target: &wgpu::TextureView,
+        offset: u32,
+    ) {
         nirender_wgpu::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("ripples"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -440,7 +619,15 @@ fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
     nirender_wgpu::gpu::note_other_pass();
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("ripples clear"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
         occlusion_query_set: None,
@@ -504,7 +691,11 @@ mod tests {
         assert!((224..=225).contains(&count), "{count}");
         let (mut a, mut b) = (Drops::new(), Drops::new());
         assert_eq!(a.of_frame(1.0, 0.5), b.of_frame(1.0, 0.5));
-        assert!(a.of_frame(1.0, 0.5).iter().all(|(x, y)| (0..SIZE as i32).contains(x) && (0..SIZE as i32).contains(y)));
+        assert!(
+            a.of_frame(1.0, 0.5)
+                .iter()
+                .all(|(x, y)| (0..SIZE as i32).contains(x) && (0..SIZE as i32).contains(y))
+        );
     }
 
     #[test]

@@ -27,9 +27,20 @@ impl GpuTime {
         if !nirender_wgpu::switches::gpu_time() || !device.features().contains(features) {
             return None;
         }
-        let buffer = |usage| device.create_buffer(&wgpu::BufferDescriptor { label: Some("gpu time"), size: 16, usage, mapped_at_creation: false });
+        let buffer = |usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("gpu time"),
+                size: 16,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
         Some(GpuTime {
-            set: device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("gpu time"), ty: wgpu::QueryType::Timestamp, count: 2 }),
+            set: device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("gpu time"),
+                ty: wgpu::QueryType::Timestamp,
+                count: 2,
+            }),
             resolve: buffer(wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC),
             read: buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST),
             period: queue.get_timestamp_period() as f64,
@@ -67,8 +78,19 @@ impl GpuTime {
 
     /// The line of the report: the mean time of each part that ran.
     pub fn report(&self) -> String {
-        let parts: Vec<String> =
-            PARTS.iter().zip(self.totals).filter(|(_, (_, count))| *count > 0).map(|(name, (total, count))| format!("{name} {:.3} ms ({count} times)", total / 1e6 / count as f64)).collect();
-        format!("gpu of the parts before the frame: {}", if parts.is_empty() { "none".to_string() } else { parts.join(", ") })
+        let parts: Vec<String> = PARTS
+            .iter()
+            .zip(self.totals)
+            .filter(|(_, (_, count))| *count > 0)
+            .map(|(name, (total, count))| format!("{name} {:.3} ms ({count} times)", total / 1e6 / count as f64))
+            .collect();
+        format!(
+            "gpu of the parts before the frame: {}",
+            if parts.is_empty() {
+                "none".to_string()
+            } else {
+                parts.join(", ")
+            }
+        )
     }
 }

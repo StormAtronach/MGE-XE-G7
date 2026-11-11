@@ -2,12 +2,13 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::schema::{
-    DRAW_DISTANCE_RANGE, DistantLandSettings, FAR_STATIC_END_RANGE, FOG_ABOVE_END_RANGE, FULL_TIER_MAX_RANGE, FOG_ABOVE_START_RANGE,
+    DRAW_DISTANCE_RANGE, DistantLandSettings, FAR_STATIC_END_RANGE, FOG_ABOVE_END_RANGE, FOG_ABOVE_START_RANGE,
     FOG_BELOW_END_RANGE, FOG_BELOW_START_RANGE, FOG_INTERIOR_END_RANGE, FOG_INTERIOR_START_RANGE, FOV_RANGE,
-    GRAPHICS_FUNCTION_COUNT, GRASS_INTERIOR_WIND_RANGE, HORIZON_BIAS_Z_RANGE, HORIZON_BINS_RANGE, HORIZON_MAX_RANGE_RANGE,
-    HORIZON_NEAR_UNITS_RANGE, HORIZON_OBJECT_BIAS_Z_RANGE, HORIZON_REBUILD_EYE_THRESHOLD_RANGE, HORIZON_RING_STEP_RANGE,
-    HORIZON_SAMPLE_SPACING_RANGE, INPUT_COUNT, MacroKind, NEAR_STATIC_END_RANGE, PER_PIXEL_LIGHT_FADE_RADIUS_RANGE,
-    SCHEMA_VERSION, STATIC_MIN_SIZE_RANGE, Settings, TRIGGER_COUNT, VERY_FAR_STATIC_END_RANGE, WEATHER_NAMES,
+    FULL_TIER_MAX_RANGE, GRAPHICS_FUNCTION_COUNT, GRASS_INTERIOR_WIND_RANGE, HORIZON_BIAS_Z_RANGE, HORIZON_BINS_RANGE,
+    HORIZON_MAX_RANGE_RANGE, HORIZON_NEAR_UNITS_RANGE, HORIZON_OBJECT_BIAS_Z_RANGE, HORIZON_REBUILD_EYE_THRESHOLD_RANGE,
+    HORIZON_RING_STEP_RANGE, HORIZON_SAMPLE_SPACING_RANGE, INPUT_COUNT, MacroKind, NEAR_STATIC_END_RANGE,
+    PER_PIXEL_LIGHT_FADE_RADIUS_RANGE, SCHEMA_VERSION, STATIC_MIN_SIZE_RANGE, Settings, TRIGGER_COUNT,
+    VERY_FAR_STATIC_END_RANGE, WEATHER_NAMES,
 };
 
 /// Clamp warning labels for every per-weather scalar, spelled out at compile time so that
@@ -287,7 +288,13 @@ pub(crate) fn validate_bounds(settings: &mut Settings) -> Result<Vec<Warning>, V
             &mut warnings,
         );
     }
-    clamp_u32(&mut settings.runtime.renderer_frame_latency, 1, 3, "runtime.renderer_frame_latency", &mut warnings);
+    clamp_u32(
+        &mut settings.runtime.renderer_frame_latency,
+        1,
+        3,
+        "runtime.renderer_frame_latency",
+        &mut warnings,
+    );
     clamp_f32(
         &mut settings.runtime.camera_x,
         -250.0,

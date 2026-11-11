@@ -21,7 +21,7 @@ pub(in crate::renderer) struct Uniforms {
     pub sun_col: [f32; 4],
     /// The sky colour, and the good weather value.
     pub sky_col: [f32; 4],
-    /// x: the debug term (`MGE_XE_WATER_DEBUG`); y: 1 under water; z: 1 in a plain interior
+    /// x: the debug term (the debug view `water`); y: 1 under water; z: 1 in a plain interior
     /// (`water_is_interior` of the water hooks).
     pub modes: [f32; 4],
     /// The two numbers of the depth of the projection of the game, for the distance of a
@@ -76,7 +76,9 @@ fn caustic_light(under: vec3f, sun: vec3f, time: f32, distance: f32, strength: f
 /// the visibility of the sun and the far fog colour, which has the light of the sky.
 pub(in crate::renderer) fn caustic_strength(intensity: f32, sun_vis: f32, fog_color_far: [f32; 3]) -> f32 {
     let sunlight = 1.0 - (1.0 - sun_vis).powi(2);
-    let sky = (fog_color_far[0] * fog_color_far[0] + fog_color_far[1] * fog_color_far[1] + fog_color_far[2] * fog_color_far[2]).sqrt();
+    let sky =
+        (fog_color_far[0] * fog_color_far[0] + fog_color_far[1] * fog_color_far[1] + fog_color_far[2] * fog_color_far[2])
+            .sqrt();
     0.05 * intensity * (0.75 * sunlight + 0.35 * sky).clamp(0.0, 1.0)
 }
 
@@ -430,7 +432,7 @@ fn underwater(uv: vec2f, w: f32, texcoords: vec4f, world_xy: vec2f, eye_vec: vec
     let seen = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
     let refracted = mix(u.fog_color.rgb, seen, exp(-dist / 500.0));
     let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w, 1.0);
-    // A look at one term, for a test: MGE_XE_WATER_DEBUG, as above the water (1 and 2), and
+    // A look at one term, for a test: the debug view `water`, as above the water (1 and 2), and
     // 10 for the picture of the game before the fog of the water is mixed into it.
     if water.modes.x == 1.0 {
         return vec4f(reflected, 1.0);
@@ -463,9 +465,97 @@ fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
 }
 ";
 
+/// The names of the library above that reach what the reflection pass draws: the bindings of
+/// its colour and its depth, and every function that reads them, itself or through a call. A
+/// shader that names none of them does not read the reflection, so a frame whose readers all
+/// name none can skip the pass. `the_reflection_readers_are_listed` keeps the list whole.
+pub(in crate::renderer) const REFLECTION_READERS: [&str; 6] = [
+    "reflection",
+    "mirror_depth",
+    "mirror_way",
+    "reflection_soft",
+    "reflection_at",
+    "underwater",
+];
+
+/// True when the WGSL text names one of [`REFLECTION_READERS`] as a word outside a comment.
+pub(in crate::renderer) fn reads_reflection(wgsl: &str) -> bool {
+    words(&without_comments(wgsl)).any(|word| REFLECTION_READERS.contains(&word))
+}
+
+/// The text without its `//` and `/* */` comments.
+fn without_comments(wgsl: &str) -> String {
+    let mut out = String::with_capacity(wgsl.len());
+    let mut rest = wgsl;
+    while !rest.is_empty() {
+        let line = rest.find("//");
+        let block = rest.find("/*");
+        match (line, block) {
+            (Some(at), b) if b.is_none_or(|b| at < b) => {
+                out.push_str(&rest[..at]);
+                rest = rest[at..].find('\n').map_or("", |end| &rest[at + end..]);
+            }
+            (_, Some(at)) => {
+                out.push_str(&rest[..at]);
+                rest = rest[at + 2..].find("*/").map_or("", |end| &rest[at + 2 + end + 2..]);
+            }
+            _ => {
+                out.push_str(rest);
+                rest = "";
+            }
+        }
+    }
+    out
+}
+
+/// The words of a WGSL text: its names and numbers.
+fn words(wgsl: &str) -> impl Iterator<Item = &str> {
+    wgsl.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|word| !word.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each function of the library that a mod's shader can call names no listed name unless
+    /// it is listed itself: a new function that reads the reflection, or calls one that does,
+    /// fails here until it joins the list.
+    #[test]
+    fn the_reflection_readers_are_listed() {
+        for library in [COMMON, WATER_NORMAL, CAUSTICS] {
+            let text = without_comments(library);
+            for function in text.split("\nfn ").skip(1) {
+                let name = function.split('(').next().unwrap().trim();
+                let body = &function[function.find('(').unwrap()..];
+                if !REFLECTION_READERS.contains(&name) {
+                    assert!(
+                        !reads_reflection(body),
+                        "the function {name} reaches the reflection: add it to REFLECTION_READERS"
+                    );
+                }
+            }
+        }
+        // Each listed name is in the library: a stale name hides nothing, but says so.
+        for name in REFLECTION_READERS {
+            assert!(
+                words(&without_comments(COMMON)).any(|word| word == name),
+                "{name} is not in COMMON"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mod_shader_reads_the_reflection_by_a_listed_name() {
+        assert!(reads_reflection(
+            "fn water_shader(s: WaterSurface) -> vec4f { return underwater(s.screen, 1.0, vec4f(0.0), s.flat.xy, vec3f(0.0), 1.0); }"
+        ));
+        assert!(reads_reflection("let c = textureLoad(mirror_depth, vec2i(0), 0);"));
+        assert!(!reads_reflection(
+            "// the reflection of the sky\nfn water_shader(s: WaterSurface) -> vec4f { return vec4f(sky_color(s.facing), 1.0); }"
+        ));
+        assert!(!reads_reflection("/* reflection_at */ let my_reflection_at = 1.0;"));
+    }
 
     #[test]
     fn the_water_struct_has_the_size_of_its_wgsl() {

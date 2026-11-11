@@ -13,9 +13,6 @@
 
 use nirender_wgpu::{SceneView, wgpu};
 
-/// `MGE_XE_POST_DEBUG`, read once: the chain is made again at a change of the shaders.
-static POST_DEBUG: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-
 /// The variables that MGE XE gives a shader (section 2 of the specification), as one
 /// uniform. The matrices are the rows of Direct3D, so that `mview[row][col]` of HLSL is
 /// `u.mview[row][col]` here.
@@ -167,12 +164,20 @@ pub struct Pass {
 
 /// A pass into a texture of the size of the picture with 8-bit colours.
 pub(super) const fn full(entry: &'static str) -> Pass {
-    Pass { entry, scale: 1, half_float: false }
+    Pass {
+        entry,
+        scale: 1,
+        half_float: false,
+    }
 }
 
 /// A pass into a texture of the picture size over `scale`, with 16-bit floats.
 const fn scaled(entry: &'static str, scale: u32) -> Pass {
-    Pass { entry, scale, half_float: true }
+    Pass {
+        entry,
+        scale,
+        half_float: true,
+    }
 }
 
 /// The textures that a shader can name: `tex1` to `tex10`.
@@ -225,7 +230,12 @@ pub struct ShaderStatus {
 impl ShaderStatus {
     /// The result of a load: [`None`] for a shader that compiles.
     pub fn note(&mut self, name: &str, error: Option<String>) {
-        let loads = self.list.iter().find(|(known, _, _)| known == name).map_or(0, |(_, _, loads)| *loads) + 1;
+        let loads = self
+            .list
+            .iter()
+            .find(|(known, _, _)| known == name)
+            .map_or(0, |(_, _, loads)| *loads)
+            + 1;
         self.list.retain(|(known, _, _)| known != name);
         self.list.push((name.to_string(), error, loads));
         self.sequence += 1;
@@ -234,7 +244,10 @@ impl ShaderStatus {
     pub fn text(&self) -> String {
         let mut text = format!("sequence {}\n", self.sequence);
         for (name, error, loads) in &self.list {
-            text.push_str(&format!("shader {name}\nloads {loads}\n{}\n", if error.is_some() { "error" } else { "ok" }));
+            text.push_str(&format!(
+                "shader {name}\nloads {loads}\n{}\n",
+                if error.is_some() { "error" } else { "ok" }
+            ));
             for line in error.iter().flat_map(|error| error.lines()) {
                 text.push_str(&format!("| {line}\n"));
             }
@@ -264,7 +277,13 @@ fn compiler_part(error: &str) -> &str {
 /// The compiler counts the common part and the functions of the variables first: `offset`
 /// lines. The numbers are after `wgsl:` and at the start of the lines that show the code.
 fn own_lines(message: &str, offset: usize) -> String {
-    let own = |number: &str| number.parse::<usize>().ok().filter(|n| *n > offset).map(|n| (n - offset).to_string());
+    let own = |number: &str| {
+        number
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n > offset)
+            .map(|n| (n - offset).to_string())
+    };
     let digits = |text: &str| text.chars().take_while(|c| c.is_ascii_digit()).count();
     message
         .lines()
@@ -309,17 +328,31 @@ impl ShaderState {
     /// then for each variable its name, its type, the number of its values, the values.
     pub fn read(bytes: &[u8]) -> Option<ShaderState> {
         let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-        let name = |at: usize| bytes.get(at..at + 64).map(|b| String::from_utf8_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(64)]).into_owned());
+        let name = |at: usize| {
+            bytes
+                .get(at..at + 64)
+                .map(|b| String::from_utf8_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(64)]).into_owned())
+        };
         if word(0)? != 1 {
             return None;
         }
         let flags = word(4)?;
-        let mut state = ShaderState { name: name(16)?, enabled: flags & 1 != 0, priority: (flags & 2 != 0).then_some(word(8)? as i32 as i64), reloads: flags >> 8, values: Vec::new() };
+        let mut state = ShaderState {
+            name: name(16)?,
+            enabled: flags & 1 != 0,
+            priority: (flags & 2 != 0).then_some(word(8)? as i32 as i64),
+            reloads: flags >> 8,
+            values: Vec::new(),
+        };
         let mut at = 80;
         for _ in 0..word(12)? {
             let (variable, kind, count) = (name(at)?, word(at + 64)?, word(at + 68)? as usize);
             let floats = bytes.get(at + 72..at + 72 + count * 4)?;
-            state.values.push((variable, kind as u8, floats.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()));
+            state.values.push((
+                variable,
+                kind as u8,
+                floats.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect(),
+            ));
             at += 72 + count * 4;
         }
         Some(state)
@@ -353,12 +386,76 @@ fn values_of(variables: &[VariableDef], set: &[(String, u8, Vec<f32>)]) -> Vec<f
 /// after it when WGSL has a function or a word with that name (`distance` is `distance_()`).
 fn function_name(variable: &str) -> String {
     const TAKEN: &[&str] = &[
-        "abs", "acos", "all", "any", "asin", "atan", "ceil", "clamp", "cos", "cross", "degrees", "distance", "dot", "exp", "floor", "fract", "length", "log", "max", "min", "mix",
-        "modf", "normalize", "pow", "radians", "reflect", "round", "saturate", "sign", "sin", "smoothstep", "sqrt", "step", "tan", "trunc", "select", "sample", "filter", "target",
-        "texture", "loop", "switch", "default", "const", "var", "let", "fn", "struct", "return", "if", "else", "for", "while", "break", "continue", "discard", "true", "false",
-        "u", "vs", "modv", "rcpres", "mview", "mproj",
+        "abs",
+        "acos",
+        "all",
+        "any",
+        "asin",
+        "atan",
+        "ceil",
+        "clamp",
+        "cos",
+        "cross",
+        "degrees",
+        "distance",
+        "dot",
+        "exp",
+        "floor",
+        "fract",
+        "length",
+        "log",
+        "max",
+        "min",
+        "mix",
+        "modf",
+        "normalize",
+        "pow",
+        "radians",
+        "reflect",
+        "round",
+        "saturate",
+        "sign",
+        "sin",
+        "smoothstep",
+        "sqrt",
+        "step",
+        "tan",
+        "trunc",
+        "select",
+        "sample",
+        "filter",
+        "target",
+        "texture",
+        "loop",
+        "switch",
+        "default",
+        "const",
+        "var",
+        "let",
+        "fn",
+        "struct",
+        "return",
+        "if",
+        "else",
+        "for",
+        "while",
+        "break",
+        "continue",
+        "discard",
+        "true",
+        "false",
+        "u",
+        "vs",
+        "modv",
+        "rcpres",
+        "mview",
+        "mproj",
     ];
-    if TAKEN.contains(&variable) { format!("{variable}_") } else { variable.to_string() }
+    if TAKEN.contains(&variable) {
+        format!("{variable}_")
+    } else {
+        variable.to_string()
+    }
 }
 
 /// The WGSL functions that read the variables of a shader from `modv`.
@@ -376,7 +473,10 @@ fn variables_wgsl(variables: &[VariableDef]) -> String {
         if variable.slots == 1 {
             out.push_str(&format!("fn {name}() -> {kind} {{ return modv.values[{slot}]{parts}; }}\n"));
         } else {
-            out.push_str(&format!("fn {name}(i: i32) -> {kind} {{ return modv.values[{slot} + clamp(i, 0, {})]{parts}; }}\n", variable.slots - 1));
+            out.push_str(&format!(
+                "fn {name}(i: i32) -> {kind} {{ return modv.values[{slot} + clamp(i, 0, {})]{parts}; }}\n",
+                variable.slots - 1
+            ));
         }
         slot += variable.slots;
     }
@@ -389,9 +489,19 @@ fn variables_wgsl(variables: &[VariableDef]) -> String {
 fn parse_variable(item: &str) -> Result<VariableDef, String> {
     let (left, default) = item.split_once('=').unwrap_or((item, ""));
     let mut words = left.split_whitespace();
-    let (Some(name), Some(kind), None) = (words.next(), words.next(), words.next()) else { return Err(format!("the variable `{item}` is not `name type`")) };
+    let (Some(name), Some(kind), None) = (words.next(), words.next(), words.next()) else {
+        return Err(format!("the variable `{item}` is not `name type`"));
+    };
     let (kind, slots) = match kind.split_once('[') {
-        Some((kind, count)) => (kind, count.trim_end_matches(']').parse::<u32>().ok().filter(|n| *n >= 1).ok_or_else(|| format!("the size of the variable {name} is not [N]"))?),
+        Some((kind, count)) => (
+            kind,
+            count
+                .trim_end_matches(']')
+                .parse::<u32>()
+                .ok()
+                .filter(|n| *n >= 1)
+                .ok_or_else(|| format!("the size of the variable {name} is not [N]"))?,
+        ),
         None => (kind, 1),
     };
     let per = match kind {
@@ -399,10 +509,25 @@ fn parse_variable(item: &str) -> Result<VariableDef, String> {
         "vec2" => 2,
         "vec3" => 3,
         "vec4" => 4,
-        other => return Err(format!("the type `{other}` of the variable {name} is not f32, vec2, vec3 or vec4")),
+        other => {
+            return Err(format!(
+                "the type `{other}` of the variable {name} is not f32, vec2, vec3 or vec4"
+            ));
+        }
     };
-    let default = default.split_whitespace().map(|v| v.parse::<f32>().map_err(|_| format!("the value `{v}` of the variable {name} is not a number"))).collect::<Result<Vec<_>, _>>()?;
-    Ok(VariableDef { name: name.to_string(), slots, per, default })
+    let default = default
+        .split_whitespace()
+        .map(|v| {
+            v.parse::<f32>()
+                .map_err(|_| format!("the value `{v}` of the variable {name} is not a number"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(VariableDef {
+        name: name.to_string(),
+        slots,
+        per,
+        default,
+    })
 }
 
 /// A shader of the chain: its name, its passes, and the environment flags that disable it
@@ -444,15 +569,42 @@ struct Definition {
 /// one file, of MGE XE or of a mod that ships a file with the same name: `port_for_file`
 /// compares that file with the one here.
 const STOCK_FILES: &[(&str, &str)] = &[
-    ("Bloom Fine", include_str!("../../../assets/Data Files/shaders/XEshaders/Bloom Fine.fx")),
-    ("Bloom Soft", include_str!("../../../assets/Data Files/shaders/XEshaders/Bloom Soft.fx")),
-    ("Depth of Field", include_str!("../../../assets/Data Files/shaders/XEshaders/Depth of Field.fx")),
-    ("Eye Adaptation (HDR)", include_str!("../../../assets/Data Files/shaders/XEshaders/Eye Adaptation (HDR).fx")),
-    ("SSAO Fast", include_str!("../../../assets/Data Files/shaders/XEshaders/SSAO Fast.fx")),
-    ("SSAO HQ", include_str!("../../../assets/Data Files/shaders/XEshaders/SSAO HQ.fx")),
-    ("Sunshafts", include_str!("../../../assets/Data Files/shaders/XEshaders/Sunshafts.fx")),
-    ("Underwater Effects", include_str!("../../../assets/Data Files/shaders/XEshaders/Underwater Effects.fx")),
-    ("Underwater Interior Effects", include_str!("../../../assets/Data Files/shaders/XEshaders/Underwater Interior Effects.fx")),
+    (
+        "Bloom Fine",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/Bloom Fine.fx"),
+    ),
+    (
+        "Bloom Soft",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/Bloom Soft.fx"),
+    ),
+    (
+        "Depth of Field",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/Depth of Field.fx"),
+    ),
+    (
+        "Eye Adaptation (HDR)",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/Eye Adaptation (HDR).fx"),
+    ),
+    (
+        "SSAO Fast",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/SSAO Fast.fx"),
+    ),
+    (
+        "SSAO HQ",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/SSAO HQ.fx"),
+    ),
+    (
+        "Sunshafts",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/Sunshafts.fx"),
+    ),
+    (
+        "Underwater Effects",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/Underwater Effects.fx"),
+    ),
+    (
+        "Underwater Interior Effects",
+        include_str!("../../../assets/Data Files/shaders/XEshaders/Underwater Interior Effects.fx"),
+    ),
 ];
 
 /// The effect files of mods that have a port here: the name of the file, the key of its
@@ -546,7 +698,10 @@ fn number_line(line: &str) -> Option<(&str, f64)> {
         }
     } else {
         let mut rest = line;
-        while let Some(after) = ["static ", "const ", "extern "].iter().find_map(|word| rest.strip_prefix(word)) {
+        while let Some(after) = ["static ", "const ", "extern "]
+            .iter()
+            .find_map(|word| rest.strip_prefix(word))
+        {
             rest = after.trim_start();
         }
         if rest.len() == line.len() {
@@ -569,7 +724,10 @@ fn number_line(line: &str) -> Option<(&str, f64)> {
 
 /// The numbers of an effect file (see `number_line`).
 fn file_numbers(text: &str) -> Vec<(String, f64)> {
-    text.lines().filter_map(number_line).map(|(name, value)| (name.to_string(), value)).collect()
+    text.lines()
+        .filter_map(number_line)
+        .map(|(name, value)| (name.to_string(), value))
+        .collect()
 }
 
 /// The key of the code of an effect file: FNV-1a 64 of its lines without the comments, the
@@ -609,9 +767,18 @@ fn code_key(text: &str) -> u64 {
 /// technique: the category (`getShaderPriority` of the Direct3D 9 path) plus
 /// `priorityAdjust`. A file without a category has the default, 6000000.
 fn file_priority(text: &str) -> i64 {
-    let Some(line) = text.lines().find(|line| line.trim_start().starts_with("technique")) else { return 6_000_000 };
-    let value_of = |key: &str| line.split_once(key).and_then(|(_, rest)| rest.split_once('=')).map(|(_, rest)| rest.trim_start());
-    let category = match value_of("category").and_then(|rest| rest.strip_prefix('"')).and_then(|rest| rest.split('"').next()) {
+    let Some(line) = text.lines().find(|line| line.trim_start().starts_with("technique")) else {
+        return 6_000_000;
+    };
+    let value_of = |key: &str| {
+        line.split_once(key)
+            .and_then(|(_, rest)| rest.split_once('='))
+            .map(|(_, rest)| rest.trim_start())
+    };
+    let category = match value_of("category")
+        .and_then(|rest| rest.strip_prefix('"'))
+        .and_then(|rest| rest.split('"').next())
+    {
         Some("scene") => 1_000_000,
         Some("atmosphere") => 2_000_000,
         Some("lens") => 3_000_000,
@@ -620,7 +787,10 @@ fn file_priority(text: &str) -> i64 {
         Some("final") => 9_000_000,
         _ => 6_000_000,
     };
-    let adjust = value_of("priorityAdjust").and_then(|rest| rest.split([';', ' ', '>']).next()).and_then(|number| number.trim().parse::<i64>().ok()).unwrap_or(0);
+    let adjust = value_of("priorityAdjust")
+        .and_then(|rest| rest.split([';', ' ', '>']).next())
+        .and_then(|number| number.trim().parse::<i64>().ok())
+        .unwrap_or(0);
     category + adjust
 }
 
@@ -640,14 +810,25 @@ fn with_file_numbers(source: &str, numbers: &[(String, f64)]) -> (String, Vec<St
     let mut out = String::with_capacity(source.len());
     for line in source.lines() {
         let mut written = false;
-        if let Some((left, _)) = line.trim_end().strip_suffix("// file").and_then(|code| code.trim_start().strip_prefix("const ")).and_then(|rest| rest.split_once('=')) {
-            let (name, kind) = left.split_once(':').map_or((left.trim(), "f32"), |(name, kind)| (name.trim(), kind.trim()));
+        if let Some((left, _)) = line
+            .trim_end()
+            .strip_suffix("// file")
+            .and_then(|code| code.trim_start().strip_prefix("const "))
+            .and_then(|rest| rest.split_once('='))
+        {
+            let (name, kind) = left
+                .split_once(':')
+                .map_or((left.trim(), "f32"), |(name, kind)| (name.trim(), kind.trim()));
             if let Some((_, value)) = numbers.iter().find(|(n, _)| n == name) {
                 let text = match kind {
                     "i32" | "u32" => format!("{}", *value as i64),
                     _ => {
                         let text = format!("{value}");
-                        if text.contains(['.', 'e']) { text } else { format!("{text}.0") }
+                        if text.contains(['.', 'e']) {
+                            text
+                        } else {
+                            format!("{text}.0")
+                        }
                     }
                 };
                 let indent = &line[..line.len() - line.trim_start().len()];
@@ -690,11 +871,21 @@ fn port_for_file(definition: &mut Definition, file: &str) {
     let key = code_key(file);
     // The stock file of the name is the file of the port, unless the port is that of a file
     // of a mod with that name.
-    let of_mod = MOD_FILES.iter().any(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key);
-    let stock = STOCK_FILES.iter().find(|(stock_name, _)| *stock_name == name && !of_mod).map(|(_, text)| *text);
+    let of_mod = MOD_FILES
+        .iter()
+        .any(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key);
+    let stock = STOCK_FILES
+        .iter()
+        .find(|(stock_name, _)| *stock_name == name && !of_mod)
+        .map(|(_, text)| *text);
     let relation = match stock {
         Some(text) if code_key(text) == key => FileOfPort::Same,
-        _ if MOD_FILES.iter().any(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key) => FileOfPort::Same,
+        _ if MOD_FILES
+            .iter()
+            .any(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key) =>
+        {
+            FileOfPort::Same
+        }
         _ => FileOfPort::Other,
     };
     match relation {
@@ -704,7 +895,12 @@ fn port_for_file(definition: &mut Definition, file: &str) {
             // file to compare with, and takes each number of its marked constants.
             let numbers = file_numbers(file);
             let other: Vec<(String, f64)> = match stock {
-                Some(text) => numbers.into_iter().zip(file_numbers(text)).filter(|((_, a), (_, b))| (a - b).abs() > 1e-9 * b.abs().max(1.0)).map(|(number, _)| number).collect(),
+                Some(text) => numbers
+                    .into_iter()
+                    .zip(file_numbers(text))
+                    .filter(|((_, a), (_, b))| (a - b).abs() > 1e-9 * b.abs().max(1.0))
+                    .map(|(number, _)| number)
+                    .collect(),
                 None => numbers,
             };
             let (fitted, mut taken) = with_file_numbers(source, &other);
@@ -713,25 +909,43 @@ fn port_for_file(definition: &mut Definition, file: &str) {
             // An older copy of a stock file has no category: its place in the chain is
             // that of the file, as on Direct3D 9.
             if let Some(text) = stock.filter(|text| file_priority(text) != file_priority(file)) {
-                println!("post: {name}: the file {name}.fx has another category than the stock file (place {} and not {}); the port takes it", file_priority(file), file_priority(text));
+                println!(
+                    "post: {name}: the file {name}.fx has another category than the stock file (place {} and not {}); the port takes it",
+                    file_priority(file),
+                    file_priority(text)
+                );
                 definition.priority = file_priority(file);
             }
             if stock.is_none() {
                 definition.priority = file_priority(file);
             }
             if stock.is_some() {
-                let say = |numbers: Vec<&(String, f64)>| numbers.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ");
+                let say = |numbers: Vec<&(String, f64)>| {
+                    numbers
+                        .iter()
+                        .map(|(n, v)| format!("{n} = {v}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
                 let (took, kept): (Vec<_>, Vec<_>) = other.iter().partition(|(n, _)| taken.contains(n));
                 if !took.is_empty() {
-                    println!("post: {name}: the file {name}.fx is the stock shader with other numbers; the port takes them: {}", say(took));
+                    println!(
+                        "post: {name}: the file {name}.fx is the stock shader with other numbers; the port takes them: {}",
+                        say(took)
+                    );
                 }
                 if !kept.is_empty() {
-                    println!("post: {name}: numbers of the file {name}.fx that the port cannot take: {}", say(kept));
+                    println!(
+                        "post: {name}: numbers of the file {name}.fx that the port cannot take: {}",
+                        say(kept)
+                    );
                 }
             }
         }
         FileOfPort::Other => {
-            println!("post: {name}: the file {name}.fx is another shader than the port of this name (code key {key:#018x}); the port runs as it is, and the file needs a port of its own");
+            println!(
+                "post: {name}: the file {name}.fx is another shader than the port of this name (code key {key:#018x}); the port runs as it is, and the file needs a port of its own"
+            );
         }
     }
 }
@@ -740,11 +954,17 @@ fn port_for_file(definition: &mut Definition, file: &str) {
 /// over N, `name f16` for 16-bit floats, or both.
 fn parse_pass(item: &str) -> Result<(String, u32, bool), String> {
     let mut words = item.split_whitespace();
-    let Some(name) = words.next() else { return Err("a pass without a name".to_string()) };
+    let Some(name) = words.next() else {
+        return Err("a pass without a name".to_string());
+    };
     let (mut scale, mut half_float) = (1u32, false);
     for word in words {
         if let Some(number) = word.strip_prefix('/') {
-            scale = number.parse().ok().filter(|n: &u32| *n >= 1).ok_or_else(|| format!("the scale `{word}` of the pass {name} is not /N with N 1 or more"))?;
+            scale = number
+                .parse()
+                .ok()
+                .filter(|n: &u32| *n >= 1)
+                .ok_or_else(|| format!("the scale `{word}` of the pass {name} is not /N with N 1 or more"))?;
         } else if word == "f16" {
             half_float = true;
         } else {
@@ -759,13 +979,26 @@ impl Definition {
         Definition {
             name: shader.name.to_string(),
             source: shader.source.to_string(),
-            passes: shader.passes.iter().map(|pass| (pass.entry.to_string(), pass.scale, pass.half_float)).collect(),
+            passes: shader
+                .passes
+                .iter()
+                .map(|pass| (pass.entry.to_string(), pass.scale, pass.half_float))
+                .collect(),
             disable_flags: shader.disable_flags,
             no_sun_glare: shader.no_sun_glare,
             priority: shader.priority,
             textures: shader.textures.iter().map(|name| name.to_string()).collect(),
             requires_hdr: shader.requires_hdr,
-            variables: shader.variables.iter().map(|v| VariableDef { name: v.name.to_string(), slots: v.slots, per: v.per, default: v.default.to_vec() }).collect(),
+            variables: shader
+                .variables
+                .iter()
+                .map(|v| VariableDef {
+                    name: v.name.to_string(),
+                    slots: v.slots,
+                    per: v.per,
+                    default: v.default.to_vec(),
+                })
+                .collect(),
         }
     }
 
@@ -790,7 +1023,17 @@ impl Definition {
     /// - `variables: a f32 = 1, b vec3, c f32[8]` (none): the variables that a mod sets from
     ///   Lua, with their values before that; the WGSL reads them as `a()`, `b()`, `c(i)`
     fn of_file(name: &str, text: &str) -> Result<Definition, String> {
-        let mut definition = Definition { name: name.to_string(), source: text.to_string(), passes: Vec::new(), disable_flags: 0, no_sun_glare: false, priority: 0, textures: Vec::new(), requires_hdr: false, variables: Vec::new() };
+        let mut definition = Definition {
+            name: name.to_string(),
+            source: text.to_string(),
+            passes: Vec::new(),
+            disable_flags: 0,
+            no_sun_glare: false,
+            priority: 0,
+            textures: Vec::new(),
+            requires_hdr: false,
+            variables: Vec::new(),
+        };
         let (mut category, mut adjust, mut interface) = (6_000_000i64, 0i64, false);
         let flag = |value: &str| match value {
             "true" => Ok(true),
@@ -799,11 +1042,20 @@ impl Definition {
         };
         for line in text.lines() {
             let Some(rest) = line.strip_prefix("//!") else { break };
-            let Some((key, value)) = rest.split_once(':') else { return Err(format!("the line `{line}` has no `key: value`")) };
+            let Some((key, value)) = rest.split_once(':') else {
+                return Err(format!("the line `{line}` has no `key: value`"));
+            };
             let value = value.trim();
             match key.trim() {
                 "interface" => interface = value == "mge-xe-wgsl 1",
-                "passes" => definition.passes = value.split(',').map(str::trim).filter(|pass| !pass.is_empty()).map(parse_pass).collect::<Result<_, _>>()?,
+                "passes" => {
+                    definition.passes = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|pass| !pass.is_empty())
+                        .map(parse_pass)
+                        .collect::<Result<_, _>>()?
+                }
                 "category" => {
                     category = match value {
                         "scene" => 1_000_000,
@@ -816,17 +1068,34 @@ impl Definition {
                         other => return Err(format!("the category `{other}` is not known")),
                     }
                 }
-                "priority_adjust" => adjust = value.parse().map_err(|_| format!("the priority adjust `{value}` is not a number"))?,
-                "mgeflags" => definition.disable_flags = value.parse().map_err(|_| format!("the flags `{value}` are not a number"))?,
+                "priority_adjust" => {
+                    adjust = value
+                        .parse()
+                        .map_err(|_| format!("the priority adjust `{value}` is not a number"))?
+                }
+                "mgeflags" => {
+                    definition.disable_flags = value.parse().map_err(|_| format!("the flags `{value}` are not a number"))?
+                }
                 "requires_hdr" => definition.requires_hdr = flag(value)?,
                 "disable_sunglare" => definition.no_sun_glare = flag(value)?,
                 "texture" => {
-                    definition.textures = value.split(',').map(|name| name.trim().to_string()).filter(|name| !name.is_empty()).collect();
+                    definition.textures = value
+                        .split(',')
+                        .map(|name| name.trim().to_string())
+                        .filter(|name| !name.is_empty())
+                        .collect();
                     if definition.textures.len() > TEXTURES {
                         return Err(format!("more than {TEXTURES} textures"));
                     }
                 }
-                "variables" => definition.variables = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(parse_variable).collect::<Result<_, _>>()?,
+                "variables" => {
+                    definition.variables = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(parse_variable)
+                        .collect::<Result<_, _>>()?
+                }
                 other => return Err(format!("the key `{other}` is not known")),
             }
         }
@@ -908,7 +1177,10 @@ const HDR_MOST_WAIT: std::time::Duration = std::time::Duration::from_millis(250)
 
 /// The wait of the read: until the submit `copy` has run, for at most [`HDR_MOST_WAIT`].
 fn hdr_wait(copy: Option<wgpu::SubmissionIndex>) -> wgpu::PollType {
-    wgpu::PollType::Wait { submission_index: copy, timeout: Some(HDR_MOST_WAIT) }
+    wgpu::PollType::Wait {
+        submission_index: copy,
+        timeout: Some(HDR_MOST_WAIT),
+    }
 }
 
 /// The longest step of the point, in seconds. A step above it is a load or a jump of the clock,
@@ -936,23 +1208,63 @@ impl Hdr {
     fn new(device: &wgpu::Device, blit_layout: &wgpu::BindGroupLayout, reaction: f32) -> Hdr {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("post hdr"),
-            size: wgpu::Extent3d { width: 512, height: 512, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 512,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 10,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let levels = (0..10).map(|level| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: level, mip_level_count: Some(1), ..Default::default() })).collect();
+        let levels = (0..10)
+            .map(|level| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: level,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
         let pipeline = full_screen_pipeline(device, "post hdr", BLIT_SHADER, blit_layout, wgpu::TextureFormat::Rgba8Unorm);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post hdr"), size: 4, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        Hdr { texture, levels, pipeline, buffer, luminance: 0.5, point: [1.0; 4], clock: HdrClock::default(), cycle: HdrCycle::default(), mapped: None, copy_submission: None, reaction: reaction.clamp(0.01, 30.0) }
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("post hdr"),
+            size: 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Hdr {
+            texture,
+            levels,
+            pipeline,
+            buffer,
+            luminance: 0.5,
+            point: [1.0; 4],
+            clock: HdrClock::default(),
+            cycle: HdrCycle::default(),
+            mapped: None,
+            copy_submission: None,
+            reaction: reaction.clamp(0.01, 30.0),
+        }
     }
 
     /// One frame of the measure, at the time `time` of the clock of the game. Returns the
     /// adaptation point.
-    fn frame(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, picture: &wgpu::TextureView, blit_layout: &wgpu::BindGroupLayout, linear: &wgpu::Sampler, environment_flags: u32, time: f32) -> [f32; 4] {
+    fn frame(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        picture: &wgpu::TextureView,
+        blit_layout: &wgpu::BindGroupLayout,
+        linear: &wgpu::Sampler,
+        environment_flags: u32,
+        time: f32,
+    ) -> [f32; 4] {
         use std::sync::atomic::{AtomicBool, Ordering};
         match self.cycle.step() {
             HdrAction::Copy => {
@@ -960,11 +1272,23 @@ impl Hdr {
                 // the mean of 2 x 2 pixels from the second level on.
                 let mut source = picture;
                 for level in &self.levels {
-                    let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-                        label: Some("post hdr"),
-                        layout: blit_layout,
-                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(linear) }],
-                    });
+                    let group = nirender_wgpu::gpu::frame_group(
+                        device,
+                        &wgpu::BindGroupDescriptor {
+                            label: Some("post hdr"),
+                            layout: blit_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(source),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(linear),
+                                },
+                            ],
+                        },
+                    );
                     let mut pass = full_screen_pass(encoder, level, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
                     pass.set_pipeline(&self.pipeline);
                     pass.set_bind_group(0, &group, &[]);
@@ -973,9 +1297,25 @@ impl Hdr {
                     source = level;
                 }
                 encoder.copy_texture_to_buffer(
-                    wgpu::TexelCopyTextureInfo { texture: &self.texture, mip_level: 9, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    wgpu::TexelCopyBufferInfo { buffer: &self.buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: None, rows_per_image: None } },
-                    wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.texture,
+                        mip_level: 9,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &self.buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: None,
+                            rows_per_image: None,
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
                 );
             }
             HdrAction::Map => {
@@ -1838,7 +2178,9 @@ fn wobbled(tex: vec2f) -> vec2f {
 
 /// Underwater Interior Effects by Hrnchamd, v1, as `Underwater Interior Effects.fx` has it:
 /// the wobble of the picture, and caustics near the surface of the water.
-const UNDERWATER_INTERIOR: &str = concat!(underwater_common!(), "
+const UNDERWATER_INTERIOR: &str = concat!(
+    underwater_common!(),
+    "
 @fragment fn wobble(in: Quad) -> @location(0) vec4f {
     let time = u.sunvec.w;
     let waterlevel = u.suncol.w;
@@ -1849,12 +2191,15 @@ const UNDERWATER_INTERIOR: &str = concat!(underwater_common!(), "
     let k = 1.0 - water_at(vec3f(v.xy / 1783.0, 0.4 * time)).b;
     return c * (1.0 - 0.2 * step(v.z, waterlevel - 1.0) * saturate(exp((v.z - waterlevel) / 100.0)) * k);
 }
-");
+"
+);
 
 /// Underwater Effects by Hrnchamd, v2, as `Underwater Effects.fx` has it: the wobble of the
 /// picture, and the rays of the light from three shells of the wave texture. The effect
 /// takes the water of an exterior at the height 0.
-const UNDERWATER: &str = concat!(underwater_common!(), "
+const UNDERWATER: &str = concat!(
+    underwater_common!(),
+    "
 const lightcolour: vec4f = vec4f(0.6, 0.91, 1.0, 0.0);
 
 fn fetch(tex: vec3f, uw: f32) -> f32 {
@@ -1893,7 +2238,8 @@ fn fetch(tex: vec3f, uw: f32) -> f32 {
 
     return c + rayz * lf * lightcolour;
 }
-");
+"
+);
 
 /// Eye Adaptation (HDR) by Hrnchamd, v4, as `Eye Adaptation (HDR).fx` has it: the exposure
 /// from the adaptation point, a film response curve, and less colour in low light.
@@ -3419,7 +3765,6 @@ const DITHERING = array<f32, 16>(
 }
 ";
 
-
 // The picture under skooma: `skoomaesthesia.fx` of the mod Skoomaesthesia. The mod sets the
 // strength, the colour cycle and the blur of the edges from Lua.
 const SKOOMAESTHESIA: &str = "
@@ -3530,7 +3875,6 @@ fn rand(co: vec2f) -> f32 {
     return final_color;
 }
 ";
-
 
 // The view of an invisible player: `Invisibility.fx` of MM - Enhanced Invisibility. The mod
 // loads it and sets its strength from Lua.
@@ -3714,7 +4058,6 @@ fn depth_at(t: vec2f) -> f32 {
 }
 ";
 
-
 // The heat and the cold of Ashfall on the picture: `ashfall.fx`. The file has a library of
 // functions that its pass does not use; the port has the pass and its one function.
 const ASHFALL: &str = "
@@ -3827,7 +4170,6 @@ const sensitivity: f32 = 1.4; // file
     return vec4f(saturate3(g), 1.0);
 }
 ";
-
 
 // The film look of the Morrowind Graphics Guide: `film.fx`.
 const FILM: &str = "
@@ -4046,7 +4388,6 @@ fn average(pos: vec2f, range: f32, h: ptr<function, f32>) -> vec3f {
     return vec4f(col, 1.0);
 }
 ";
-
 
 // gammavtdt of the STEP Shaders Compilation: a bloom from a quarter-size copy in the corner
 // of the picture, a tone curve with the adaptation point, and a lens pass.
@@ -4302,32 +4643,140 @@ fn ports() -> impl Iterator<Item = &'static Shader> {
 
 /// The shaders that this program has a port of.
 pub const SHADERS: &[Shader] = &[
-    Shader { name: "Sunshafts", source: SUNSHAFTS, passes: &[full("stretch"), full("blur_r_half"), full("rays"), full("blur_t"), full("combine")], disable_flags: 9, no_sun_glare: true, priority: 2_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "Bloom Fine", source: BLOOM_FINE, passes: &[full("energy_levels"), full("blur_vert"), full("blur_horz_combine")], disable_flags: 0, no_sun_glare: false, priority: 4_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    // `mgeflags` 22: not in a true exterior, not in an interior that behaves as an exterior,
-    // not above the water. 17: not in an interior, not above the water.
-    Shader { name: "Underwater Interior Effects", source: UNDERWATER_INTERIOR, passes: &[full("wobble")], disable_flags: 22, no_sun_glare: false, priority: 1_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "Underwater Effects", source: UNDERWATER, passes: &[full("rays")], disable_flags: 17, no_sun_glare: false, priority: 1_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "Eye Adaptation (HDR)", source: EYE_ADAPTATION, passes: &[full("tone")], disable_flags: 0, no_sun_glare: false, priority: 5_000_000, textures: &[], requires_hdr: true, variables: &[] },
-    Shader { name: "SSAO Fast", source: SSAO_FAST, passes: &[full("ssao"), full("smartblur"), full("smartblur"), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, textures: &["MGE/poisson_nrm.dds"], requires_hdr: false, variables: &[] },
-    Shader { name: "SSAO HQ", source: SSAO_HQ, passes: &[full("ssao"), full("smartblur"), full("smartblur"), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, textures: &["MGE/poisson_nrm.dds"], requires_hdr: false, variables: &[] },
-    Shader { name: "Depth of Field", source: DEPTH_OF_FIELD, passes: &[full("dof"), full("smartblur")], disable_flags: 0, no_sun_glare: false, priority: 3_000_000, textures: &["MGE/noise64.dds"], requires_hdr: false, variables: &[] },
     Shader {
-        name: "Bloom Soft",
-        source: BLOOM_SOFT,
-        passes: &[full("fix_sky"), full("blur_hor_i"), full("blur_vert_i"), full("bright_pass"), full("blur_hor_2"), full("blur_vert_2"), full("recombine_a"), full("blur_hor_3"), full("blur_vert_3"), full("bloom_b")],
+        name: "Sunshafts",
+        source: SUNSHAFTS,
+        passes: &[
+            full("stretch"),
+            full("blur_r_half"),
+            full("rays"),
+            full("blur_t"),
+            full("combine"),
+        ],
+        disable_flags: 9,
+        no_sun_glare: true,
+        priority: 2_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Bloom Fine",
+        source: BLOOM_FINE,
+        passes: &[full("energy_levels"), full("blur_vert"), full("blur_horz_combine")],
         disable_flags: 0,
         no_sun_glare: false,
         priority: 4_000_000,
         textures: &[],
-        requires_hdr: false, variables: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    // `mgeflags` 22: not in a true exterior, not in an interior that behaves as an exterior,
+    // not above the water. 17: not in an interior, not above the water.
+    Shader {
+        name: "Underwater Interior Effects",
+        source: UNDERWATER_INTERIOR,
+        passes: &[full("wobble")],
+        disable_flags: 22,
+        no_sun_glare: false,
+        priority: 1_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Underwater Effects",
+        source: UNDERWATER,
+        passes: &[full("rays")],
+        disable_flags: 17,
+        no_sun_glare: false,
+        priority: 1_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Eye Adaptation (HDR)",
+        source: EYE_ADAPTATION,
+        passes: &[full("tone")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 5_000_000,
+        textures: &[],
+        requires_hdr: true,
+        variables: &[],
+    },
+    Shader {
+        name: "SSAO Fast",
+        source: SSAO_FAST,
+        passes: &[full("ssao"), full("smartblur"), full("smartblur"), full("combine")],
+        disable_flags: 8,
+        no_sun_glare: false,
+        priority: 1_000_000 - 10_000,
+        textures: &["MGE/poisson_nrm.dds"],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "SSAO HQ",
+        source: SSAO_HQ,
+        passes: &[full("ssao"), full("smartblur"), full("smartblur"), full("combine")],
+        disable_flags: 8,
+        no_sun_glare: false,
+        priority: 1_000_000 - 10_000,
+        textures: &["MGE/poisson_nrm.dds"],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Depth of Field",
+        source: DEPTH_OF_FIELD,
+        passes: &[full("dof"), full("smartblur")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 3_000_000,
+        textures: &["MGE/noise64.dds"],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Bloom Soft",
+        source: BLOOM_SOFT,
+        passes: &[
+            full("fix_sky"),
+            full("blur_hor_i"),
+            full("blur_vert_i"),
+            full("bright_pass"),
+            full("blur_hor_2"),
+            full("blur_vert_2"),
+            full("recombine_a"),
+            full("blur_hor_3"),
+            full("blur_vert_3"),
+            full("bloom_b"),
+        ],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 4_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
     },
     // Bloom Soft for a file with the sky and the hands in the bloom: the file has no pass
     // for the depth then.
     Shader {
         name: "Bloom Soft without the depth pass",
         source: BLOOM_SOFT,
-        passes: &[full("blur_hor_i"), full("blur_vert_i"), full("bright_pass"), full("blur_hor_2"), full("blur_vert_2"), full("recombine_a"), full("blur_hor_3"), full("blur_vert_3"), full("bloom_b")],
+        passes: &[
+            full("blur_hor_i"),
+            full("blur_vert_i"),
+            full("bright_pass"),
+            full("blur_hor_2"),
+            full("blur_vert_2"),
+            full("recombine_a"),
+            full("blur_hor_3"),
+            full("blur_vert_3"),
+            full("bloom_b"),
+        ],
         disable_flags: 0,
         no_sun_glare: false,
         priority: 4_000_000,
@@ -4338,19 +4787,68 @@ pub const SHADERS: &[Shader] = &[
     Shader {
         name: "Bloom S_A",
         source: BLOOM_S_A,
-        passes: &[scaled("prefilter", 2), scaled("down", 4), scaled("down", 8), scaled("down", 16), scaled("down", 32), scaled("down", 64), scaled("up4", 32), scaled("up3", 16), scaled("up2", 8), scaled("up1", 4), scaled("up0", 2), full("combine")],
+        passes: &[
+            scaled("prefilter", 2),
+            scaled("down", 4),
+            scaled("down", 8),
+            scaled("down", 16),
+            scaled("down", 32),
+            scaled("down", 64),
+            scaled("up4", 32),
+            scaled("up3", 16),
+            scaled("up2", 8),
+            scaled("up1", 4),
+            scaled("up0", 2),
+            full("combine"),
+        ],
         disable_flags: 0,
         no_sun_glare: false,
         priority: 4_000_000,
         textures: &[],
-        requires_hdr: false, variables: &[],
+        requires_hdr: false,
+        variables: &[],
     },
-    Shader { name: "SSAO S_A", source: SSAO_S_A, passes: &[scaled("ao", 2), scaled("blur_x", 2), scaled("blur_y", 2), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 1_000_000 - 10_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "Depth of Field S_A", source: DOF_S_A, passes: &[scaled("coc", 2), scaled("gather", 2), scaled("postfilter", 2), full("combine")], disable_flags: 0, no_sun_glare: false, priority: 3_000_000, textures: &[], requires_hdr: false, variables: &[] },
+    Shader {
+        name: "SSAO S_A",
+        source: SSAO_S_A,
+        passes: &[scaled("ao", 2), scaled("blur_x", 2), scaled("blur_y", 2), full("combine")],
+        disable_flags: 8,
+        no_sun_glare: false,
+        priority: 1_000_000 - 10_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Depth of Field S_A",
+        source: DOF_S_A,
+        passes: &[
+            scaled("coc", 2),
+            scaled("gather", 2),
+            scaled("postfilter", 2),
+            full("combine"),
+        ],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 3_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
     // The technique of `MGG SSAO.fx` has no category. MGE XE gives such a shader the
     // priority of the nearest shader of the chain with a category; the chain of the
     // Morrowind Graphics Guide puts it first, before the underwater shaders (scene).
-    Shader { name: "MGG SSAO", source: MGG_SSAO, passes: &[full("ssao"), full("smartblur"), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
+    Shader {
+        name: "MGG SSAO",
+        source: MGG_SSAO,
+        passes: &[full("ssao"), full("smartblur"), full("combine")],
+        disable_flags: 8,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
     // The technique of the file has no category: the place of `none`.
     Shader {
         name: "heathaze",
@@ -4362,16 +4860,61 @@ pub const SHADERS: &[Shader] = &[
         textures: &["heathaze_nm.dds"],
         requires_hdr: false,
         variables: &[
-            Variable { name: "warpint", slots: 1, per: 1, default: &[0.003] },
-            Variable { name: "dmaskint1", slots: 1, per: 1, default: &[5005.0] },
-            Variable { name: "dmaskint2", slots: 1, per: 1, default: &[9000.0] },
+            Variable {
+                name: "warpint",
+                slots: 1,
+                per: 1,
+                default: &[0.003],
+            },
+            Variable {
+                name: "dmaskint1",
+                slots: 1,
+                per: 1,
+                default: &[5005.0],
+            },
+            Variable {
+                name: "dmaskint2",
+                slots: 1,
+                per: 1,
+                default: &[9000.0],
+            },
         ],
     },
     // The technique of the file has no category: the place of `none`.
-    Shader { name: "Special Process", source: SPECIAL_PROCESS, passes: &[full("brightpass"), full("blurx"), full("blury"), full("specialcontrast")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: true, variables: &[] },
+    Shader {
+        name: "Special Process",
+        source: SPECIAL_PROCESS,
+        passes: &[full("brightpass"), full("blurx"), full("blury"), full("specialcontrast")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: true,
+        variables: &[],
+    },
     // The two files have no category: the place of `none`.
-    Shader { name: "ColorMood", source: COLOR_MOOD, passes: &[full("colorMood")], disable_flags: 1, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "MGG darker interiors", source: MGG_DARKER_INTERIORS, passes: &[full("gammatoo")], disable_flags: 6, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
+    Shader {
+        name: "ColorMood",
+        source: COLOR_MOOD,
+        passes: &[full("colorMood")],
+        disable_flags: 1,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "MGG darker interiors",
+        source: MGG_DARKER_INTERIORS,
+        passes: &[full("gammatoo")],
+        disable_flags: 6,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
     // The fog boxes that a mod sets from Lua: the centres, the half sizes and the colours of
     // the boxes (3 floats each), and their densities.
     Shader {
@@ -4384,10 +4927,30 @@ pub const SHADERS: &[Shader] = &[
         textures: &[],
         requires_hdr: false,
         variables: &[
-            Variable { name: "fogCenters", slots: 2, per: 3, default: &[] },
-            Variable { name: "fogRadi", slots: 2, per: 3, default: &[] },
-            Variable { name: "fogColors", slots: 2, per: 3, default: &[] },
-            Variable { name: "fogDensities", slots: 2, per: 1, default: &[] },
+            Variable {
+                name: "fogCenters",
+                slots: 2,
+                per: 3,
+                default: &[],
+            },
+            Variable {
+                name: "fogRadi",
+                slots: 2,
+                per: 3,
+                default: &[],
+            },
+            Variable {
+                name: "fogColors",
+                slots: 2,
+                per: 3,
+                default: &[],
+            },
+            Variable {
+                name: "fogDensities",
+                slots: 2,
+                per: 1,
+                default: &[],
+            },
         ],
     },
     Shader {
@@ -4400,10 +4963,30 @@ pub const SHADERS: &[Shader] = &[
         textures: &[],
         requires_hdr: false,
         variables: &[
-            Variable { name: "fogCenters", slots: 3, per: 3, default: &[] },
-            Variable { name: "fogRadi", slots: 3, per: 3, default: &[] },
-            Variable { name: "fogColors", slots: 3, per: 3, default: &[] },
-            Variable { name: "fogDensities", slots: 3, per: 1, default: &[] },
+            Variable {
+                name: "fogCenters",
+                slots: 3,
+                per: 3,
+                default: &[],
+            },
+            Variable {
+                name: "fogRadi",
+                slots: 3,
+                per: 3,
+                default: &[],
+            },
+            Variable {
+                name: "fogColors",
+                slots: 3,
+                per: 3,
+                default: &[],
+            },
+            Variable {
+                name: "fogDensities",
+                slots: 3,
+                per: 1,
+                default: &[],
+            },
         ],
     },
     Shader {
@@ -4416,9 +4999,24 @@ pub const SHADERS: &[Shader] = &[
         textures: &["x0_psychedelic.tga"],
         requires_hdr: false,
         variables: &[
-            Variable { name: "intensity", slots: 1, per: 1, default: &[0.0] },
-            Variable { name: "cycle", slots: 1, per: 1, default: &[0.0] },
-            Variable { name: "radius", slots: 1, per: 1, default: &[0.0] },
+            Variable {
+                name: "intensity",
+                slots: 1,
+                per: 1,
+                default: &[0.0],
+            },
+            Variable {
+                name: "cycle",
+                slots: 1,
+                per: 1,
+                default: &[0.0],
+            },
+            Variable {
+                name: "radius",
+                slots: 1,
+                per: 1,
+                default: &[0.0],
+            },
         ],
     },
     Shader {
@@ -4431,13 +5029,48 @@ pub const SHADERS: &[Shader] = &[
         textures: &[],
         requires_hdr: false,
         variables: &[
-            Variable { name: "srange", slots: 1, per: 1, default: &[0.0] },
-            Variable { name: "sspeed", slots: 1, per: 1, default: &[0.0] },
-            Variable { name: "zoom", slots: 1, per: 1, default: &[1.0] },
-            Variable { name: "offset", slots: 1, per: 1, default: &[0.0] },
-            Variable { name: "intensity", slots: 1, per: 1, default: &[0.0] },
-            Variable { name: "vibright", slots: 1, per: 1, default: &[0.5] },
-            Variable { name: "seed", slots: 1, per: 1, default: &[5.0] },
+            Variable {
+                name: "srange",
+                slots: 1,
+                per: 1,
+                default: &[0.0],
+            },
+            Variable {
+                name: "sspeed",
+                slots: 1,
+                per: 1,
+                default: &[0.0],
+            },
+            Variable {
+                name: "zoom",
+                slots: 1,
+                per: 1,
+                default: &[1.0],
+            },
+            Variable {
+                name: "offset",
+                slots: 1,
+                per: 1,
+                default: &[0.0],
+            },
+            Variable {
+                name: "intensity",
+                slots: 1,
+                per: 1,
+                default: &[0.0],
+            },
+            Variable {
+                name: "vibright",
+                slots: 1,
+                per: 1,
+                default: &[0.5],
+            },
+            Variable {
+                name: "seed",
+                slots: 1,
+                per: 1,
+                default: &[5.0],
+            },
         ],
     },
     Shader {
@@ -4449,7 +5082,20 @@ pub const SHADERS: &[Shader] = &[
         priority: 6_000_000,
         textures: &["warpfxnorm.dds"],
         requires_hdr: false,
-        variables: &[Variable { name: "invisint", slots: 1, per: 1, default: &[1.0] }, Variable { name: "warpint", slots: 1, per: 1, default: &[1.0] }],
+        variables: &[
+            Variable {
+                name: "invisint",
+                slots: 1,
+                per: 1,
+                default: &[1.0],
+            },
+            Variable {
+                name: "warpint",
+                slots: 1,
+                per: 1,
+                default: &[1.0],
+            },
+        ],
     },
     Shader {
         name: "InspectIt/Bokeh",
@@ -4460,32 +5106,203 @@ pub const SHADERS: &[Shader] = &[
         priority: 3_000_000,
         textures: &["MGE/noise64.dds"],
         requires_hdr: false,
-        variables: &[Variable { name: "focus_distance", slots: 1, per: 1, default: &[0.0] }, Variable { name: "focal_length", slots: 1, per: 1, default: &[1.0] }],
+        variables: &[
+            Variable {
+                name: "focus_distance",
+                slots: 1,
+                per: 1,
+                default: &[0.0],
+            },
+            Variable {
+                name: "focal_length",
+                slots: 1,
+                per: 1,
+                default: &[1.0],
+            },
+        ],
     },
-    Shader { name: "ashfall", source: ASHFALL, passes: &[full("main")], disable_flags: 0, no_sun_glare: false, priority: 9_000_000 + 40, textures: &[], requires_hdr: false, variables: &[Variable { name: "temperature", slots: 1, per: 1, default: &[20.0] }] },
-    Shader { name: "harness_fill_opaque", source: HARNESS_FILL_OPAQUE, passes: &[full("fill")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "harness_fill_scene", source: HARNESS_FILL_SCENE, passes: &[full("fill")], disable_flags: 0, no_sun_glare: false, priority: 1_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "Lens Effects", source: LENS_EFFECTS, passes: &[full("barrelvig")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "film", source: FILM, passes: &[full("FilmPass")], disable_flags: 65, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "deband_fogaware", source: DEBAND_FOGAWARE, passes: &[full("PS_Deband")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
+    Shader {
+        name: "ashfall",
+        source: ASHFALL,
+        passes: &[full("main")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 9_000_000 + 40,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[Variable {
+            name: "temperature",
+            slots: 1,
+            per: 1,
+            default: &[20.0],
+        }],
+    },
+    Shader {
+        name: "harness_fill_opaque",
+        source: HARNESS_FILL_OPAQUE,
+        passes: &[full("fill")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "harness_fill_scene",
+        source: HARNESS_FILL_SCENE,
+        passes: &[full("fill")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 1_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Lens Effects",
+        source: LENS_EFFECTS,
+        passes: &[full("barrelvig")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "film",
+        source: FILM,
+        passes: &[full("FilmPass")],
+        disable_flags: 65,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "deband_fogaware",
+        source: DEBAND_FOGAWARE,
+        passes: &[full("PS_Deband")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
     Shader {
         name: "gammavtdt",
         source: GAMMAVTDT,
-        passes: &[full("ThreshDownScale"), full("MyBloomH"), full("MyBloomV"), full("MyBloomH"), full("MyBloomV"), full("gamma"), full("barrelvig")],
+        passes: &[
+            full("ThreshDownScale"),
+            full("MyBloomH"),
+            full("MyBloomV"),
+            full("MyBloomH"),
+            full("MyBloomV"),
+            full("gamma"),
+            full("barrelvig"),
+        ],
         disable_flags: 0,
         no_sun_glare: false,
         priority: 6_000_000,
         textures: &[],
         requires_hdr: true,
-        variables: &[Variable { name: "exteriorbloom", slots: 1, per: 1, default: &[2.0] }, Variable { name: "interiorbloom", slots: 1, per: 1, default: &[3.0] }],
+        variables: &[
+            Variable {
+                name: "exteriorbloom",
+                slots: 1,
+                per: 1,
+                default: &[2.0],
+            },
+            Variable {
+                name: "interiorbloom",
+                slots: 1,
+                per: 1,
+                default: &[3.0],
+            },
+        ],
     },
-    Shader { name: "Cinematic Bokeh DoF", source: CINEMATIC_BOKEH, passes: &[full("dof"), full("dof2")], disable_flags: 0, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: true, variables: &[] },
+    Shader {
+        name: "Cinematic Bokeh DoF",
+        source: CINEMATIC_BOKEH,
+        passes: &[full("dof"), full("dof2")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: true,
+        variables: &[],
+    },
     // Files of mods with the name of a stock shader and other code: see `MOD_FILES`.
-    Shader { name: "Sunshafts of Watch the Skies", source: SUNSHAFTS_WTS, passes: &[full("stretch"), full("blur_r_half"), full("rays"), full("blur_t"), full("combine")], disable_flags: 9, no_sun_glare: true, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "Sunshafts of STEP", source: SUNSHAFTS_STEP, passes: &[full("stretch"), full("blur_r_half"), full("rays"), full("blur_t"), full("combine")], disable_flags: 9, no_sun_glare: true, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "Underwater Effects of Krokantor", source: UNDERWATER_KROKANTOR, passes: &[full("rays"), full("chroma")], disable_flags: 17, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: false, variables: &[] },
-    Shader { name: "SSAO HQ of STEP", source: SSAO_HQ_STEP, passes: &[full("ssao"), full("smartblur"), full("smartblur"), full("combine")], disable_flags: 8, no_sun_glare: false, priority: 6_000_000, textures: &["noise8q.tga"], requires_hdr: false, variables: &[] },
-    Shader { name: "Eye Adaptation (HDR) of STEP", source: EYE_ADAPTATION_STEP, passes: &[full("tone")], disable_flags: 5, no_sun_glare: false, priority: 6_000_000, textures: &[], requires_hdr: true, variables: &[] },
+    Shader {
+        name: "Sunshafts of Watch the Skies",
+        source: SUNSHAFTS_WTS,
+        passes: &[
+            full("stretch"),
+            full("blur_r_half"),
+            full("rays"),
+            full("blur_t"),
+            full("combine"),
+        ],
+        disable_flags: 9,
+        no_sun_glare: true,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Sunshafts of STEP",
+        source: SUNSHAFTS_STEP,
+        passes: &[
+            full("stretch"),
+            full("blur_r_half"),
+            full("rays"),
+            full("blur_t"),
+            full("combine"),
+        ],
+        disable_flags: 9,
+        no_sun_glare: true,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Underwater Effects of Krokantor",
+        source: UNDERWATER_KROKANTOR,
+        passes: &[full("rays"), full("chroma")],
+        disable_flags: 17,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "SSAO HQ of STEP",
+        source: SSAO_HQ_STEP,
+        passes: &[full("ssao"), full("smartblur"), full("smartblur"), full("combine")],
+        disable_flags: 8,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &["noise8q.tga"],
+        requires_hdr: false,
+        variables: &[],
+    },
+    Shader {
+        name: "Eye Adaptation (HDR) of STEP",
+        source: EYE_ADAPTATION_STEP,
+        passes: &[full("tone")],
+        disable_flags: 5,
+        no_sun_glare: false,
+        priority: 6_000_000,
+        textures: &[],
+        requires_hdr: true,
+        variables: &[],
+    },
 ];
 
 /// The linear depth of the frame, as the depth frame of the Direct3D 9 path has it
@@ -4545,7 +5362,7 @@ struct Quad {
 }
 ";
 
-/// A look at a term, for a test: MGE_XE_POST_DEBUG 1 tints the result, 2 shows the linear
+/// A look at a term, for a test: the debug view `post 1` tints the result, `post 2` shows the linear
 /// depth over 10000 units as grey.
 const DEBUG_BLIT_SHADER: &str = "
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -4660,9 +5477,28 @@ impl PostView {
     }
 
     fn new(device: &wgpu::Device, owns_hdr: bool) -> PostView {
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post"), size: size_of::<Variables>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post depth"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        PostView { size: (0, 0), pool: Vec::new(), depth: None, uniforms, depth_uniform, infos: std::collections::HashMap::new(), owns_hdr, hdr: None }
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("post"),
+            size: size_of::<Variables>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let depth_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("post depth"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        PostView {
+            size: (0, 0),
+            pool: Vec::new(),
+            depth: None,
+            uniforms,
+            depth_uniform,
+            infos: std::collections::HashMap::new(),
+            owns_hdr,
+            hdr: None,
+        }
     }
 
     /// The adaptation point that this view measured; `[1; 4]` before the measure exists.
@@ -4680,7 +5516,15 @@ impl PostView {
     /// the pool classes it has, the depth frame if it has one, and the measure. The size rule of
     /// the views of their own uses the main view's number at another view's size.
     pub fn bytes_at(&self, size: (u32, u32)) -> u64 {
-        let pool: u64 = self.pool.iter().map(|pooled| u64::from(size.0.div_ceil(pooled.scale).max(1)) * u64::from(size.1.div_ceil(pooled.scale).max(1)) * if pooled.half_float { 8 } else { 4 }).sum();
+        let pool: u64 = self
+            .pool
+            .iter()
+            .map(|pooled| {
+                u64::from(size.0.div_ceil(pooled.scale).max(1))
+                    * u64::from(size.1.div_ceil(pooled.scale).max(1))
+                    * if pooled.half_float { 8 } else { 4 }
+            })
+            .sum();
         let depth = self.depth.as_ref().map_or(0, |_| u64::from(size.0) * u64::from(size.1) * 4);
         let hdr = self.hdr.as_ref().map_or(0, |_| 512 * 512 * 4 * 4 / 3);
         pool + depth + hdr
@@ -4712,11 +5556,17 @@ impl PostView {
 
     /// The pool texture for a pass: one of its class that is not in use, or a new one.
     fn pooled(&mut self, device: &wgpu::Device, scale: u32, half_float: bool, in_use: &[usize]) -> usize {
-        if let Some(index) = (0..self.pool.len()).find(|i| self.pool[*i].scale == scale && self.pool[*i].half_float == half_float && !in_use.contains(i)) {
+        if let Some(index) = (0..self.pool.len())
+            .find(|i| self.pool[*i].scale == scale && self.pool[*i].half_float == half_float && !in_use.contains(i))
+        {
             return index;
         }
         let size = (self.size.0.div_ceil(scale).max(1), self.size.1.div_ceil(scale).max(1));
-        let format = if half_float { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba8Unorm };
+        let format = if half_float {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
         let view = make_texture(device, size, format).create_view(&Default::default());
         self.pool.push(Pooled { scale, half_float, view });
         self.pool.len() - 1
@@ -4729,7 +5579,12 @@ impl PostView {
         }
         let buffers = self.infos.get_mut(name).expect("the entry was made above");
         while buffers.len() <= number {
-            buffers.push(device.create_buffer(&wgpu::BufferDescriptor { label: Some("post pass"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+            buffers.push(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("post pass"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
         }
         &buffers[number]
     }
@@ -4764,6 +5619,7 @@ pub struct Post {
     depth_layout: wgpu::BindGroupLayout,
     blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
+    /// The term of the debug view `post` (0: off): [`Post::set_debug`].
     debug: f32,
     debug_pipeline: wgpu::RenderPipeline,
     debug_layout: wgpu::BindGroupLayout,
@@ -4793,22 +5649,46 @@ impl Post {
     /// a port of this program; a name with neither, and a file that does not compile, is
     /// reported and skipped. `waves` is the 3D wave texture of the water; `read` gives the
     /// bytes of a file under `Data Files`; `hdr_reaction` is `render.hdr_reaction_time`.
-    pub fn new(scene: &SceneView, chain: &[String], waves: wgpu::TextureView, read: &dyn Fn(&str) -> Option<Vec<u8>>, hdr_reaction: f32) -> Post {
+    pub fn new(
+        scene: &SceneView,
+        chain: &[String],
+        waves: wgpu::TextureView,
+        read: &dyn Fn(&str) -> Option<Vec<u8>>,
+        hdr_reaction: f32,
+    ) -> Post {
         let device = scene.device;
         // The groups of the shaders (`COMMON`): 0 the frame, 1 the shader, 2 the pass.
         let uniform = |binding, visibility| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
             count: None,
         };
-        let colour = |binding| texture(binding, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2);
+        let colour = |binding| {
+            texture(
+                binding,
+                wgpu::TextureSampleType::Float { filterable: true },
+                wgpu::TextureViewDimension::D2,
+            )
+        };
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post frame"),
             entries: &[
                 uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                texture(1, wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureViewDimension::D2),
-                texture(2, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3),
+                texture(
+                    1,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    wgpu::TextureViewDimension::D2,
+                ),
+                texture(
+                    2,
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::TextureViewDimension::D3,
+                ),
                 sampler(3, wgpu::SamplerBindingType::NonFiltering),
                 sampler(4, wgpu::SamplerBindingType::Filtering),
                 sampler(5, wgpu::SamplerBindingType::Filtering),
@@ -4819,17 +5699,30 @@ impl Post {
         });
         let mut entries = vec![uniform(0, wgpu::ShaderStages::FRAGMENT)];
         entries.extend((1..=10).map(colour));
-        let shader_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("post shader"), entries: &entries });
+        let shader_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post shader"),
+            entries: &entries,
+        });
         let mut entries = vec![uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT)];
         entries.extend((1..=10).map(colour));
-        let pass_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("post pass"), entries: &entries });
+        let pass_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post pass"),
+            entries: &entries,
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("post shaders"),
             bind_group_layouts: &[Some(&frame_layout), Some(&shader_layout), Some(&pass_layout)],
             immediate_size: 0,
         });
         let make_sampler = |filter: wgpu::FilterMode, address: wgpu::AddressMode| {
-            device.create_sampler(&wgpu::SamplerDescriptor { address_mode_u: address, address_mode_v: address, address_mode_w: address, mag_filter: filter, min_filter: filter, ..Default::default() })
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                address_mode_u: address,
+                address_mode_v: address,
+                address_mode_w: address,
+                mag_filter: filter,
+                min_filter: filter,
+                ..Default::default()
+            })
         };
         let samplers = [
             make_sampler(wgpu::FilterMode::Nearest, wgpu::AddressMode::ClampToEdge),
@@ -4846,7 +5739,11 @@ impl Post {
                 scene.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("post white"),
-                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -4863,7 +5760,11 @@ impl Post {
                 scene.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("post black"),
-                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -4882,34 +5783,74 @@ impl Post {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 texture(1, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
                 texture(2, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
             ],
         });
-        let depth_pipeline = full_screen_pipeline(device, "post depth", &format!("{}{}", nirender_wgpu::depth::wgsl(), DEPTH_SHADER), &depth_layout, wgpu::TextureFormat::R32Float);
+        let depth_pipeline = full_screen_pipeline(
+            device,
+            "post depth",
+            &format!("{}{}", nirender_wgpu::depth::wgsl(), DEPTH_SHADER),
+            &depth_layout,
+            wgpu::TextureFormat::R32Float,
+        );
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post blit"),
-            entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
+            entries: &[
+                texture(
+                    0,
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::TextureViewDimension::D2,
+                ),
+                sampler(1, wgpu::SamplerBindingType::Filtering),
+            ],
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
-        let debug = *POST_DEBUG.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_POST_DEBUG", 0.0));
+        let debug = 0.0f32;
         let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post debug"),
             entries: &[
-                texture(0, wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureViewDimension::D2),
+                texture(
+                    0,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    wgpu::TextureViewDimension::D2,
+                ),
                 sampler(1, wgpu::SamplerBindingType::NonFiltering),
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
-        let debug_pipeline = full_screen_pipeline(device, "post debug", DEBUG_BLIT_SHADER, &debug_layout, scene.target_format);
+        let debug_pipeline =
+            full_screen_pipeline(device, "post debug", DEBUG_BLIT_SHADER, &debug_layout, scene.target_format);
         let debug_uniform = {
             use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("post debug"), contents: bytemuck::cast_slice(&[debug, 0.0, 0.0, 0.0]), usage: wgpu::BufferUsages::UNIFORM })
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("post debug"),
+                contents: bytemuck::cast_slice(&[debug, 0.0, 0.0, 0.0]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            })
         };
-        let no_values = device.create_buffer(&wgpu::BufferDescriptor { label: Some("post no values"), size: (MOD_SLOTS * 16) as u64, usage: wgpu::BufferUsages::UNIFORM, mapped_at_creation: false });
+        let no_values = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("post no values"),
+            size: (MOD_SLOTS * 16) as u64,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
         let mut post = Post {
             chain: Vec::new(),
             failed: Vec::new(),
@@ -4951,7 +5892,13 @@ impl Post {
         // chain (`MWPatches::disableSunglare`). A shader that a mod loads or turns off
         // later does not change it.
         post.no_sun_glare = post.chain.iter().any(|c| c.no_sun_glare);
-        println!("post: {} of {} shaders of the chain run: {} ports, {} files of mods", post.chain.len(), chain.len(), post.counts.0, post.counts.1);
+        println!(
+            "post: {} of {} shaders of the chain run: {} ports, {} files of mods",
+            post.chain.len(),
+            chain.len(),
+            post.counts.0,
+            post.counts.1
+        );
         post
     }
 
@@ -4973,7 +5920,12 @@ impl Post {
                 Ok(definition) => definition,
                 Err(problem) => {
                     println!("post: the shader file {name}.wgsl is not used: {problem}");
-                    self.status.note(name, Some(format!("The first lines of {name}.wgsl (the lines with //!) are not right: {problem}")));
+                    self.status.note(
+                        name,
+                        Some(format!(
+                            "The first lines of {name}.wgsl (the lines with //!) are not right: {problem}"
+                        )),
+                    );
                     self.failed.push(name.to_string());
                     return false;
                 }
@@ -4981,8 +5933,17 @@ impl Post {
             None => {
                 // The effect file that the name resolves to, from a mod or from MGE XE. A
                 // file of a mod with the name of another shader has a port of its own.
-                let effect = read(&format!("shaders/XEshaders/{name}.fx")).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-                let port_name = effect.as_deref().map(code_key).and_then(|key| MOD_FILES.iter().find(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key)).map_or(name, |(_, _, port)| *port);
+                let effect =
+                    read(&format!("shaders/XEshaders/{name}.fx")).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+                let port_name = effect
+                    .as_deref()
+                    .map(code_key)
+                    .and_then(|key| {
+                        MOD_FILES
+                            .iter()
+                            .find(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key)
+                    })
+                    .map_or(name, |(_, _, port)| *port);
                 match ports().find(|shader| shader.name == port_name) {
                     Some(port) => {
                         let mut definition = Definition::of_port(port);
@@ -4997,10 +5958,19 @@ impl Post {
                     None => {
                         // The key tells which file this is, for a report.
                         match effect.as_deref().map(code_key) {
-                            Some(key) => println!("post: no file {name}.wgsl and no port of the shader {name} (the code key of {name}.fx is {key:#018x}); skipped"),
-                            None => println!("post: no file {name}.wgsl, no file {name}.fx and no port of the shader {name}; skipped"),
+                            Some(key) => println!(
+                                "post: no file {name}.wgsl and no port of the shader {name} (the code key of {name}.fx is {key:#018x}); skipped"
+                            ),
+                            None => println!(
+                                "post: no file {name}.wgsl, no file {name}.fx and no port of the shader {name}; skipped"
+                            ),
                         }
-                        self.status.note(name, Some(format!("The wgpu renderer has no file {name}.wgsl and no port of the shader {name}.")));
+                        self.status.note(
+                            name,
+                            Some(format!(
+                                "The wgpu renderer has no file {name}.wgsl and no port of the shader {name}."
+                            )),
+                        );
                         self.failed.push(name.to_string());
                         return false;
                     }
@@ -5012,39 +5982,69 @@ impl Post {
         // An error of the WGSL of a file, or a pass that is not a function of it, comes
         // back from the scope and does not stop the program.
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(&shader.name), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&shader.name),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
         let passes: Vec<CompiledPass> = shader
             .passes
             .iter()
             .map(|(entry, scale, half_float)| {
-                let format = if *half_float { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba8Unorm };
+                let format = if *half_float {
+                    wgpu::TextureFormat::Rgba16Float
+                } else {
+                    wgpu::TextureFormat::Rgba8Unorm
+                };
                 let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(&shader.name),
                     layout: Some(&self.pipeline_layout),
-                    vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                    primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: None,
+                        ..Default::default()
+                    },
                     depth_stencil: None,
                     multisample: Default::default(),
                     fragment: Some(wgpu::FragmentState {
                         module: &module,
                         entry_point: Some(entry.as_str()),
                         compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
                     }),
                     multiview_mask: None,
                     cache: None,
                 });
-                CompiledPass { pipeline, scale: *scale, half_float: *half_float }
+                CompiledPass {
+                    pipeline,
+                    scale: *scale,
+                    half_float: *half_float,
+                }
             })
             .collect();
         if let Some(error) = pollster::block_on(scope.pop()) {
             // The lines of the message count the common part and the functions of the
             // variables first.
             let before = COMMON.lines().count() + functions.lines().count() + 2;
-            println!("post: the shader {} does not compile; skipped (its first line is the line {before} of the message):\n{error}", shader.name);
+            println!(
+                "post: the shader {} does not compile; skipped (its first line is the line {before} of the message):\n{error}",
+                shader.name
+            );
             // For the author: the line numbers of the file. A port has no file of its own.
             let error = error.to_string();
-            let message = if file.is_some() { own_lines(compiler_part(&error), before - 1) } else { compiler_part(&error).to_string() };
+            let message = if file.is_some() {
+                own_lines(compiler_part(&error), before - 1)
+            } else {
+                compiler_part(&error).to_string()
+            };
             self.status.note(name, Some(message));
             self.failed.push(name.to_string());
             return false;
@@ -5062,10 +6062,16 @@ impl Post {
             .iter()
             .map(|name| {
                 let path = format!("textures/{name}");
-                match read(&path).ok_or_else(|| "no file".to_string()).and_then(|bytes| super::image_texture(scene, name, &bytes)) {
+                match read(&path)
+                    .ok_or_else(|| "no file".to_string())
+                    .and_then(|bytes| super::image_texture(scene, name, &bytes))
+                {
                     Ok(view) => view,
                     Err(problem) => {
-                        println!("post: the texture {name} of the shader {} was not read ({problem}); black", shader.name);
+                        println!(
+                            "post: the texture {name} of the shader {} was not read ({problem}); black",
+                            shader.name
+                        );
                         self.black.clone()
                     }
                 }
@@ -5074,12 +6080,26 @@ impl Post {
         // The variables, with their values before a mod sets them.
         let values = (!shader.variables.is_empty()).then(|| {
             use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("post values"), contents: bytemuck::cast_slice(&values_of(&shader.variables, &[])), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST })
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("post values"),
+                contents: bytemuck::cast_slice(&values_of(&shader.variables, &[])),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            })
         });
         // Group 1 of the shader; it keeps the textures.
-        let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: values.as_ref().unwrap_or(&self.no_values).as_entire_binding() }];
-        entries.extend((0..10).map(|i| wgpu::BindGroupEntry { binding: i as u32 + 1, resource: wgpu::BindingResource::TextureView(textures.get(i).unwrap_or(&self.white)) }));
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(&shader.name), layout: &self.shader_layout, entries: &entries });
+        let mut entries = vec![wgpu::BindGroupEntry {
+            binding: 0,
+            resource: values.as_ref().unwrap_or(&self.no_values).as_entire_binding(),
+        }];
+        entries.extend((0..10).map(|i| wgpu::BindGroupEntry {
+            binding: i as u32 + 1,
+            resource: wgpu::BindingResource::TextureView(textures.get(i).unwrap_or(&self.white)),
+        }));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&shader.name),
+            layout: &self.shader_layout,
+            entries: &entries,
+        });
         self.chain.push(Compiled {
             name: shader.name,
             disable_flags: shader.disable_flags,
@@ -5104,7 +6124,12 @@ impl Post {
     fn order(&mut self) {
         const NO_CATEGORY: i64 = 6_000_000;
         self.chain.sort_by_key(|c| c.sequence);
-        let mut last = self.chain.iter().map(|c| c.own_priority).find(|priority| *priority != NO_CATEGORY).unwrap_or(NO_CATEGORY);
+        let mut last = self
+            .chain
+            .iter()
+            .map(|c| c.own_priority)
+            .find(|priority| *priority != NO_CATEGORY)
+            .unwrap_or(NO_CATEGORY);
         for shader in self.chain.iter_mut() {
             if shader.own_priority == NO_CATEGORY {
                 shader.priority = last;
@@ -5114,7 +6139,18 @@ impl Post {
             }
         }
         self.chain.sort_by_key(|c| c.priority);
-        println!("post: the order: {}", self.chain.iter().map(|c| if c.enabled { c.name.clone() } else { format!("{} (off)", c.name) }).collect::<Vec<_>>().join(", "));
+        println!(
+            "post: the order: {}",
+            self.chain
+                .iter()
+                .map(|c| if c.enabled {
+                    c.name.clone()
+                } else {
+                    format!("{} (off)", c.name)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     /// Takes the state of a shader that a mod loaded: the shader comes into the chain when
@@ -5137,23 +6173,38 @@ impl Post {
         if !known && !self.load(scene, &state.name, read) {
             return;
         }
-        let Some(shader) = self.chain.iter_mut().find(|c| c.name == state.name) else { return };
+        let Some(shader) = self.chain.iter_mut().find(|c| c.name == state.name) else {
+            return;
+        };
         if let Some(sequence) = place {
             shader.sequence = sequence;
         }
-        let reorder = !known || shader.enabled != state.enabled || state.priority.is_some_and(|priority| priority != shader.own_priority);
+        let reorder = !known
+            || shader.enabled != state.enabled
+            || state.priority.is_some_and(|priority| priority != shader.own_priority);
         shader.enabled = state.enabled;
         if let Some(priority) = state.priority {
             shader.own_priority = priority;
         }
         if let Some(buffer) = shader.values.as_ref() {
-            scene.queue.write_buffer(buffer, 0, bytemuck::cast_slice(&values_of(&shader.variables, &state.values)));
+            scene
+                .queue
+                .write_buffer(buffer, 0, bytemuck::cast_slice(&values_of(&shader.variables, &state.values)));
         }
         if !self.told_unknown.contains(&state.name) {
-            let unknown: Vec<&str> = state.values.iter().map(|(name, _, _)| name.as_str()).filter(|name| !shader.variables.iter().any(|v| v.name == *name)).collect();
+            let unknown: Vec<&str> = state
+                .values
+                .iter()
+                .map(|(name, _, _)| name.as_str())
+                .filter(|name| !shader.variables.iter().any(|v| v.name == *name))
+                .collect();
             if !unknown.is_empty() {
                 self.told_unknown.push(state.name.clone());
-                println!("post: {}: a mod sets variables that the shader does not have here: {}", state.name, unknown.join(", "));
+                println!(
+                    "post: {}: a mod sets variables that the shader does not have here: {}",
+                    state.name,
+                    unknown.join(", ")
+                );
             }
         }
         if reorder {
@@ -5165,6 +6216,17 @@ impl Post {
     pub fn set_hdr(&mut self, on: bool, reaction: f32) {
         self.hdr_on = on;
         self.hdr_reaction = reaction;
+    }
+
+    /// The term of the debug view `post` (0: off). The uniform is written only when the term
+    /// changes; the write lands before the frame's one submit.
+    pub fn set_debug(&mut self, scene: &SceneView, term: f32) {
+        if term != self.debug {
+            self.debug = term;
+            scene
+                .queue
+                .write_buffer(&self.debug_uniform, 0, bytemuck::cast_slice(&[term, 0.0, 0.0, 0.0]));
+        }
     }
 
     /// No shader is on.
@@ -5179,8 +6241,20 @@ impl Post {
     /// measure of its own reads. `distant` has the depth terms of the projection of the distant
     /// stage (`nirender_wgpu::depth::terms`), when its depth is a part of the depth frame.
     #[allow(clippy::too_many_arguments)]
-    pub fn run(&mut self, view: &mut PostView, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, variables: &Variables, environment_flags: u32, distant: Option<[f32; 2]>, main_point: [f32; 4]) {
-        let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else { return };
+    pub fn run(
+        &mut self,
+        view: &mut PostView,
+        scene: &SceneView,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        variables: &Variables,
+        environment_flags: u32,
+        distant: Option<[f32; 2]>,
+        main_point: [f32; 4],
+    ) {
+        let (Some(picture), Some(depth)) = (scene.picture, scene.depth) else {
+            return;
+        };
         if self.is_empty() {
             return;
         }
@@ -5195,9 +6269,23 @@ impl Post {
                 variables.hdr = main_point;
             }
         } else if self.needs_hdr {
-            let hdr = view.hdr.get_or_insert_with(|| Hdr::new(device, &self.blit_layout, self.hdr_reaction));
+            let hdr = view
+                .hdr
+                .get_or_insert_with(|| Hdr::new(device, &self.blit_layout, self.hdr_reaction));
             hdr.reaction = self.hdr_reaction.clamp(0.01, 30.0);
-            variables.hdr = if self.hdr_on { hdr.frame(device, encoder, picture, &self.blit_layout, &self.samplers[1], environment_flags, variables.sunvec[3]) } else { hdr.point };
+            variables.hdr = if self.hdr_on {
+                hdr.frame(
+                    device,
+                    encoder,
+                    picture,
+                    &self.blit_layout,
+                    &self.samplers[1],
+                    environment_flags,
+                    variables.sunvec[3],
+                )
+            } else {
+                hdr.point
+            };
         }
         let variables = &variables;
         scene.queue.write_buffer(&view.uniforms, 0, bytemuck::bytes_of(variables));
@@ -5208,24 +6296,44 @@ impl Post {
             (Some(view), Some(numbers)) => (view, numbers),
             _ => (depth, [0.0, 0.0]),
         };
-        scene.queue.write_buffer(&view.depth_uniform, 0, bytemuck::cast_slice(&[nirender_wgpu::depth::terms(&scene.projection), distant].concat()));
+        scene.queue.write_buffer(
+            &view.depth_uniform,
+            0,
+            bytemuck::cast_slice(&[nirender_wgpu::depth::terms(&scene.projection), distant].concat()),
+        );
         let depth_view = &view.depth.as_ref().unwrap().1.clone();
         // The depth frame only when a shader of the chain of this frame reads it, or the
         // look at it is on.
-        let reads_depth = self.debug == 2.0 || self.chain.iter().any(|c| c.enabled && c.disable_flags & environment_flags == 0 && c.reads_depth);
+        let reads_depth = self.debug == 2.0
+            || self
+                .chain
+                .iter()
+                .any(|c| c.enabled && c.disable_flags & environment_flags == 0 && c.reads_depth);
         if reads_depth {
             self.depth_frames += 1;
             let stamps = scene.commands.stamps();
             let at = stamps.begin(encoder, "post: the depth frame", nirender_wgpu::stamps::StampKind::Detail);
-            let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-                label: Some("post depth"),
-                layout: &self.depth_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: view.depth_uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(distant_depth) },
-                ],
-            });
+            let group = nirender_wgpu::gpu::frame_group(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("post depth"),
+                    layout: &self.depth_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: view.depth_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(depth),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(distant_depth),
+                        },
+                    ],
+                },
+            );
             let mut pass = full_screen_pass(encoder, depth_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
             pass.set_pipeline(&self.depth_pipeline);
             pass.set_bind_group(0, &group, &[]);
@@ -5237,21 +6345,51 @@ impl Post {
         // the picture. The passes of a shader each get a texture of their class that is not
         // the input and not an earlier pass of the shader (`pass0` to `pass7` read those).
         let mut last: Option<usize> = None;
-        let frame_group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-            label: Some("post frame"),
-            layout: &self.frame_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: view.uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.waves) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.samplers[1]) },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.samplers[2]) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.samplers[3]) },
-                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.samplers[4]) },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&self.samplers[5]) },
-            ],
-        });
+        let frame_group = nirender_wgpu::gpu::frame_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("post frame"),
+                layout: &self.frame_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: view.uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(depth_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&self.waves),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.samplers[0]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&self.samplers[1]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.samplers[2]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Sampler(&self.samplers[3]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::Sampler(&self.samplers[4]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::Sampler(&self.samplers[5]),
+                    },
+                ],
+            },
+        );
         let chain = std::mem::take(&mut self.chain);
         for compiled in &chain {
             if !compiled.enabled || compiled.disable_flags & environment_flags != 0 {
@@ -5260,15 +6398,28 @@ impl Post {
             self.shaders_run += 1;
             // The GPU time of each shader, with `MGE_XE_GPU_TIME=1`.
             let stamps = scene.commands.stamps();
-            let at = if stamps.on() { stamps.begin(encoder, nirender_wgpu::stamps::name(&compiled.name), nirender_wgpu::stamps::StampKind::Detail) } else { nirender_wgpu::stamps::Stamp::NONE };
+            let at = if stamps.on() {
+                stamps.begin(
+                    encoder,
+                    nirender_wgpu::stamps::name(&compiled.name),
+                    nirender_wgpu::stamps::StampKind::Detail,
+                )
+            } else {
+                nirender_wgpu::stamps::Stamp::NONE
+            };
             let mut in_use: Vec<usize> = last.into_iter().collect();
             let mut targets: Vec<usize> = Vec::with_capacity(compiled.passes.len());
             for (number, pass) in compiled.passes.iter().enumerate() {
                 let sink = view.pooled(device, pass.scale, pass.half_float, &in_use);
                 in_use.push(sink);
-                let size = (view.size.0.div_ceil(pass.scale).max(1) as f32, view.size.1.div_ceil(pass.scale).max(1) as f32);
+                let size = (
+                    view.size.0.div_ceil(pass.scale).max(1) as f32,
+                    view.size.1.div_ceil(pass.scale).max(1) as f32,
+                );
                 let info = view.pass_info(device, &compiled.name, number).clone();
-                scene.queue.write_buffer(&info, 0, bytemuck::cast_slice(&[size.0, size.1, 1.0 / size.0, 1.0 / size.1]));
+                scene
+                    .queue
+                    .write_buffer(&info, 0, bytemuck::cast_slice(&[size.0, size.1, 1.0 / size.0, 1.0 / size.1]));
                 let lastshader_view = match last {
                     Some(index) => &view.pool[index].view,
                     None => picture,
@@ -5279,12 +6430,31 @@ impl Post {
                 };
                 let earlier = |i: usize| targets.get(i).map_or(&self.white, |index| &view.pool[*index].view);
                 let mut entries = vec![
-                    wgpu::BindGroupEntry { binding: 0, resource: info.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(lastshader_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(lastpass_view) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: info.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(lastshader_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(lastpass_view),
+                    },
                 ];
-                entries.extend((0..8).map(|i| wgpu::BindGroupEntry { binding: i as u32 + 3, resource: wgpu::BindingResource::TextureView(earlier(i)) }));
-                let pass_group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor { label: Some(&compiled.name), layout: &self.pass_layout, entries: &entries });
+                entries.extend((0..8).map(|i| wgpu::BindGroupEntry {
+                    binding: i as u32 + 3,
+                    resource: wgpu::BindingResource::TextureView(earlier(i)),
+                }));
+                let pass_group = nirender_wgpu::gpu::frame_group(
+                    device,
+                    &wgpu::BindGroupDescriptor {
+                        label: Some(&compiled.name),
+                        layout: &self.pass_layout,
+                        entries: &entries,
+                    },
+                );
                 // A pass keeps what the texture held where it discards a pixel.
                 let mut render = full_screen_pass(encoder, &view.pool[sink].view, wgpu::LoadOp::Load);
                 render.set_pipeline(&pass.pipeline);
@@ -5302,16 +6472,32 @@ impl Post {
         self.chain = chain;
         // A look at a term, for a test.
         if self.debug > 0.0 {
-            let source = if self.debug == 2.0 { depth_view } else { &view.pool[last.unwrap_or(0)].view };
-            let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-                label: Some("post debug"),
-                layout: &self.debug_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.debug_uniform.as_entire_binding() },
-                ],
-            });
+            let source = if self.debug == 2.0 {
+                depth_view
+            } else {
+                &view.pool[last.unwrap_or(0)].view
+            };
+            let group = nirender_wgpu::gpu::frame_group(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("post debug"),
+                    layout: &self.debug_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(source),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.samplers[0]),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.debug_uniform.as_entire_binding(),
+                        },
+                    ],
+                },
+            );
             let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
             pass.set_pipeline(&self.debug_pipeline);
             pass.set_bind_group(0, &group, &[]);
@@ -5320,11 +6506,23 @@ impl Post {
         }
         // The result into the picture of the frame.
         if let Some(index) = last {
-            let group = nirender_wgpu::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-                label: Some("post blit"),
-                layout: &self.blit_layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view.pool[index].view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[0]) }],
-            });
+            let group = nirender_wgpu::gpu::frame_group(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("post blit"),
+                    layout: &self.blit_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view.pool[index].view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.samplers[0]),
+                        },
+                    ],
+                },
+            );
             let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
             pass.set_pipeline(&self.blit_pipeline);
             pass.set_bind_group(0, &group, &[]);
@@ -5337,7 +6535,11 @@ impl Post {
 fn make_texture(device: &wgpu::Device, size: (u32, u32), format: wgpu::TextureFormat) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("post"),
-        size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -5347,36 +6549,96 @@ fn make_texture(device: &wgpu::Device, size: (u32, u32), format: wgpu::TextureFo
     })
 }
 
-fn texture(binding: u32, sample_type: wgpu::TextureSampleType, dimension: wgpu::TextureViewDimension) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type, view_dimension: dimension, multisampled: false }, count: None }
+fn texture(
+    binding: u32,
+    sample_type: wgpu::TextureSampleType,
+    dimension: wgpu::TextureViewDimension,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type,
+            view_dimension: dimension,
+            multisampled: false,
+        },
+        count: None,
+    }
 }
 
 fn sampler(binding: u32, kind: wgpu::SamplerBindingType) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(kind), count: None }
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(kind),
+        count: None,
+    }
 }
 
-pub(super) fn full_screen_pipeline(device: &wgpu::Device, label: &str, source: &str, layout: &wgpu::BindGroupLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+pub(super) fn full_screen_pipeline(
+    device: &wgpu::Device,
+    label: &str,
+    source: &str,
+    layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
     let _long = nirender_wgpu::LongStep::begin();
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[Some(layout)], immediate_size: 0 });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[Some(layout)],
+        immediate_size: 0,
+    });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            cull_mode: None,
+            ..Default::default()
+        },
         depth_stencil: None,
         multisample: Default::default(),
-        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
         multiview_mask: None,
         cache: None,
     })
 }
 
-pub(super) fn full_screen_pass<'a>(encoder: &'a mut wgpu::CommandEncoder, target: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>) -> wgpu::RenderPass<'a> {
+pub(super) fn full_screen_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+) -> wgpu::RenderPass<'a> {
     nirender_wgpu::gpu::note_other_pass();
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("post"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
         occlusion_query_set: None,
@@ -5445,7 +6707,10 @@ mod tests {
     #[test]
     fn the_hdr_wait_has_a_limit_and_names_a_submit() {
         match hdr_wait(None) {
-            wgpu::PollType::Wait { submission_index: None, timeout: Some(limit) } => assert_eq!(limit, HDR_MOST_WAIT),
+            wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(limit),
+            } => assert_eq!(limit, HDR_MOST_WAIT),
             _ => panic!("a wait with a time limit"),
         }
     }
@@ -5468,16 +6733,33 @@ mod tests {
         static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("test blit"),
-            entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2), sampler(1, wgpu::SamplerBindingType::Filtering)],
+            entries: &[
+                texture(
+                    0,
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::TextureViewDimension::D2,
+                ),
+                sampler(1, wgpu::SamplerBindingType::Filtering),
+            ],
         });
-        let linear = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        let linear = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let picture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("test picture"),
-            size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -5491,8 +6773,18 @@ mod tests {
         // gives the time of a copy.
         let size = 128 << 20;
         let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
-        let from = device.create_buffer(&wgpu::BufferDescriptor { label: Some("test busy from"), size, usage, mapped_at_creation: false });
-        let to = device.create_buffer(&wgpu::BufferDescriptor { label: Some("test busy to"), size, usage, mapped_at_creation: false });
+        let from = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test busy from"),
+            size,
+            usage,
+            mapped_at_creation: false,
+        });
+        let to = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test busy to"),
+            size,
+            usage,
+            mapped_at_creation: false,
+        });
         let work = |copies: u32| {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             for _ in 0..copies {
@@ -5502,7 +6794,10 @@ mod tests {
         };
         let timed = std::time::Instant::now();
         let index = work(100);
-        let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None });
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: Some(index),
+            timeout: None,
+        });
         let per_copy = timed.elapsed().as_secs_f64() / 100.0;
         let copies = (busy.as_secs_f64() / per_copy).ceil().max(1.0) as u32;
         work(copies);
@@ -5510,12 +6805,24 @@ mod tests {
 
         let mut hdr = Hdr::new(&device, &blit_layout, 1.0);
         assert_eq!(hdr.luminance, 0.5, "the luminance before the first read");
-        let mut run = HdrRun { calls: 0, longest: std::time::Duration::ZERO, luminance: 0.5 };
+        let mut run = HdrRun {
+            calls: 0,
+            longest: std::time::Duration::ZERO,
+            luminance: 0.5,
+        };
         while hdr.luminance == 0.5 && run.calls < 40 {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             drop(full_screen_pass(&mut encoder, &view, wgpu::LoadOp::Clear(wgpu::Color::WHITE)));
             let called = std::time::Instant::now();
-            hdr.frame(&device, &mut encoder, &view, &blit_layout, &linear, 0, run.calls as f32 * 0.016);
+            hdr.frame(
+                &device,
+                &mut encoder,
+                &view,
+                &blit_layout,
+                &linear,
+                0,
+                run.calls as f32 * 0.016,
+            );
             run.longest = run.longest.max(called.elapsed());
             nirender_wgpu::gpu::submit(&queue, [encoder.finish()]);
             run.calls += 1;
@@ -5525,7 +6832,10 @@ mod tests {
             }
         }
         run.luminance = hdr.luminance;
-        println!("hdr read: busy {busy:?} before the copy and {busy_after_map:?} after the map ({copies} + {copies_after_map} copies, {per_copy:.6} s each): {} calls, longest call {:?}, luminance {}", run.calls, run.longest, run.luminance);
+        println!(
+            "hdr read: busy {busy:?} before the copy and {busy_after_map:?} after the map ({copies} + {copies_after_map} copies, {per_copy:.6} s each): {} calls, longest call {:?}, luminance {}",
+            run.calls, run.longest, run.luminance
+        );
         run
     }
 
@@ -5550,7 +6860,11 @@ mod tests {
     fn the_hdr_read_does_not_wait_for_work_sent_after_the_map() {
         let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(150), std::time::Duration::from_millis(800));
         assert_eq!(run.calls, 4, "the read comes at the fourth call");
-        assert!(run.longest < std::time::Duration::from_millis(200), "no call waits for the work after the map: {:?}", run.longest);
+        assert!(
+            run.longest < std::time::Duration::from_millis(200),
+            "no call waits for the work after the map: {:?}",
+            run.longest
+        );
         assert!(run.luminance > 0.99, "the read gets the white of the copy: {}", run.luminance);
     }
 
@@ -5561,15 +6875,25 @@ mod tests {
     fn a_read_that_waits_past_the_limit_comes_again_and_gets_the_pixel() {
         let run = hdr_run_with_busy_gpu(std::time::Duration::from_millis(800), std::time::Duration::ZERO);
         assert!(run.calls > 4, "the read gave up at least once: {} calls", run.calls);
-        assert!(run.longest < HDR_MOST_WAIT * 2, "no call waits much longer than the limit: {:?}", run.longest);
-        assert!(run.luminance > 0.99, "the later read gets the white of the copy: {}", run.luminance);
+        assert!(
+            run.longest < HDR_MOST_WAIT * 2,
+            "no call waits much longer than the limit: {:?}",
+            run.longest
+        );
+        assert!(
+            run.luminance > 0.99,
+            "the later read gets the white of the copy: {}",
+            run.luminance
+        );
     }
 
     const FILE: &str = "// A shader.\n#define N 16 // samples\nstatic const float strength = 1.8; // more is more\nfloat fov;\nfloat4 pass(float2 t : TEXCOORD0) : COLOR0 { return strength * N; }\ntechnique T0 < string MGEinterface = \"MGE XE 0\"; string category = \"scene\"; int priorityAdjust = -10000; > { pass { PixelShader = compile ps_3_0 pass(); } }\n";
 
     #[test]
     fn the_code_key_ignores_numbers_comments_space_and_annotations() {
-        let other_numbers = FILE.replace("#define N 16 // samples", "#define   N   32").replace("strength = 1.8; // more is more", "strength = 1.2;");
+        let other_numbers = FILE
+            .replace("#define N 16 // samples", "#define   N   32")
+            .replace("strength = 1.8; // more is more", "strength = 1.2;");
         assert_eq!(code_key(FILE), code_key(&other_numbers));
         let no_category = FILE.replace(" string category = \"scene\"; int priorityAdjust = -10000;", "");
         assert_eq!(code_key(FILE), code_key(&no_category));
@@ -5581,25 +6905,56 @@ mod tests {
 
     #[test]
     fn the_numbers_of_a_file_are_read() {
-        let numbers = file_numbers("#define N 16\nstatic const float a = 1.5f;\nextern int b = 5005;\nstatic float c = -0.06;\nconst bool d = true;\nfloat fov;\nstatic const float2 e = float2(1, 2);\n#define BLUR\n");
-        assert_eq!(numbers, vec![("N".to_string(), 16.0), ("a".to_string(), 1.5), ("b".to_string(), 5005.0), ("c".to_string(), -0.06), ("d".to_string(), 1.0)]);
+        let numbers = file_numbers(
+            "#define N 16\nstatic const float a = 1.5f;\nextern int b = 5005;\nstatic float c = -0.06;\nconst bool d = true;\nfloat fov;\nstatic const float2 e = float2(1, 2);\n#define BLUR\n",
+        );
+        assert_eq!(
+            numbers,
+            vec![
+                ("N".to_string(), 16.0),
+                ("a".to_string(), 1.5),
+                ("b".to_string(), 5005.0),
+                ("c".to_string(), -0.06),
+                ("d".to_string(), 1.0)
+            ]
+        );
     }
 
     #[test]
     fn a_port_takes_the_marked_numbers() {
         let port = "const N: i32 = 16;\nconst strength: f32 = 1.8; // file\nconst other: f32 = 2.0; // file\n";
         let (fitted, taken) = with_file_numbers(port, &[("N".to_string(), 32.0), ("strength".to_string(), 1.0)]);
-        assert_eq!(fitted, "const N: i32 = 16;\nconst strength: f32 = 1.0; // file\nconst other: f32 = 2.0; // file\n");
+        assert_eq!(
+            fitted,
+            "const N: i32 = 16;\nconst strength: f32 = 1.0; // file\nconst other: f32 = 2.0; // file\n"
+        );
         assert_eq!(taken, vec!["strength".to_string()]);
     }
 
     #[test]
     fn a_port_variable_takes_the_number_of_the_file() {
         let mut variables = vec![
-            VariableDef { name: "warpint".to_string(), slots: 1, per: 1, default: vec![0.003] },
-            VariableDef { name: "fogColors".to_string(), slots: 8, per: 4, default: vec![0.0; 32] },
+            VariableDef {
+                name: "warpint".to_string(),
+                slots: 1,
+                per: 1,
+                default: vec![0.003],
+            },
+            VariableDef {
+                name: "fogColors".to_string(),
+                slots: 8,
+                per: 4,
+                default: vec![0.0; 32],
+            },
         ];
-        let taken = fit_variable_defaults(&mut variables, &[("warpint".to_string(), 0.005), ("fogColors".to_string(), 1.0), ("other".to_string(), 2.0)]);
+        let taken = fit_variable_defaults(
+            &mut variables,
+            &[
+                ("warpint".to_string(), 0.005),
+                ("fogColors".to_string(), 1.0),
+                ("other".to_string(), 2.0),
+            ],
+        );
         assert_eq!(taken, vec!["warpint".to_string()]);
         assert_eq!(variables[0].default, vec![0.005f32]);
         assert_eq!(variables[1].default, vec![0.0; 32]);
@@ -5610,7 +6965,10 @@ mod tests {
         let mut status = ShaderStatus::default();
         status.note("a", None);
         status.note("b c", Some("first line\nsecond line".to_string()));
-        assert_eq!(status.text(), "sequence 2\nshader a\nloads 1\nok\nshader b c\nloads 1\nerror\n| first line\n| second line\n");
+        assert_eq!(
+            status.text(),
+            "sequence 2\nshader a\nloads 1\nok\nshader b c\nloads 1\nerror\n| first line\n| second line\n"
+        );
         // A new result of a shader takes the place of the old one, and the sequence changes.
         status.note("b c", None);
         assert_eq!(status.text(), "sequence 3\nshader a\nloads 1\nok\nshader b c\nloads 2\nok\n");
@@ -5626,7 +6984,8 @@ mod tests {
         // A line of the common part keeps its number.
         assert!(own_lines("wgsl:50:1", 200).contains("wgsl:50:1"));
         // The lines of wgpu before the message of the compiler go.
-        let wrapped = format!("Validation Error\n\nCaused by:\n  In Device::create_shader_module, label = 'x'\n    \n{message}");
+        let wrapped =
+            format!("Validation Error\n\nCaused by:\n  In Device::create_shader_module, label = 'x'\n    \n{message}");
         assert!(compiler_part(&wrapped).starts_with("Shader 'x' parsing error"));
         assert_eq!(compiler_part("no compiler part"), "no compiler part");
     }
@@ -5635,7 +6994,10 @@ mod tests {
     fn the_place_of_a_file_comes_from_its_technique() {
         assert_eq!(file_priority(FILE), 1_000_000 - 10_000);
         assert_eq!(file_priority("technique T0 < string MGEinterface=\"MGE XE 0\"; >"), 6_000_000);
-        assert_eq!(file_priority("technique T0<string MGEinterface = \"MGE XE 0\"; string category = \"atmosphere\";> {"), 2_000_000);
+        assert_eq!(
+            file_priority("technique T0<string MGEinterface = \"MGE XE 0\"; string category = \"atmosphere\";> {"),
+            2_000_000
+        );
     }
 
     /// A record as [`PostShaders::sendShaderStates`] writes it.
@@ -5664,13 +7026,24 @@ mod tests {
 
     #[test]
     fn the_state_of_a_shader_is_read() {
-        let bytes = record("oj_me_fog_box", 3, -5, &[("fogDensities", b'F', &[0.5, 0.25]), ("fogCenters", b'F', &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])]);
+        let bytes = record(
+            "oj_me_fog_box",
+            3,
+            -5,
+            &[
+                ("fogDensities", b'F', &[0.5, 0.25]),
+                ("fogCenters", b'F', &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            ],
+        );
         let state = ShaderState::read(&bytes).unwrap();
         assert_eq!(state.name, "oj_me_fog_box");
         assert!(state.enabled);
         assert_eq!(state.priority, Some(-5));
         assert_eq!(state.values.len(), 2);
-        assert_eq!(state.values[1], ("fogCenters".to_string(), b'F', vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+        assert_eq!(
+            state.values[1],
+            ("fogCenters".to_string(), b'F', vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        );
         // A record that ends before its values, and another version.
         assert!(ShaderState::read(&bytes[..bytes.len() - 4]).is_none());
         assert!(ShaderState::read(&record("x", 0, 0, &[])[4..]).is_none());
@@ -5683,9 +7056,24 @@ mod tests {
     #[test]
     fn the_variables_go_to_their_places() {
         let variables = vec![
-            VariableDef { name: "fogCenters".to_string(), slots: 2, per: 3, default: vec![] },
-            VariableDef { name: "fogDensities".to_string(), slots: 2, per: 1, default: vec![7.0, 8.0] },
-            VariableDef { name: "tints".to_string(), slots: 2, per: 3, default: vec![] },
+            VariableDef {
+                name: "fogCenters".to_string(),
+                slots: 2,
+                per: 3,
+                default: vec![],
+            },
+            VariableDef {
+                name: "fogDensities".to_string(),
+                slots: 2,
+                per: 1,
+                default: vec![7.0, 8.0],
+            },
+            VariableDef {
+                name: "tints".to_string(),
+                slots: 2,
+                per: 3,
+                default: vec![],
+            },
         ];
         let set = vec![
             ("fogCenters".to_string(), b'F', vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 99.0]),
@@ -5707,7 +7095,15 @@ mod tests {
     #[test]
     fn a_variable_line_of_a_file_is_read() {
         let variable = parse_variable("tint vec3 = 1 0.5 0").unwrap();
-        assert_eq!((variable.name.as_str(), variable.slots, variable.per, variable.default.as_slice()), ("tint", 1, 3, &[1.0, 0.5, 0.0][..]));
+        assert_eq!(
+            (
+                variable.name.as_str(),
+                variable.slots,
+                variable.per,
+                variable.default.as_slice()
+            ),
+            ("tint", 1, 3, &[1.0, 0.5, 0.0][..])
+        );
         let array = parse_variable("densities f32[8]").unwrap();
         assert_eq!((array.slots, array.per, array.default.len()), (8, 1, 0));
         assert!(parse_variable("x mat4").is_err());
@@ -5731,7 +7127,11 @@ mod tests {
                 }
             };
             for pass in shader.passes {
-                if !module.entry_points.iter().any(|entry| entry.name == pass.entry && entry.stage == naga::ShaderStage::Fragment) {
+                if !module
+                    .entry_points
+                    .iter()
+                    .any(|entry| entry.name == pass.entry && entry.stage == naga::ShaderStage::Fragment)
+                {
                     problems.push(format!("{}: the pass {} is not a fragment function", shader.name, pass.entry));
                 }
             }
@@ -5744,11 +7144,18 @@ mod tests {
         for shader in ports() {
             assert!(!shader.passes.is_empty(), "{}", shader.name);
             for pass in shader.passes {
-                assert!(shader.source.contains(&format!("fn {}(", pass.entry)), "{}: the pass {}", shader.name, pass.entry);
+                assert!(
+                    shader.source.contains(&format!("fn {}(", pass.entry)),
+                    "{}: the pass {}",
+                    shader.name,
+                    pass.entry
+                );
             }
         }
         for (name, text) in STOCK_FILES {
-            let port = ports().find(|shader| shader.name == *name).unwrap_or_else(|| panic!("{name} has no port"));
+            let port = ports()
+                .find(|shader| shader.name == *name)
+                .unwrap_or_else(|| panic!("{name} has no port"));
             // The place that the table gives a stock port is that of its file.
             assert_eq!(port.priority, file_priority(text), "{name}");
         }

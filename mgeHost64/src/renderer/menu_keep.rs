@@ -12,7 +12,7 @@
 
 use nirender_wgpu::{SceneView, wgpu};
 
-use super::post::{full_screen_pass, full_screen_pipeline, BLIT_SHADER};
+use super::post::{BLIT_SHADER, full_screen_pass, full_screen_pipeline};
 
 pub struct MenuKeep {
     texture: Option<wgpu::Texture>,
@@ -30,26 +30,50 @@ impl MenuKeep {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let pipeline = full_screen_pipeline(device, "menu keep", BLIT_SHADER, &layout, scene.target_format);
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("menu keep"), ..Default::default() });
-        MenuKeep { texture: None, layout, pipeline, sampler }
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("menu keep"),
+            ..Default::default()
+        });
+        MenuKeep {
+            texture: None,
+            layout,
+            pipeline,
+            sampler,
+        }
     }
 
     /// The texture that keeps the picture, of the size and the format of the target; made
     /// again when the size changes.
     pub fn target(&mut self, scene: &SceneView) -> wgpu::TextureView {
         let (width, height) = scene.target_size;
-        let fits = self.texture.as_ref().is_some_and(|texture| texture.width() == width && texture.height() == height);
+        let fits = self
+            .texture
+            .as_ref()
+            .is_some_and(|texture| texture.width() == width && texture.height() == height);
         if !fits {
             self.texture = Some(scene.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("menu keep"),
-                size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: width.max(1),
+                    height: height.max(1),
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -62,11 +86,26 @@ impl MenuKeep {
     }
 
     /// Draws `source` into `target`, the whole picture.
-    pub fn copy(&self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, target: &wgpu::TextureView) {
+    pub fn copy(
+        &self,
+        scene: &SceneView,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+    ) {
         let group = scene.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("menu keep"),
             layout: &self.layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
         });
         let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load);
         pass.set_pipeline(&self.pipeline);

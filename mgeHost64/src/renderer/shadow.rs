@@ -9,11 +9,7 @@ use std::rc::Rc;
 
 use nirender_wgpu::{SceneView, wgpu};
 
-/// `MGE_XE_SHADOW_DEBUG` and `MGE_XE_SHADOW_LAYERS`, read once: the shadows are made again
-/// at a change of the resolution.
-static SHADOW_DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-static SHADOW_LAYERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
+use super::debug_view::DebugView;
 use super::multiply;
 
 /// The constants of `XE Mod Shadow Data.fx`: the built-in values of a core mod's
@@ -116,11 +112,12 @@ pub struct Shadow {
     /// The uniforms of the blur groups, kept alive with them.
     _blur_uniforms: [wgpu::Buffer; 2],
     debug_pipeline: wgpu::RenderPipeline,
+    /// The sample count of [`Shadow::debug_pipeline`]: that of the frame when the map was made.
+    debug_samples: u32,
     debug_group: wgpu::BindGroup,
+    /// The debug view `shadow-map`: the map drawn small over the frame.
     pub debug: bool,
-    /// `MGE_XE_SHADOW_LAYERS=1`: the draw shader colours each pixel by the layer of the
-    /// shadow map that serves it (red the first, green the second, blue outside both, grey
-    /// a draw without the shadow test), darker where the map shadows the pixel.
+    /// The debug view `shadow-layers` ([`super::debug_view::View::ShadowLayers`]).
     pub layers_debug: bool,
     /// The matrices of the two layers for this frame, with the layout of Direct3D.
     pub viewproj: [[f32; 16]; 2],
@@ -130,7 +127,13 @@ pub struct Shadow {
 /// `D3DXMatrixLookAtRH`, with the layout of Direct3D (a position is a row vector).
 fn look_at_rh(eye: [f32; 3], at: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let normalize = |a: [f32; 3]| {
         let l = dot(a, a).sqrt().max(1e-12);
@@ -139,7 +142,24 @@ fn look_at_rh(eye: [f32; 3], at: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     let z = normalize(sub(eye, at));
     let x = normalize(cross(up, z));
     let y = cross(z, x);
-    [x[0], y[0], z[0], 0.0, x[1], y[1], z[1], 0.0, x[2], y[2], z[2], 0.0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1.0]
+    [
+        x[0],
+        y[0],
+        z[0],
+        0.0,
+        x[1],
+        y[1],
+        z[1],
+        0.0,
+        x[2],
+        y[2],
+        z[2],
+        0.0,
+        -dot(x, eye),
+        -dot(y, eye),
+        -dot(z, eye),
+        1.0,
+    ]
 }
 
 /// The inverse of a matrix with the layout of Direct3D (the identity when there is none).
@@ -202,15 +222,28 @@ fn ortho_rh(width: f32, height: f32, near: f32, far: f32) -> [f32; 16] {
 /// orthographic view from the sun, centred `radius` ahead of the camera (half of that up),
 /// snapped to whole texels.
 pub fn layer_matrix(eye: [f32; 3], eye_vec: [f32; 3], light_vec: [f32; 3], radius: f32, resolution: u32) -> [f32; 16] {
-    let look_at = [eye[0] + radius * eye_vec[0], eye[1] + radius * eye_vec[1], eye[2] + 0.5 * radius * eye_vec[2]];
+    let look_at = [
+        eye[0] + radius * eye_vec[0],
+        eye[1] + radius * eye_vec[1],
+        eye[2] + 0.5 * radius * eye_vec[2],
+    ];
     let look_at_eye = eye.map(|v| 16.0 * (0.0625 * v).floor());
-    let camera = [look_at_eye[0] - ZRANGE * light_vec[0], look_at_eye[1] - ZRANGE * light_vec[1], look_at_eye[2] - ZRANGE * light_vec[2]];
+    let camera = [
+        look_at_eye[0] - ZRANGE * light_vec[0],
+        look_at_eye[1] - ZRANGE * light_vec[1],
+        look_at_eye[2] - ZRANGE * light_vec[2],
+    ];
     let view = look_at_rh(camera, look_at_eye, [0.0, 0.0, 1.0]);
     let projection = ortho_rh(2.0 * radius, (1.0 + light_vec[2].abs()) * radius, 0.0, 2.0 * ZRANGE);
     let mut viewproj = multiply(&view, &projection);
     // The point `look_at` goes to the middle of the layer, in whole texels.
-    let delta = [look_at_eye[0] - look_at[0], look_at_eye[1] - look_at[1], look_at_eye[2] - look_at[2]];
-    let dv: [f32; 3] = core::array::from_fn(|i| delta[0] * viewproj[i] + delta[1] * viewproj[4 + i] + delta[2] * viewproj[8 + i]);
+    let delta = [
+        look_at_eye[0] - look_at[0],
+        look_at_eye[1] - look_at[1],
+        look_at_eye[2] - look_at[2],
+    ];
+    let dv: [f32; 3] =
+        core::array::from_fn(|i| delta[0] * viewproj[i] + delta[1] * viewproj[4 + i] + delta[2] * viewproj[8 + i]);
     let quantizer = 2.0 / resolution as f32;
     viewproj[12] += quantizer * (dv[0] / quantizer).floor();
     viewproj[13] += quantizer * (dv[1] / quantizer).floor();
@@ -237,7 +270,11 @@ impl Shadow {
         let target = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: 2 * resolution, height: resolution, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: 2 * resolution,
+                    height: resolution,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -249,7 +286,12 @@ impl Shadow {
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let atlas = target("shadow atlas", wgpu::TextureFormat::R16Float, usage);
         let blur = target("shadow blur", wgpu::TextureFormat::R16Float, usage);
-        let depth_view = target("shadow depth", Shadow::depth_format(scene.depth_format), wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
+        let depth_view = target(
+            "shadow depth",
+            Shadow::depth_format(scene.depth_format),
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        )
+        .create_view(&Default::default());
         let atlas_view = Rc::new(atlas.create_view(&Default::default()));
         let blur_view = blur.create_view(&Default::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -265,48 +307,101 @@ impl Shadow {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
-        let make_pipeline = |label: &str, source: &str, format: wgpu::TextureFormat, depth: Option<wgpu::DepthStencilState>| {
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        // `samples`: the sample count of the pass the pipeline draws into.
+        let make_pipeline = |label: &str,
+                             source: &str,
+                             format: wgpu::TextureFormat,
+                             depth: Option<wgpu::DepthStencilState>,
+                             samples: u32| {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, cull_mode: None, ..Default::default() },
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    cull_mode: None,
+                    ..Default::default()
+                },
                 depth_stencil: depth,
-                multisample: Default::default(),
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some("fs"),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
                 }),
                 multiview_mask: None,
                 cache: None,
             })
         };
-        let blur_pipeline = make_pipeline("shadow blur", BLUR_SHADER, wgpu::TextureFormat::R16Float, None);
+        // The blur draws into the atlas (1 sample); the debug view draws into the main pass.
+        let blur_pipeline = make_pipeline("shadow blur", BLUR_SHADER, wgpu::TextureFormat::R16Float, None, 1);
         let debug_pipeline = make_pipeline(
             "shadow debug",
             DEBUG_SHADER,
             scene.target_format,
-            Some(wgpu::DepthStencilState { format: scene.depth_format, depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always), stencil: Default::default(), bias: Default::default() }),
+            Some(wgpu::DepthStencilState {
+                format: scene.depth_format,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            scene.samples,
         );
         let uniform = |values: [f32; 4]| {
             use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("shadow"), contents: bytemuck::cast_slice(&values), usage: wgpu::BufferUsages::UNIFORM })
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("shadow"),
+                contents: bytemuck::cast_slice(&values),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
         };
         // The blur steps: shadowRcpRes is 1 / res on both axes of an atlas 2 res wide, as
         // the Direct3D 9 path has it.
@@ -317,9 +412,18 @@ impl Shadow {
                 label: Some("shadow"),
                 layout: &layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
                 ],
             })
         };
@@ -336,9 +440,10 @@ impl Shadow {
             blur_groups,
             _blur_uniforms: blur_uniforms,
             debug_pipeline,
+            debug_samples: scene.samples,
             debug_group,
-            debug: *SHADOW_DEBUG.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_SHADOW_DEBUG") == Some(true)),
-            layers_debug: *SHADOW_LAYERS.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_SHADOW_LAYERS") == Some(true)),
+            debug: false,
+            layers_debug: false,
             viewproj: [[0.0; 16]; 2],
             frames: 0,
         }
@@ -363,11 +468,22 @@ impl Shadow {
                     view: &self.atlas_view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: ESM_SCALE as f64, g: 0.0, b: 0.0, a: 1.0 }), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: ESM_SCALE as f64,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -386,7 +502,10 @@ impl Shadow {
 
     /// The two blurs, after the casters.
     pub fn blur(&self, encoder: &mut wgpu::CommandEncoder) {
-        for (step, target) in [(&self.blur_view, 0usize), (&*self.atlas_view, 1usize)].into_iter().map(|(view, i)| (i, view)) {
+        for (step, target) in [(&self.blur_view, 0usize), (&*self.atlas_view, 1usize)]
+            .into_iter()
+            .map(|(view, i)| (i, view))
+        {
             nirender_wgpu::gpu::note_other_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow blur"),
@@ -394,7 +513,10 @@ impl Shadow {
                     view: target,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -407,8 +529,21 @@ impl Shadow {
         }
     }
 
-    /// The atlas in the lower left of the picture, for a test.
-    pub fn draw_debug(&self, pass: &mut wgpu::RenderPass<'static>) {
+    /// The shadow map's debug views as the frame's view has them.
+    pub fn set_debug(&mut self, view: &DebugView) {
+        self.debug = view.shadow_map();
+        self.layers_debug = view.shadow_layers();
+    }
+
+    /// The atlas in the lower left of the picture, for a test. `samples`: the sample count of
+    /// the frame (`SceneView::samples` of the main view), not of the pass. A frame whose count
+    /// is not the one the pipeline was made with (the count changed after the map was made)
+    /// gets no atlas. The check does not see a pass of its own count, such as a rendered
+    /// picture.
+    pub fn draw_debug(&self, pass: &mut wgpu::RenderPass<'static>, samples: u32) {
+        if samples != self.debug_samples {
+            return;
+        }
         pass.set_pipeline(&self.debug_pipeline);
         pass.set_bind_group(0, &self.debug_group, &[]);
         pass.draw(0..4, 0..1);
@@ -418,25 +553,41 @@ impl Shadow {
     /// matrices from the view space of the game to the layers (8 vectors, the rows of
     /// Direct3D), then the values of the shadow (`shadow_values`, the built-in ones or those of
     /// a core mod), the visibility of the sun, and 1 when the camera is above the sea.
-    pub fn frame_values(&self, sun_vis: f32, view: &[f32; 16], above_sea: bool, shadow_values: &super::core_mods::ShadowValues) -> [[f32; 4]; 32] {
+    pub fn frame_values(
+        &self,
+        sun_vis: f32,
+        view: &[f32; 16],
+        above_sea: bool,
+        shadow_values: &super::core_mods::ShadowValues,
+    ) -> [[f32; 4]; 32] {
         let mut values = [[0.0f32; 4]; 32];
         let from_view = inverse(view);
         for layer in 0..2 {
             let to_shadow = multiply(&from_view, &self.viewproj[layer]);
             for row in 0..4 {
-                values[layer * 4 + row] = [to_shadow[row * 4], to_shadow[row * 4 + 1], to_shadow[row * 4 + 2], to_shadow[row * 4 + 3]];
+                values[layer * 4 + row] = [
+                    to_shadow[row * 4],
+                    to_shadow[row * 4 + 1],
+                    to_shadow[row * 4 + 2],
+                    to_shadow[row * 4 + 3],
+                ];
             }
         }
         values[8] = shadow_values.esm(1.0 / self.resolution as f32);
         values[9] = shadow_values.shade();
-        values[10] = [sun_vis, if above_sea { 1.0 } else { 0.0 }, if self.layers_debug { 1.0 } else { 0.0 }, 0.0];
+        values[10] = [
+            sun_vis,
+            if above_sea { 1.0 } else { 0.0 },
+            if self.layers_debug { 1.0 } else { 0.0 },
+            0.0,
+        ];
         values
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{layer_matrix, light_vector, sun_light, Shadow, BLUR_SHADER, DEBUG_SHADER, RADII};
+    use super::{BLUR_SHADER, DEBUG_SHADER, RADII, Shadow, layer_matrix, light_vector, sun_light};
     use nirender_wgpu::wgpu::TextureFormat;
 
     /// The shadow camera follows the sun light of the game, normalized, by day and at night
@@ -471,7 +622,10 @@ mod tests {
             let matrix = layer_matrix(eye, [0.0, 1.0, 0.0], light, radius, 2048);
             let near = project(&matrix, eye);
             let far = project(&matrix, [0, 1, 2].map(|c| eye[c] + 500.0 * light[c]));
-            assert!((near[0] - far[0]).abs() < 1e-4 && (near[1] - far[1]).abs() < 1e-4, "radius {radius}: {near:?} {far:?}");
+            assert!(
+                (near[0] - far[0]).abs() < 1e-4 && (near[1] - far[1]).abs() < 1e-4,
+                "radius {radius}: {near:?} {far:?}"
+            );
             assert!(far[2] > near[2], "radius {radius}: {near:?} {far:?}");
         }
     }
@@ -489,8 +643,14 @@ mod tests {
     /// with no stencil stays as it is.
     #[test]
     fn the_shadow_depth_has_no_stencil() {
-        assert_eq!(Shadow::depth_format(TextureFormat::Depth32FloatStencil8), TextureFormat::Depth32Float);
-        assert_eq!(Shadow::depth_format(TextureFormat::Depth24PlusStencil8), TextureFormat::Depth24Plus);
+        assert_eq!(
+            Shadow::depth_format(TextureFormat::Depth32FloatStencil8),
+            TextureFormat::Depth32Float
+        );
+        assert_eq!(
+            Shadow::depth_format(TextureFormat::Depth24PlusStencil8),
+            TextureFormat::Depth24Plus
+        );
         assert_eq!(Shadow::depth_format(TextureFormat::Depth32Float), TextureFormat::Depth32Float);
         for frame in [TextureFormat::Depth32FloatStencil8, TextureFormat::Depth24PlusStencil8] {
             assert!(!Shadow::depth_format(frame).has_stencil_aspect(), "{frame:?}");

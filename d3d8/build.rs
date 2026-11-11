@@ -19,9 +19,15 @@ fn main() {
     // in xtask, so that the two read one folder.
     println!("cargo:rerun-if-env-changed=NIRENDER_PLUGIN_DIR");
     let workspace_root = manifest_dir.join("..");
-    let plugin_dir = env::var_os("NIRENDER_PLUGIN_DIR").map(|value| workspace_root.join(value)).unwrap_or_else(|| workspace_root.join("..").join("nirender-plugin"));
+    let plugin_dir = env::var_os("NIRENDER_PLUGIN_DIR")
+        .map(|value| workspace_root.join(value))
+        .unwrap_or_else(|| workspace_root.join("..").join("nirender-plugin"));
     let contract_dir = plugin_dir.join("contract");
-    assert!(contract_dir.join("mge_render_link.h").exists(), "the nirender plugin's contract is not at {} (NIRENDER_PLUGIN_DIR names the plugin's repository)", contract_dir.display());
+    assert!(
+        contract_dir.join("mge_render_link.h").exists(),
+        "the nirender plugin's contract is not at {} (NIRENDER_PLUGIN_DIR names the plugin's repository)",
+        contract_dir.display()
+    );
 
     println!("cargo:rerun-if-changed={}", cpp_dir.display());
     println!("cargo:rerun-if-changed={}", def_file.display());

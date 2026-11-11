@@ -93,7 +93,14 @@ fn draws(strength: f32) -> u32 {
 }
 
 fn shader() -> String {
-    format!("{}{}{}{}{}", super::view::wgsl(), nirender_wgpu::depth::wgsl(), SHADER, super::water::CAUSTICS, super::blend::DISTANCE)
+    format!(
+        "{}{}{}{}{}",
+        super::view::wgsl(),
+        nirender_wgpu::depth::wgsl(),
+        SHADER,
+        super::water::CAUSTICS,
+        super::blend::DISTANCE
+    )
 }
 
 /// What the caustics need from the frame.
@@ -130,7 +137,11 @@ impl Caustics {
         let texture = |binding, sample_type, dimension| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture { sample_type, view_dimension: dimension, multisampled: false },
+            ty: wgpu::BindingType::Texture {
+                sample_type,
+                view_dimension: dimension,
+                multisampled: false,
+            },
             count: None,
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -139,29 +150,61 @@ impl Caustics {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 texture(1, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2),
-                texture(2, wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D3),
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                texture(
+                    2,
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::TextureViewDimension::D3,
+                ),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("caustics"), source: wgpu::ShaderSource::Wgsl(shader().into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("caustics"), bind_group_layouts: &[Some(view_layout), Some(&layout)], immediate_size: 0 });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("caustics"),
+            source: wgpu::ShaderSource::Wgsl(shader().into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("caustics"),
+            bind_group_layouts: &[Some(view_layout), Some(&layout)],
+            immediate_size: 0,
+        });
         // In the pass of the world: no test of the depth and no write, and the stencil of the
         // dry spaces for the cut. The blend multiplies the target: colour * target + target *
         // colour.
         let modulate = wgpu::BlendState {
-            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Dst, dst_factor: wgpu::BlendFactor::Src, operation: wgpu::BlendOperation::Add },
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::Src,
+                operation: wgpu::BlendOperation::Add,
+            },
             alpha: wgpu::BlendComponent::REPLACE,
         };
         let make_pipeline = |stencil: wgpu::StencilState| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("caustics"),
                 layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: scene.depth_format,
                     depth_write_enabled: Some(false),
@@ -174,7 +217,11 @@ impl Caustics {
                     module: &module,
                     entry_point: Some("fs"),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: scene.target_format, blend: Some(modulate), write_mask: wgpu::ColorWrites::COLOR })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: scene.target_format,
+                        blend: Some(modulate),
+                        write_mask: wgpu::ColorWrites::COLOR,
+                    })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -182,7 +229,12 @@ impl Caustics {
         };
         let pipeline = make_pipeline(Default::default());
         let pipeline_cut = make_pipeline(cut);
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("caustics"), size: 64 + 4 * 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("caustics"),
+            size: 64 + 4 * 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let wave_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -191,32 +243,68 @@ impl Caustics {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        Self { pipeline, pipeline_cut, layout, uniforms, wave_sampler, intensity, frames: 0 }
+        Self {
+            pipeline,
+            pipeline_cut,
+            layout,
+            uniforms,
+            wave_sampler,
+            intensity,
+            frames: 0,
+        }
     }
 
     /// Draws the caustics on the picture. `depth` is the depth of the draws of the game,
     /// `waves` the wave texture of the water. With `cut`, only outside the dry spaces: the
     /// caller has their count in the stencil.
-    pub fn draw(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, depth: &wgpu::TextureView, waves: &wgpu::TextureView, frame: &CausticsFrame, cut: bool) {
+    pub fn draw(
+        &mut self,
+        scene: &SceneView,
+        pass: &mut wgpu::RenderPass<'static>,
+        depth: &wgpu::TextureView,
+        waves: &wgpu::TextureView,
+        frame: &CausticsFrame,
+        cut: bool,
+    ) {
         let strength = super::water::caustic_strength(self.intensity, frame.sun_vis, frame.fog_color_far);
         let mut values = [0.0f32; 16 + 16];
         values[..16].copy_from_slice(&scene.view);
         let [depth_a, depth_b] = nirender_wgpu::depth::terms(&scene.projection);
         values[16..20].copy_from_slice(&[scene.projection[0], scene.projection[5], depth_a, depth_b]);
-        values[20..24].copy_from_slice(&[scene.target_size.0 as f32, scene.target_size.1 as f32, super::blend::ZONE, 0.0]);
+        values[20..24].copy_from_slice(&[
+            scene.target_size.0 as f32,
+            scene.target_size.1 as f32,
+            super::blend::ZONE,
+            0.0,
+        ]);
         values[24..28].copy_from_slice(&[frame.water_level, frame.time, 0.0, 0.0]);
         values[28..32].copy_from_slice(&[strength, frame.near_view_range, 0.0, 0.0]);
         scene.queue.write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&values));
-        let group = nirender_wgpu::gpu::frame_group(scene.device, &wgpu::BindGroupDescriptor {
-            label: Some("caustics"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(waves) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.wave_sampler) },
-            ],
-        });
+        let group = nirender_wgpu::gpu::frame_group(
+            scene.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("caustics"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(waves),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.wave_sampler),
+                    },
+                ],
+            },
+        );
         pass.set_pipeline(if cut { &self.pipeline_cut } else { &self.pipeline });
         pass.set_stencil_reference(0);
         pass.set_bind_group(1, &group, &[]);
