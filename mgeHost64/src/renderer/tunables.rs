@@ -38,6 +38,9 @@ pub const STATICS_FADE: &str = "statics.fade";
 /// The shadow on the grass: 2 ends it as the shadow of the ground (the fade at the edge of
 /// the shadow map and in the fog), 1 as the Direct3D 9 path (no fade), 0 none.
 pub const GRASS_SHADOW: &str = "grass.shadow";
+/// The light of a particle: 1 each pixel, 0 the four corners of its quads. It starts from the
+/// setting `distant_land.per_pixel_particles` ([`Tunables::start_at`]).
+pub const PARTICLES: &str = "lights.particles";
 
 #[derive(Default)]
 struct Tunable {
@@ -98,6 +101,16 @@ impl Tunables {
             .iter()
             .find(|tunable| tunable.name == name)
             .map_or(0.0, |tunable| tunable.value)
+    }
+
+    /// A parameter that starts from a setting of the user's file (`lights.particles` from
+    /// `per_pixel_particles`): the value and the value that `reset` gives back. A name that
+    /// the file does not have does nothing.
+    pub fn start_at(&mut self, name: &str, value: f32) {
+        if let Some(tunable) = self.list.iter_mut().find(|tunable| tunable.name == name) {
+            tunable.start = value.clamp(tunable.least, tunable.most);
+            tunable.value = tunable.start;
+        }
     }
 
     /// The three numbers of the blur that is sharp at the waterline.
@@ -176,6 +189,7 @@ mod tests {
             BAKED_STRENGTH,
             STATICS_FADE,
             GRASS_SHADOW,
+            PARTICLES,
         ] {
             let tunable = tunables
                 .list
@@ -253,6 +267,22 @@ mod tests {
             assert_eq!(tunables.command(bad), None, "{bad}");
         }
         assert_eq!(tunables.blur(), before);
+    }
+
+    #[test]
+    fn a_setting_gives_the_start_value() {
+        let mut tunables = Tunables::new();
+        assert_eq!(tunables.get(PARTICLES), 1.0);
+        tunables.start_at(PARTICLES, 0.0);
+        assert_eq!(tunables.get(PARTICLES), 0.0);
+        assert!(tunables.command("set lights.particles 1").is_some());
+        assert_eq!(tunables.get(PARTICLES), 1.0);
+        assert!(tunables.command("reset lights.particles").is_some());
+        assert_eq!(tunables.get(PARTICLES), 0.0);
+        // Out of the range: clamped. An unknown name: nothing.
+        tunables.start_at(PARTICLES, 7.0);
+        assert_eq!(tunables.get(PARTICLES), 1.0);
+        tunables.start_at("no.such.name", 1.0);
     }
 
     #[test]

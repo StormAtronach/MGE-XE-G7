@@ -102,3 +102,12 @@ start = 2.0
 least = 0.0
 most = 2.0
 step = 1.0
+
+[[parameter]]
+name = "lights.particles"
+label = "Particles: light for each pixel"
+about = "1: each pixel of a particle takes its lights, as MGE XE on Direct3D 9. 0: a particle takes its lights at its four corners. It starts from the setting per_pixel_particles of mgeXE.toml, and acts only with per-pixel lighting."
+start = 1.0
+least = 0.0
+most = 1.0
+step = 1.0

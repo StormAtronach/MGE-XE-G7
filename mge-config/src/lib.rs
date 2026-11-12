@@ -28,6 +28,16 @@ mod tests {
         }
     }
 
+    /// A file of before `per_pixel_particles` reads it as true: today's look, and nothing is
+    /// written into the user's file.
+    #[test]
+    fn a_file_without_per_pixel_particles_lights_each_pixel() {
+        let settings: Settings = toml_edit::de::from_str("[distant_land]\nper_pixel_lighting = true\n").unwrap();
+        assert!(settings.distant_land.per_pixel_particles);
+        let off: Settings = toml_edit::de::from_str("[distant_land]\nper_pixel_particles = false\n").unwrap();
+        assert!(!off.distant_land.per_pixel_particles);
+    }
+
     #[test]
     fn template_covers_every_typed_default_entry() {
         let template: toml_edit::DocumentMut = DEFAULT_DOCUMENT.parse().unwrap();
