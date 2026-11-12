@@ -94,6 +94,11 @@ mod part {
     pub const STATICS: &str = "distant statics";
     pub const SHADOW_STATICS: &str = "distant statics: the shadow layers";
     pub const MIRROR_STATICS: &str = "distant statics: the reflection";
+    pub const MIRROR_LAND: &str = "distant land: the reflection";
+    /// The game's draws of the glare of the sun (class 8), which go when a post shader draws its
+    /// own sun.
+    pub const SUN_GLARE: &str = "the game's sun glare";
+    pub const CAUSTICS_DRY_CUT: &str = "sea caustics: the cut of the dry spaces";
     pub const UNDER_MENU: &str = "the kept picture under a menu";
     pub const OUT_OF_VIEW: &str = "the water plane is out of view";
     pub const NO_LIGHTS: &str = "no distant lights";
@@ -903,6 +908,125 @@ struct Gpu {
     patterns: [f32; 4],
 }
 
+/// The facts of distant land that the decisions of a frame read (W341 step B), fixed in `frame`
+/// once its settings, its loads and the cell's facts are final. The fields they come from can
+/// change later in the frame (`after_frame` finishes a load and applies settings); no decision
+/// reads those fields after this.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct DistantFacts {
+    /// Distant land is on (`enabled`).
+    on: bool,
+    /// The cell has a world space of the distant land (`distant_cell`).
+    cell: bool,
+    /// The terrain is on the GPU.
+    terrain: bool,
+    /// The cell is like an exterior (`like_exterior`).
+    like_exterior: bool,
+}
+
+impl DistantFacts {
+    /// Distant land in the frame, with its terrain on the GPU: the shadow map, the fog range, the
+    /// blend and the sky of the frame.
+    fn distant(self) -> bool {
+        self.on && self.cell && self.terrain
+    }
+}
+
+/// The answers of a frame that the crate and the frame's later calls take (W341 step B), made
+/// at the end of `frame`'s state, when the water and the post objects are made. Each path of
+/// `frame` writes them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FrameAnswers {
+    /// The picture kept under a menu shows: no part of the extension runs.
+    UnderMenu,
+    World(WorldAnswers),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WorldAnswers {
+    /// The chain of post shaders, or why the frame has none.
+    chain: Option<Skip>,
+    /// The caustics under the sea, or why the frame has none.
+    sea_caustics: Option<Skip>,
+}
+
+/// The plan of a picture (W341 step B): made at `before_world` from the frame's answers, the
+/// picture's scene and the environment, and kept for the picture's later calls (`draw_class`,
+/// the held calls, `after_world`). `frame` makes one too, so that no call takes the plan of the
+/// frame before. It never gives more than the frame's answers promised. It keeps the decisions;
+/// the values of the water (the camera, the sun, the fog) are those of each call's scene.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Plan {
+    /// Why the extension's parts of the world do not run (under a menu, no distant land), or
+    /// nothing.
+    world: Option<Skip>,
+    /// Why the terrain is not drawn, or nothing.
+    terrain: Option<Skip>,
+    /// Why the picture has no water plane of the cell, or nothing.
+    water: Option<Skip>,
+    /// Why the picture has no surfaces of water volumes, or nothing.
+    volumes: Option<Skip>,
+    /// The reflection in the water. The mirror's cull set, its pass, the one-colour fill and
+    /// their notes read it.
+    reflection: Reflection,
+}
+
+/// The reflection in the water of a picture (W341 step B): the mirror, one colour, or none with
+/// its reason.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reflection {
+    /// The land, the sky and the statics, mirrored, in a pass of their own.
+    Mirror,
+    /// One colour: a cell without the distant land (`clearReflection` of the Direct3D 9 path),
+    /// or an interior without `reflect_interiors`.
+    Fill,
+    None(Skip),
+}
+
+/// The plan of a view of its own (W341 step B): made from the frame's answers, the view's parts
+/// and its scene at each of its three calls. It reads nothing that changes within a frame, so the
+/// three calls get one answer. What a call makes for its set (the claim of a place, the groups
+/// and sets of the view) stays at the draw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewPlan {
+    /// Why the view gets none of the extension's parts of the world (under a menu, no distant
+    /// land), or nothing.
+    world: Option<Skip>,
+    /// The view has an orthographic projection (the local map's camera): its depth terms are not
+    /// those of a perspective one, so it gets no land.
+    orthographic: bool,
+    /// Why the land is not ready for the view (no terrain in the frame's facts), or nothing.
+    land: Option<Skip>,
+    /// Why the terrain is not drawn in the view, or nothing.
+    terrain: Option<Skip>,
+    /// Why the statics are not drawn in the view (not in the options, `MGE_XE_SKIP`), or nothing.
+    statics: Option<Skip>,
+    /// Why the glows are not drawn in the view (not in the options, not night, an interior), or
+    /// nothing.
+    glows: Option<Skip>,
+    /// Why the grass is not drawn in the view, or nothing.
+    grass: Option<Skip>,
+    /// Why the post chain does not run on the view, or nothing.
+    post: Option<Skip>,
+    /// The view asks for the water of MGE XE, which a view of its own does not draw.
+    water_asked: bool,
+}
+
+/// The plan before the first frame.
+const NO_FRAME: &str = "no frame yet";
+
+impl Default for Plan {
+    fn default() -> Plan {
+        Plan {
+            world: Some(NO_FRAME),
+            terrain: Some(NO_FRAME),
+            water: Some(NO_FRAME),
+            volumes: Some(NO_FRAME),
+            reflection: Reflection::None(NO_FRAME),
+        }
+    }
+}
+
 pub struct DistantLand {
     enabled: bool,
     /// The water is wanted: distant land is on, or only distant water is (`USE_DISTANT_WATER`,
@@ -960,6 +1084,10 @@ pub struct DistantLand {
     /// The cell of the frame has a world space of the distant land: an exterior, or an
     /// interior cell with statics in `usage.data` (`isDistantCell` of the Direct3D 9 path).
     distant_cell: bool,
+    /// The facts, the answers and the plan of the frame (W341 step B).
+    facts: DistantFacts,
+    answers: FrameAnswers,
+    plan: Plan,
     /// The light for each pixel of this frame, or [`None`].
     shade: Option<PerPixel>,
     /// The core mods of the session (`Data Files/shaders/core-mods`): the hooks of the shaders
@@ -1063,7 +1191,6 @@ pub struct DistantLand {
     /// kept; this frame shows it (no work of distant land); this frame keeps a new one.
     menu_keep: Option<menu_keep::MenuKeep>,
     menu_kept: bool,
-    menu_reuse: bool,
     menu_keeping: bool,
     post_chain: Vec<String>,
     /// `render.hdr_reaction_time`: the seconds that the HDR measure takes to follow the picture.
@@ -1560,6 +1687,12 @@ impl DistantLand {
             interior: false,
             like_exterior: true,
             distant_cell: true,
+            facts: DistantFacts::default(),
+            answers: FrameAnswers::World(WorldAnswers {
+                chain: Some(NO_FRAME),
+                sea_caustics: Some(NO_FRAME),
+            }),
+            plan: Plan::default(),
             shade: None,
             core_mods,
             scene_sun: None,
@@ -1605,7 +1738,6 @@ impl DistantLand {
             post: None,
             menu_keep: None,
             menu_kept: false,
-            menu_reuse: false,
             menu_keeping: false,
             root: root.to_path_buf(),
             post_enabled: document.settings().render.enable_shaders,
@@ -1771,6 +1903,25 @@ impl DistantLand {
         if let Some(statics) = self.statics.as_mut() {
             statics.set_views(views);
         }
+    }
+
+    /// Distant statics with subset flags that this build does not know: distant land is off for
+    /// the session, as on Direct3D 9, and the data must be generated again. Read once a frame, in
+    /// `frame`, after the statics' load and the settings of the frame (W341 step B).
+    fn reject_unknown_statics(&mut self) {
+        let Some(problem) = self
+            .statics
+            .as_ref()
+            .and_then(|statics| statics.rejected())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        println!("distant land: off: {problem}");
+        self.problem = Some(format!("distant land is off: {problem}"));
+        self.enabled = false;
+        self.statics = None;
+        self.lights = None;
     }
 
     /// Makes the buffers, the textures and the pipeline when the loader thread is done.
@@ -3018,7 +3169,14 @@ impl Extension for DistantLand {
             statics.finish_load(scene);
         }
         self.apply_settings();
+        self.reject_unknown_statics();
         self.cell_facts(scene);
+        self.facts = DistantFacts {
+            on: self.enabled,
+            cell: self.distant_cell,
+            terrain: self.gpu.is_some(),
+            like_exterior: self.like_exterior,
+        };
         self.free_idle_spares(scene.frame);
         if let Some(statics) = self.statics.as_mut() {
             statics.set_fade(self.tunables.get(tunables::STATICS_FADE));
@@ -3034,9 +3192,12 @@ impl Extension for DistantLand {
         let flags = self.environment.map_or(0, |e| e.flags);
         let caching = self.settings.is_some_and(|s| s.flags & USE_MENU_CACHING != 0) && flags & 64 != 0;
         self.menu_kept &= caching;
-        self.menu_reuse = self.menu_kept;
         self.menu_keeping = caching && !self.menu_kept;
-        if self.menu_reuse {
+        if self.menu_kept {
+            // The answers of this path too: no later call of the frame takes those of the frame
+            // before.
+            self.answers = FrameAnswers::UnderMenu;
+            self.plan = self.make_plan(scene);
             return FrameParameters {
                 post: true,
                 ..FrameParameters::default()
@@ -3047,10 +3208,10 @@ impl Extension for DistantLand {
         // path): an exterior, an interior that is like one, or a plain interior cell with
         // statics in the distant land data. The shadow map and the sky are for a cell that
         // is like an exterior.
-        let distant = self.enabled && self.distant_cell && self.gpu.is_some();
+        let distant = self.facts.distant();
         // The water: an exterior with its land, or an interior cell with water (`CellHasWater`
         // of MGE XE, which draws its water there too, with a flat reflection).
-        let water_land = self.water_on && !scene.interior && self.gpu.is_some();
+        let water_land = self.water_on && !scene.interior && self.facts.terrain;
         let water_cell =
             self.water_on && self.environment.is_some_and(|e| e.has_water != 0) && (water_land || scene.interior);
         if (water_cell || (self.water_on && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
@@ -3080,7 +3241,8 @@ impl Extension for DistantLand {
             water.set_debug(scene, self.debug_view.water_term());
         }
         self.far_water.clear();
-        self.volumes_ready = self.water_on && self.water_enabled && self.water.is_some() && self.volume_frame(scene).is_ok();
+        self.volumes_ready =
+            self.water_on && self.water_enabled && self.water.is_some() && self.volume_skip(scene).is_none();
         // In a water volume its top is the level of the water of the frame: the sea plane is
         // not cut there.
         let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
@@ -3151,7 +3313,8 @@ impl Extension for DistantLand {
                 post.status.write(&self.root);
             }
         }
-        let post = self.post_enabled && self.post.as_ref().is_some_and(|post| !post.is_empty());
+        let chain = self.chain_skip();
+        let post = chain.is_none();
         // The glare of the sun of the game (class 8) goes when a shader draws its own sun.
         // The engine's glare code still runs: this mode does not apply the patch at 0x4404FB
         // of the Direct3D 9 path, so the picks and the full-screen glare fader stay.
@@ -3192,6 +3355,12 @@ impl Extension for DistantLand {
         }
         self.shade = self.per_pixel();
         values[11][0] = self.tunables.get(tunables::WATER_LIGHT_COLOUR);
+        // The answers of the frame, after its objects are made; the parameters are made from them.
+        self.answers = FrameAnswers::World(WorldAnswers {
+            chain,
+            sea_caustics: self.sea_caustics_skip(),
+        });
+        self.plan = self.make_plan(scene);
         FrameParameters {
             fog_range: distant.then(|| {
                 self.environment
@@ -3361,7 +3530,7 @@ impl Extension for DistantLand {
     fn after_frame(&mut self, scene: &SceneView) {
         let Some((world, eye)) = self.prefetch.clone() else { return };
         // At the first load of a session the data comes in a frame with no world: the loads
-        // are finished here, as in `frame` and `before_world`.
+        // are finished here, as in `frame`.
         self.finish_generation();
         self.poll_lights(scene);
         self.finish_load(scene);
@@ -3633,27 +3802,13 @@ impl Extension for DistantLand {
     }
 
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool {
-        if self.menu_reuse {
+        self.plan = self.make_plan(scene);
+        if self.answers == FrameAnswers::UnderMenu {
             Self::note_world_skipped(self.shadow_in_frame, part::UNDER_MENU, true);
             return false;
         }
         self.near_fog = None;
-        self.cell_facts(scene);
         self.write_game_view(scene);
-        // Distant statics with subset flags that this build does not know: distant land is off
-        // for the session, as on Direct3D 9, and the data must be generated again.
-        if let Some(problem) = self
-            .statics
-            .as_ref()
-            .and_then(|statics| statics.rejected())
-            .map(str::to_string)
-        {
-            println!("distant land: off: {problem}");
-            self.problem = Some(format!("distant land is off: {problem}"));
-            self.enabled = false;
-            self.statics = None;
-            self.lights = None;
-        }
         if std::mem::take(&mut self.lose_device) {
             println!("gpu: the device is destroyed for the test of a lost device");
             nirender_wgpu::gpu::test_loss(scene.device);
@@ -3662,28 +3817,24 @@ impl Extension for DistantLand {
             self.gpu_time_made = true;
             self.gpu_time = gpu_time::GpuTime::new(scene.device, scene.queue);
         }
-        if let Some(reason) = self.distant_skip() {
+        if let Some(reason) = self.plan.world {
             Self::note_world_skipped(self.shadow_in_frame, reason, false);
             // A cell without the distant land: the reflection of the water is one colour,
             // as `clearReflection` of the Direct3D 9 path has it.
-            match self.water_frame(scene) {
-                Ok(frame) => {
-                    let needed = self.reflection_needed(scene, &frame);
-                    if let Some(water) = self.water.as_mut() {
-                        if needed {
-                            water.fill_reflection(scene, &frame);
-                        } else {
-                            pass_report::note_skipped(part::REFLECTION_FILL, part::OUT_OF_VIEW);
-                        }
+            match self.plan.reflection {
+                Reflection::None(reason) => pass_report::note_skipped(part::REFLECTION_FILL, reason),
+                _ => {
+                    let frame = self.water_frame(scene);
+                    if let (Some(water), Ok(frame)) = (self.water.as_mut(), frame.as_ref()) {
+                        water.fill_reflection(scene, frame);
                     }
                 }
-                Err(reason) => pass_report::note_skipped(part::REFLECTION_FILL, reason),
             }
             return false;
         }
         self.poll_lights(scene);
-        self.finish_load(scene);
-        let Some(gpu) = self.gpu.as_ref() else {
+        // The terrain that the frame's facts have: one that came after them waits for the next frame.
+        let Some(gpu) = self.gpu.as_ref().filter(|_| self.facts.terrain) else {
             Self::note_world_skipped(self.shadow_in_frame, "no terrain on the GPU", true);
             return false;
         };
@@ -3738,7 +3889,7 @@ impl Extension for DistantLand {
         let mut drawn = 0;
         // The terrain is for an exterior; an interior cell has the statics of its own world
         // space over the clear colour.
-        match Self::terrain_skip(scene) {
+        match self.plan.terrain {
             None => {
                 pass.push_debug_group("distant land");
                 drawn = gpu.draw_meshes(scene, pass, main_group, &planes);
@@ -3773,10 +3924,9 @@ impl Extension for DistantLand {
                     });
                 }
             }
-            if let (Some(_), Some(frame)) = (
-                self.water.as_ref().filter(|_| self.reflect_statics),
-                water_frame.as_ref().ok(),
-            ) {
+            // The mirror's set, only for a picture that draws the mirror with its statics.
+            if let (Reflection::Mirror, true, Ok(frame)) = (self.plan.reflection, self.reflect_statics, water_frame.as_ref())
+            {
                 let mirrored_view = multiply(&Water::mirror(frame.mirror_level), &scene.view);
                 let projection = Water::far_projection(scene, frame.draw_distance);
                 sets.push(statics::CullSet {
@@ -3879,38 +4029,26 @@ impl Extension for DistantLand {
             }
         }
 
-        // An interior reflects only with `reflect_interiors`; without it the reflection is one
-        // colour, as in a cell without the distant land.
-        let mirrored = !scene.interior || self.reflect_interior;
-        // A frame whose plane is out of view and that has no other reader draws no
-        // reflection: the texture keeps its last content, which nothing reads in it.
-        let reflection_frame = match water_frame.as_ref() {
-            Ok(frame) if self.reflection_needed(scene, frame) => Some(frame),
-            Ok(_) => {
-                Self::note_reflection_skipped(part::OUT_OF_VIEW);
-                None
-            }
-            Err(reason) => {
-                Self::note_reflection_skipped(reason);
-                None
-            }
-        };
-        match (reflection_frame, mirrored) {
-            (Some(_), true) => pass_report::note_skipped(part::REFLECTION_FILL, "the mirror is drawn"),
-            (Some(_), false) => {
+        // The reflection of the picture (the plan). An interior without `reflect_interiors` has
+        // one colour, as a cell without the distant land.
+        let reflection = self.plan.reflection;
+        match reflection {
+            Reflection::Mirror => pass_report::note_skipped(part::REFLECTION_FILL, "the mirror is drawn"),
+            Reflection::Fill => {
                 pass_report::note_skipped(part::REFLECTION, "an interior, and reflect_interiors is off");
                 pass_report::note_skipped(part::REFLECTED_SKY, "no mirror");
+                pass_report::note_skipped(part::MIRROR_LAND, "no mirror");
                 pass_report::note_skipped(part::MIRROR_STATICS, "no mirror");
             }
-            (None, _) => {}
+            Reflection::None(reason) => Self::note_reflection_skipped(reason),
         }
-        if let (Some(water), Some(frame), false) = (self.water.as_mut(), reflection_frame, mirrored) {
+        if let (Some(water), Ok(frame), Reflection::Fill) = (self.water.as_mut(), water_frame.as_ref(), reflection) {
             water.fill_reflection(scene, frame);
         }
 
         // The reflection in the water: the land and the sky, mirrored, in a pass of their
         // own that goes to the GPU before the frame.
-        if let (Some(water), Some(frame)) = (self.water.as_mut(), reflection_frame.filter(|_| mirrored)) {
+        if let (Some(water), Ok(frame), Reflection::Mirror) = (self.water.as_mut(), water_frame.as_ref(), reflection) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("water reflection"),
             });
@@ -3933,7 +4071,12 @@ impl Extension for DistantLand {
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
             // path) with `reflect_land`; an interior cell reflects its statics only.
-            if !scene.interior && self.reflect_land {
+            if scene.interior {
+                pass_report::note_skipped(part::MIRROR_LAND, "an interior");
+            } else if !self.reflect_land {
+                pass_report::note_skipped(part::MIRROR_LAND, "reflect_land is off");
+            } else {
+                pass_report::note_ran(part::MIRROR_LAND);
                 mirror_pass.set_pipeline(gpu.mirror_pipeline_for(scene));
                 mirror_pass.set_bind_group(0, views.group(view::MIRROR), &[]);
                 mirror_pass.set_bind_group(1, &gpu.group, &[]);
@@ -4043,29 +4186,22 @@ impl Extension for DistantLand {
         pass: &mut wgpu::RenderPass<'static>,
         _replay: &mut dyn Replay,
     ) -> bool {
-        let blocked = if self.menu_reuse {
-            Some(part::UNDER_MENU)
-        } else {
-            self.distant_skip()
-        };
-        if let Some(reason) = blocked {
+        let plan = self.view_plan(scene, parts);
+        if plan.water_asked {
+            pass_report::note_skipped(part::WATER_PLANE, "not drawn in a view of its own");
+        }
+        if let Some(reason) = plan.world {
             Self::note_view_skipped(parts, reason);
             return false;
         }
-        // A view with an orthographic projection (the local map's camera) gets no land: its
-        // depth terms are not those of a perspective one.
-        if !is_perspective(&scene.projection) {
+        if plan.orthographic {
             self.tier_views.orthographic += 1;
             Self::note_view_skipped(parts, ORTHOGRAPHIC);
             return false;
         }
-        let not_ready = if self.gpu.is_none() {
-            Some("no terrain on the GPU")
-        } else if !self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready) {
-            Some(part::NOT_MADE)
-        } else {
-            None
-        };
+        let not_ready = plan
+            .land
+            .or_else(|| (!self.view_binding.as_ref().is_some_and(view::ViewBinding::is_ready)).then_some(part::NOT_MADE));
         let claimed = match not_ready {
             Some(reason) => Err(reason),
             None => self
@@ -4088,28 +4224,13 @@ impl Extension for DistantLand {
         }
         // What this call makes for its set is made before the draws, within the size rule and an
         // out-of-memory scope: a part that is refused leaves the call without it.
-        let statics_skip = if !parts.contains(Additions::STATICS) {
-            Some(NOT_IN_OPTIONS)
-        } else if skipped("statics") {
-            Some("left out by MGE_XE_SKIP")
-        } else {
-            self.ensure_statics_set(scene, k).err()
-        };
+        let statics_skip = plan.statics.or_else(|| self.ensure_statics_set(scene, k).err());
         let statics_ready = statics_skip.is_none();
         if let Some(reason) = statics_skip {
             pass_report::note_skipped(part::STATICS, reason);
         }
         let night = self.night(scene);
-        let is_night = night > 0.0;
-        let glows_skip = if !parts.contains(Additions::GLOWS) {
-            Some(NOT_IN_OPTIONS)
-        } else if !is_night {
-            Some("not night")
-        } else if scene.interior {
-            Some("an interior")
-        } else {
-            self.ensure_glow_set(scene, k).err()
-        };
+        let glows_skip = plan.glows.or_else(|| self.ensure_glow_set(scene, k).err());
         let glows_ready = glows_skip.is_none();
         if let Some(reason) = glows_skip {
             pass_report::note_skipped(part::GLOW_CULL, reason);
@@ -4141,12 +4262,7 @@ impl Extension for DistantLand {
         let eye_range = [eye[0], eye[1], eye[2], view_range];
         let mut drew = false;
         // The terrain is for an exterior, as in the main view.
-        let terrain_skip = if parts.contains(Additions::LAND) {
-            Self::terrain_skip(scene)
-        } else {
-            Some(NOT_IN_OPTIONS)
-        };
-        match terrain_skip {
+        match plan.terrain {
             None => {
                 pass.push_debug_group("distant land (view of its own)");
                 let drawn = gpu.draw_meshes(scene, pass, view_group, &planes);
@@ -4230,7 +4346,11 @@ impl Extension for DistantLand {
         pass: &mut wgpu::RenderPass<'static>,
         _replay: &mut dyn Replay,
     ) {
-        if let Some(reason) = self.view_grass_skip(scene, parts) {
+        let grass_skip = self
+            .view_plan(scene, parts)
+            .grass
+            .or_else(|| self.statics.is_none().then_some(NO_STATICS));
+        if let Some(reason) = grass_skip {
             pass_report::note_skipped(part::GRASS, reason);
             return;
         }
@@ -4285,11 +4405,7 @@ impl Extension for DistantLand {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
     ) {
-        let blocked = if self.menu_reuse {
-            Some(part::UNDER_MENU)
-        } else if !parts.contains(Additions::POST_COVER) {
-            Some(NOT_IN_OPTIONS)
-        } else if let Some(reason) = self.chain_skip() {
+        let blocked = if let Some(reason) = self.view_plan(scene, parts).post {
             Some(reason)
         } else if scene.picture.is_none() {
             Some("no copy of the picture")
@@ -4319,19 +4435,15 @@ impl Extension for DistantLand {
     }
 
     fn wants_held(&self) -> bool {
-        !self.far_water.is_empty() || self.sea_caustics()
+        !self.far_water.is_empty() || self.sea_caustics().is_none()
     }
 
     /// The grass, at the end of the world scene of the game: with the projection and the
     /// depth of the game, as `renderStage1` of the Direct3D 9 path draws it.
     fn after_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
-        if self.menu_reuse {
-            pass_report::note_skipped(part::GRASS, part::UNDER_MENU);
-            return;
-        }
-        // The grass of a cell with a world space, a plain interior cell among them, as
-        // `renderStage1` of the Direct3D 9 path has it.
-        if let Some(reason) = self.distant_skip() {
+        // Under a menu, no grass. The grass of a cell with a world space, a plain interior cell
+        // among them, as `renderStage1` of the Direct3D 9 path has it.
+        if let Some(reason) = self.plan.world {
             pass_report::note_skipped(part::GRASS, reason);
             return;
         }
@@ -4355,7 +4467,7 @@ impl Extension for DistantLand {
     /// The shader chain on the picture of the frame.
     fn post(&mut self, scene: &SceneView, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         // Under a menu: the kept picture, until a click; the frame after it draws again.
-        if self.menu_reuse {
+        if self.answers == FrameAnswers::UnderMenu {
             pass_report::note_skipped(part::POST, part::UNDER_MENU);
             if let Some(keep) = self.menu_keep.as_ref() {
                 keep.show(scene, encoder, target);
@@ -4368,7 +4480,7 @@ impl Extension for DistantLand {
         if self.menu_keeping {
             let mut keep = self.menu_keep.take().unwrap_or_else(|| menu_keep::MenuKeep::new(scene));
             let kept = keep.target(scene);
-            let chain = match self.chain_skip() {
+            let chain = match self.chain() {
                 None => true,
                 Some(reason) => {
                     pass_report::note_skipped(part::POST, reason);
@@ -4387,7 +4499,7 @@ impl Extension for DistantLand {
         }
         // A frame without a chain runs this call only to take a picture before the interface
         // (`picture_without_ui_wanted`): the picture of the game stays as it is.
-        if let Some(reason) = self.chain_skip() {
+        if let Some(reason) = self.chain() {
             pass_report::note_skipped(part::POST, reason);
             return;
         }
@@ -4434,7 +4546,7 @@ impl Extension for DistantLand {
         };
         // The caustics under the sea first, on the picture of the game: the surfaces of volumes
         // then go over them.
-        if let Some(reason) = self.sea_caustics_skip() {
+        if let Some(reason) = self.sea_caustics() {
             pass_report::note_skipped(part::SEA_CAUSTICS, reason);
         } else {
             // The caustics of the sea are under the sea: in a water volume the level of the
@@ -4523,8 +4635,17 @@ impl Extension for DistantLand {
 
     /// The water plane of MGE XE in place of the water plane of the game.
     fn draw_class(&mut self, class: u32, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {
-        if class != 10 {
-            return;
+        match class {
+            10 => {}
+            // The glare of the sun is watched only when a post shader draws its own sun
+            // (`FrameParameters::watched`): its draws go, and nothing is drawn in their place.
+            8 => {
+                pass_report::on_request(&[part::SUN_GLARE]);
+                pass_report::note_skipped(part::SUN_GLARE, "a post shader draws its own sun");
+                return;
+            }
+            // No other class is watched.
+            _ => return,
         }
         pass_report::on_request(&[part::WATER_PLANE]);
         if skipped("water") {
@@ -4577,10 +4698,12 @@ impl Extension for DistantLand {
     fn reads(&self, call: ReadingCall) -> Reads {
         match call {
             ReadingCall::Blend => Reads::NONE,
-            ReadingCall::Post if !self.chain_wanted() && !self.menu_reuse && !self.menu_keeping => Reads::NONE,
+            ReadingCall::Post if self.answers != FrameAnswers::UnderMenu && self.chain().is_some() && !self.menu_keeping => {
+                Reads::NONE
+            }
             ReadingCall::Class(class) if class != 10 => Reads::NONE,
             ReadingCall::Held(held) if held.is_empty() && self.far_water.is_empty() => {
-                if self.sea_caustics() {
+                if self.sea_caustics().is_none() {
                     Reads::DEPTH
                 } else {
                     Reads::NONE
@@ -4603,13 +4726,66 @@ impl DistantLand {
 
     /// Why the frame draws no distant land, or nothing when it does.
     fn distant_skip(&self) -> Option<Skip> {
-        if !self.enabled {
+        if !self.facts.on {
             return Some("distant land is off");
         }
-        if !self.distant_cell {
+        if !self.facts.cell {
             return Some("a cell without distant land");
         }
         None
+    }
+
+    /// The plan of the picture of `scene` (W341 step B), from the frame's answers.
+    fn make_plan(&self, scene: &SceneView) -> Plan {
+        let world = match self.answers {
+            FrameAnswers::UnderMenu => Some(part::UNDER_MENU),
+            FrameAnswers::World(_) => self.distant_skip(),
+        };
+        let water = self.water_skip(scene);
+        Plan {
+            world,
+            terrain: Self::terrain_skip(scene),
+            water,
+            volumes: self.volume_skip(scene),
+            reflection: self.reflection(scene, world, water),
+        }
+    }
+
+    /// The reflection of the picture of `scene`, for the plan. A picture whose plane is out of
+    /// view and that has no other reader draws none: the texture keeps its last content, which
+    /// nothing reads in it.
+    fn reflection(&self, scene: &SceneView, world: Option<Skip>, water: Option<Skip>) -> Reflection {
+        if self.answers == FrameAnswers::UnderMenu {
+            return Reflection::None(part::UNDER_MENU);
+        }
+        let frame = match self.water_frame_of(scene, water) {
+            Ok(frame) => frame,
+            Err(reason) => return Reflection::None(reason),
+        };
+        if !self.reflection_needed(scene, &frame) {
+            return Reflection::None(part::OUT_OF_VIEW);
+        }
+        // An interior reflects only with `reflect_interiors`.
+        if world.is_some() || (scene.interior && !self.reflect_interior) {
+            return Reflection::Fill;
+        }
+        Reflection::Mirror
+    }
+
+    /// The chain of post shaders of the frame, or why it has none: the frame's answer.
+    fn chain(&self) -> Option<Skip> {
+        match self.answers {
+            FrameAnswers::UnderMenu => Some(part::UNDER_MENU),
+            FrameAnswers::World(answers) => answers.chain,
+        }
+    }
+
+    /// The caustics under the sea of the frame, or why it has none: the frame's answer.
+    fn sea_caustics(&self) -> Option<Skip> {
+        match self.answers {
+            FrameAnswers::UnderMenu => Some(part::UNDER_MENU),
+            FrameAnswers::World(answers) => answers.sea_caustics,
+        }
     }
 
     /// Why the frame has no shadow map, or nothing when it has one. `distant`: distant land in
@@ -4618,7 +4794,7 @@ impl DistantLand {
         if !distant {
             return Some("no distant land in the frame");
         }
-        if !self.like_exterior {
+        if !self.facts.like_exterior {
             return Some("a cell that is not like an exterior");
         }
         if !self.shadows_enabled {
@@ -4654,6 +4830,7 @@ impl DistantLand {
             part::REFLECTION,
             part::REFLECTED_SKY,
             part::STATICS,
+            part::MIRROR_LAND,
             part::MIRROR_STATICS,
         ] {
             pass_report::note_skipped(name, reason);
@@ -4695,26 +4872,44 @@ impl DistantLand {
     }
 
     /// Why a view of its own draws no grass before its place is claimed, or nothing.
-    fn view_grass_skip(&self, scene: &SceneView, parts: Additions) -> Option<Skip> {
-        if self.menu_reuse {
-            return Some(part::UNDER_MENU);
+    fn view_plan(&self, scene: &SceneView, parts: Additions) -> ViewPlan {
+        let under_menu = self.answers == FrameAnswers::UnderMenu;
+        let world = if under_menu {
+            Some(part::UNDER_MENU)
+        } else {
+            self.distant_skip()
+        };
+        let orthographic = !is_perspective(&scene.projection);
+        let of = |flag: Additions| (!parts.contains(flag)).then_some(NOT_IN_OPTIONS);
+        let terrain = of(Additions::LAND).or_else(|| Self::terrain_skip(scene));
+        let statics = of(Additions::STATICS).or_else(|| skipped("statics").then_some("left out by MGE_XE_SKIP"));
+        let glows = of(Additions::GLOWS).or_else(|| {
+            if self.night(scene) > 0.0 {
+                scene.interior.then_some("an interior")
+            } else {
+                Some("not night")
+            }
+        });
+        let grass = world
+            .or_else(|| of(Additions::GRASS))
+            .or_else(|| skipped("grass").then_some("left out by MGE_XE_SKIP"))
+            .or_else(|| orthographic.then_some(ORTHOGRAPHIC));
+        let post = if under_menu {
+            Some(part::UNDER_MENU)
+        } else {
+            of(Additions::POST_COVER).or_else(|| self.chain())
+        };
+        ViewPlan {
+            world,
+            orthographic,
+            land: (!self.facts.terrain).then_some("no terrain on the GPU"),
+            terrain,
+            statics,
+            glows,
+            grass,
+            post,
+            water_asked: parts.contains(Additions::WATER),
         }
-        if let Some(reason) = self.distant_skip() {
-            return Some(reason);
-        }
-        if !parts.contains(Additions::GRASS) {
-            return Some(NOT_IN_OPTIONS);
-        }
-        if skipped("grass") {
-            return Some("left out by MGE_XE_SKIP");
-        }
-        if !is_perspective(&scene.projection) {
-            return Some(ORTHOGRAPHIC);
-        }
-        if self.statics.is_none() {
-            return Some(NO_STATICS);
-        }
-        None
     }
 
     /// No shadow map in the frame, for `reason`: no statics in its layers either.
@@ -4729,15 +4924,11 @@ impl DistantLand {
             part::REFLECTION,
             part::REFLECTION_FILL,
             part::REFLECTED_SKY,
+            part::MIRROR_LAND,
             part::MIRROR_STATICS,
         ] {
             pass_report::note_skipped(name, reason);
         }
-    }
-
-    /// The chain of post shaders is on and has a shader.
-    fn chain_wanted(&self) -> bool {
-        self.chain_skip().is_none()
     }
 
     /// Why the frame has no chain of post shaders, or nothing when it has one.
@@ -4766,7 +4957,7 @@ impl DistantLand {
     /// of distant land. This holds for the water too: with distant water and no distant land
     /// its fog is the game's.
     fn fog_ranges(&self, e: &Environment, scene: &SceneView) -> FogRanges {
-        if self.enabled && self.distant_cell {
+        if self.facts.on && self.facts.cell {
             return FogRanges {
                 start: e.fog_start,
                 end: e.fog_end,
@@ -4990,7 +5181,7 @@ impl DistantLand {
         // above the water only, as `DistantLand::renderDepth` of the Direct3D 9 path has
         // it. The numbers are those of the projection of `before_world`. With distant land
         // off there is no distant stage, and the depth of the game stands in for it.
-        let distant = (self.enabled && !underwater).then_some(land_terms);
+        let distant = (self.facts.on && !underwater).then_some(land_terms);
         Ok((variables, flags, distant))
     }
 
@@ -5009,13 +5200,9 @@ impl DistantLand {
         self.distant_cell = !scene.interior || has_world;
     }
 
-    /// The caustics under the sea are drawn in this frame: an exterior with water and the
-    /// setting above 0. The held stage draws them, where the count of the dry spaces is.
-    fn sea_caustics(&self) -> bool {
-        self.sea_caustics_skip().is_none()
-    }
-
-    /// Why the frame has no caustics under the sea, or nothing when it has them.
+    /// Why the frame has no caustics under the sea, or nothing when it has them: an exterior with
+    /// water and the setting above 0. The held stage draws them, where the count of the dry
+    /// spaces is.
     fn sea_caustics_skip(&self) -> Option<Skip> {
         if self.interior {
             return Some("an interior");
@@ -5048,7 +5235,7 @@ impl DistantLand {
         // What a surface reflects in place of the sky in an interior: the light of the room,
         // as the reflection of the water of the cell has it ([`water::fill_colour`]; the
         // Direct3D 9 path takes the same sum for the volumes, renderwater.cpp).
-        let sky = if self.like_exterior {
+        let sky = if self.facts.like_exterior {
             [0.0; 4]
         } else {
             let light = water::fill_colour(false, scene.fog_color, scene.sun_color, scene.ambient);
@@ -5070,7 +5257,7 @@ impl DistantLand {
             .as_ref()
             .filter(|_| self.volume_shadows && self.shadow_in_frame)
             .map(|shadow| (&*shadow.atlas_view, shadow.viewproj, 1.0 / shadow.resolution as f32));
-        let outdoors = self.like_exterior && !scene.interior;
+        let outdoors = self.facts.like_exterior && !scene.interior;
         let light = water::VolumeLight {
             shadow,
             shadow_values: self.core_mods.shadow_values(),
@@ -5132,14 +5319,38 @@ impl DistantLand {
         )
     }
 
-    /// What the water needs from the environment of the frame, or why there is nothing: no
-    /// water in the cell, no land, no environment.
-    fn water_frame(&self, scene: &SceneView) -> Result<WaterFrame, Skip> {
-        let e = self.environment.ok_or(part::NO_ENVIRONMENT)?;
+    /// Why the picture of `scene` has no water plane of the cell, or nothing: no environment,
+    /// no water in the cell, no water state, no land. Asked by the plan (W341 step B).
+    fn water_skip(&self, scene: &SceneView) -> Option<Skip> {
+        let Some(e) = self.environment else {
+            return Some(part::NO_ENVIRONMENT);
+        };
         if e.has_water == 0 {
-            return Err("no water in the cell");
+            return Some("no water in the cell");
         }
-        self.water_frame_of(scene, e)
+        self.volume_skip(scene)
+    }
+
+    /// Why the picture of `scene` has no surfaces of water volumes, or nothing: as
+    /// `water_skip`, in a cell without water too. Asked by the plan and by `frame`.
+    fn volume_skip(&self, scene: &SceneView) -> Option<Skip> {
+        if self.environment.is_none() {
+            return Some(part::NO_ENVIRONMENT);
+        }
+        if self.water.is_none() {
+            return Some("no water state");
+        }
+        // A plain interior cell has its water without the land.
+        if scene.like_exterior && !self.facts.terrain {
+            return Some("no terrain on the GPU");
+        }
+        None
+    }
+
+    /// What the water plane of the cell needs for the call of `scene`, or why the plan has
+    /// none. The plan decides; the values (the camera, the sun, the fog) are those of the call.
+    fn water_frame(&self, scene: &SceneView) -> Result<WaterFrame, Skip> {
+        self.water_frame_of(scene, self.plan.water)
     }
 
     /// The projection of the game with a far plane at the draw distance of the distant land.
@@ -5182,7 +5393,7 @@ impl DistantLand {
                     let ranges = self.fog_ranges(&e, scene);
                     [ranges.exp_start, ranges.exp_divisor, ranges.near_start, ranges.near_end]
                 },
-                e.flags & 1 != 0 && e.flags & 2 == 0 && self.like_exterior,
+                e.flags & 1 != 0 && e.flags & 2 == 0 && self.facts.like_exterior,
                 e.light_sun_mult,
                 e.light_amb_mult,
             ),
@@ -5198,7 +5409,7 @@ impl DistantLand {
             fog_color = [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 1.0];
             // The record's flag needs distant land; the water of a state without it scatters as
             // the shaders of Direct3D 9 do.
-            if e.flags & 8 != 0 || (!self.enabled && self.scatter_shaders) {
+            if e.flags & 8 != 0 || (!self.facts.on && self.scatter_shaders) {
                 let far = e.sky_scatter_far;
                 let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
                 let altitude = (1.0 + e.sun_pos[2]).powi(10);
@@ -5241,11 +5452,14 @@ impl DistantLand {
 
     /// What the surfaces of water volumes need: as `water_frame`, in a cell without water too.
     fn volume_frame(&self, scene: &SceneView) -> Result<WaterFrame, Skip> {
-        self.water_frame_of(scene, self.environment.ok_or(part::NO_ENVIRONMENT)?)
+        self.water_frame_of(scene, self.plan.volumes)
     }
 
-    fn water_frame_of(&self, scene: &SceneView, e: Environment) -> Result<WaterFrame, Skip> {
-        self.water.as_ref().ok_or("no water state")?;
+    fn water_frame_of(&self, scene: &SceneView, skip: Option<Skip>) -> Result<WaterFrame, Skip> {
+        if let Some(reason) = skip {
+            return Err(reason);
+        }
+        let e = self.environment.ok_or(part::NO_ENVIRONMENT)?;
         // The draws of the game end at the fog end of an interior, and under the water: the
         // plane ends there too (the clip plane of `renderStageWater`). With distant land off
         // they end at the far plane of the game, its view range: Direct3D 9 moves that plane
@@ -5253,7 +5467,7 @@ impl DistantLand {
         let underwater = e.flags & 2 != 0;
         let view_end = if self.interior || underwater {
             Some(self.interior_fog_end)
-        } else if !self.enabled {
+        } else if !self.facts.on {
             Some(e.near_view_range)
         } else {
             None
@@ -5286,7 +5500,6 @@ impl DistantLand {
                 blur_tune: self.tunables.blur(),
             });
         }
-        self.gpu.as_ref().ok_or("no terrain on the GPU")?;
         let sun_pos = e.sun_pos;
         Ok(WaterFrame {
             water_level: e.surface_level(),
@@ -5321,7 +5534,7 @@ impl DistantLand {
     /// scattering on and the distant land in the frame, as `renderStage0` of the Direct3D 9
     /// path has it.
     fn sky(&mut self) -> Option<[[f32; 4]; 8]> {
-        if !self.enabled || !self.distant_cell || !self.like_exterior || self.gpu.is_none() {
+        if !(self.facts.distant() && self.facts.like_exterior) {
             return None;
         }
         self.environment.as_ref()?.sky()
@@ -6295,7 +6508,7 @@ mod settings_tests {
             with_ui: false,
         });
         assert!(land.picture_without_ui_wanted());
-        assert!(!land.chain_wanted());
+        assert!(land.chain_skip().is_some());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -7032,6 +7245,273 @@ mod interior_start_tests {
             !land.distant_cell,
             "an interior cell that the data does not have is not a distant cell"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod frame_value_tests {
+    use super::*;
+
+    /// One GPU test at a time: each makes a device of its own.
+    static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A device with the helper's features and limits: the frame makes the post chain too.
+    struct TestDevice {
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        commands: nirender_wgpu::FrameCommands,
+    }
+
+    impl TestDevice {
+        fn new() -> TestDevice {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+            let descriptor = wgpu::DeviceDescriptor {
+                required_features: nirender_wgpu::required_features(),
+                required_limits: nirender_wgpu::fixed_limits(),
+                ..Default::default()
+            };
+            let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))
+                .expect("a device with the helper's features and limits");
+            TestDevice {
+                device,
+                queue,
+                commands: nirender_wgpu::FrameCommands::default(),
+            }
+        }
+
+        /// The world scene of an exterior cell, 64 x 64 pixels.
+        fn scene(&self) -> SceneView<'_> {
+            nirender_wgpu::SceneView {
+                device: &self.device,
+                queue: &self.queue,
+                commands: &self.commands,
+                target_format: wgpu::TextureFormat::Bgra8Unorm,
+                depth_format: wgpu::TextureFormat::Depth32Float,
+                target_size: (64, 64),
+                frame: 0,
+                view_key: nirender_wgpu::ViewKey::MAIN,
+                samples: 1,
+                view: [0.0; 16],
+                projection: [0.0; 16],
+                eye: [0.0; 3],
+                interior: false,
+                like_exterior: false,
+                wireframe: false,
+                fog_on: false,
+                fog_color: [0.0; 4],
+                fog_start: 0.0,
+                fog_end: 0.0,
+                sun_direction: None,
+                sun_color: [0.0; 3],
+                sun_ambient: [0.0; 3],
+                ambient: [0.0; 3],
+                picture: None,
+                depth: None,
+                before_depth: None,
+                lights: None,
+            }
+        }
+    }
+
+    /// The game's draws of a test: none.
+    struct NoDraws;
+
+    impl Replay for NoDraws {
+        fn replay(&mut self, _pass: &mut wgpu::RenderPass<'static>, _view: &nirender_wgpu::ReplayView) {}
+
+        fn count(&self) -> usize {
+            0
+        }
+    }
+
+    /// A DDS file of one RGBA pixel, as `dds_layout` reads it.
+    fn one_pixel_dds() -> Vec<u8> {
+        let mut dds = vec![0u8; 132];
+        dds[0..4].copy_from_slice(b"DDS ");
+        // The height, the width, the levels, the bits of a pixel and the mask of red.
+        for (at, value) in [(12, 1u32), (16, 1), (28, 1), (88, 32), (92, 0xFF)] {
+            dds[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        dds
+    }
+
+    /// A load of the terrain with no mesh: enough for the terrain's GPU objects.
+    fn loaded_terrain() -> Loaded {
+        Loaded {
+            terrain: TerrainFile::default(),
+            atlas: one_pixel_dds(),
+            material: one_pixel_dds(),
+            material_flags: one_pixel_dds(),
+            patch_albedo: one_pixel_dds(),
+            blend_patterns: one_pixel_dds(),
+        }
+    }
+
+    /// A live session with distant land on in the settings and the load of the terrain under
+    /// way: the load ends when the sender sends it, as the loader thread does.
+    fn land_with_a_load(tag: &str) -> (DistantLand, PathBuf, std::sync::mpsc::Sender<Result<Loaded, String>>) {
+        let (mut land, root) = super::set_free_tests::land_with_no_data(tag);
+        // The game side has said hello: a frame without one stops the helper.
+        land.hello = Some("test".to_string());
+        land.synchronous = false;
+        let (sender, receiver) = channel();
+        land.loading = Some(receiver);
+        land.settings = Some(Settings {
+            version: Settings::VERSION,
+            flags: USE_DISTANT_LAND,
+            ..bytemuck::Zeroable::zeroed()
+        });
+        (land, root, sender)
+    }
+
+    /// `before_world` in a pass of its own: true when it drew the distant land.
+    fn before_world(land: &mut DistantLand, scene: &SceneView) -> bool {
+        let size = wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        };
+        let attachment = |format| {
+            scene
+                .device
+                .counted_texture(&wgpu::TextureDescriptor {
+                    label: Some("a test's target"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .counted_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let color = attachment(scene.target_format);
+        let depth = attachment(scene.depth_format);
+        let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("a test's frame"),
+        });
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("a test's world"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+            .forget_lifetime();
+        let drew = land.before_world(scene, &mut pass, &mut NoDraws);
+        drop(pass);
+        scene.queue.submit([encoder.finish()]);
+        drew
+    }
+
+    /// W341 step B, acceptance 1: a load of the terrain that ends between `frame` and
+    /// `before_world` draws no land in that frame. The frame's answers said "no terrain", so its
+    /// blend, fog and sky are those of a frame without the land. The next frame draws it. On the
+    /// code before step B, `before_world` asks again, finishes the load, and draws the land: this
+    /// test fails there. `cargo test -p mgeHost64 -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_load_that_ends_after_the_frame_counts_from_the_next_frame() {
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gpu = TestDevice::new();
+        let scene = gpu.scene();
+        let (mut land, root, sender) = land_with_a_load("load-after-frame");
+
+        let parameters = land.frame(&scene);
+        assert!(!parameters.blend, "the load has not ended: the frame has no distant land");
+        sender.send(Ok(loaded_terrain())).unwrap();
+        assert!(
+            !before_world(&mut land, &scene),
+            "the load ended after the frame: the land waits for the next frame"
+        );
+
+        let parameters = land.frame(&scene);
+        assert!(parameters.blend, "the next frame has the terrain");
+        assert!(before_world(&mut land, &scene), "and draws it");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// W341 step B, acceptance 1: distant land that goes off after `frame` (a rejection of the
+    /// statics, a settings record that `after_frame` applies) is still drawn by that frame's
+    /// `before_world`: the frame's blend, fog and sky were made for the land. It is off from the
+    /// next frame. On the code before step B, `before_world` reads the field again and leaves the
+    /// land out: this test fails there.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn distant_land_that_goes_off_after_the_frame_counts_from_the_next_frame() {
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gpu = TestDevice::new();
+        let scene = gpu.scene();
+        let (mut land, root, sender) = land_with_a_load("off-after-frame");
+        sender.send(Ok(loaded_terrain())).unwrap();
+
+        let parameters = land.frame(&scene);
+        assert!(
+            parameters.blend,
+            "the load ended before the frame: the frame has distant land"
+        );
+        land.enabled = false;
+        assert!(
+            before_world(&mut land, &scene),
+            "the frame said distant land: its before_world draws the land"
+        );
+
+        let parameters = land.frame(&scene);
+        assert!(!parameters.blend, "the next frame has distant land off");
+        assert!(!before_world(&mut land, &scene), "and draws no land");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// W341 step B, acceptance 1, the second case: a frame under a menu after a world frame. Its
+    /// `before_world` takes "under a menu", and not the answers of the world frame before it: the
+    /// frame's value is written on each path of `frame`, the early return of a menu too. It passes
+    /// on the code before step B, where `before_world` reads `menu_reuse`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_frame_under_a_menu_after_a_world_frame_draws_no_land() {
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gpu = TestDevice::new();
+        let scene = gpu.scene();
+        let (mut land, root, sender) = land_with_a_load("menu-after-world");
+        sender.send(Ok(loaded_terrain())).unwrap();
+        assert!(land.frame(&scene).blend, "the world frame has distant land");
+        assert!(before_world(&mut land, &scene), "and draws it");
+
+        // A menu that shows the picture kept under it (`menu_caching`).
+        land.settings = Some(Settings {
+            version: Settings::VERSION,
+            flags: USE_DISTANT_LAND | USE_MENU_CACHING,
+            ..bytemuck::Zeroable::zeroed()
+        });
+        let mut environment: Environment = bytemuck::Zeroable::zeroed();
+        environment.version = Environment::VERSION;
+        environment.flags = 64;
+        land.environment = Some(environment);
+        land.menu_kept = true;
+        let parameters = land.frame(&scene);
+        assert!(parameters.post && !parameters.blend, "the menu frame shows the kept picture");
+        assert!(!before_world(&mut land, &scene), "under a menu: no land");
         std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -6430,12 +6430,21 @@ impl Post {
         );
         let chain = std::mem::take(&mut self.chain);
         for compiled in &chain {
-            if !compiled.enabled || compiled.disable_flags & environment_flags != 0 {
+            // The GPU time of each shader, with `MGE_XE_GPU_TIME=1`, its passes in the census, and
+            // its note in the pass report: one name for each. A shader is noted in a frame whose
+            // chain runs, so a frame without the chain shows no shader as unknown.
+            let shader_name = nirender_wgpu::stamps::name(&compiled.name);
+            nirender_wgpu::pass_report::on_request(&[shader_name]);
+            if !compiled.enabled {
+                nirender_wgpu::pass_report::note_skipped(shader_name, "the shader is off");
                 continue;
             }
+            if compiled.disable_flags & environment_flags != 0 {
+                nirender_wgpu::pass_report::note_skipped(shader_name, "its flags leave it out in this environment");
+                continue;
+            }
+            nirender_wgpu::pass_report::note_ran(shader_name);
             self.shaders_run += 1;
-            // The GPU time of each shader, with `MGE_XE_GPU_TIME=1`, and its passes in the census.
-            let shader_name = nirender_wgpu::stamps::name(&compiled.name);
             let stamps = scene.commands.stamps();
             let at = if stamps.on() {
                 stamps.begin(encoder, shader_name, nirender_wgpu::stamps::StampKind::Detail)

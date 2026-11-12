@@ -3117,9 +3117,9 @@ impl Statics {
             nirender_wgpu::pass_report::note_skipped(super::part::GRASS, "the grass is off");
             return;
         }
-        nirender_wgpu::pass_report::note_ran(super::part::GRASS);
         let started = Instant::now();
-        self.draw_grass_timed(scene, pass, frame, GrassTarget::Main);
+        let drawn = self.draw_grass_timed(scene, pass, frame, GrassTarget::Main);
+        nirender_wgpu::pass_report::note_result(super::part::GRASS, drawn);
         self.grass_stats.calls += 1;
         self.grass_stats.seconds += started.elapsed().as_secs_f64();
         self.grass_stats.drawn += self.grass_draws.len() as u64;
@@ -3144,9 +3144,10 @@ impl Statics {
             nirender_wgpu::pass_report::note_skipped(super::part::GRASS, "the grass is off");
             return GrassView::default();
         }
-        nirender_wgpu::pass_report::note_ran(super::part::GRASS);
         let drawn = self.draw_grass_timed(scene, pass, frame, GrassTarget::View(k));
-        GrassView { drawn }
+        GrassView {
+            drawn: nirender_wgpu::pass_report::note_result(super::part::GRASS, drawn).unwrap_or(0),
+        }
     }
 
     /// Makes the grass set `k` of the views of their own when it is not made; returns the bytes
@@ -3188,14 +3189,15 @@ impl Statics {
         made
     }
 
-    /// Draws the grass for `target`; returns the places drawn.
+    /// Draws the grass for `target`; returns the places drawn, or why it drew none: no catalog or
+    /// GPU objects yet, no view group or set, or no grass in the world space.
     fn draw_grass_timed(
         &mut self,
         scene: &SceneView,
         pass: &mut wgpu::RenderPass<'static>,
         frame: &GrassFrame,
         target: GrassTarget,
-    ) -> usize {
+    ) -> Result<usize, nirender_wgpu::pass_report::Skip> {
         let main = matches!(target, GrassTarget::Main);
         // The shadow map is made once in a session: the group takes it at its first frame.
         if let (Some(shadow), Some(gpu), true) = (frame.shadow.as_ref(), self.gpu.as_mut(), main) {
@@ -3212,24 +3214,24 @@ impl Statics {
             }
         }
         let (Some(catalog), Some(gpu)) = (self.catalog.clone(), self.gpu.as_ref()) else {
-            return 0;
+            return Err("no catalog or GPU objects of the statics yet");
         };
         let view_index = match target {
             GrassTarget::Main => super::view::GAME,
             GrassTarget::View(k) => super::view::tier_game(k),
         };
         let Some(view) = self.view_groups.get(view_index).and_then(Option::as_ref) else {
-            return 0;
+            return Err(super::part::NOT_MADE);
         };
         let (records_buffer, uniforms_buffer, group) = match target {
             GrassTarget::Main => (&gpu.grass_records, &gpu.grass_uniforms, &gpu.grass_group),
             GrassTarget::View(k) => match gpu.grass_sets.get(k).and_then(Option::as_ref) {
                 Some(set) => (&set.records, &set.uniforms, &set.group),
-                None => return 0,
+                None => return Err("the grass set of the view is not made"),
             },
         };
         let Some(world) = catalog.worlds.get(&self.world) else {
-            return 0;
+            return Err("the world space has no grass");
         };
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
@@ -3272,7 +3274,7 @@ impl Statics {
         counts.draws = self.grass_draws.len() as u64;
         if self.grass_draws.is_empty() {
             self.note_grass(main, &counts);
-            return 0;
+            return Ok(0);
         }
         let sort_started = Instant::now();
         self.grass_order
@@ -3365,7 +3367,7 @@ impl Statics {
         if main {
             self.grass_drawn += self.grass_draws.len() as u64;
         }
-        self.grass_draws.len()
+        Ok(self.grass_draws.len())
     }
 
     /// A wait for the statics is open: the merged subsets that arrive in it are counted apart

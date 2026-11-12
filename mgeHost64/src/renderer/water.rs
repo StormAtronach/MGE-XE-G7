@@ -1408,14 +1408,17 @@ impl Water {
         caustics_frame: &super::caustics::CausticsFrame,
     ) -> Result<(), nirender_wgpu::pass_report::Skip> {
         let depth = scene.depth.ok_or("no copy of the depth")?;
-        let group = self
-            .dry
-            .any()
-            .then(|| {
-                self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None, GroupSlot::DryCut)
-                    .ok()
-            })
-            .flatten();
+        // The cut is asked for only where there are dry spaces; without its group the caustics
+        // are drawn without it.
+        let group = if self.dry.any() {
+            nirender_wgpu::pass_report::on_request(&[super::part::CAUSTICS_DRY_CUT]);
+            nirender_wgpu::pass_report::note_result(
+                super::part::CAUSTICS_DRY_CUT,
+                self.frame_group(scene, frame, ripples, &self.volume_uniforms, false, None, GroupSlot::DryCut),
+            )
+        } else {
+            None
+        };
         pass.set_bind_group(0, view, &[]);
         if let Some(group) = group.as_ref() {
             pass.set_bind_group(1, group, &[]);
