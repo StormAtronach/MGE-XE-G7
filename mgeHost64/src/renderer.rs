@@ -54,9 +54,9 @@ mod view;
 mod water;
 
 use crate::abi::constants::{
-    BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, EXP_FOG, FPS_COUNTER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY,
-    REFLECTIVE_WATER, USE_ATM_SCATTER, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_DISTANT_WATER, USE_FFESHADER, USE_GRASS,
-    USE_HDR, USE_HW_SHADER, USE_MENU_CACHING, USE_SHADOWS,
+    BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY,
+    REFLECTIVE_WATER, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_DISTANT_WATER, USE_FFESHADER, USE_GRASS, USE_HDR,
+    USE_HW_SHADER, USE_MENU_CACHING, USE_SHADOWS,
 };
 use distantland::mge_xe::distant_terrain::{
     TERRAIN_ATLAS_FILE_NAME, TERRAIN_BLEND_PATTERNS_FILE_NAME, TERRAIN_FILE_NAME, TERRAIN_MATERIAL_FILE_NAME,
@@ -1100,14 +1100,6 @@ pub struct DistantLand {
     /// Direct3D 9 (mean difference 0.73 of 255; E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt,
     /// section 5).
     water_on: bool,
-    /// The shaders of Direct3D 9 have the scattering of the atmosphere in them
-    /// (`USE_SCATTERING`): the exponential fog and the scattering were both on when the shaders
-    /// last started, which is at the start and at each change of either, and with distant land
-    /// off then they are not (`DistantLand::initShader` clears both). The water scatters then in
-    /// each state, also with distant land off, by the weather and by the eye above the sea
-    /// (`fogColourScatter`); the record's scattering flag needs distant land, so this decides
-    /// for the water of a start without it.
-    scatter_shaders: bool,
     /// `views.full_tier_max`: how many views of a frame get the parts that a mod asks for with
     /// `mge.camera.setViewOptions`. `MGE_XE_FULL_TIER_MAX` (0 to 32, the view slots) overrides
     /// the file for a test. The number is the helper's places for the session
@@ -1726,8 +1718,6 @@ impl DistantLand {
         let mut land = DistantLand {
             enabled: settings.enabled,
             water_on: settings.enabled || settings.water_without_land,
-            // As the shaders start with the settings of the file, before a settings record.
-            scatter_shaders: settings.enabled && settings.fog.exponential && settings.fog.atmosphere_scattering,
             full_tier_max,
             draw_distance: settings.draw_distance * CELL,
             settings_fog: (settings.fog.above_water_start * CELL, settings.fog.above_water_end * CELL),
@@ -5483,9 +5473,9 @@ impl DistantLand {
         let mut scattering = [[0.0f32; 4]; 5];
         if let Some(e) = self.environment.filter(|_| scene.like_exterior) {
             fog_color = [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 1.0];
-            // The record's flag needs distant land; the water of a state without it scatters as
-            // the shaders of Direct3D 9 do.
-            if e.flags & 8 != 0 || (!self.facts.on && self.scatter_shaders) {
+            // The record's flag: distant land, the scattering and a place like an exterior in
+            // this frame. Without the land the water has the fog of the game's scene.
+            if e.flags & 8 != 0 {
                 let far = e.sky_scatter_far;
                 let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
                 let altitude = (1.0 + e.sun_pos[2]).powi(10);
@@ -5638,12 +5628,6 @@ impl DistantLand {
         let loaded = self.gpu.is_some() || self.loading.is_some();
         self.enabled = on(USE_DISTANT_LAND) && loaded;
         self.water_on = on(USE_DISTANT_LAND) || on(USE_DISTANT_WATER);
-        // The shaders start again when either fog flag changes (`MGEAPIv1::loadConfig`).
-        // Difference: `MGEAPIv1::featureSetEnabled` (mge.render) only sets the flag and restarts no shaders; this latch follows any change of the flags.
-        let fog_flags = |flags: u32| flags & (EXP_FOG | USE_ATM_SCATTER);
-        if before.is_none_or(|b| fog_flags(b.flags) != fog_flags(settings.flags)) {
-            self.scatter_shaders = on(USE_DISTANT_LAND) && fog_flags(settings.flags) == (EXP_FOG | USE_ATM_SCATTER);
-        }
         self.shadows_enabled = on(USE_SHADOWS);
         self.post_enabled = on(USE_HW_SHADER);
         self.per_pixel.0 = on(USE_FFESHADER);
@@ -6698,43 +6682,6 @@ full_tier_max = 0
         )
         .unwrap();
         assert!(!DistantLand::start(&root, false).water_on);
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// The water scatters with the shaders that have the scattering: both fog flags on when the
-    /// shaders last started, with distant land on then. A later change of distant land alone
-    /// leaves them as they are; a change of a fog flag starts them again.
-    #[test]
-    fn the_water_scatters_when_the_shaders_have_the_scattering() {
-        let root = std::env::temp_dir().join(format!("mge-scatter-flag-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
-        let mut land = DistantLand::start(&root, false);
-        let (_sender, receiver) = channel();
-        land.loading = Some(receiver);
-        let fog = EXP_FOG | USE_ATM_SCATTER;
-        // (flags of the record, the water scatters after it)
-        for (flags, scatters) in [
-            // A start with distant land off: the shaders have no scattering.
-            (fog | USE_DISTANT_WATER, false),
-            (fog | USE_DISTANT_WATER | USE_DISTANT_LAND, false),
-            // The scattering off, then on, with distant land on: the shaders start again.
-            (EXP_FOG | USE_DISTANT_LAND, false),
-            (fog | USE_DISTANT_LAND, true),
-            // Distant land off, the fog flags as before: the shaders stay.
-            (fog | USE_DISTANT_WATER, true),
-            // A change of a fog flag with distant land off: they start without it.
-            (EXP_FOG | USE_DISTANT_WATER, false),
-            (fog | USE_DISTANT_WATER, false),
-        ] {
-            land.settings = Some(Settings {
-                version: Settings::VERSION,
-                flags,
-                ..bytemuck::Zeroable::zeroed()
-            });
-            land.apply_settings();
-            assert_eq!(land.scatter_shaders, scatters, "flags {flags:#x}");
-        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 
