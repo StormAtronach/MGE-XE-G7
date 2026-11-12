@@ -469,9 +469,14 @@ did work in the span.
 - `prepare:` the calls of the work of the frame and of the GPU cull of its sets, and the ms of
   a call. The line ends with `frames culled by set: view: N, mirror: M, shadow 1: S, shadow 2:
   S`: the frames in which the cull ran for each set. The four fixed sets always print, so
-  `mirror: 0` means that no frame of the span culled the mirror's set (the water plane was out
-  of view, or the reflection draws no statics). A view of its own prints only when its set
-  was culled.
+  `mirror: 0` shows that no frame of the span culled the mirror's set. A frame culls it only
+  when the frame has its water (water in the cell, its state and its GPU objects), its
+  reflection is the mirror, and the reflection draws the statics. The reflection is not the
+  mirror when the plane is out of view, under a menu, or in a cell that takes the one-colour
+  fill (a cell without the distant land, an interior without `reflect_interiors`). So
+  `mirror: 0` says "out of view" only when the pass report of the same frames shows the water
+  drawn and the reflection not run with "the water plane is out of view". A view of its own
+  prints only when its set was culled.
 - `<set> (GPU):` with the GPU cull, the counts of the cull for each call of each set, and the
   size of the pools in MB.
 - `arrivals:` when subsets came onto the GPU: the subsets in play, those inside the draw
