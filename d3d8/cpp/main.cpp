@@ -24,13 +24,19 @@ static void setDPIScalingAware();
 
 static const char* welcomeMessage = MGE_BUILD_ID;
 static bool isMW;
-// The wgpu path is off for this session: the log line with the reason, and the setting of the
-// session. The callers: DllMain, when a part of the renderer is missing, and the game's
-// Direct3DCreate8, when the plugin does not give the game its Direct3D 8 (the proxy, no
-// distant land). A graphics device that cannot run the renderer is not a caller: the helper
-// refuses it with its own box, and the game closes (the owner's D386).
+// The wgpu path was turned off for this session (wgpuPathOff). A latch of its own: mge.loadConfig
+// reads the settings again and sets Configuration.RendererWgpu back to the value of the file,
+// and a later Direct3DCreate8 (a restart of the renderer) must not take the wgpu path then.
+static bool wgpuOff = false;
+
+// The wgpu path is off for this session: the log line with the reason, the latch, and the
+// setting of the session. The callers: DllMain, when a part of the renderer is missing, and
+// the game's Direct3DCreate8, when the plugin does not give the game its Direct3D 8 (the
+// proxy, no distant land). A graphics device that cannot run the renderer is not a caller:
+// the helper refuses it with its own box, and the game closes (the owner's D386).
 static void wgpuPathOff(const char* reason) {
     LOG::logline("!! wgpu renderer: not in use, %s. MGE XE continues with Direct3D 9", reason);
+    wgpuOff = true;
     Configuration.RendererWgpu = false;
     MWInitPatch::patchDirect3D9EngineChanges();
 }
@@ -242,13 +248,13 @@ static void* createStreamedD3D(UINT version) {
     return d3d;
 }
 
-// The wgpu path for this session: the game is Morrowind, and the setting is still on after
-// DllMain's check of the parts. Two ask it: the plugin when it loads (MgeRendererWgpuActive),
-// and the game when it asks for its Direct3D 8. No process is started and nothing waits here:
-// a graphics device that cannot run the renderer gets the helper's refusal at its start, with
-// a box and the code 20 (the owner's D386).
+// The wgpu path for this session: the game is Morrowind, the path was not turned off
+// (wgpuPathOff), and the setting is on. Two ask it: the plugin when it loads
+// (MgeRendererWgpuActive), and the game when it asks for its Direct3D 8. No process is started
+// and nothing waits here: a graphics device that cannot run the renderer gets the helper's
+// refusal at its start, with a box and the code 20 (the owner's D386).
 static bool wgpuPathOn() {
-    return isMW && Configuration.RendererWgpu;
+    return isMW && !wgpuOff && Configuration.RendererWgpu;
 }
 
 // The nirender plugin asks this when it loads: nonzero when the game gets its Direct3D 8
