@@ -821,7 +821,6 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "mge-config",
- "mge-probe",
 ]
 
 [[package]]
@@ -992,7 +991,6 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "mge-config",
- "mge-probe",
 ]
 
 [[package]]
@@ -2774,10 +2772,6 @@ dependencies = [
  "toml_edit 0.25.13+spec-1.1.0",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "mge-probe"
-version = "0.1.0"
 
 [[package]]
 name = "mgeHost64"
