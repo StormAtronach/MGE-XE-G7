@@ -3,11 +3,11 @@
 The versioned C++ vtable and script opcodes MGE XE exposes to MWSE. This is a cross-repo,
 cross-binary interface: MWSE ships on its own schedule against a compiled copy of it, so none of
 the hazards below are caught at MGE build time. MGE XE is at API version 4. MWSE master's copy of
-the interface is at version 3, without `MGEAPIv4`. Our MWSE test branches (`test/abi-fixes-*`)
-have `MGEAPIv4` and call its two slots when `apiVersion >= 4`; their `supported_api_version`
-stays 3. Treat `api.h` as frozen-by-slot (see [Append-only](#append-only)). MWSE-side paths
-refer to the `MWSE/MWSE` repository. This page cites functions and types, not line numbers, so
-that it does not drift.
+the interface is at version 3, without `MGEAPIv4`. Our MWSE test branches (`test/abi-fixes-14`
+and later) have `MGEAPIv4` and call its two slots when `apiVersion >= 4`; their
+`supported_api_version` stays 3. Treat `api.h` as frozen-by-slot (see
+[Append-only](#append-only)). MWSE-side paths refer to the `MWSE/MWSE` repository. This page
+cites functions and types, not line numbers, so that it does not drift.
 
 ## Direction
 
