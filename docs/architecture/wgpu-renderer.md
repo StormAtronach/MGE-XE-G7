@@ -162,7 +162,7 @@ flowchart TD
     subgraph main["Main encoder"]
         P0["game pass: sky draws (back buffer + D24S8; multisampled targets resolved into the back buffer with graphics.anti_aliasing)"]
         P1["before_world: distant land, statics set 0, glows"]
-        P2["copies: picture before world, depth; game pass reopened, depth cleared"]
+        P2["copies: picture before world, depth; game pass reopened, depth cleared (kept with one depth buffer)"]
         P3["game world draws (game draw shader + extension frame group)"]
         P4["sorted blends of the table, where the engine flushes its queue in the world scene"]
         P5["after_world: grass; then the copy of the world depth for the post chain"]
@@ -178,10 +178,11 @@ flowchart TD
     R --> C --> L --> S --> W --> P0
     P0 --> P1 --> P2 --> P3
     P3 -- "queue flushed in the world scene" --> P4 --> P5
-    P3 -- "water shown: queue open" --> P5
+    P3 -- "queue open: water shown or shadows on" --> P5
     P5 --> P6 --> P7
     P7 -- "water shown" --> P8 --> P9 --> P10
-    P7 -- "no water" --> P10
+    P7 -- "shadows on, no water" --> P9
+    P7 -- "queue flushed in the world scene" --> P10
     P10 --> P11 --> P12 --> P13
     S -. shadow atlas .-> P3
     S -. shadow atlas .-> P5
@@ -199,8 +200,8 @@ flowchart TD
 
 The sorted blends of the table have two places (`Plan` in nirender's `host/src/engine/plan.rs`). When the
 engine flushes its queue in the world scene, they come before the extension's world end, with the depth of the
-world (P4). When the queue stays open (the water shown, the shadow manager on), the extension's world end comes
-first, and they wait for the scene that flushes the queue: after the water plane (P9). A held draw in its place
+world (P4). When the queue stays open (the water shown, or the shadow manager on), the extension's world end comes
+first, and they wait for the scene that flushes the queue (P9): with the water shown, after the water plane. A held draw in its place
 (`draw_held_in_place`) comes inside the sorted blends, at either place.
 
 The shadow atlas is the extension's frame texture (`FrameParameters::texture`) of the game's draws. The grass
