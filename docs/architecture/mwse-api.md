@@ -2,9 +2,12 @@
 
 The versioned C++ vtable and script opcodes MGE XE exposes to MWSE. This is a cross-repo,
 cross-binary interface: MWSE ships on its own schedule against a compiled copy of it, so none of
-the hazards below are caught at MGE build time. Both sides are at API version 3; treat `api.h` as
-frozen-by-slot (see [Append-only](#append-only)). MWSE-side paths refer to the `MWSE/MWSE`
-repository. This page cites functions and types, not line numbers, so that it does not drift.
+the hazards below are caught at MGE build time. MGE XE is at API version 4. MWSE master's copy of
+the interface is at version 3, without `MGEAPIv4`. Our MWSE test branches (`test/abi-fixes-14`
+and later) have `MGEAPIv4` and call its two slots when `apiVersion >= 4`; their
+`supported_api_version` stays 3. Treat `api.h` as frozen-by-slot (see
+[Append-only](#append-only)). MWSE-side paths refer to the `MWSE/MWSE` repository. This page
+cites functions and types, not line numbers, so that it does not drift.
 
 ## Direction
 
@@ -21,7 +24,7 @@ gives MWSE no API object; the wgpu renderer does (see [On the wgpu renderer](#on
 
 ## File map
 
-- `mge/api.h`: the live interface, namespace `api`, `supported_api_version = 3`
+- `mge/api.h`: the live interface, namespace `api`, `supported_api_version = 4`
 - `mge/api.cpp`: implementations, for example `MGEAPIv1::getAPIVersion` and `getMGEVersion`
 - `mwse/mgebridge.cpp`: export resolution, opcode registration, 0.9.4a fallback
 - `mwse/mwseinstruction.h`: instruction base; hardcoded TES3MACHINE vtable offsets
@@ -65,12 +68,13 @@ on `MGEXEgui.exe`'s version resource (`DllMain` in MWSE `main.cpp`, with
 
 ## Append-only
 
-`MGEAPI` (2 methods) <- `MGEAPIv1` <- `MGEAPIv2` <- `MGEAPIv3`, with
-`typedef MGEAPIv3 MGEAPI_ExportVersion` (`api.h`). Each version subclasses the last
+`MGEAPI` (2 methods) <- `MGEAPIv1` <- `MGEAPIv2` <- `MGEAPIv3` <- `MGEAPIv4`, with
+`typedef MGEAPIv4 MGEAPI_ExportVersion` (`api.h`). Each version subclasses the last
 and adds only tail slots, so layout is append-only by construction:
 
 - v2 adds `saveScreenshot`, `weatherScatteringSkylightGet/Set`
 - v3 adds `nearRenderDistanceGet/Set` and six `shaderGet/Set{Int,Bool,Vector}Array`
+- v4 adds `viewOptionsSet`, `viewOptionsGet`
 
 Inserting, reordering, or changing the signature of any existing virtual shifts vtable
 slots against MWSE's already-compiled copy. Nothing catches it at MGE build time; it
@@ -114,7 +118,7 @@ build flag. `mwseinstruction.h` additionally carries hardcoded TES3MACHINE vtabl
 Every hazard here is an MGE-XE edit read by MWSE's precompiled header, so none of it can
 be caught at MGE build time:
 
-- Insert/reorder/re-sign any virtual in v1/v2/v3 -> vtable slot drift.
+- Insert/reorder/re-sign any virtual in v1 to v4 -> vtable slot drift.
 - Change `DistantLandRenderConfig` layout -> MWSE reads wrong offsets (the
   `mgeDistantLandRenderConfig` usertype in `bindMGEUtil`, `MGEUtilLua.cpp`, binds by
   member). MGE's own `static_assert` in `api.cpp` checks parity with `Configuration.DL`
@@ -122,13 +126,18 @@ be caught at MGE build time:
 - Insert into the middle of `RenderFeature` -> the enum indexes `featureToFlagMap`
   (`api.cpp`) positionally; every later feature toggle changes meaning.
 - Reorder/remove `MacroFunctions` members -> MWSE binds them by offset.
+- Renumber a `ViewKeyKind` value or a `ViewPart` bit, or reorder the fields of `ViewOptions`
+  -> MWSE's copy names another view or another part. A new kind or a new part bit is safe:
+  `viewOptionsSet` refuses a kind it does not know, and masks the parts with `VIEW_PARTS_ALL`,
+  so an older MGE XE drops a newer part bit without an error (the call still returns true).
+  A field added at the tail of `ViewOptions` is safe: `viewOptionsSet` and `viewOptionsGet`
+  refuse a caller's `size` below `sizeof(ViewOptions)`.
 - MWSE's `ShaderHandleLua::setVariable` (`MGEPostShaders.cpp`) static_casts the API to
   `MGEAPIv3` with no `apiVersion` check. Safe today only because MGE always constructs a
-  full v3. A bump of `supported_api_version` alone does not change this; the hazard of a
-  bump is a later MWSE that gates on `apiVersion >= 4` and calls slots that this MGE XE
-  does not have.
+  full v3 (the v4 export is a superset). An MWSE that calls the v4 slots must gate on
+  `apiVersion >= 4`: an older MGE XE reports 3 and does not have them.
 
-The reverse direction, MGE newer than MWSE, is safe because v3 is a superset and older
+The reverse direction, MGE newer than MWSE, is safe because v4 is a superset and older
 MWSE never touches the new slots. There is no cross-binary layout test anywhere.
 
 ## Fields read only at load
@@ -170,13 +179,13 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `getVersion`, the API version | as on Direct3D 9 |
 | `loadConfig`, `saveConfig` | work; the next settings record carries the values |
 | `reloadDistantLand` | returns true and does nothing; the helper takes the settings on the next frame |
-| `render.*` features: shaders, shadows, grass, distantStatics, updateHDR, blurReflections, dynamicRipples, reflectiveWater, reflectNearStatics, reflectSky | followed (settings record) |
+| `render.*` features: shaders, shadows, grass, distantStatics, updateHDR, blurReflections, dynamicRipples, reflectiveWater, reflectNearStatics, reflectSky, reflectInterior | followed (settings record) |
 | `render.*` features: exponentialFog, atmosphericScattering | followed (environment flags) |
 | `render.distantLand` | refused before the first frame; after it, followed only if the helper loaded the land at the start |
 | `render.*` features: fpsCounter, displayMessages | followed: the helper draws the status text and the frame rate on the window (not in screenshots, as on Direct3D 9) |
 | `render.pauseRenderingInMenus` | followed: the helper keeps the picture of the first menu frame and does no distant land or post work until a click (`renderer/menu_keep.rs`) |
 | `render.distantWater` | followed: the water draws with distant land on or with only distant water on, as on Direct3D 9 (`distantWater` of `mged3d8device.cpp`). One parity gap is open: after a start with distant land off the exterior water does not draw (Direct3D 9 draws it). The water-only picture equals that of Direct3D 9 (mean difference 0.73 of 255 against 1.0 to 1.7 in the other cases of the matrix; run 20261103-211741-d82s3d-water-wgpu against 20261103-190215-d82w4-d3d9) |
-| `render.*` features: reflectInterior, transparencyAA, noMWMGEBlending, noMWSunglare | the flag is stored, the helper does not use it (sun glare: each post shader's own `disable_sunglare`) |
+| `render.*` features: transparencyAA, noMWMGEBlending, noMWSunglare | the flag is stored, the helper does not use it (sun glare: each post shader's own `disable_sunglare`) |
 | crosshairAutoHide, UI scale, lighting mode | work |
 | `distantLandRenderConfig`: draw distance, static ends, caustics, wave height, interior fog end | followed (settings record) |
 | `distantLandRenderConfig`: fog and wind; `weather` fog, per-pixel lighting, wind, scattering, skylight scattering | followed (environment record) |
@@ -193,6 +202,7 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `macros.toggleStatusText`, `toggleFpsCounter`, `showLastMessage` | work (record 9 and the settings record) |
 | the camera macros of the third person view | work (tested 2026-10-15) |
 | HUD calls | do nothing (no device; MWSE does not bind them) |
+| `viewOptionsSet`, `viewOptionsGet` (v4) | the plugin keeps the options (the exports `nirender_view_options` and `nirender_view_options_get`, which `main.cpp` finds) and drops them when the key's object is freed. On Direct3D 9, `api.cpp` keeps a copy by the key's address that nothing draws from; an address that the engine reuses keeps the old options. MWSE master does not call them. Our MWSE test branches call both from `MGEApiLua.cpp` and bind `mge.camera.setViewOptions` and `getViewOptions` only when `apiVersion >= 4` (`MGEUtilLua.cpp`) |
 
 The FFI exports outside the vtable (`MGE_HorizonGet/SetParam`, `MGE_WaterVolumesSet`,
 `MGE_WaterLookSet`, `MGE_WaterMasksSet`, `MGE_WaterDrySet`, `MGE_DistantLandReadyNext`, in
