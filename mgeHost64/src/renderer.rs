@@ -2822,9 +2822,10 @@ impl PerPixel {
 /// distance where the light ends (0: no end), the fade of MGE XE, a spot light (`position.w`
 /// 2) has the cone of Direct3D 8 (`spot_cone` of [`nirender_wgpu::spot`], which the world
 /// shader has), and a directional light is the sun.
-/// Bit 2 of `counts.w`: the fog makes the colour darker and adds no fog colour (a draw that
-/// adds to the picture). Bit 256 with it: the camera is under water, and the light of the
-/// draw goes to the colour of the water with the distance.
+/// Bits 2 and 256 of `counts.w`: the draw adds to the picture and the camera is under water:
+/// the light of the draw goes to the colour of the water with the distance. Any other draw
+/// takes the fog of the crate's `fogged`: a draw that adds to the picture gets darker and
+/// takes no fog colour.
 const DRAW_SHADER: &str = "
 // The shadow of the draw at the pixel: `RenderShadowsPS` of `XE Mod Shadow.fx`. From
 // `extension_shade` for `extension_finish`.
@@ -3061,15 +3062,13 @@ fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
         let lit = (((0.0548303 * c - 0.189786) * c - 0.154732) * c + 1.12969) * c;
         if under_water {
             out = vec4f(lit * water_transmission(clear), alpha);
-        } else if (draw.counts.w & 2u) != 0u {
-            out = vec4f(lit * clear, alpha);
         } else {
-            out = vec4f(mix(draw.fog_color.rgb, lit, clear), alpha);
+            out = vec4f(fogged(lit, clear), alpha);
         }
     } else if under_water {
         out = vec4f(color * water_transmission(clear), alpha);
     } else {
-        out = vec4f(mix(draw.fog_color.rgb, color, clear), alpha);
+        out = vec4f(fogged(color, clear), alpha);
     }
     if (draw.counts.w & 32u) != 0u && shadow_v > 0.0 {
         let fogatt = clear * clear;
@@ -6053,7 +6052,7 @@ impl DistantLand {
     fn shade_flags(&self, facts: &DrawFacts) -> u32 {
         // A draw that adds to the picture (a glow, a spell, a bug) under water: its light goes
         // to the colour of the water with the distance, and the fog adds no colour to it.
-        let adds = facts.blend_enable && (facts.source_blend == 2 || facts.destination_blend == 2);
+        let adds = facts.adds_to_picture();
         let mut bits = 0;
         if adds && self.under_water() {
             bits |= 1 | 2 | 256;
@@ -6072,10 +6071,7 @@ impl DistantLand {
         if !p.original {
             bits |= 512;
         }
-        // A draw that adds to the picture gets darker in the fog and no fog colour. This is
-        // MGE XE's rule: the engine fogs every draw toward the colour of its fog property
-        // (`updateD3DState` 0x6B8352).
-        bits | 1 | if adds { 2 } else { 0 }
+        bits | 1
     }
 
     /// [`DrawData::extension`] 5 and 7 of a draw with these facts: the sun for its shadow, its
