@@ -278,6 +278,43 @@ fn changing_record_name(id: u32) -> Option<&'static str> {
     }
 }
 
+/// The change of a frame for the count of the GPU objects ([`nirender_wgpu::objects`]): the
+/// first changing record of the frame, else the load of the terrain, else the subsets of the
+/// distant statics that came from their reader thread. A frame with none of them is steady.
+fn frame_change(record: Option<&'static str>, loading: bool, statics_arrived: bool) -> Option<&'static str> {
+    record
+        .or(loading.then_some("a load of distant land"))
+        .or(statics_arrived.then_some("an arrival of distant statics"))
+}
+
+#[cfg(test)]
+mod frame_change_tests {
+    use super::*;
+
+    /// A frame that took subsets of the distant statics is not steady: the subsets can need
+    /// buffers (W340: after a far teleport, 29 buffers in frames that counted as steady).
+    #[test]
+    fn a_frame_with_an_arrival_of_distant_statics_is_changed() {
+        assert_eq!(frame_change(None, false, true), Some("an arrival of distant statics"));
+    }
+
+    /// The null: a frame with no changing record, no load and no arrival is steady.
+    #[test]
+    fn a_frame_without_records_loads_or_arrivals_is_steady() {
+        assert_eq!(frame_change(None, false, false), None);
+    }
+
+    /// The first changing record names the frame, then the load, then the arrivals.
+    #[test]
+    fn a_record_names_the_frame_before_a_load_and_a_load_before_an_arrival() {
+        assert_eq!(
+            frame_change(Some("extension record settings"), true, true),
+            Some("extension record settings")
+        );
+        assert_eq!(frame_change(None, true, true), Some("a load of distant land"));
+    }
+}
+
 /// The build id of this program: its name, its version and its commit (`build.rs` puts the
 /// commit into MGE_COMMIT).
 fn build_id() -> String {
@@ -3548,8 +3585,9 @@ impl Extension for DistantLand {
     }
 
     fn frame_changed(&mut self) -> Option<&'static str> {
-        let load = self.loading.is_some().then_some("a load of distant land");
-        self.changed.take().or(load)
+        // Each frame takes the mark of the arrivals, so that it does not stay for the next.
+        let arrived = self.statics.as_mut().is_some_and(|statics| statics.take_arrived());
+        frame_change(self.changed.take(), self.loading.is_some(), arrived)
     }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {

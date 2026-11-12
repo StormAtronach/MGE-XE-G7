@@ -2008,6 +2008,8 @@ pub struct Statics {
     /// The arrivals are those of a wait on the loading screen: they show complete when the
     /// wait ends, with no fade-in.
     prefetching: bool,
+    /// A subset came from the reader thread since the last [`Statics::take_arrived`].
+    arrived: bool,
     grass_frames: u64,
     grass_drawn: u64,
     grass_cut: u64,
@@ -2161,6 +2163,7 @@ impl Statics {
             clock: Instant::now(),
             fade_seconds: 1.0,
             prefetching: false,
+            arrived: false,
             grass_frames: 0,
             grass_drawn: 0,
             grass_cut: 0,
@@ -2921,6 +2924,12 @@ impl Statics {
         self.find_here();
     }
 
+    /// Whether a subset came from the reader thread since the last call. The frame that took
+    /// it has new content, as a frame with a new record has: its subsets can need buffers.
+    pub fn take_arrived(&mut self) -> bool {
+        std::mem::take(&mut self.arrived)
+    }
+
     /// Makes the buffers of the subsets that the reader thread has ready, for a part of a frame.
     fn take_arrivals(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, eye: [f32; 3]) {
         let Some(arrivals) = self.arrivals.as_ref() else { return };
@@ -2957,6 +2966,7 @@ impl Statics {
             if !self.requested.remove(&arrival.subset) {
                 continue;
             }
+            self.arrived = true;
             let Some(catalog) = self.catalog.as_ref() else { continue };
             let s = &catalog.subsets[arrival.subset as usize];
             // A subset with no triangles would be asked for again each frame: it goes with
