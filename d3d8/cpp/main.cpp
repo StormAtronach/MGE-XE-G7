@@ -109,6 +109,9 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
                 wgpuPathOff((std::string("a part is missing: ") + missing).c_str());
             }
         }
+        // The choice of this session: a file with renderer_wgpu = false never calls
+        // wgpuPathOff, and a later loadConfig must not turn the path on.
+        wgpuOff = !Configuration.RendererWgpu;
 
         if (Configuration.RendererWgpu) {
             // The wgpu renderer of the helper draws the picture, and no Direct3D device
