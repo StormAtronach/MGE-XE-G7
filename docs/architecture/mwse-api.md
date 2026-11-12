@@ -196,12 +196,18 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | shader `enabled`, `orderPriority`, number variables (bool, int, float, vector, matrix, arrays), `reload()` | work (shader record; `reload()` makes the helper reload its WGSL) |
 | shader string variables | work (the store keeps the text; the helper does not get it) |
 | old calls `enableShader`, `disableShader`, `setShaderFloat`, `setShaderLong` (opcodes 0x3AB0-0x3AB4) | write to the placeholder store |
-| `saveScreenshot` | the helper writes the picture; a request before the first frame waits for it |
+| `saveScreenshot` | the helper writes the picture; a request before the first frame waits for it. The extension of the path picks the format: `.bmp`, `.tga`, `.dds`, `.jpg` or `.jpeg`; any other extension gives PNG data (run 20261112-183552-w423-d397) |
 | `macros.takeScreenshot` (and PrintScreen) | the helper writes the picture, with the name, folder and format of the settings |
 | `macros.toggleDistantLand` | does nothing |
 | `macros.toggleStatusText`, `toggleFpsCounter`, `showLastMessage` | work (record 9 and the settings record) |
+| `macros.toggleShaders`, `toggleShadows`, `toggleGrass`, `toggleZoom`, `increaseFOV`, `decreaseFOV`, `increaseZoom`, `decreaseZoom` | work: each changes its `mge.render` or `mge.camera` value, and the opposite call or a second toggle sets it back (run 20261112-183552-w423-d397, as for the four rows below) |
+| `macros.toggleBlending`, `toggleTransparencyAA` | change their flag (`noMWMGEBlending`, `transparencyAA`); the helper does not use these flags (the row of those features above) |
+| `macros.toggleLightingMode`, `resetEnableZoom` | work: the lighting mode steps 1, 2, 0; `resetEnableZoom` sets `zoomEnable` |
+| `macros.increaseViewRange`, `decreaseViewRange`, `nextTrack`, `disableMusic`, `haggleMore*`, `haggleLess*` | run without a fault; their effect is not tested (the haggle macros with no barter menu open) |
+| `macros.toggleCrosshair` | runs without a fault; a screenshot with the UI shows the crosshair before and after it (open) |
 | the camera macros of the third person view | work (tested 2026-10-15) |
 | HUD calls | do nothing (no device; MWSE does not bind them) |
+| legacy `mge.*` opcode wrappers (`mge.log`, the HUD calls, `stopZoom`, the camera shake and screen rotation calls) | not bound by MWSE when the MGE API is present: `LuaManager.cpp` calls `bindLegacyMGEScriptUtil` only when `isMGEAPIAvailable()` is false, so each is nil. `tes3.runLegacyScript` does not run MGE's function names either (run 20261112-183552-w423-d397). The same on Direct3D 9: MGE's API is present on both renderers (not in the proxy-only mode, see [Direction](#direction)). A plugin's compiled script still reaches MGE's functions through MWSE's script machine; this path is not tested on the new renderer (`XE Sky Variations.esp` of Morrowind Refreshed calls `XSetWeatherScattering` and `XSetWeatherFog` that way) |
 | `viewOptionsSet`, `viewOptionsGet` (v4) | the plugin keeps the options (the exports `nirender_view_options` and `nirender_view_options_get`, which `main.cpp` finds) and drops them when the key's object is freed. On Direct3D 9, `api.cpp` keeps a copy by the key's address that nothing draws from; an address that the engine reuses keeps the old options. MWSE master does not call them. Our MWSE test branches call both from `MGEApiLua.cpp` and bind `mge.camera.setViewOptions` and `getViewOptions` only when `apiVersion >= 4` (`MGEUtilLua.cpp`) |
 
 The FFI exports outside the vtable (`MGE_HorizonGet/SetParam`, `MGE_WaterVolumesSet`,
