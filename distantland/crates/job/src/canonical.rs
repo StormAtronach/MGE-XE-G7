@@ -79,7 +79,6 @@ pub fn write_generation_settings_canonical(writer: &mut CanonicalWriter, setting
         deep_water_static_cull_depth,
         static_texture_sizing,
         distant_lights,
-        bake_lights,
         discover_override_files,
     } = settings;
     let StaticTextureSizingSettings {
@@ -128,6 +127,8 @@ pub fn write_generation_settings_canonical(writer: &mut CanonicalWriter, setting
     writer.write_u32(*min_texture_size);
     writer.write_u8(*max_mip_reduction);
     writer.write_bool(*distant_lights);
-    writer.write_bool(*bake_lights);
+    // The place of the setting `bake_lights`, which went in W449, at its default: an output made
+    // with the default keeps its identity, so its first start after the change is no rebuild.
+    writer.write_bool(true);
     writer.write_bool(*discover_override_files);
 }
