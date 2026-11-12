@@ -215,7 +215,11 @@ change. That start can take some minutes. With an older file, set it below
 - A graphics card or a driver that lacks what the renderer needs (the BC texture
   compression, 32 sampled textures in a shader stage, or an adapter at all on Vulkan and
   Direct3D 12): the wgpu renderer refuses it at its start. A box names, for each backend,
-  the card and what it lacks; when you close the box, the game closes.
+  the card and what it lacks; when you close the box, the game closes. When a backend did
+  not load or names no card, the box says so and tells you to update the graphics driver;
+  for Direct3D 12 it names each card with its reason, for example "without shader model 6".
+  When the graphics driver gives no answer for 30 s at the start, a box names the backend and
+  the step, and the game closes when you close it.
   `nirender-host.log` has the details. Set `renderer_wgpu = false` under `[runtime]` to play
   with MGE XE on Direct3D 9.
 - When `numidium.exe` or `MWSE.dll` is not in the Morrowind folder, MGE XE runs on
