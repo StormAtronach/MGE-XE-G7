@@ -256,3 +256,61 @@ fn cache_occupancy_changes_neither_equality_nor_encoded_bytes() {
     let unpopulated_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&unpopulated).unwrap();
     assert_eq!(populated_bytes.as_slice(), unpopulated_bytes.as_slice());
 }
+
+/// A lights entry of `bytes`, as the generator records it.
+fn lights_entry(bytes: &[u8]) -> RequiredArtifact {
+    artifact_from_written(
+        ArtifactKind::Lights,
+        "lights.data",
+        bytes.len() as u64,
+        *blake3::hash(bytes).as_bytes(),
+    )
+}
+
+/// An output of a build from before the Lights kind has no lights entry, and stays valid.
+#[test]
+fn an_inventory_without_lights_is_valid() {
+    sample_state(false).validate_invariants().unwrap();
+    sample_state(true).validate_invariants().unwrap();
+}
+
+#[test]
+fn an_inventory_lists_at_most_one_lights_file_at_its_path() {
+    let bytes = crate::mge_xe::lights::Lights::default().to_bytes();
+    // Through CommittedState::new, as the generator makes a state: it sorts the inventory by path,
+    // then checks the invariants.
+    let with = |entries: Vec<RequiredArtifact>| {
+        let base = sample_state(false);
+        let mut artifacts = base.artifacts;
+        artifacts.extend(entries);
+        CommittedState::new(base.state_bytes, artifacts)
+    };
+    with(vec![lights_entry(&bytes)]).unwrap();
+
+    let mut entry = lights_entry(&bytes);
+    entry.relative_path = "statics\\lights.data".into();
+    let error = format!("{:#}", with(vec![entry]).unwrap_err());
+    assert!(error.contains("lights path"), "unexpected error: {error}");
+
+    // Two entries at one path are refused as duplicates before the count.
+    assert!(with(vec![lights_entry(&bytes), lights_entry(&bytes)]).is_err());
+}
+
+/// Routine validation reads the lights file's magic and version: a file of the old version 2
+/// with the right length is refused.
+#[test]
+fn routine_validation_reads_the_lights_header() {
+    let dir = tempfile::tempdir().unwrap();
+    write_empty_static_bundle(dir.path());
+    let bytes = crate::mge_xe::lights::Lights::default().to_bytes();
+    fs::write(dir.path().join("lights.data"), &bytes).unwrap();
+    let mut artifacts = sample_state(false).artifacts;
+    artifacts.push(lights_entry(&bytes));
+    let state = CommittedState::new(sample_state(false).state_bytes, artifacts).unwrap();
+    validate_artifacts(dir.path(), &state, ArtifactValidation::Routine).unwrap();
+
+    let mut old = bytes.clone();
+    old[8..12].copy_from_slice(&2_u32.to_le_bytes());
+    fs::write(dir.path().join("lights.data"), &old).unwrap();
+    assert!(validate_artifacts(dir.path(), &state, ArtifactValidation::Routine).is_err());
+}

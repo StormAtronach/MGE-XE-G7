@@ -372,7 +372,8 @@ pub(super) fn summarize_gpu_memory(artifacts: &[RequiredArtifact]) -> DistantLan
             ArtifactKind::AtlasDds => &mut estimate.static_texture_bytes,
             ArtifactKind::TerrainPayload => &mut estimate.terrain_geometry_bytes,
             ArtifactKind::TerrainDds => &mut estimate.terrain_texture_bytes,
-            ArtifactKind::Version | ArtifactKind::Usage | ArtifactKind::TerrainOcclusion => {
+            // The lights file is uploaded too, but its lamps are a small buffer.
+            ArtifactKind::Version | ArtifactKind::Usage | ArtifactKind::TerrainOcclusion | ArtifactKind::Lights => {
                 continue;
             }
         };

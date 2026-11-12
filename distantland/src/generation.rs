@@ -815,8 +815,8 @@ fn run_generation(
         current: units_are_clean(&diff.report),
         rebuild_cause: rebuild_cause.clone(),
     };
-    // The light file is not in the units: a missing or old one is written without a rebuild.
-    let lights_current = lights::is_current(&output_paths, lights.as_ref());
+    // The lights file is not in the units: a change of it alone is published without a rebuild.
+    let lights_current = lights::is_current(base_committed.as_ref(), lights.as_ref());
     match run_mode.override_log(input_status.current) {
         OverrideLog::Report => crate::statics::OverrideReport::write_log(&override_lines),
         OverrideLog::NextGeneration => info!("Mesh overrides apply at the next generation: the distant land is not current"),
@@ -831,11 +831,13 @@ fn run_generation(
             return Ok(GenerationRunResult::Inspected(status));
         }
         RunMode::Ensure { return_if_current: true } if input_status.current => {
-            let writer = writer.context("ensure mode lost its writer session")?;
-            if !lights_current && lights::publish(&output_paths, lights.as_ref())? {
+            let mut writer = writer.context("ensure mode lost its writer session")?;
+            if lights_current {
+                writer.finish_noop();
+            } else {
+                lights::publish_alone(&mut writer, lights.as_ref())?;
                 info!("Wrote the distant lights");
             }
-            writer.finish_noop();
             return Ok(GenerationRunResult::AlreadyCurrent);
         }
         RunMode::Publish | RunMode::Ensure { .. } => {}
@@ -1011,8 +1013,11 @@ fn run_generation(
             .context("no-op base failed under-session Routine validation")?;
         // True no-ops perform no writes, so no deferred payload sync may be outstanding.
         debug_assert!(writes.pending_durables_is_empty());
-        lights::publish(&output_paths, lights.as_ref())?;
-        writer.finish_noop();
+        if lights_current {
+            writer.finish_noop();
+        } else {
+            lights::publish_alone(&mut writer, lights.as_ref())?;
+        }
         return Ok(GenerationRunResult::Published(ValidatedGeneration {
             report: GenerationReport {
                 output_root: output_paths.output_root,
@@ -1134,6 +1139,12 @@ fn run_generation(
     artifacts.extend(statics_result.shards);
     artifacts.extend(terrain_result.artifacts);
     artifacts.extend(atlas_inventory);
+    artifacts.extend(lights::entry(
+        &writes,
+        &output_paths,
+        base_committed.as_ref(),
+        lights.as_ref(),
+    )?);
 
     // Summarize the final committed inventory, so carried atlas pages and reused shards are
     // counted the same as freshly written ones. Must precede the move into `CommittedState`.
@@ -1142,7 +1153,6 @@ fn run_generation(
     let generator_state = state_db::encode(&current_state)?;
     let committed = storage::state::CommittedState::new(generator_state, artifacts)?;
     writer.finish_publish(committed, &writes)?;
-    lights::publish(&output_paths, lights.as_ref())?;
 
     let (report_data, report_written) = run_stage(GenerationStage::WriteGenerationReport, reporter, || {
         let _stage_guard = info_span!("stage.write_generation_report", report = true).entered();

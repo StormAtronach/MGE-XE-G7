@@ -12,19 +12,26 @@
 //! A smoke source is a placed object whose model path has "smoke" and not "nosmoke" (strength
 //! 1), or a lamp of a fire whose smoke is seen from far ([`LightRecord::smokes`], strength 0.5).
 //!
-//! The file is written apart from the committed inventory of the generation, when its bytes
-//! change: it is made again at every generation run, which costs little.
+//! The file is an entry of the committed state ([`ArtifactKind::Lights`]): it is current when
+//! the state lists it with the length and digest of the bytes made now, or when the lights are off
+//! and the state lists none. It is written in place inside the writer's dirty session, with the
+//! rest of a publication or alone ([`publish_alone`]); the pruner removes it when a state does not
+//! list it.
+//!
+//! [`ArtifactKind::Lights`]: ArtifactKind::Lights
 //!
 //! [`LightRecord::lights`]: crate::LightRecord::lights
 //! [`LightRecord::smokes`]: crate::LightRecord::smokes
 //! [`ObjectDefinition::script_disables`]: crate::ObjectDefinition::script_disables
 
 use std::collections::BTreeMap;
-use std::fs;
 
 use anyhow::{Context, Result};
 
-use super::{GenerationSettings, OutputPaths};
+use super::storage::authority::WriterSession;
+use super::storage::durable::SyncClass;
+use super::storage::state::{self, ArtifactKind, CommittedState, RequiredArtifact};
+use super::{GenerationSettings, OutputPaths, PublicationWrites};
 use crate::UsageInfo;
 use crate::mge_xe::lights::{EXTERIOR_KEY, Lamp, LampRecord, LightBlock, Lights, SmokeSource};
 
@@ -33,10 +40,14 @@ const EXTERIOR_CELL: &str = "\0";
 /// The strength of the smoke of a smoke effect, and of a fire.
 const EFFECT_SMOKE: f32 = 1.0;
 const FIRE_SMOKE: f32 = 0.5;
+/// The file's path in the inventory, relative to `distantland`.
+const RELATIVE_PATH: &str = "lights.data";
 
 /// The bytes of the file, and what they hold.
 pub(crate) struct LightsOutput {
     pub bytes: Vec<u8>,
+    /// The BLAKE3 of `bytes`, as the inventory records it.
+    pub digest: [u8; 32],
     pub block_count: usize,
     pub lamp_count: usize,
     pub smoke_count: usize,
@@ -170,43 +181,81 @@ pub(crate) fn build(lights: &Lights, settings: &GenerationSettings) -> Option<Li
     if !settings.distant_lights {
         return None;
     }
+    let bytes = lights.to_bytes();
     Some(LightsOutput {
-        bytes: lights.to_bytes(),
+        digest: *blake3::hash(&bytes).as_bytes(),
+        bytes,
         block_count: lights.blocks.len(),
         lamp_count: lights.blocks.iter().map(|block| block.lamps.len()).sum(),
         smoke_count: lights.blocks.iter().map(|block| block.smoke.len()).sum(),
     })
 }
 
-/// True when the file on disk is the one that `output` would write (or there is none, and
-/// `output` is `None`).
-pub(crate) fn is_current(paths: &OutputPaths, output: Option<&LightsOutput>) -> bool {
-    match (output, fs::read(&paths.lights_path)) {
-        (Some(output), Ok(existing)) => existing == output.bytes,
-        (None, Err(_)) => true,
+/// True when `committed` has the lights of `output`: it lists the file with the length and
+/// digest of its bytes, or the distant lights are off and it lists none.
+pub(crate) fn is_current(committed: Option<&CommittedState>, output: Option<&LightsOutput>) -> bool {
+    let entry = committed.and_then(|committed| committed.artifact_by_kind(ArtifactKind::Lights));
+    match (output, entry) {
+        (Some(output), Some(entry)) => {
+            entry.byte_length == output.bytes.len() as u64 && entry.content_blake3 == output.digest
+        }
+        (None, None) => true,
         _ => false,
     }
 }
 
-/// Writes the file when its bytes change, or removes it when the distant lights are off. True
-/// when the disk changed.
-pub(crate) fn publish(paths: &OutputPaths, output: Option<&LightsOutput>) -> Result<bool> {
-    if is_current(paths, output) {
-        return Ok(false);
+/// The inventory entry of the lights: the base's own when it is current, else the file written in
+/// place now. `None` when the distant lights are off. Call it only inside the dirty session.
+pub(crate) fn entry(
+    writes: &PublicationWrites,
+    paths: &OutputPaths,
+    base: Option<&CommittedState>,
+    output: Option<&LightsOutput>,
+) -> Result<Option<RequiredArtifact>> {
+    let Some(output) = output else {
+        return Ok(None);
+    };
+    if is_current(base, Some(output)) {
+        return Ok(base.and_then(|base| base.artifact_by_kind(ArtifactKind::Lights)).cloned());
     }
-    match output {
-        Some(output) => {
-            let temporary = paths.lights_path.with_extension("data.tmp");
-            fs::write(&temporary, &output.bytes).with_context(|| format!("Failed to write {}", temporary.display()))?;
-            fs::rename(&temporary, &paths.lights_path)
-                .with_context(|| format!("Failed to replace {}", paths.lights_path.display()))?;
-        }
-        None => {
-            fs::remove_file(&paths.lights_path)
-                .with_context(|| format!("Failed to remove {}", paths.lights_path.display()))?;
-        }
-    }
-    Ok(true)
+    let written = writes
+        .write_durable(&paths.lights_path, &output.bytes, SyncClass::SmallArtifact)
+        .with_context(|| format!("Failed to write {}", paths.lights_path.display()))?;
+    Ok(Some(state::artifact_from_written(
+        ArtifactKind::Lights,
+        RELATIVE_PATH,
+        written.byte_length,
+        written.content_blake3,
+    )))
+}
+
+/// Publishes a change of the lights alone, on a valid base: the state not valid, the one file
+/// written in place, the state valid again with its new entry. The bytes are made before, so the
+/// window holds only the write, its sync and the state's write. A cut in that window leaves the
+/// state not valid, and the next start makes the output again whole.
+pub(crate) fn publish_alone(writer: &mut WriterSession, output: Option<&LightsOutput>) -> Result<()> {
+    // `begin_dirty` drops the writer's base, so it is taken first.
+    let base = writer
+        .base_state()
+        .cloned()
+        .context("a publication of the lights alone needs a valid base state")?;
+    let paths = writer.paths().clone();
+    let writes = PublicationWrites::new();
+    writer.begin_dirty(output.map_or(0, |output| output.bytes.len() as u64))?;
+
+    let mut artifacts: Vec<RequiredArtifact> = base
+        .artifacts
+        .iter()
+        .filter(|entry| entry.kind != ArtifactKind::Lights)
+        .cloned()
+        .collect();
+    artifacts.extend(entry(&writes, &paths, None, output)?);
+    let committed = CommittedState::new(base.state_bytes.clone(), artifacts)?;
+    writer.finish_publish(committed, &writes)?;
+    writer
+        .validate_published()
+        .context("the lights publication failed its validation")?;
+    Ok(())
 }
 
 #[cfg(test)]
