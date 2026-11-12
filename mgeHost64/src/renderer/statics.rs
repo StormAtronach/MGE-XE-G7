@@ -1076,6 +1076,26 @@ fn mark_prepared(prepared: &mut Vec<bool>, set: usize) {
     prepared[set] = true;
 }
 
+/// Counts a cull of the set `set` for the report.
+fn count_culled(culled: &mut Vec<u64>, set: usize) {
+    if culled.len() <= set {
+        culled.resize(set + 1, 0);
+    }
+    culled[set] += 1;
+}
+
+/// The sets culled since the last report, for its `prepare` line: each fixed set, so that a set
+/// with no cull shows 0, and a set of a view of its own only when it was culled.
+fn culled_text(culled: &[u64], name: impl Fn(usize) -> String) -> String {
+    (0..culled.len().max(FIXED_SETS))
+        .filter_map(|set| {
+            let count = culled.get(set).copied().unwrap_or(0);
+            (set < FIXED_SETS || count > 0).then(|| format!("{}: {count}", name(set)))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// True when the place of a group is hidden: `shown` has a byte for each group, 0 for a hidden
 /// one. A place without a group (0) is always shown, and so is each place before the first
 /// record.
@@ -2001,6 +2021,8 @@ pub struct Statics {
     tier_places: usize,
     prepare_calls: u64,
     prepare_seconds: f64,
+    /// The frames in which each set was culled since the last report, by the number of the set.
+    culled_sets: Vec<u64>,
     /// The grass of the frame: texture, subset, record, the fade-in, 1 for bent normals.
     grass_draws: Vec<GrassDraw>,
     /// The draws of the call in the order of the draw, and their records, kept from call to call.
@@ -2163,6 +2185,7 @@ impl Statics {
             tier_places: 0,
             prepare_calls: 0,
             prepare_seconds: 0.0,
+            culled_sets: Vec::new(),
             grass_draws: Vec::new(),
             grass_order: GrassOrder::default(),
             grass_records: Vec::new(),
@@ -2378,13 +2401,15 @@ impl Statics {
         }
         if self.prepare_calls > 0 {
             println!(
-                "statics report {label}: prepare: {} calls, {:.3} ms a call (the work of the frame and the culling of its sets)",
+                "statics report {label}: prepare: {} calls, {:.3} ms a call (the work of the frame and the culling of its sets); frames culled by set: {}",
                 self.prepare_calls,
-                self.prepare_seconds * 1000.0 / self.prepare_calls as f64
+                self.prepare_seconds * 1000.0 / self.prepare_calls as f64,
+                culled_text(&self.culled_sets, |set| self.set_name(set))
             );
         }
         self.prepare_calls = 0;
         self.prepare_seconds = 0.0;
+        self.culled_sets.clear();
         if let (Some(gpu), Some(device), Some(queue)) = (self.gpu.as_ref(), self.device.as_ref(), self.queue.as_ref()) {
             if let Some(culling) = gpu.culling.as_ref() {
                 for ((name, stats), counts) in names.iter().zip(self.set_stats.iter()).zip(culling.take_stats(device, queue))
@@ -3713,6 +3738,7 @@ impl Statics {
                                 let values = cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end);
                                 culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
                                 mark_prepared(&mut self.prepared, cull_set.set);
+                                count_culled(&mut self.culled_sets, cull_set.set);
                             }
                             scene.commands.stamps().end(&mut encoder, at);
                             scene.commands.defer(encoder.finish());
@@ -3773,6 +3799,7 @@ impl Statics {
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
         mark_prepared(&mut self.prepared, cull_set.set);
+        count_culled(&mut self.culled_sets, cull_set.set);
         Ok(())
     }
 
@@ -5126,6 +5153,37 @@ mod tests {
         CELL, GRASS_KEEP_CALLS, GRASS_RECORDS, GrassDraw, GrassHash, GrassKept, GrassMiss, GrassOrder, GrassParts,
         GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, grass_record, world_matrix,
     };
+    use super::{FIXED_SETS, SET_NAMES, count_culled, culled_text};
+
+    /// The name of a set as `Statics::set_name` gives it with no spares.
+    fn set_name(set: usize) -> String {
+        SET_NAMES.get(set).map_or_else(
+            || format!("view of its own {}", set - FIXED_SETS + 1),
+            |name| (*name).to_owned(),
+        )
+    }
+
+    /// The count of the culled sets (W374): a frame without the mirror's set counts the other
+    /// sets only, the mirror's set shows 0 when it was never culled, and a set of a view of its
+    /// own shows only when it was culled.
+    #[test]
+    fn the_culled_sets_are_counted_by_set() {
+        let mut culled = Vec::new();
+        for set in [0, 2, 3] {
+            count_culled(&mut culled, set);
+        }
+        assert_eq!(culled_text(&culled, set_name), "view: 1, mirror: 0, shadow 1: 1, shadow 2: 1");
+        for set in [0, 1, 2, 3] {
+            count_culled(&mut culled, set);
+        }
+        assert_eq!(culled_text(&culled, set_name), "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2");
+        count_culled(&mut culled, FIXED_SETS + 1);
+        assert_eq!(
+            culled_text(&culled, set_name),
+            "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2, view of its own 2: 1"
+        );
+        assert_eq!(culled_text(&[], set_name), "view: 0, mirror: 0, shadow 1: 0, shadow 2: 0");
+    }
 
     /// A record of 16 floats that starts at `first` and rises by one.
     fn rising_record(first: f32) -> Vec<f32> {
