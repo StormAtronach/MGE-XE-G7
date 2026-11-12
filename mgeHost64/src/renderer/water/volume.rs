@@ -1726,7 +1726,8 @@ impl Volumes {
                     cut: false,
                     depth_only: false,
                     depth_test: true,
-                    depth_write: true,
+                    // The near surfaces go over the far water.
+                    depth_write: false,
                     depth_function: D3DCMP_LESSEQUAL,
                     stencil: None,
                     coordinates: [None; 2],
