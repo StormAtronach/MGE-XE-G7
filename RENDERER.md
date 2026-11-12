@@ -467,8 +467,8 @@ did work in the span.
 - `grass parts:` and `grass kept:`: the work of the grass for each call, and the cells and
   bytes of its kept records.
 - `prepare:` the calls of the work of the frame and of the GPU cull of its sets, and the ms of
-  a call. The line ends with `frames culled by set: view: N, mirror: M, shadow 1: S, shadow 2:
-  S`: the frames in which the cull ran for each set. The four fixed sets always print, so
+  a call. The line ends with `frames with a cull, by set: view: N, mirror: M, shadow 1: S,
+  shadow 2: S`: the frames in which the cull ran for each set. The four fixed sets always print, so
   `mirror: 0` shows that no frame of the span culled the mirror's set. A frame culls it only
   when the frame has its water (water in the cell, its state and its GPU objects), its
   reflection is the mirror, and the reflection draws the statics. The reflection is not the

@@ -2401,7 +2401,7 @@ impl Statics {
         }
         if self.prepare_calls > 0 {
             println!(
-                "statics report {label}: prepare: {} calls, {:.3} ms a call (the work of the frame and the culling of its sets); frames culled by set: {}",
+                "statics report {label}: prepare: {} calls, {:.3} ms a call (the work of the frame and the culling of its sets); frames with a cull, by set: {}",
                 self.prepare_calls,
                 self.prepare_seconds * 1000.0 / self.prepare_calls as f64,
                 culled_text(&self.culled_sets, |set| self.set_name(set))
