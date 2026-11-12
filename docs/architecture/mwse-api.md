@@ -4,7 +4,8 @@ The versioned C++ vtable and script opcodes MGE XE exposes to MWSE. This is a cr
 cross-binary interface: MWSE ships on its own schedule against a compiled copy of it, so none of
 the hazards below are caught at MGE build time. MGE XE is at API version 4; MWSE's copy of the
 interface is at version 3. Treat `api.h` as frozen-by-slot (see [Append-only](#append-only)).
-MWSE-side paths refer to the `MWSE/MWSE` repository. This page cites functions and types, not line numbers, so that it does not drift.
+MWSE-side paths refer to the `MWSE/MWSE` repository. This page cites functions and types, not
+line numbers, so that it does not drift.
 
 ## Direction
 
@@ -123,6 +124,11 @@ be caught at MGE build time:
 - Insert into the middle of `RenderFeature` -> the enum indexes `featureToFlagMap`
   (`api.cpp`) positionally; every later feature toggle changes meaning.
 - Reorder/remove `MacroFunctions` members -> MWSE binds them by offset.
+- Renumber a `ViewKeyKind` value or a `ViewPart` bit, or reorder the fields of `ViewOptions`
+  -> MWSE's copy names another view or another part. A new kind or a new part bit is safe:
+  `viewOptionsSet` refuses a kind it does not know and masks the parts with `VIEW_PARTS_ALL`.
+  A field added at the tail of `ViewOptions` is safe: `viewOptionsSet` and `viewOptionsGet`
+  refuse a caller's `size` below `sizeof(ViewOptions)`.
 - MWSE's `ShaderHandleLua::setVariable` (`MGEPostShaders.cpp`) static_casts the API to
   `MGEAPIv3` with no `apiVersion` check. Safe today only because MGE always constructs a
   full v3 (the v4 export is a superset). An MWSE that calls the v4 slots must gate on
@@ -193,6 +199,7 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `macros.toggleStatusText`, `toggleFpsCounter`, `showLastMessage` | work (record 9 and the settings record) |
 | the camera macros of the third person view | work (tested 2026-10-15) |
 | HUD calls | do nothing (no device; MWSE does not bind them) |
+| `viewOptionsSet`, `viewOptionsGet` (v4) | the plugin keeps the options (the exports `nirender_view_options` and `nirender_view_options_get`, which `main.cpp` finds) and drops them when the key's object is freed. On Direct3D 9, `api.cpp` keeps a copy by the key's address that nothing draws from; an address that the engine reuses keeps the old options. MWSE's copy of the interface is at version 3, so nothing calls them yet |
 
 The FFI exports outside the vtable (`MGE_HorizonGet/SetParam`, `MGE_WaterVolumesSet`,
 `MGE_WaterLookSet`, `MGE_WaterMasksSet`, `MGE_WaterDrySet`, `MGE_DistantLandReadyNext`, in
