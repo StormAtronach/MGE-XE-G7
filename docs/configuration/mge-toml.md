@@ -231,6 +231,13 @@ reads them.
 - `distant_land.per_pixel_original_lights` (default `false`): the wgpu renderer lights each
   pixel with each light of the game in its own colour and with its whole falloff. `true`
   decodes the lights as MGE XE on Direct3D 9 does.
+- `distant_land.per_pixel_particles` (default `true`): the wgpu renderer lights each pixel
+  of a particle, as MGE XE on Direct3D 9. `false` lights a particle at its four corners and
+  interpolates the colour, the engine's method (not its look: MGE XE's light model stays).
+  It can pay where a lit particle fills much of the screen; a flame close to its own light
+  looks different. It acts only with `per_pixel_lighting`. A file without the key reads
+  `true`. The live tunable `lights.particles` (1 each pixel, 0 corners) changes it in play.
+  With `clustered_lights` on, a corner takes every light of its draw.
 - `distant_land.clustered_lights` (default `false`): a pixel takes its lights from the
   clusters of the view (tiles of the picture by slices of depth), with the mask of the
   lights of its draw. The picture is the same either way; `false` lights each pixel from

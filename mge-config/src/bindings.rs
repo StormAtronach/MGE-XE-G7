@@ -206,6 +206,7 @@ impl Settings {
             "distant_land.per_pixel_light_fade" => bool_number(self.distant_land.per_pixel_light_fade),
             "distant_land.per_pixel_light_fade_radius" => self.distant_land.per_pixel_light_fade_radius.into(),
             "distant_land.per_pixel_original_lights" => bool_number(self.distant_land.per_pixel_original_lights),
+            "distant_land.per_pixel_particles" => bool_number(self.distant_land.per_pixel_particles),
             "distant_land.horizon.culling" => bool_number(self.distant_land.horizon.culling),
             "distant_land.horizon.height_bias" => self.distant_land.horizon.height_bias.into(),
             "distant_land.horizon.object_bias" => self.distant_land.horizon.object_bias.into(),
@@ -371,6 +372,7 @@ impl Settings {
             "distant_land.per_pixel_original_lights" => {
                 self.distant_land.per_pixel_original_lights = number_bool(value, path)?
             }
+            "distant_land.per_pixel_particles" => self.distant_land.per_pixel_particles = number_bool(value, path)?,
             "distant_land.per_pixel_light_fade_radius" => {
                 self.distant_land.per_pixel_light_fade_radius = finite_f32(value, path)?
             }

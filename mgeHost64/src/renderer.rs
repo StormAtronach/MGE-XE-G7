@@ -1783,7 +1783,12 @@ impl DistantLand {
             extension_refused: 0,
             environment_version_logged: false,
             changed: Some("the first frame"),
-            tunables: tunables::Tunables::new(),
+            tunables: {
+                // The light of a particle starts from the user's setting; the tune changes it in play.
+                let mut tunables = tunables::Tunables::new();
+                tunables.start_at(tunables::PARTICLES, if settings.per_pixel_particles { 1.0 } else { 0.0 });
+                tunables
+            },
             settings: None,
             settings_applied: None,
             settings_told_distance: (settings.draw_distance, settings.very_far_static_end),
@@ -2996,6 +3001,14 @@ fn extension_shade(in: VertexOut) -> vec4f {
     if draw.flags.x == 0u {
         return in.vertex_color;
     }
+    // A particle lit at its corners (the renderer's CORNER_LIGHT_BIT, 16384u; the setting
+    // `per_pixel_particles` off): the vertex stage made its colour (`extension_corner_shade`).
+    // The sun's shadow above stays for each pixel. The bit is a fact of the stage key.
+    if (draw.counts.w & 16384u) != 0u {
+        light_term = in.corner_light;
+        light_term_set = true;
+        return in.color;
+    }
     // A lit draw without normals: a zero normal, as the fixed function and a shader of
     // Direct3D 9 have it. The lights give it their ambient light and no diffuse light.
     var normal = vec3f(0.0);
@@ -3057,14 +3070,40 @@ fn extension_shade(in: VertexOut) -> vec4f {
         light_term = d + a;
         light_term_set = true;
     }
-    // The three ways of a material with a vertex colour.
+    return material_color(d, a, in.vertex_color);
+}
+
+// The colour of a lit draw before the texture stages, from its diffuse light `d` and its
+// ambient light `a`: the three ways of a material with a vertex colour.
+fn material_color(d: vec3f, a: vec3f, vertex_color: vec4f) -> vec4f {
     if draw.more.x == 1u {
-        return vec4f(in.vertex_color.rgb * (d + a) + draw.material_emissive.rgb, in.vertex_color.a);
+        return vec4f(vertex_color.rgb * (d + a) + draw.material_emissive.rgb, vertex_color.a);
     }
     if draw.more.y == 1u {
-        return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + in.vertex_color.rgb, draw.material_diffuse.a);
+        return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + vertex_color.rgb, draw.material_diffuse.a);
     }
     return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + draw.material_emissive.rgb, draw.material_diffuse.a);
+}
+
+// The light of a corner of a particle (the renderer's CORNER_LIGHT_BIT), in the vertex stage:
+// the draw's own lights (its directional lights too) with `light_terms`, from the scene's
+// ambient light, as `extension_shade` lights a pixel, so that the fade and the original lights
+// give the same numbers at a corner as at a pixel. The vertex stage cannot read the clusters:
+// with clusters on, a corner takes every light of the draw. The colour is not kept between 0
+// and 1: the tone curve, the fog and the shadow stay for each pixel.
+fn extension_corner_shade(world_position: vec3f, world_normal: vec3f, vertex_color: vec4f, color: vec4f) -> CornerShade {
+    var normal = vec3f(0.0);
+    if draw.flags.y != 0u {
+        normal = normalize(world_normal + vec3f(0.0, 0.0, 1e-20));
+    }
+    var d = vec3f(0.0);
+    var a = draw.scene_ambient.rgb;
+    for (var i = 0u; i < draw.light_range.y; i++) {
+        let terms = light_terms(lights[draw.light_range.x + i], normal, world_position);
+        d += terms.d;
+        a += terms.a;
+    }
+    return CornerShade(material_color(d, a, vertex_color), d + a);
 }
 
 // What the water leaves of a light under water, for each colour: the light goes as the fog
@@ -3466,6 +3505,9 @@ impl Extension for DistantLand {
             lights: self.volume_point_lights && near_volumes && self.volumes_ready,
             clustered_lights: self.clustered_lights,
             world_lights: self.world_lights,
+            // `distant_land.per_pixel_particles` false, or the tune `lights.particles` 0: a
+            // particle takes its lights at its corners. Only a draw lit for each pixel can.
+            particle_corners: self.tunables.get(tunables::PARTICLES) < 0.5,
             // The far cascade of the shadow map: what it reaches animates in the game.
             shadow_reach: if self.shadow_in_frame { shadow::RADII[1] } else { 0.0 },
             full_tier_max: Some(self.full_tier_max),
@@ -6082,7 +6124,8 @@ impl DistantLand {
     /// shades, 2 a draw that adds (no fog colour), 16 and 128 the light for each pixel, 32 the
     /// sun's shadow, 64 the shadow takes the alpha, 256 a draw that adds under water, 512 the
     /// game's lights with MGE XE's fade (not the original lights). The renderer adds its own [`nirender_wgpu::NO_LIGHTS_BIT`] (32768) after
-    /// `shade` for a draw lit for each pixel with no lights.
+    /// `shade` for a draw lit for each pixel with no lights, and [`nirender_wgpu::CORNER_LIGHT_BIT`]
+    /// (16384) for a particle that takes its lights at its corners.
     fn shade_flags(&self, facts: &DrawFacts) -> u32 {
         // A draw that adds to the picture (a glow, a spell, a bug) under water: its light goes
         // to the colour of the water with the distance, and the fog adds no colour to it.
@@ -6270,6 +6313,17 @@ mod shader_tests {
         assert_eq!(DRAW_SHADER.matches(bit.as_str()).count(), 1);
         let own = 1 | 2 | 16 | 32 | 64 | 128 | 256 | 512;
         assert_eq!(own & nirender_wgpu::NO_LIGHTS_BIT, 0);
+    }
+
+    /// The same for the crate's bit of a particle lit at its corners; the draw part has the
+    /// corner function, so the crate does not add the one that keeps the vertex colour.
+    #[test]
+    fn the_draw_shader_reads_the_crates_corner_light_bit() {
+        let bit = format!("(draw.counts.w & {}u) != 0u", nirender_wgpu::CORNER_LIGHT_BIT);
+        assert_eq!(DRAW_SHADER.matches(bit.as_str()).count(), 1);
+        let own = 1 | 2 | 16 | 32 | 64 | 128 | 256 | 512;
+        assert_eq!(own & nirender_wgpu::CORNER_LIGHT_BIT, 0);
+        assert_eq!(DRAW_SHADER.matches("fn extension_corner_shade(").count(), 1);
     }
 
     /// The draw part tests a debug view if and only if the crate makes a world variant of it

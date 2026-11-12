@@ -171,6 +171,10 @@ per_pixel_light_fade_radius = 1.75
 # its own colour and its whole falloff. On: the lights as MGE XE on Direct3D 9
 # decodes them (the linear part of the falloff dropped, some lights grey).
 per_pixel_original_lights = false
+# The wgpu renderer lights each pixel of a particle (true, as MGE XE on Direct3D 9).
+# False lights a particle at its four corners: cheaper where a lit particle fills
+# much of the screen, and a flame close to its own light looks different.
+per_pixel_particles = true
 # The wgpu renderer: a pixel takes its lights from the clusters of the view, with
 # the mask of the lights of its draw. The picture is the same either way; they
 # can pay with many lights for each object, and cost CPU time otherwise.
