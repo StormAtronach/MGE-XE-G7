@@ -743,9 +743,10 @@ fn game_time(environment: Option<Environment>, started: Instant) -> f32 {
 /// The startup generation of distant land, as the IPC host mode does it in `main.rs`: when
 /// the output does not match the generation job of mgeXE.toml, the generator makes it again.
 /// Its lines go into this program's own log (`logging::init_stdout_logger`); mgeHost64.log
-/// is the IPC host mode's only. Runs on the loader thread. False when the
-/// generation failed and left no valid output: the distant land stays off then, as in that
-/// mode (`handle_generation_failure` turns it off in the configuration).
+/// is the IPC host mode's only. Runs on the loader thread. False when the output is not
+/// usable after the generation's status (`DistantLandStartupStatus::output_usable`): the
+/// generation failed and left no valid output, or it stopped before it looked at the output
+/// and the output does not open as a Routine snapshot.
 fn generate_at_start() -> bool {
     let Ok(root) = std::env::current_dir() else {
         println!("distant land: no folder of the game; no startup generation");
@@ -759,7 +760,29 @@ fn generate_at_start() -> bool {
         "distant land: startup generation {status:?} in {:.1} s",
         started.elapsed().as_secs_f32()
     );
-    status != crate::startup_generation::DistantLandStartupStatus::GenerationFailedDistantLandDisabled
+    usable_or_say(status.output_usable(&root.join("Data Files")))
+}
+
+/// The output check of a game session without the automatic rebuild, as the IPC host mode
+/// does it at every start: the distant land loads only when its output opens as a Routine
+/// snapshot. Runs on the loader thread.
+fn check_output_at_start() -> bool {
+    let Ok(root) = std::env::current_dir() else {
+        println!("distant land: no folder of the game; no output check");
+        return true;
+    };
+    usable_or_say(crate::startup_generation::check_output(&root.join("Data Files")))
+}
+
+/// True when the distant land is usable; else the reason goes on the log.
+fn usable_or_say(usable: Result<(), String>) -> bool {
+    match usable {
+        Ok(()) => true,
+        Err(reason) => {
+            println!("distant land: not usable: {reason}");
+            false
+        }
+    }
 }
 
 /// The state of the game for a frame, from the 32-bit part of MGE XE. The layout is that of
@@ -1095,10 +1118,11 @@ pub struct DistantLand {
     settings_fog: (f32, f32),
     environment: Option<Environment>,
     loading: Option<Receiver<Result<Loaded, String>>>,
-    /// The startup generation of a game session: when it is done, whether the distant land
-    /// is usable after it (false: the generation failed and left no valid output).
+    /// The start check of a game session (the startup generation, or the output check
+    /// without the automatic rebuild): when it is done, whether the distant land is usable
+    /// after it (false: no usable output; the reason is on the log).
     generation: Option<Receiver<bool>>,
-    /// The folder of the statics to start after the startup generation.
+    /// The folder of the statics to start after the start check.
     statics_after_generation: Option<PathBuf>,
     gpu: Option<Gpu>,
     /// The fog distances for the near cells of the frame, when the terrain is in it.
@@ -1859,17 +1883,27 @@ impl DistantLand {
         }
         if land.enabled {
             // For a test, the distant land of another folder: MGE_XE_DISTANT_LAND_DIR.
-            let folder: PathBuf = nirender_wgpu::switches::path("MGE_XE_DISTANT_LAND_DIR")
-                .unwrap_or_else(|| root.join("Data Files").join("distantland"));
+            let test_folder = nirender_wgpu::switches::path("MGE_XE_DISTANT_LAND_DIR");
+            // A game session loads only a usable output, as the IPC host mode: after the
+            // startup generation, or else after the output check. A replay, and a test folder
+            // without the automatic rebuild, load without the check.
+            let start_check: Option<fn() -> bool> = if live && settings.automatic_rebuild {
+                Some(generate_at_start)
+            } else if live && test_folder.is_none() {
+                Some(check_output_at_start)
+            } else {
+                None
+            };
+            let folder: PathBuf = test_folder.unwrap_or_else(|| root.join("Data Files").join("distantland"));
             let statics_wanted = settings.statics || settings.render_grass;
             let (sender, receiver) = channel();
             land.loading = Some(receiver);
-            if live && settings.automatic_rebuild {
+            if let Some(start_check) = start_check {
                 let (done, generation) = channel();
                 land.generation = Some(generation);
                 land.statics_after_generation = statics_wanted.then(|| folder.clone());
                 thread::spawn(move || {
-                    let usable = generate_at_start();
+                    let usable = start_check();
                     let _ = done.send(usable);
                     let _ = sender.send(load_after_generation(usable, &folder));
                 });
@@ -1891,9 +1925,9 @@ impl DistantLand {
         land
     }
 
-    /// Starts the statics when the startup generation is done: their files are then the
-    /// new ones. Not after a failed generation with no valid output: the terrain load fails
-    /// then too ([`DistantLand::finish_load`] turns the distant land off).
+    /// Starts the statics when the start check (the startup generation, or the output check)
+    /// is done: their files are then the new ones. Not when the output is not usable: the
+    /// terrain load fails then too ([`DistantLand::finish_load`] turns the distant land off).
     fn finish_generation(&mut self) {
         let Some(generation) = self.generation.as_ref() else { return };
         let usable = match generation.try_recv() {
@@ -2054,11 +2088,11 @@ impl Drop for DistantLand {
     }
 }
 
-/// The terrain after the startup generation: loaded from `folder`, or the problem when the
-/// generation failed and left no valid output (the files there are stale or mixed).
+/// The terrain after the start check: loaded from `folder`, or the problem when the check
+/// found no usable output (the files there are missing, stale or mixed).
 fn load_after_generation(usable: bool, folder: &Path) -> Result<Loaded, String> {
     if !usable {
-        return Err("the startup generation failed and left no valid distant land (its lines are above)".to_string());
+        return Err("the start check found no usable distant land (its lines are above)".to_string());
     }
     load(folder)
 }
@@ -6708,15 +6742,15 @@ full_tier_max = 0
 mod generation_tests {
     use super::*;
 
-    /// A failed startup generation with no valid output loads nothing, whatever the folder
-    /// holds: the distant land goes off, as in the IPC host mode.
+    /// A start check that found no usable output loads nothing, whatever the folder holds:
+    /// the distant land goes off, as in the IPC host mode.
     #[test]
     fn a_failed_generation_loads_no_distant_land() {
         let folder = std::env::temp_dir().join("mge-xe-generation-test-no-files");
         let problem = load_after_generation(false, &folder)
             .err()
-            .expect("no load after a failed generation");
-        assert!(problem.contains("startup generation failed"), "{problem}");
+            .expect("no load after a failed start check");
+        assert!(problem.contains("start check found no usable distant land"), "{problem}");
         // With a usable generation the folder decides: this one has no files.
         assert!(load_after_generation(true, &folder).is_err());
     }
