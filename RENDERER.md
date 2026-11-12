@@ -452,6 +452,36 @@ Retired: the start-time switches `MGE_XE_SHADOW_LAYERS`, `MGE_XE_SHADOW_DEBUG`,
 `MGE_XE_WATER_DEBUG` and `MGE_XE_POST_DEBUG`. The helper does not read them. When one is
 set, the log gets one line that names it.
 
+## The statics report
+
+For a developer's test. In a game, `include("nirender").tune("statics report <label>")` makes
+the helper write the work of the distant statics since the last report into its log
+(`nirender-host.log`, or `host.txt` of a run of the plugin's runner), and then count again
+from zero. Each line starts with `statics report <label>:`. A line comes only when its part
+did work in the span.
+
+- `<set>:` one line for each set that drew (`view`, `mirror`, `shadow 1`, `shadow 2`, a view
+  of its own, and `grass`): its calls, the ms of a call, and for each call the places visited,
+  out of their band, out of the view, not on the GPU and drawn (with the runs of one subset),
+  and the triangles.
+- `grass parts:` and `grass kept:`: the work of the grass for each call, and the cells and
+  bytes of its kept records.
+- `prepare:` the calls of the work of the frame and of the GPU cull of its sets, and the ms of
+  a call. The line ends with `frames culled by set: view: N, mirror: M, shadow 1: S, shadow 2:
+  S`: the frames in which the cull ran for each set. The four fixed sets always print, so
+  `mirror: 0` shows that no frame of the span culled the mirror's set. A frame culls it only
+  when the frame has its water (water in the cell, its state and its GPU objects), its
+  reflection is the mirror, and the reflection draws the statics. The reflection is not the
+  mirror when the plane is out of view, under a menu, or in a cell that takes the one-colour
+  fill (a cell without the distant land, an interior without `reflect_interiors`). So
+  `mirror: 0` says "out of view" only when the pass report of the same frames shows the water
+  drawn and the reflection not run with "the water plane is out of view". A view of its own
+  prints only when its set was culled.
+- `<set> (GPU):` with the GPU cull, the counts of the cull for each call of each set, and the
+  size of the pools in MB.
+- `arrivals:` when subsets came onto the GPU: the subsets in play, those inside the draw
+  distance, those shown late, the nearest of them, and those during a wait.
+
 ## When something is wrong
 
 Report it at <https://github.com/StormAtronach/nirender-plugin/issues>. The form there
