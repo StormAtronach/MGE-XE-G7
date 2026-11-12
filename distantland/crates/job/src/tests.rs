@@ -921,3 +921,39 @@ fn sync_propagates_an_unreadable_ini_instead_of_emptying_the_selection() {
     // The caller aborts on that error, so the job it still holds is untouched.
     assert_eq!(job.plugins, Some(vec![PathBuf::from("Morrowind.esm")]));
 }
+
+#[test]
+fn a_job_with_auto_sync_on_takes_the_live_load_order_and_pins_its_ini() {
+    let dir = tempfile::tempdir().unwrap();
+    let ini = stub_install(dir.path(), &["Morrowind.esm", "Mod.esp"], &["Morrowind.esm", "Mod.esp"]);
+    let mut job = GenerationJob {
+        morrowind_ini: Some(ini.clone()),
+        plugins: Some(vec![PathBuf::from("Saved.esp")]),
+        ..GenerationJob::default()
+    };
+    assert!(job.auto_sync_plugins);
+
+    assert!(job.sync_plugins_when_enabled().unwrap());
+    let data_files = dir.path().join("Data Files");
+    assert_eq!(
+        job.plugins,
+        Some(vec![data_files.join("Morrowind.esm"), data_files.join("Mod.esp")])
+    );
+    assert_eq!(job.morrowind_ini, Some(ini));
+}
+
+#[test]
+fn a_job_with_auto_sync_off_keeps_its_saved_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let ini = stub_install(dir.path(), &["Morrowind.esm"], &["Morrowind.esm"]);
+    let mut job = GenerationJob {
+        morrowind_ini: Some(ini.clone()),
+        plugins: Some(vec![PathBuf::from("Saved.esp")]),
+        auto_sync_plugins: false,
+        ..GenerationJob::default()
+    };
+
+    assert!(!job.sync_plugins_when_enabled().unwrap());
+    assert_eq!(job.plugins, Some(vec![PathBuf::from("Saved.esp")]));
+    assert_eq!(job.morrowind_ini, Some(ini));
+}

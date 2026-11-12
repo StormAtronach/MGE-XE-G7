@@ -42,6 +42,14 @@ fn main() -> Result<()> {
 
     let mut job = load_generation_job_file(job_path)?;
 
+    // As mgeHost64 does: the plugins of the live load order, not the saved list.
+    if job.sync_plugins_when_enabled()? {
+        info!(
+            plugins = job.plugins.as_ref().map_or(0, Vec::len),
+            "Synced the plugin list from the live load order"
+        );
+    }
+
     if force_rebuild {
         job.settings.force_rebuild = true;
     }

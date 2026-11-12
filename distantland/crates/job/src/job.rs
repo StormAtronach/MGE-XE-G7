@@ -10,7 +10,7 @@ use distantland_statics::{
     StaticMeshSimplifierConfig, StaticTextureSizingMode, StaticTextureSizingSettings, TextureDedupeMode,
 };
 use distantland_usage::UsageFilterOptions;
-use distantland_vfs::{Vfs, morrowind_data_dirs, parse_morrowind_game_files_with_data_dirs};
+use distantland_vfs::{Vfs, find_morrowind_ini, morrowind_data_dirs, parse_morrowind_game_files_with_data_dirs};
 
 /// One recoverable problem found while loading a generation job.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -601,6 +601,30 @@ impl GenerationJob {
         }
 
         Ok(())
+    }
+
+    /// Applies the job's own `auto_sync_plugins`, as `load_startup_job` in mgeHost64 does: when
+    /// the key is on, pins `morrowind_ini` (the job's value, else the registry's install) and
+    /// replaces `plugins` with the live load order through [`sync_plugins_from_load_order`].
+    /// Returns whether it synced. A caller that generates from a job file without this sees the
+    /// saved list, not the plugins a start of the game sees.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is on and the install or its load order cannot be read.
+    pub fn sync_plugins_when_enabled(&mut self) -> Result<bool> {
+        if !self.auto_sync_plugins {
+            return Ok(false);
+        }
+
+        let morrowind_ini = match &self.morrowind_ini {
+            Some(path) => path.clone(),
+            None => find_morrowind_ini().context("Failed to find Morrowind.ini of the registry's install")?,
+        };
+        let data_dirs = self.data_dirs.clone();
+        sync_plugins_from_load_order(self, &morrowind_ini, data_dirs.as_deref())?;
+        self.morrowind_ini = Some(morrowind_ini);
+        Ok(true)
     }
 
     /// Resolves the output root, defaulting to the active VFS data directory.
