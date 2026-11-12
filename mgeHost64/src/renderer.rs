@@ -279,12 +279,11 @@ fn changing_record_name(id: u32) -> Option<&'static str> {
 }
 
 /// The change of a frame for the count of the GPU objects ([`nirender_wgpu::objects`]): the
-/// first changing record of the frame, else the load of the terrain, else the subsets of the
-/// distant statics that came from their reader thread. A frame with none of them is steady.
-fn frame_change(record: Option<&'static str>, loading: bool, statics_arrived: bool) -> Option<&'static str> {
-    record
-        .or(loading.then_some("a load of distant land"))
-        .or(statics_arrived.then_some("an arrival of distant statics"))
+/// first changing record of the frame, else the load of the terrain, else the first change of
+/// the distant statics (`Statics::take_change`: subsets that came from their reader thread, or
+/// pools reserved). A frame with none of them is steady.
+fn frame_change(record: Option<&'static str>, loading: bool, statics: Option<&'static str>) -> Option<&'static str> {
+    record.or(loading.then_some("a load of distant land")).or(statics)
 }
 
 #[cfg(test)]
@@ -295,23 +294,44 @@ mod frame_change_tests {
     /// buffers (W340: after a far teleport, 29 buffers in frames that counted as steady).
     #[test]
     fn a_frame_with_an_arrival_of_distant_statics_is_changed() {
-        assert_eq!(frame_change(None, false, true), Some("an arrival of distant statics"));
+        assert_eq!(frame_change(None, false, Some(statics::ARRIVAL)), Some(statics::ARRIVAL));
     }
 
-    /// The null: a frame with no changing record, no load and no arrival is steady.
+    /// A frame that reserved the pools of a world space (residency "all") is not steady: the
+    /// pools are new buffers.
+    #[test]
+    fn a_frame_that_reserved_the_pools_of_distant_statics_is_changed() {
+        assert_eq!(
+            frame_change(None, false, Some(statics::POOLS_RESERVED)),
+            Some(statics::POOLS_RESERVED)
+        );
+    }
+
+    /// The null: a frame with no changing record, no load and no change of the statics is
+    /// steady.
     #[test]
     fn a_frame_without_records_loads_or_arrivals_is_steady() {
-        assert_eq!(frame_change(None, false, false), None);
+        assert_eq!(frame_change(None, false, None), None);
     }
 
-    /// The first changing record names the frame, then the load, then the arrivals.
+    /// The first changing record names the frame, then the load, then the statics.
     #[test]
     fn a_record_names_the_frame_before_a_load_and_a_load_before_an_arrival() {
         assert_eq!(
-            frame_change(Some("extension record settings"), true, true),
+            frame_change(Some("extension record settings"), true, Some(statics::ARRIVAL)),
             Some("extension record settings")
         );
-        assert_eq!(frame_change(None, true, true), Some("a load of distant land"));
+        assert_eq!(
+            frame_change(None, true, Some(statics::ARRIVAL)),
+            Some("a load of distant land")
+        );
+    }
+
+    /// The baseline gate counts the frames that an arrival changed first by this name
+    /// (`tools/validate_retained.py`, `OBJECTS_ARRIVAL`): a new name needs the gate too.
+    #[test]
+    fn the_name_of_an_arrival_is_the_one_the_gate_reads() {
+        assert_eq!(statics::ARRIVAL, "an arrival of distant statics");
     }
 }
 
@@ -3585,9 +3605,9 @@ impl Extension for DistantLand {
     }
 
     fn frame_changed(&mut self) -> Option<&'static str> {
-        // Each frame takes the mark of the arrivals, so that it does not stay for the next.
-        let arrived = self.statics.as_mut().is_some_and(|statics| statics.take_arrived());
-        frame_change(self.changed.take(), self.loading.is_some(), arrived)
+        // Each frame takes the change of the statics, so that it does not stay for the next.
+        let statics = self.statics.as_mut().and_then(|statics| statics.take_change());
+        frame_change(self.changed.take(), self.loading.is_some(), statics)
     }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {

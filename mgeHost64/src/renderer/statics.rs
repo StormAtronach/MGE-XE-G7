@@ -75,6 +75,12 @@ const NO_CATALOG: Skip = "no catalog of the distant statics";
 const NO_WORLD: Skip = "no world space of the cell among the distant statics";
 const OFF: Skip = "the distant statics are off";
 const NO_GPU: Skip = "no GPU state of the statics";
+
+/// The changes of the distant statics in the count of the GPU objects
+/// ([`Statics::take_change`]). The baseline gate reads the name of [`ARRIVAL`]
+/// (`tools/validate_retained.py` of nirender-plugin).
+pub(super) const ARRIVAL: &str = "an arrival of distant statics";
+pub(super) const POOLS_RESERVED: &str = "the pools of distant statics reserved";
 use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -2008,8 +2014,9 @@ pub struct Statics {
     /// The arrivals are those of a wait on the loading screen: they show complete when the
     /// wait ends, with no fade-in.
     prefetching: bool,
-    /// A subset came from the reader thread since the last [`Statics::take_arrived`].
-    arrived: bool,
+    /// The first change of the distant statics since the last [`Statics::take_change`]: one of
+    /// [`ARRIVAL`] and [`POOLS_RESERVED`].
+    change: Option<&'static str>,
     grass_frames: u64,
     grass_drawn: u64,
     grass_cut: u64,
@@ -2163,7 +2170,7 @@ impl Statics {
             clock: Instant::now(),
             fade_seconds: 1.0,
             prefetching: false,
-            arrived: false,
+            change: None,
             grass_frames: 0,
             grass_drawn: 0,
             grass_cut: 0,
@@ -2924,10 +2931,11 @@ impl Statics {
         self.find_here();
     }
 
-    /// Whether a subset came from the reader thread since the last call. The frame that took
-    /// it has new content, as a frame with a new record has: its subsets can need buffers.
-    pub fn take_arrived(&mut self) -> bool {
-        std::mem::take(&mut self.arrived)
+    /// The first change of the distant statics since the last call: subsets that came from the
+    /// reader thread, or pools reserved for the subsets of a world space. The frame of the
+    /// change has new content, as a frame with a new record has: it can make buffers.
+    pub fn take_change(&mut self) -> Option<&'static str> {
+        self.change.take()
     }
 
     /// Makes the buffers of the subsets that the reader thread has ready, for a part of a frame.
@@ -2966,7 +2974,7 @@ impl Statics {
             if !self.requested.remove(&arrival.subset) {
                 continue;
             }
-            self.arrived = true;
+            self.change.get_or_insert(ARRIVAL);
             let Some(catalog) = self.catalog.as_ref() else { continue };
             let s = &catalog.subsets[arrival.subset as usize];
             // A subset with no triangles would be asked for again each frame: it goes with
@@ -3881,6 +3889,7 @@ impl Statics {
                 if let (Some(gpu), Some(device), Some(queue)) =
                     (self.gpu.as_mut(), self.device.as_ref(), self.queue.as_ref())
                 {
+                    self.change.get_or_insert(POOLS_RESERVED);
                     for (texture, (vertices, indexes)) in room {
                         gpu.pools.reserve(device, queue, texture, vertices, indexes);
                     }
