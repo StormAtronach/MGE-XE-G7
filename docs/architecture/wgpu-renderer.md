@@ -164,26 +164,51 @@ flowchart TD
         P1["before_world: distant land, statics set 0, glows"]
         P2["copies: picture before world, depth; game pass reopened, depth cleared"]
         P3["game world draws (game draw shader + extension frame group)"]
-        P4["class 10 replaced: MGE water plane (dry-space stencil)"]
-        P5["after_world: grass"]
+        P4["sorted blends of the table, where the engine flushes its queue in the world scene"]
+        P5["after_world: grass; then the copy of the world depth for the post chain"]
         P6["blend pass: distant land under the game's picture"]
         P7["draw_held: sea caustics, far water, water volumes"]
-        P8["translucent and first-person draws"]
-        P9["post: HDR, depth, the shader chain, blit (own passes)"]
-        P10["UI draws"]
-        P11["copy to surface, overlay pass, present"]
+        P8["water scene: class 10 replaced by the MGE water plane (dry-space stencil)"]
+        P9["sorted blends of the table, at the end of the scene that flushes the queue"]
+        P10["first-person draws"]
+        P11["post: HDR, depth, the shader chain, blit (own passes)"]
+        P12["UI draws"]
+        P13["copy to surface, overlay pass, present"]
     end
     R --> C --> L --> S --> W --> P0
-    P0 --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> P9 --> P10 --> P11
-    S -. shadow atlas .-> P1
+    P0 --> P1 --> P2 --> P3
+    P3 -- "queue flushed in the world scene" --> P4 --> P5
+    P3 -- "water shown: queue open" --> P5
+    P5 --> P6 --> P7
+    P7 -- "water shown" --> P8 --> P9 --> P10
+    P7 -- "no water" --> P10
+    P10 --> P11 --> P12 --> P13
     S -. shadow atlas .-> P3
-    W -. reflection .-> P4
+    S -. shadow atlas .-> P5
+    S -. shadow atlas .-> P7
+    W -. reflection .-> P7
+    W -. reflection .-> P8
     C -. indirect draws .-> P1
     C -. indirect draws .-> W
     C -. indirect draws .-> S
     L -. glow list .-> P1
-    P2 -. depth copy .-> P7
+    P2 -. depth before the world .-> P7
+    P2 -. depth before the world .-> P8
+    P5 -. world depth .-> P7
 ```
+
+The sorted blends of the table have two places (`Plan` in nirender's `host/src/engine/plan.rs`). When the
+engine flushes its queue in the world scene, they come before the extension's world end, with the depth of the
+world (P4). When the queue stays open (the water shown, the shadow manager on), the extension's world end comes
+first, and they wait for the scene that flushes the queue: after the water plane (P9). A held draw in its place
+(`draw_held_in_place`) comes inside the sorted blends, at either place.
+
+The shadow atlas is the extension's frame texture (`FrameParameters::texture`) of the game's draws. The grass
+binds it too, and so do the surfaces of the water volumes when their shadow setting is on. The land and the
+distant statics do not. The reflection is in the frame group of the water, for the plane and for the surfaces
+of the volumes. The held draws and the water plane get the depth before the world (P2) when it was kept. When
+they read the depth, the held draws get the copy of the world depth made for the post chain at the world's end
+(P5), or a copy of their own when there is no post chain; the water plane gets a copy of its own.
 
 | Step | Extension hook | Pass | Condition |
 | --- | --- | --- | --- |
@@ -193,11 +218,13 @@ flowchart TD
 | shadow map | `before_world` | deferred ("shadow map", "shadow blur") | shadows on, distant cell |
 | water reflection | `before_world` | deferred ("water reflection", levels) | water in view |
 | land, statics, glows | `before_world` | game pass | distant cell |
-| water plane | `draw_class` (class 10) | game pass | water cell |
-| volumes in place | `draw_held_in_place` | game pass | a surface with its own stencil |
+| sorted blends (P4) | none: the host's table | game pass | the engine flushes its queue in the world scene |
 | grass | `after_world` | game pass | distant cell |
 | blend | `blend` | own pass, colour only | `before_world` drew |
 | caustics, far water, volumes | `draw_held` | game pass | held shapes or far water |
+| water plane | `draw_class` (class 10) | game pass | water cell |
+| sorted blends (P9) | none: the host's table | game pass | the queue open: at the end of the scene that flushes it |
+| volumes in place | `draw_held_in_place` | game pass | a surface with its own stencil, inside the sorted blends |
 | post | `post` | own passes | chain not empty |
 
 The host asks for a new game pass after every copy, target change or extension pass; the pass begins at its first draw, and a pass asked for that did not begin gives its clears to the next one on the same targets (nirender d057471). A pass that begins calls
