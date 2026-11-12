@@ -19,16 +19,17 @@ use nirender_wgpu::pass_report::Skip;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
-use distantland::mge_xe::lights::{LIGHT_TEXEL_SIZE, LIGHT_TILE, parse_lights};
+use distantland::mge_xe::lights::{EXTERIOR_KEY, parse_lights};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
 
-/// The values on a side of a tile (the file's layout: `distantland_formats::lights`).
-const TILE: u32 = LIGHT_TILE as u32;
+/// The values on a side of a tile. The file has no tiles since its version 3, so the baked
+/// light has none to show.
+const TILE: u32 = 65;
 /// The tiles in a row of the texture of the tiles.
 const TILES_IN_ROW: u32 = 64;
 /// The bytes of a value of a tile: red, green, blue, 255, each half of the light.
-const TEXEL: u32 = LIGHT_TEXEL_SIZE as u32;
+const TEXEL: u32 = 4;
 /// The values of a source in the list of the glows: two rows of four numbers.
 const GLOW_WORDS: u64 = 8;
 
@@ -307,16 +308,20 @@ struct LightsFile {
     texels: Vec<u8>,
 }
 
-/// Reads `lights.data` through the formats crate, which checks its header and its length
-/// against its counts and gives the reason of a refusal.
+/// Reads `lights.data` through the formats crate, which checks each count and length against
+/// the file's end and gives the reason of a refusal. Only the exterior's block: the lamps of an
+/// interior's block have that interior's coordinates.
 fn read(path: &Path) -> Result<LightsFile, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let lights = parse_lights(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+    let (sources, source_count) = lights
+        .block(EXTERIOR_KEY)
+        .map_or((Vec::new(), 0), |block| (block.lamp_bytes(), block.lamps.len() as u32));
     Ok(LightsFile {
-        sources: lights.sources,
-        source_count: lights.source_count,
-        tiles: lights.tiles,
-        texels: lights.texels,
+        sources,
+        source_count,
+        tiles: Vec::new(),
+        texels: Vec::new(),
     })
 }
 

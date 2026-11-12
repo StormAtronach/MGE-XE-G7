@@ -1,21 +1,23 @@
-//! The light sources of the exterior for the distant lights of the renderer, and the light
-//! that they give the land far away: `distantland\lights.data`.
+//! The placed lights and the smoke sources of the distant land, by block:
+//! `distantland\lights.data`. The layout is in `distantland_formats::lights`
+//! (`crate::mge_xe::lights`), with its writer and the renderer's reader, `parse_lights`.
 //!
-//! The sources are the placed references of the light records of the load order: their place,
-//! colour, radius and flags. A light that is off by default, or a negative light, is left out.
-//! The renderer draws a glow for each source with a mesh beyond the cells that the game has
-//! loaded.
+//! The blocks are the exterior, and each interior that behaves like an exterior when the job
+//! includes those. A lamp is a placed reference of a light record that lights
+//! ([`LightRecord::lights`]): the reference is not deleted, and no script disables it
+//! ([`ObjectDefinition::script_disables`], under the job's `exclude_script_disable_targets`,
+//! as for the statics). Its radius, colour and flags are the plugins' values; the renderer takes
+//! the game's own when the game gives them.
 //!
-//! With `bake_lights` the file also has the light of the sources on the land of each lit
-//! exterior cell: one tile for each cell, a value for each of the 65 x 65 vertices of its land
-//! (the grid of `TerrainCell::heights`, 128 units apart), so that the tiles of two cells meet at
-//! the same values. The renderer adds it to the light of the distant land and statics.
+//! A smoke source is a placed object whose model path has "smoke" and not "nosmoke" (strength
+//! 1), or a lamp of a fire whose smoke is seen from far ([`LightRecord::smokes`], strength 0.5).
 //!
 //! The file is written apart from the committed inventory of the generation, when its bytes
-//! change: it is rebuilt at every generation run, which costs little.
+//! change: it is made again at every generation run, which costs little.
 //!
-//! The layout is in `distantland_formats::lights` (`crate::mge_xe::lights`), with its
-//! constants, which this writer takes, and the reader of the renderer, `parse_lights`.
+//! [`LightRecord::lights`]: crate::LightRecord::lights
+//! [`LightRecord::smokes`]: crate::LightRecord::smokes
+//! [`ObjectDefinition::script_disables`]: crate::ObjectDefinition::script_disables
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -24,171 +26,155 @@ use anyhow::{Context, Result};
 
 use super::{GenerationSettings, OutputPaths};
 use crate::UsageInfo;
-use crate::mge_xe::lights::{
-    LIGHT_CELL as CELL, LIGHT_SOURCE_SIZE, LIGHT_STEP as STEP, LIGHT_TEXEL_SIZE, LIGHT_TILE as TILE, LIGHTS_HEADER_SIZE,
-    LIGHTS_MAGIC, LIGHTS_VERSION,
-};
+use crate::mge_xe::lights::{EXTERIOR_KEY, Lamp, LampRecord, LightBlock, Lights, SmokeSource};
 
-/// `tes3::esp::LightFlags`.
-const NEGATIVE: u32 = 0x4;
-const OFF_BY_DEFAULT: u32 = 0x20;
-/// The bake reaches this many times the radius of a light: the radius of the game is where its
-/// light is already weak, and far away a light should still make a pool on the ground.
-const BAKE_REACH: f32 = 1.5;
-/// The height difference counts this much against the distance across the ground. The values
-/// are on the land, and the statics read them by their place across the ground: a lantern high
-/// on the wall of a canton should light that wall, so the height counts little.
-const HEIGHT_WEIGHT: f32 = 0.1;
-
-/// A light source in the file.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct LightSource {
-    pub position: [f32; 3],
-    pub radius: f32,
-    pub color: [u8; 3],
-    pub flags: u32,
-    pub has_mesh: bool,
-}
+/// The key of the exterior's references in [`UsageInfo::cells`].
+const EXTERIOR_CELL: &str = "\0";
+/// The strength of the smoke of a smoke effect, and of a fire.
+const EFFECT_SMOKE: f32 = 1.0;
+const FIRE_SMOKE: f32 = 0.5;
 
 /// The bytes of the file, and what they hold.
 pub(crate) struct LightsOutput {
     pub bytes: Vec<u8>,
-    pub source_count: usize,
-    pub tile_count: usize,
+    pub block_count: usize,
+    pub lamp_count: usize,
+    pub smoke_count: usize,
 }
 
-/// The light sources of the exterior, sorted by their place.
-pub(crate) fn light_sources(usage: &UsageInfo) -> Vec<LightSource> {
-    let Some(references) = usage.exterior_references() else {
-        return Vec::new();
-    };
-    let mut sources: Vec<LightSource> = references
-        .values()
-        .filter(|reference| !reference.deleted)
-        .filter_map(|reference| {
-            let record = usage.lights.get(reference.id.as_ref())?;
-            if record.radius <= 0.0 || record.flags & (NEGATIVE | OFF_BY_DEFAULT) != 0 {
-                return None;
-            }
-            Some(LightSource {
-                position: reference.translation.to_array(),
-                radius: record.radius,
-                color: record.color,
-                flags: record.flags,
-                has_mesh: record.has_mesh,
+/// A lamp before its block's records are numbered.
+struct PlacedLamp {
+    id: String,
+    lamp: Lamp,
+}
+
+/// The lamps and the smoke of one block, as the references give them.
+#[derive(Default)]
+struct BlockParts {
+    lamps: Vec<PlacedLamp>,
+    smoke: Vec<SmokeSource>,
+}
+
+impl BlockParts {
+    /// The block, in an order that does not depend on the order of the references: the records
+    /// by their ids, the lamps and the smoke by their places.
+    fn finish(mut self, key: String) -> LightBlock {
+        let mut ids: Vec<&str> = self.lamps.iter().map(|placed| placed.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let records: Vec<LampRecord> = ids
+            .iter()
+            .map(|id| LampRecord {
+                id: (*id).to_string(),
+                glow_radius: 0.0,
             })
-        })
-        .collect();
-    sources.sort_by(|a, b| {
-        let key = |s: &LightSource| (s.position.map(f32::to_bits), s.radius.to_bits(), s.color, s.flags);
-        key(a).cmp(&key(b))
-    });
-    sources
-}
+            .collect();
 
-/// The light of `sources` at a point.
-fn light_at(point: [f32; 3], sources: &[&LightSource]) -> [f32; 3] {
-    let mut sum = [0.0f32; 3];
-    for source in sources {
-        let reach = source.radius * BAKE_REACH;
-        let dx = point[0] - source.position[0];
-        let dy = point[1] - source.position[1];
-        let dz = (point[2] - source.position[2]) * HEIGHT_WEIGHT;
-        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-        if distance >= reach {
-            continue;
-        }
-        let falloff = 1.0 - distance / reach;
-        let strength = falloff * falloff;
-        for (channel, value) in sum.iter_mut().zip(source.color) {
-            *channel += strength * value as f32 / 255.0;
+        let mut lamps: Vec<Lamp> = self
+            .lamps
+            .iter()
+            .map(|placed| Lamp {
+                record: ids.binary_search(&placed.id.as_str()).expect("the id of a lamp is a record") as u32,
+                ..placed.lamp
+            })
+            .collect();
+        // By place: x, then y, then z. f32::total_cmp is a total order, so the file does not
+        // depend on the order of the references.
+        let by_place =
+            |a: &[f32; 3], b: &[f32; 3]| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])).then(a[2].total_cmp(&b[2]));
+        lamps.sort_by(|a, b| {
+            by_place(&a.position, &b.position)
+                .then(a.radius.total_cmp(&b.radius))
+                .then((a.color, a.flags, a.record).cmp(&(b.color, b.flags, b.record)))
+        });
+        self.smoke
+            .sort_by(|a, b| by_place(&a.position, &b.position).then(a.strength.total_cmp(&b.strength)));
+
+        LightBlock {
+            key,
+            records,
+            lamps,
+            smoke: self.smoke,
         }
     }
-    sum
 }
 
-/// The baked tiles: the cells with land that a source reaches, with their values.
-fn bake(usage: &UsageInfo, sources: &[LightSource]) -> BTreeMap<(i32, i32), Vec<[f32; 3]>> {
-    let mut by_cell: BTreeMap<(i32, i32), Vec<&LightSource>> = BTreeMap::new();
-    for source in sources {
-        let reach = source.radius * BAKE_REACH;
-        let cell = |value: f32| (value / CELL).floor() as i32;
-        for x in cell(source.position[0] - reach)..=cell(source.position[0] + reach) {
-            for y in cell(source.position[1] - reach)..=cell(source.position[1] + reach) {
-                by_cell.entry((x, y)).or_default().push(source);
-            }
-        }
-    }
-    let mut tiles = BTreeMap::new();
-    for (grid, near) in by_cell {
-        let Some(land) = usage.terrain_cells.get(&grid) else {
+/// Whether a model's path, normalised to lower case, is a smoke effect.
+fn is_smoke_model(mesh: &str) -> bool {
+    mesh.contains("smoke") && !mesh.contains("nosmoke")
+}
+
+/// The lamps and the smoke sources of each block, before the references are remapped to meshes
+/// (the remap drops the lights without a mesh). Blocks with neither are left out.
+pub(crate) fn light_blocks(usage: &UsageInfo, include_behaves_like_exterior: bool, exclude_disable_targets: bool) -> Lights {
+    let mut parts: BTreeMap<String, BlockParts> = BTreeMap::new();
+    for (cell, references) in &usage.cells {
+        let key = if cell == EXTERIOR_CELL {
+            EXTERIOR_KEY.to_string()
+        } else if !cell.is_empty() && include_behaves_like_exterior && usage.behaves_like_exterior(cell) {
+            // The game finds a cell by its name in any case: two spellings are one block.
+            cell.to_ascii_lowercase()
+        } else {
             continue;
         };
-        let origin = [grid.0 as f32 * CELL, grid.1 as f32 * CELL];
-        let mut values = Vec::with_capacity(TILE * TILE);
-        let mut lit = false;
-        for y in 0..TILE {
-            for x in 0..TILE {
-                let point = [origin[0] + x as f32 * STEP, origin[1] + y as f32 * STEP, land.heights[y][x]];
-                let value = light_at(point, &near);
-                lit |= value.iter().any(|channel| *channel > 0.0);
-                values.push(value);
+        let block = parts.entry(key).or_default();
+
+        for reference in references.values().filter(|reference| !reference.deleted) {
+            let id = reference.id.as_ref();
+            let object = usage.objects.get(id);
+            if object.is_some_and(|object| object.script_disables(reference, exclude_disable_targets)) {
+                continue;
             }
-        }
-        if lit {
-            tiles.insert(grid, values);
+            let position = reference.translation.to_array();
+            if object.is_some_and(|object| is_smoke_model(object.mesh)) {
+                block.smoke.push(SmokeSource {
+                    position,
+                    strength: EFFECT_SMOKE,
+                });
+            }
+
+            let Some(record) = usage.lights.get(id).filter(|record| record.lights()) else {
+                continue;
+            };
+            if record.smokes() {
+                block.smoke.push(SmokeSource {
+                    position,
+                    strength: FIRE_SMOKE,
+                });
+            }
+            block.lamps.push(PlacedLamp {
+                id: id.to_ascii_lowercase(),
+                lamp: Lamp {
+                    position,
+                    radius: record.radius,
+                    color: record.color,
+                    has_mesh: record.has_mesh,
+                    flags: record.flags,
+                    record: 0,
+                },
+            });
         }
     }
-    tiles
+
+    let blocks = parts
+        .into_iter()
+        .filter(|(_, block)| !block.lamps.is_empty() || !block.smoke.is_empty())
+        .map(|(key, block)| block.finish(key))
+        .collect();
+    Lights { blocks }
 }
 
-/// The bytes of `lights.data` for `sources` (from `light_sources`, before the references are
-/// remapped to meshes) and the land of `usage`, or `None` when the distant lights are off.
-pub(crate) fn build(sources: &[LightSource], usage: &UsageInfo, settings: &GenerationSettings) -> Option<LightsOutput> {
+/// The bytes of `lights.data` for `lights` (from [`light_blocks`]), or `None` when the distant
+/// lights are off.
+pub(crate) fn build(lights: &Lights, settings: &GenerationSettings) -> Option<LightsOutput> {
     if !settings.distant_lights {
         return None;
     }
-    let tiles = if settings.bake_lights {
-        bake(usage, sources)
-    } else {
-        BTreeMap::new()
-    };
-
-    let mut bytes = Vec::with_capacity(
-        LIGHTS_HEADER_SIZE + sources.len() * LIGHT_SOURCE_SIZE + tiles.len() * (8 + TILE * TILE * LIGHT_TEXEL_SIZE),
-    );
-    bytes.extend_from_slice(LIGHTS_MAGIC);
-    for word in [LIGHTS_VERSION, sources.len() as u32, tiles.len() as u32, TILE as u32] {
-        bytes.extend_from_slice(&word.to_le_bytes());
-    }
-    bytes.extend_from_slice(&CELL.to_le_bytes());
-    bytes.extend_from_slice(&STEP.to_le_bytes());
-    bytes.extend_from_slice(&[0u8; 8]);
-    for source in sources {
-        for value in source.position.iter().chain([&source.radius]) {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        bytes.extend_from_slice(&source.color);
-        bytes.push(if source.has_mesh { 255 } else { 0 });
-        bytes.extend_from_slice(&source.flags.to_le_bytes());
-        bytes.extend_from_slice(&[0u8; 8]);
-    }
-    for grid in tiles.keys() {
-        bytes.extend_from_slice(&grid.0.to_le_bytes());
-        bytes.extend_from_slice(&grid.1.to_le_bytes());
-    }
-    for values in tiles.values() {
-        for value in values {
-            for channel in [value[0], value[1], value[2]] {
-                bytes.push((channel * 0.5 * 255.0).round().clamp(0.0, 255.0) as u8);
-            }
-            bytes.push(255);
-        }
-    }
     Some(LightsOutput {
-        bytes,
-        source_count: sources.len(),
-        tile_count: tiles.len(),
+        bytes: lights.to_bytes(),
+        block_count: lights.blocks.len(),
+        lamp_count: lights.blocks.iter().map(|block| block.lamps.len()).sum(),
+        smoke_count: lights.blocks.iter().map(|block| block.smoke.len()).sum(),
     })
 }
 
@@ -224,62 +210,4 @@ pub(crate) fn publish(paths: &OutputPaths, output: Option<&LightsOutput>) -> Res
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn source(position: [f32; 3], radius: f32, color: [u8; 3]) -> LightSource {
-        LightSource {
-            position,
-            radius,
-            color,
-            flags: 0,
-            has_mesh: true,
-        }
-    }
-
-    #[test]
-    fn the_light_is_full_at_the_source_and_gone_at_its_reach() {
-        let lamp = source([0.0, 0.0, 0.0], 100.0, [255, 128, 0]);
-        let at = light_at([0.0, 0.0, 0.0], &[&lamp]);
-        assert_eq!(at, [1.0, 128.0 / 255.0, 0.0]);
-        assert_eq!(light_at([150.0, 0.0, 0.0], &[&lamp]), [0.0; 3]);
-        let half_way = light_at([75.0, 0.0, 0.0], &[&lamp]);
-        assert!((half_way[0] - 0.25).abs() < 1e-6);
-    }
-
-    #[test]
-    fn height_counts_a_tenth() {
-        let lamp = source([0.0, 0.0, 100.0], 100.0, [255, 255, 255]);
-        // 100 units up counts as 10 across the ground.
-        let below = light_at([0.0, 0.0, 0.0], &[&lamp]);
-        let across = light_at([10.0, 0.0, 100.0], &[&lamp]);
-        assert!((below[0] - across[0]).abs() < 1e-6);
-    }
-
-    /// What this writer writes, the reader of the renderer reads (`parse_lights`).
-    #[test]
-    fn the_renderers_reader_reads_what_this_writes() {
-        let sources = [
-            source([1.0, 2.0, 3.0], 100.0, [255, 0, 0]),
-            source([-5.0, 0.0, 9.0], 50.0, [0, 0, 255]),
-        ];
-        let settings = GenerationSettings {
-            distant_lights: true,
-            bake_lights: false,
-            ..Default::default()
-        };
-        let output = build(&sources, &UsageInfo::default(), &settings).unwrap();
-        let lights = crate::mge_xe::lights::parse_lights(&output.bytes).unwrap();
-        assert_eq!(lights.source_count as usize, output.source_count);
-        assert_eq!(lights.tiles.len(), output.tile_count);
-        assert_eq!(lights.sources.len(), sources.len() * LIGHT_SOURCE_SIZE);
-        assert_eq!(lights.sources[..12], [1.0f32, 2.0, 3.0].map(f32::to_le_bytes).concat());
-    }
-
-    #[test]
-    fn lights_add() {
-        let a = source([0.0, 0.0, 0.0], 100.0, [100, 0, 0]);
-        let b = source([0.0, 0.0, 0.0], 100.0, [100, 0, 0]);
-        assert!((light_at([0.0; 3], &[&a, &b])[0] - 200.0 / 255.0).abs() < 1e-6);
-    }
-}
+mod tests;

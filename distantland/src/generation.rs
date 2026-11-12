@@ -534,17 +534,22 @@ fn run_generation(
                 |usage_info| {
                     let started = Instant::now();
                     let projections = projection::Projections::capture(usage_info, &job.settings, &overrides);
-                    // The light sources need the ids of the references, which the remap after
-                    // the capture turns into the names of meshes.
-                    let light_sources = if job.settings.distant_lights {
-                        lights::light_sources(usage_info)
+                    // The lamps need the ids of the references, which the remap after the
+                    // capture turns into the names of meshes, and the interiors, which the
+                    // filter after it drops.
+                    let light_blocks = if job.settings.distant_lights {
+                        lights::light_blocks(
+                            usage_info,
+                            usage_options.include_behaves_like_exterior,
+                            usage_options.exclude_script_disable_targets,
+                        )
                     } else {
-                        Vec::new()
+                        Default::default()
                     };
-                    (projections, started.elapsed(), light_sources)
+                    (projections, started.elapsed(), light_blocks)
                 },
             )?;
-        let (mut projections, mut projection_build_time, light_sources) = capture;
+        let (mut projections, mut projection_build_time, light_blocks) = capture;
         let grass_capture_started = Instant::now();
         projections.capture_dedicated_grass(&usage_info, &grass_plugins, &job.settings, &overrides);
         projection_build_time += grass_capture_started.elapsed();
@@ -561,10 +566,10 @@ fn run_generation(
             grass_plugin_identities,
             grass_warnings,
             projections,
-            light_sources,
+            light_blocks,
         ))
     })?;
-    let (mut usage_info, plugin_identities, grass_plugin_identities, grass_warnings, _projections, light_sources) =
+    let (mut usage_info, plugin_identities, grass_plugin_identities, grass_warnings, _projections, light_blocks) =
         usage_result;
     // The report of the mesh overrides: which keys matched a mesh of an object of this load
     // order. The run writes it after the unit diff (`RunMode::override_log`).
@@ -599,20 +604,21 @@ fn run_generation(
     metrics.usage.exterior_reference_count_after_parse = usage_info.exterior_references_count();
     metrics.usage.script_disable = usage_info.script_disable.clone();
 
-    // The light sources and the baked light, before the pruning drops the references that no
-    // distant static uses.
+    // The bytes of the lights file, from the lamps and the smoke taken before the remap.
     let lights = {
         let span = info_span!(
             "stage.distant_lights",
             report = true,
-            source_count = field::Empty,
-            tile_count = field::Empty
+            block_count = field::Empty,
+            lamp_count = field::Empty,
+            smoke_count = field::Empty
         );
         let _guard = span.enter();
-        let lights = lights::build(&light_sources, &usage_info, &job.settings);
+        let lights = lights::build(&light_blocks, &job.settings);
         if let Some(lights) = lights.as_ref() {
-            record_usize(&span, "source_count", lights.source_count);
-            record_usize(&span, "tile_count", lights.tile_count);
+            record_usize(&span, "block_count", lights.block_count);
+            record_usize(&span, "lamp_count", lights.lamp_count);
+            record_usize(&span, "smoke_count", lights.smoke_count);
         }
         lights
     };
