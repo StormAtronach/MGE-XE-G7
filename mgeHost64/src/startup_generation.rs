@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
+use distantland::output_index::{OutputValidation, open_output_snapshot};
 use distantland::{
     GenerationJob, GenerationOutcome, GenerationReport, GenerationStage, OutputStatus, OutputStatusKind, ProgressReporter,
     check_output_status, ensure_generated, load_generation_job_file, resolve_generation_job_paths,
@@ -15,6 +17,9 @@ const STARTUP_JOB_PATH: &str = "mgeXE.toml";
 const RUNTIME_OUTPUT_ROOT: &str = "Data Files";
 const RUNTIME_MORROWIND_INI: &str = "Morrowind.ini";
 const MUTEX_WAIT_CHUNK_MS: u32 = 1000;
+/// How long the output check waits for a writer of the tree (a generation of the GUI) to let
+/// go of its lock. The IPC host mode waits as long in `main.rs`.
+const OUTPUT_CHECK_LOCK_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DistantLandStartupStatus {
@@ -26,6 +31,36 @@ pub enum DistantLandStartupStatus {
     Generated,
     GenerationFailedExistingOutputValid,
     GenerationFailedDistantLandDisabled,
+}
+
+impl DistantLandStartupStatus {
+    /// Whether the distant land of `output_root` may load after this status, or why not.
+    ///
+    /// `AlreadyValid` and `GenerationFailedExistingOutputValid` come from a Routine snapshot of
+    /// the output, and `Generated` from the generator's own validation of the tree it
+    /// committed: they answer without a second look. The statuses that stopped before the
+    /// output was looked at load only what [`check_output`] accepts.
+    pub fn output_usable(self, output_root: &Path) -> Result<(), String> {
+        match self {
+            Self::AlreadyValid | Self::Generated | Self::GenerationFailedExistingOutputValid => Ok(()),
+            Self::GenerationFailedDistantLandDisabled => {
+                Err("the startup generation failed and left no valid distant land".to_string())
+            }
+            Self::GenerationDisabled | Self::JobMissing | Self::JobInvalid | Self::StatusCheckFailed => {
+                check_output(output_root)
+            }
+        }
+    }
+}
+
+/// Whether the distant land in `output_root` opens as a Routine snapshot (its committed
+/// `generation_state.bin`, and each file it lists with its exact length and header), or why
+/// not, as the reason code and its text. The IPC host mode loads only such an output, at
+/// every start.
+pub fn check_output(output_root: &Path) -> Result<(), String> {
+    open_output_snapshot(output_root, OUTPUT_CHECK_LOCK_WAIT, OutputValidation::Routine)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 pub fn ensure_distant_land_ready(configuration: &mut Configuration, morrowind_root: &Path) -> DistantLandStartupStatus {
@@ -624,6 +659,79 @@ mod tests {
 
         assert_eq!(status, DistantLandStartupStatus::GenerationFailedDistantLandDisabled);
         assert!(!configuration.distant_land_enabled());
+    }
+
+    /// The statuses that stop before the output is looked at.
+    const UNCHECKED_STATUSES: [DistantLandStartupStatus; 4] = [
+        DistantLandStartupStatus::GenerationDisabled,
+        DistantLandStartupStatus::JobMissing,
+        DistantLandStartupStatus::JobInvalid,
+        DistantLandStartupStatus::StatusCheckFailed,
+    ];
+
+    /// The statuses that come from a validation of the output.
+    const VALIDATED_STATUSES: [DistantLandStartupStatus; 3] = [
+        DistantLandStartupStatus::AlreadyValid,
+        DistantLandStartupStatus::Generated,
+        DistantLandStartupStatus::GenerationFailedExistingOutputValid,
+    ];
+
+    /// W446: a status that did not look at the output loads only an output that opens as a
+    /// Routine snapshot.
+    #[test]
+    fn an_unchecked_status_loads_a_routine_valid_tree() {
+        let root = TestRoot::new("unchecked_valid");
+        generated_tree(&root);
+        let output_root = root.path().join("Data Files");
+
+        for status in UNCHECKED_STATUSES {
+            assert_eq!(status.output_usable(&output_root), Ok(()), "{status:?}");
+        }
+    }
+
+    #[test]
+    fn an_unchecked_status_loads_no_missing_output() {
+        let root = TestRoot::new("unchecked_missing");
+        let output_root = root.path().join("Data Files");
+
+        for status in UNCHECKED_STATUSES {
+            let problem = status
+                .output_usable(&output_root)
+                .expect_err("a missing output is not usable");
+            assert!(problem.starts_with("missing_version: "), "{status:?}: {problem}");
+        }
+    }
+
+    #[test]
+    fn an_unchecked_status_loads_no_damaged_tree() {
+        let root = TestRoot::new("unchecked_damaged");
+        generated_tree(&root);
+        let output_root = root.path().join("Data Files");
+        let usage = output_root.join("distantland").join("statics").join("usage.data");
+        assert!(usage.is_file(), "the fixture must have committed a usage table to damage");
+        fs::write(&usage, b"").unwrap();
+
+        for status in UNCHECKED_STATUSES {
+            assert!(status.output_usable(&output_root).is_err(), "{status:?}");
+        }
+    }
+
+    /// A status that comes from a validation answers by itself: on a missing output, the
+    /// validated statuses still load and the failed generation still does not, so neither
+    /// opens the output again.
+    #[test]
+    fn a_validated_status_answers_without_opening_the_output() {
+        let root = TestRoot::new("validated_missing");
+        let output_root = root.path().join("Data Files");
+
+        for status in VALIDATED_STATUSES {
+            assert_eq!(status.output_usable(&output_root), Ok(()), "{status:?}");
+        }
+        assert!(
+            DistantLandStartupStatus::GenerationFailedDistantLandDisabled
+                .output_usable(&output_root)
+                .is_err()
+        );
     }
 
     #[test]
