@@ -25,7 +25,7 @@ Morrowind.exe (32-bit)                                 numidium.exe --live (64-b
 |     records of each frame  ------------------ring---->  trait Extension, SceneView        |
 | d3d8.dll (MGE XE, Deviceless)            |          |   overlay (F10), capture, errors     |
 |   weather, settings, mge API, vis groups |          |                                      |
-|     extension records 1-8  ------------------------>  DistantLand (impl Extension)        |
+|     extension records 1-12 ------------------------>  DistantLand (impl Extension)        |
 | MWSE.dll + Lua mods: mge.*, nirender.*   |          |   land, statics, grass, shadows,     |
 +------------------------------------------+          |   water, volumes, lights, post       |
                                                       +--------------------------------------+
@@ -55,9 +55,11 @@ Morrowind.exe (32-bit)                                 numidium.exe --live (64-b
 | 8 | vis groups | yes | on a cell change or a load |
 | 9 | status text (`StatusOverlay::setStatus`): warning, ms to show, text | no | at Present after a new text |
 | 10 | the place of the player after a teleport, or of a wait of a game load (`distant_land.wait_on_load`): version, serial, position, interior name | no | at MWSE's native event 5: a game load (the move to the loaded place, after the engine's resolve), or a teleport across more than one cell or to or from an interior |
+| 11 | hello: version, `MGE_EXTENSION_FORMAT`, the build id of d3d8.dll (64 bytes) | yes | once, at the plugin's load |
+| 12 | light settings (`Deviceless::sendLightSettings`): version, the engine's nine `[LightAttenuation]` values, the light limit asked and in force | yes | once, when the game is loaded |
 
 A kept record (bit `0x80000000`) stays in the stream, so a capture file holds it. Use kept
-records for state. The next free id is 11. The ids are constants at the top of `renderer.rs`
+records for state. The next free id is 13. The ids are constants at the top of `renderer.rs`
 and in `Deviceless`; each side names the other.
 
 The environment flags (record 1): 1 exponential fog, 2 under water, 4 an exterior or an

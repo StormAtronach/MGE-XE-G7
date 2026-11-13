@@ -1724,6 +1724,50 @@ namespace Deviceless {
         sendToRenderer(HelloId, &hello, sizeof(hello));
     }
 
+    // The light settings: record 12 (LIGHT_SETTINGS_ID in mgeHost64/src/renderer.rs), kept. The
+    // engine's values of [LightAttenuation] (MWBridge::lightAttenuation), from which the helper
+    // makes the terms of a distant lamp as the engine makes those of a near one, and the light
+    // limit. Sent one time, when the game is loaded: the values do not change after the start.
+    struct LightSettings {
+        UINT version;
+        // 1 UseConstant, 2 UseLinear, 4 UseQuadratic.
+        UINT flags;
+        INT linearMethod;
+        INT quadraticMethod;
+        float constantValue;
+        float linearValue;
+        float quadraticValue;
+        float linearRadiusMultiplier;
+        float quadraticRadiusMultiplier;
+        // 1 when OutQuadInLin is set, else 0.
+        UINT outQuadInLin;
+        // The most lights of a node that MGE XE asked of the engine: 0 when the setting
+        // ExpandedLightLimit is off.
+        UINT lightLimitAsked;
+        // The most lights of a node in force: the number asked when MWSE took it, else the
+        // engine's 7.
+        UINT lightLimit;
+    };
+    static const UINT LightSettingsId = 12 | 0x80000000u;
+
+    static void sendLightSettings(MWBridge* mwBridge, unsigned lightLimitAsked, unsigned lightLimit) {
+        const auto& attenuation = mwBridge->lightAttenuation();
+        LightSettings s = {};
+        s.version = 1;
+        s.flags = attenuation.flags;
+        s.linearMethod = attenuation.linearMethod;
+        s.quadraticMethod = attenuation.quadraticMethod;
+        s.constantValue = attenuation.constantValue;
+        s.linearValue = attenuation.linearValue;
+        s.quadraticValue = attenuation.quadraticValue;
+        s.linearRadiusMultiplier = attenuation.linearRadiusMultiplier;
+        s.quadraticRadiusMultiplier = attenuation.quadraticRadiusMultiplier;
+        s.outQuadInLin = attenuation.outQuadInLin ? 1 : 0;
+        s.lightLimitAsked = lightLimitAsked;
+        s.lightLimit = lightLimit;
+        sendToRenderer(LightSettingsId, &s, sizeof(s));
+    }
+
     // The place of the player goes to the helper (record 10): it streams the distant land
     // there, and says when the distant statics around the player are there (its arrival, the
     // event distantLandReady "arrived"). With `wait`, from distant_land.wait_on_load, the game
@@ -1925,16 +1969,20 @@ namespace Deviceless {
             // it asks MWSE for 48 lights of a node's own (the owner: "we could match 48 in the
             // active cell with wgpu"). It has no patch of the game's code of its own: refused,
             // a node keeps the engine's 7 (D424, "fail safely").
+            unsigned lightLimitAsked = 0;
+            unsigned lightLimit = 7;
             if (Configuration.ExpandedLightLimit) {
-                const unsigned lightLimit = 48;
-                if (MwseNative::requestLightLimit(lightLimit)) {
+                lightLimitAsked = 48;
+                if (MwseNative::requestLightLimit(lightLimitAsked)) {
+                    lightLimit = lightLimitAsked;
                     LOG::logline("-- wgpu renderer: light limit %u (a node's own lights), through MWSE", lightLimit);
                 } else {
-                    LOG::logline("!! wgpu renderer: light limit %u asked, the engine's limit stays (7 unless another module changed it): MWSE refused the request", lightLimit);
+                    LOG::logline("!! wgpu renderer: light limit %u asked, the engine's limit stays (7 unless another module changed it): MWSE refused the request", lightLimitAsked);
                 }
             } else {
                 LOG::logline("-- wgpu renderer: light limit 7 (a node's own lights): the setting ExpandedLightLimit is off");
             }
+            sendLightSettings(mwBridge, lightLimitAsked, lightLimit);
             // As on Direct3D 9: the engine attaches a light out to where the per-pixel fade
             // of the renderer ends. Without it a mesh past the radius of a light gets none of
             // it while its neighbour fades: a light seam.
