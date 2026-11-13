@@ -54,9 +54,9 @@ mod view;
 mod water;
 
 use crate::abi::constants::{
-    BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, EXP_FOG, FPS_COUNTER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY,
-    REFLECTIVE_WATER, USE_ATM_SCATTER, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_DISTANT_WATER, USE_FFESHADER, USE_GRASS,
-    USE_HDR, USE_HW_SHADER, USE_MENU_CACHING, USE_SHADOWS,
+    BLUR_REFLECTIONS, DISPLAY_MESSAGES, DYNAMIC_RIPPLES, FPS_COUNTER, REFLECT_INTERIOR, REFLECT_NEAR, REFLECT_SKY,
+    REFLECTIVE_WATER, USE_DISTANT_LAND, USE_DISTANT_STATICS, USE_DISTANT_WATER, USE_FFESHADER, USE_GRASS, USE_HDR,
+    USE_HW_SHADER, USE_MENU_CACHING, USE_SHADOWS,
 };
 use distantland::mge_xe::distant_terrain::{
     TERRAIN_ATLAS_FILE_NAME, TERRAIN_BLEND_PATTERNS_FILE_NAME, TERRAIN_FILE_NAME, TERRAIN_MATERIAL_FILE_NAME,
@@ -1094,20 +1094,12 @@ impl Default for Plan {
 pub struct DistantLand {
     enabled: bool,
     /// The water is wanted: distant land is on, or only distant water is (`USE_DISTANT_WATER`,
-    /// as `distantWater` of the Direct3D 9 path). One difference from that path is open: after
-    /// a start with distant land off the exterior water does not draw (the GPU data of the land
-    /// is not loaded; Direct3D 9 draws it). The water-only picture equals that of Direct3D 9
-    /// (mean difference 0.73 of 255; E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt,
+    /// as `distantWater` of the Direct3D 9 path), by the flags alone. It does not need the
+    /// land: a frame without terrain on the GPU (the land off, or never loaded) has the water
+    /// with a one-colour reflection and no far water. The water-only picture equals that of
+    /// Direct3D 9 (mean difference 0.73 of 255; E:/nirender-keep/d82-water-noui-2026-11-03/NUMBERS.txt,
     /// section 5).
     water_on: bool,
-    /// The shaders of Direct3D 9 have the scattering of the atmosphere in them
-    /// (`USE_SCATTERING`): the exponential fog and the scattering were both on when the shaders
-    /// last started, which is at the start and at each change of either, and with distant land
-    /// off then they are not (`DistantLand::initShader` clears both). The water scatters then in
-    /// each state, also with distant land off, by the weather and by the eye above the sea
-    /// (`fogColourScatter`); the record's scattering flag needs distant land, so this decides
-    /// for the water of a start without it.
-    scatter_shaders: bool,
     /// `views.full_tier_max`: how many views of a frame get the parts that a mod asks for with
     /// `mge.camera.setViewOptions`. `MGE_XE_FULL_TIER_MAX` (0 to 32, the view slots) overrides
     /// the file for a test. The number is the helper's places for the session
@@ -1328,7 +1320,8 @@ pub struct DistantLand {
     water_masks: Option<Vec<[f32; 3]>>,
     /// The bytes of the last record of the vis groups, for statics that start after it.
     vis_groups: Vec<u8>,
-    waves: Vec<u8>,
+    /// The wave texture's file, for the water and the post shaders: read at the first need.
+    waves: water::WaveFile,
     /// Why distant land is off when its data did not load (e.g. a data version that this
     /// build does not read), for the debug overlay.
     problem: Option<String>,
@@ -1724,9 +1717,7 @@ impl DistantLand {
             });
         let mut land = DistantLand {
             enabled: settings.enabled,
-            water_on: settings.enabled,
-            // As the shaders start with the settings of the file, before a settings record.
-            scatter_shaders: settings.enabled && settings.fog.exponential && settings.fog.atmosphere_scattering,
+            water_on: settings.enabled || settings.water_without_land,
             full_tier_max,
             draw_distance: settings.draw_distance * CELL,
             settings_fog: (settings.fog.above_water_start * CELL, settings.fog.above_water_end * CELL),
@@ -1854,7 +1845,7 @@ impl DistantLand {
             far_water: Vec::new(),
             water_masks: None,
             vis_groups: Vec::new(),
-            waves: Vec::new(),
+            waves: water::WaveFile::NotTried,
             problem: None,
             started: Instant::now(),
             meshes_drawn: 0,
@@ -1875,17 +1866,6 @@ impl DistantLand {
             settings.fog.above_water_start,
             settings.fog.above_water_end
         );
-        // The wave texture is for the water and for the post shaders. The post shaders run
-        // with distant land off too, as on the Direct3D 9 path.
-        if (land.enabled && land.water_enabled) || land.post_enabled {
-            // The wave texture: in the game folder (the mod of MGE XE in the file system of
-            // Mod Organizer), or beside this program for a replay.
-            land.waves = data_file(root, "textures/MGE/water_NRM.dds").unwrap_or_default();
-            if land.waves.is_empty() && land.enabled {
-                println!("water: the wave texture water_NRM.dds was not found; no water");
-                land.water_enabled = false;
-            }
-        }
         if land.enabled {
             // For a test, the distant land of another folder: MGE_XE_DISTANT_LAND_DIR.
             let test_folder = nirender_wgpu::switches::path("MGE_XE_DISTANT_LAND_DIR");
@@ -3316,26 +3296,29 @@ impl Extension for DistantLand {
                 ..FrameParameters::default()
             };
         }
-        // The terrain and the water are for an exterior. The statics, the fog distances and
-        // the blend are for a cell with a world space (`isDistantCell` of the Direct3D 9
-        // path): an exterior, an interior that is like one, or a plain interior cell with
-        // statics in the distant land data. The shadow map and the sky are for a cell that
-        // is like an exterior.
+        // The terrain is for an exterior; the water for any cell with water. The statics, the
+        // fog distances and the blend are for a cell with a world space (`isDistantCell` of
+        // the Direct3D 9 path): an exterior, an interior that is like one, or a plain interior
+        // cell with statics in the distant land data. The shadow map and the sky are for a
+        // cell that is like an exterior.
         let distant = self.facts.distant();
-        // The water: an exterior with its land, or an interior cell with water (`CellHasWater`
-        // of MGE XE, which draws its water there too, with a flat reflection).
-        let water_land = self.water_on && !scene.interior && self.facts.terrain;
-        let water_cell =
-            self.water_on && self.environment.is_some_and(|e| e.has_water != 0) && (water_land || scene.interior);
+        // The water: a cell with water (`CellHasWater` of MGE XE), an exterior or an interior,
+        // with the land or without it. Without terrain in the frame its reflection is one
+        // colour (`reflection`).
+        let water_cell = self.water_on && self.environment.is_some_and(|e| e.has_water != 0);
         if (water_cell || (self.water_on && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
-            let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
-            match timed("the water's pipelines", || {
-                Water::new(scene, &self.waves, &views.layout, &self.core_mods)
-            }) {
-                Ok(water) => self.water = Some(water),
-                Err(problem) => {
-                    println!("water: {problem}; no water");
-                    self.water_enabled = false;
+            // The wave file at the first need: a missing file leaves the engine's own plane.
+            let root = &self.root;
+            if let Some(waves) = self.waves.get(|| data_file(root, water::WAVE_FILE)) {
+                let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
+                match timed("the water's pipelines", || {
+                    Water::new(scene, waves, &views.layout, &self.core_mods)
+                }) {
+                    Ok(water) => self.water = Some(water),
+                    Err(problem) => {
+                        println!("water: {problem}; no water");
+                        self.water_enabled = false;
+                    }
                 }
             }
         }
@@ -3354,8 +3337,7 @@ impl Extension for DistantLand {
             water.set_debug(scene, self.debug_view.water_term());
         }
         self.far_water.clear();
-        self.volumes_ready =
-            self.water_on && self.water_enabled && self.water.is_some() && self.volume_skip(scene).is_none();
+        self.volumes_ready = self.water_on && self.water_enabled && self.water.is_some() && self.volume_skip().is_none();
         // In a water volume its top is the level of the water of the frame: the sea plane is
         // not cut there.
         let in_volume = self.environment.is_some_and(|e| e.flags & 16 != 0);
@@ -3389,16 +3371,21 @@ impl Extension for DistantLand {
             }
         }
         // The chain of post shaders runs in an interior and with distant land off too, as it
-        // does with MGE XE on Direct3D 9: its wave texture is that of the water, or one of its
-        // own when the frame has no water object. Without the file the shaders get a flat
-        // wave texture: a shader that reads it is wrong, but the chain still runs.
+        // does with MGE XE on Direct3D 9: its wave texture is that of the water, or one made
+        // from the same wave file when the frame has no water object. Without the file the
+        // shaders get a flat wave texture: a shader that reads it is wrong, but the chain still
+        // runs.
         if self.post_enabled && self.post.is_none() {
+            let root = &self.root;
             let waves = match self.water.as_ref() {
                 Some(water) => water.waves(),
-                None => water::wave_texture(scene, &self.waves).unwrap_or_else(|problem| {
-                    println!("post: {problem}; the shaders get a flat wave texture");
-                    water::flat_wave_texture(scene)
-                }),
+                None => match self.waves.get(|| data_file(root, water::WAVE_FILE)) {
+                    Some(bytes) => water::wave_texture(scene, bytes).unwrap_or_else(|problem| {
+                        println!("post: {problem}; the shaders get a flat wave texture");
+                        water::flat_wave_texture(scene)
+                    }),
+                    None => water::flat_wave_texture(scene),
+                },
             };
             let root = self.root.clone();
             self.post = Some(timed("the post chain's pipelines", || {
@@ -3936,23 +3923,14 @@ impl Extension for DistantLand {
         }
         if let Some(reason) = self.plan.world {
             Self::note_world_skipped(self.shadow_in_frame, reason, false);
-            // A cell without the distant land: the reflection of the water is one colour,
-            // as `clearReflection` of the Direct3D 9 path has it.
-            match self.plan.reflection {
-                Reflection::None(reason) => pass_report::note_skipped(part::REFLECTION_FILL, reason),
-                _ => {
-                    let frame = self.water_frame(scene);
-                    if let (Some(water), Ok(frame)) = (self.water.as_mut(), frame.as_ref()) {
-                        water.fill_reflection(scene, frame);
-                    }
-                }
-            }
+            self.fill_flat_reflection(scene);
             return false;
         }
         self.poll_lights(scene);
         // The terrain that the frame's facts have: one that came after them waits for the next frame.
         let Some(gpu) = self.gpu.as_ref().filter(|_| self.facts.terrain) else {
-            Self::note_world_skipped(self.shadow_in_frame, "no terrain on the GPU", true);
+            Self::note_world_skipped(self.shadow_in_frame, "no terrain on the GPU", false);
+            self.fill_flat_reflection(scene);
             return false;
         };
 
@@ -4858,12 +4836,12 @@ impl DistantLand {
             FrameAnswers::UnderMenu => Some(part::UNDER_MENU),
             FrameAnswers::World(_) => self.distant_skip(),
         };
-        let water = self.water_skip(scene);
+        let water = self.water_skip();
         Plan {
             world,
             terrain: Self::terrain_skip(scene),
             water,
-            volumes: self.volume_skip(scene),
+            volumes: self.volume_skip(),
             reflection: self.reflection(scene, world, water),
         }
     }
@@ -4882,8 +4860,10 @@ impl DistantLand {
         if !self.reflection_needed(scene, &frame) {
             return Reflection::None(part::OUT_OF_VIEW);
         }
-        // An interior reflects only with `reflect_interiors`.
-        if world.is_some() || (scene.interior && !self.reflect_interior) {
+        // Without terrain in the frame (the land off, never loaded or not loaded yet) the
+        // reflection is one colour, as `clearReflection` of the Direct3D 9 path has it. An
+        // interior reflects only with `reflect_interiors`.
+        if world.is_some() || !self.facts.terrain || (scene.interior && !self.reflect_interior) {
             return Reflection::Fill;
         }
         Reflection::Mirror
@@ -4933,6 +4913,20 @@ impl DistantLand {
             return Some("left out by MGE_XE_SKIP");
         }
         None
+    }
+
+    /// The reflection of a frame without the land's world (no distant land in the cell, or no
+    /// terrain on the GPU): one colour, as `clearReflection` of the Direct3D 9 path has it.
+    fn fill_flat_reflection(&mut self, scene: &SceneView) {
+        match self.plan.reflection {
+            Reflection::None(reason) => pass_report::note_skipped(part::REFLECTION_FILL, reason),
+            _ => {
+                let frame = self.water_frame(scene);
+                if let (Some(water), Ok(frame)) = (self.water.as_mut(), frame.as_ref()) {
+                    water.fill_reflection(scene, frame);
+                }
+            }
+        }
     }
 
     /// The parts of the world's start of the main view did not run, for `reason`: the shadow map
@@ -5436,30 +5430,27 @@ impl DistantLand {
         )
     }
 
-    /// Why the picture of `scene` has no water plane of the cell, or nothing: no environment,
-    /// no water in the cell, no water state, no land. Asked by the plan (W341 step B).
-    fn water_skip(&self, scene: &SceneView) -> Option<Skip> {
+    /// Why the frame has no water plane of the cell, or nothing: no environment, no water in
+    /// the cell, no water state. The land is not asked: the water draws without it. Asked by
+    /// the plan (W341 step B).
+    fn water_skip(&self) -> Option<Skip> {
         let Some(e) = self.environment else {
             return Some(part::NO_ENVIRONMENT);
         };
         if e.has_water == 0 {
             return Some("no water in the cell");
         }
-        self.volume_skip(scene)
+        self.volume_skip()
     }
 
-    /// Why the picture of `scene` has no surfaces of water volumes, or nothing: as
-    /// `water_skip`, in a cell without water too. Asked by the plan and by `frame`.
-    fn volume_skip(&self, scene: &SceneView) -> Option<Skip> {
+    /// Why the frame has no surfaces of water volumes, or nothing: as `water_skip`, in a cell
+    /// without water too. Asked by the plan and by `frame`.
+    fn volume_skip(&self) -> Option<Skip> {
         if self.environment.is_none() {
             return Some(part::NO_ENVIRONMENT);
         }
         if self.water.is_none() {
             return Some("no water state");
-        }
-        // A plain interior cell has its water without the land.
-        if scene.like_exterior && !self.facts.terrain {
-            return Some("no terrain on the GPU");
         }
         None
     }
@@ -5524,9 +5515,9 @@ impl DistantLand {
         let mut scattering = [[0.0f32; 4]; 5];
         if let Some(e) = self.environment.filter(|_| scene.like_exterior) {
             fog_color = [e.fog_col_far[0], e.fog_col_far[1], e.fog_col_far[2], 1.0];
-            // The record's flag needs distant land; the water of a state without it scatters as
-            // the shaders of Direct3D 9 do.
-            if e.flags & 8 != 0 || (!self.facts.on && self.scatter_shaders) {
+            // The record's flag: distant land, the scattering and a place like an exterior in
+            // this frame. Without the land the water has the fog of the game's scene.
+            if e.flags & 8 != 0 {
                 let far = e.sky_scatter_far;
                 let sky: [f32; 3] = core::array::from_fn(|i| e.sky_col[i] + (far[i] - e.sky_col[i]) * far[3]);
                 let altitude = (1.0 + e.sun_pos[2]).powi(10);
@@ -5678,13 +5669,7 @@ impl DistantLand {
         self.debug_view.settings_word(settings.debug);
         let loaded = self.gpu.is_some() || self.loading.is_some();
         self.enabled = on(USE_DISTANT_LAND) && loaded;
-        self.water_on = (on(USE_DISTANT_LAND) || on(USE_DISTANT_WATER)) && loaded;
-        // The shaders start again when either fog flag changes (`MGEAPIv1::loadConfig`).
-        // Difference: `MGEAPIv1::featureSetEnabled` (mge.render) only sets the flag and restarts no shaders; this latch follows any change of the flags.
-        let fog_flags = |flags: u32| flags & (EXP_FOG | USE_ATM_SCATTER);
-        if before.is_none_or(|b| fog_flags(b.flags) != fog_flags(settings.flags)) {
-            self.scatter_shaders = on(USE_DISTANT_LAND) && fog_flags(settings.flags) == (EXP_FOG | USE_ATM_SCATTER);
-        }
+        self.water_on = on(USE_DISTANT_LAND) || on(USE_DISTANT_WATER);
         self.shadows_enabled = on(USE_SHADOWS);
         self.post_enabled = on(USE_HW_SHADER);
         self.per_pixel.0 = on(USE_FFESHADER);
@@ -6716,31 +6701,26 @@ full_tier_max = 0
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// The water scatters with the shaders that have the scattering: both fog flags on when the
-    /// shaders last started, with distant land on then. A later change of distant land alone
-    /// leaves them as they are; a change of a fog flag starts them again.
+    /// W424: the water does not need a loaded land. A start with distant land off has the
+    /// water by distant water alone, and a later settings record turns it on or off by the
+    /// flags; the land itself stays off, as it was never loaded (the question of W425).
     #[test]
-    fn the_water_scatters_when_the_shaders_have_the_scattering() {
-        let root = std::env::temp_dir().join(format!("mge-scatter-flag-{}", std::process::id()));
+    fn the_water_needs_no_loaded_land() {
+        let root = std::env::temp_dir().join(format!("mge-water-no-land-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        std::fs::write(
+            root.join(FILE_NAME),
+            "[distant_land]\nenabled = false\nwater_without_land = true\n",
+        )
+        .unwrap();
         let mut land = DistantLand::start(&root, false);
-        let (_sender, receiver) = channel();
-        land.loading = Some(receiver);
-        let fog = EXP_FOG | USE_ATM_SCATTER;
-        // (flags of the record, the water scatters after it)
-        for (flags, scatters) in [
-            // A start with distant land off: the shaders have no scattering.
-            (fog | USE_DISTANT_WATER, false),
-            (fog | USE_DISTANT_WATER | USE_DISTANT_LAND, false),
-            // The scattering off, then on, with distant land on: the shaders start again.
-            (EXP_FOG | USE_DISTANT_LAND, false),
-            (fog | USE_DISTANT_LAND, true),
-            // Distant land off, the fog flags as before: the shaders stay.
-            (fog | USE_DISTANT_WATER, true),
-            // A change of a fog flag with distant land off: they start without it.
-            (EXP_FOG | USE_DISTANT_WATER, false),
-            (fog | USE_DISTANT_WATER, false),
+        assert!(land.loading.is_none() && land.gpu.is_none());
+        assert_eq!((land.enabled, land.water_on), (false, true));
+        for (flags, water_on) in [
+            (0, false),
+            (USE_DISTANT_WATER, true),
+            (USE_DISTANT_LAND, true),
+            (USE_DISTANT_LAND | USE_DISTANT_WATER, true),
         ] {
             land.settings = Some(Settings {
                 version: Settings::VERSION,
@@ -6748,8 +6728,14 @@ full_tier_max = 0
                 ..bytemuck::Zeroable::zeroed()
             });
             land.apply_settings();
-            assert_eq!(land.scatter_shaders, scatters, "flags {flags:#x}");
+            assert_eq!((land.enabled, land.water_on), (false, water_on), "flags {flags:#x}");
         }
+        std::fs::write(
+            root.join(FILE_NAME),
+            "[distant_land]\nenabled = false\nwater_without_land = false\n",
+        )
+        .unwrap();
+        assert!(!DistantLand::start(&root, false).water_on);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

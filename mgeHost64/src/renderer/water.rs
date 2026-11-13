@@ -1477,6 +1477,42 @@ impl Water {
     }
 }
 
+/// The path of the wave texture under `Data Files`.
+pub(super) const WAVE_FILE: &str = "textures/MGE/water_NRM.dds";
+
+/// The bytes of the wave texture file, read at the first need: the first water object or
+/// the first post chain, whenever in the session that comes. Its only owner; a missing file
+/// is a fact of the session, not a setting, and is not read again.
+#[derive(Debug, Default, PartialEq)]
+pub(super) enum WaveFile {
+    #[default]
+    NotTried,
+    Loaded(Vec<u8>),
+    Missing,
+}
+
+impl WaveFile {
+    /// The bytes, read with `read` at the first call; `None` when the file is missing. The
+    /// call that finds it missing writes the one log line.
+    pub(super) fn get(&mut self, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<&[u8]> {
+        if *self == Self::NotTried {
+            *self = match read() {
+                Some(bytes) => Self::Loaded(bytes),
+                None => {
+                    println!(
+                        "water: the wave texture {WAVE_FILE} was not found: no water of MGE XE, and the post shaders get a flat wave texture"
+                    );
+                    Self::Missing
+                }
+            };
+        }
+        match self {
+            Self::Loaded(bytes) => Some(bytes),
+            Self::NotTried | Self::Missing => None,
+        }
+    }
+}
+
 /// The wave texture: a DDS volume of 32-bit BGRA pixels, its first level only.
 pub(super) fn wave_texture(scene: &SceneView, dds: &[u8]) -> Result<wgpu::TextureView, String> {
     let word = |at: usize| u32::from_le_bytes(dds[at..at + 4].try_into().unwrap());
@@ -1786,5 +1822,18 @@ mod tests {
         // The ring before the last is within the view range of the game times 1.2.
         let before = vertices[vertices.len() - 300][0];
         assert!(before > 8192.0 && before < 9600.0, "{before}");
+    }
+
+    /// W424: the wave file is read once, at the first need; a missing file stays missing.
+    #[test]
+    fn the_wave_file_is_read_once() {
+        let mut found = WaveFile::default();
+        assert_eq!(found.get(|| Some(vec![1, 2])), Some(&[1u8, 2][..]));
+        assert_eq!(found.get(|| panic!("read again")), Some(&[1u8, 2][..]));
+
+        let mut missing = WaveFile::default();
+        assert_eq!(missing.get(|| None), None);
+        assert_eq!(missing.get(|| panic!("read again")), None);
+        assert_eq!(missing, WaveFile::Missing);
     }
 }
