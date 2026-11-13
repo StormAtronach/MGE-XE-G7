@@ -1486,6 +1486,12 @@ fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
     data_places(root, relative).iter().find_map(|place| std::fs::read(place).ok())
 }
 
+/// The wave texture file (about 10 MB), with its read time in the log: in a frame, the read
+/// stalls that frame.
+fn wave_file(root: &Path) -> Option<Vec<u8>> {
+    timed("the wave texture file", || data_file(root, water::WAVE_FILE))
+}
+
 /// The places of a path under `Data Files`, in the order [`data_file`] tries them. A place
 /// whose real path is one already in the list (the game folder is also the folder of this
 /// program, or `MGE_XE_GAME_DIR`) is left out.
@@ -3309,7 +3315,7 @@ impl Extension for DistantLand {
         if (water_cell || (self.water_on && self.volumes_wanted)) && self.water_enabled && self.water.is_none() {
             // The wave file at the first need: a missing file leaves the engine's own plane.
             let root = &self.root;
-            if let Some(waves) = self.waves.get(|| data_file(root, water::WAVE_FILE)) {
+            if let Some(waves) = self.waves.get(|| wave_file(root)) {
                 let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
                 match timed("the water's pipelines", || {
                     Water::new(scene, waves, &views.layout, &self.core_mods)
@@ -3379,7 +3385,7 @@ impl Extension for DistantLand {
             let root = &self.root;
             let waves = match self.water.as_ref() {
                 Some(water) => water.waves(),
-                None => match self.waves.get(|| data_file(root, water::WAVE_FILE)) {
+                None => match self.waves.get(|| wave_file(root)) {
                     Some(bytes) => water::wave_texture(scene, bytes).unwrap_or_else(|problem| {
                         println!("post: {problem}; the shaders get a flat wave texture");
                         water::flat_wave_texture(scene)
