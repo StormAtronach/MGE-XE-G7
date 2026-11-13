@@ -1865,6 +1865,12 @@ impl DistantLand {
             views_refusal_lines: 0,
             main_post_runs: 0,
         };
+        // The wave file before the first frame when the settings want the water or the post
+        // chain: a read in a frame stalls it. A later need (the water switched on in play)
+        // reads it then.
+        if land.water_on || land.post_enabled {
+            land.waves.get(|| wave_file(root));
+        }
         println!(
             "distant land: {}, draw distance {:.1} cells, fog from {:.2} to {:.2} cells",
             if land.enabled { "on" } else { "off in mgeXE.toml" },
@@ -6742,6 +6748,40 @@ full_tier_max = 0
         )
         .unwrap();
         assert!(!DistantLand::start(&root, false).water_on);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The wave file is read at the start when the settings want the water or the post chain,
+    /// and not when they want neither.
+    #[test]
+    fn the_wave_file_is_read_at_the_start_when_wanted() {
+        let root = std::env::temp_dir().join(format!("mge-wave-start-{}", std::process::id()));
+        let waves = root.join("Data Files").join(water::WAVE_FILE);
+        std::fs::create_dir_all(waves.parent().unwrap()).unwrap();
+        std::fs::write(&waves, b"waves").unwrap();
+        for (file, read) in [
+            (
+                "[distant_land]\nenabled = false\nwater_without_land = false\n[render]\nenable_shaders = false\n",
+                false,
+            ),
+            (
+                "[distant_land]\nenabled = false\nwater_without_land = true\n[render]\nenable_shaders = false\n",
+                true,
+            ),
+            (
+                "[distant_land]\nenabled = false\nwater_without_land = false\n[render]\nenable_shaders = true\n",
+                true,
+            ),
+        ] {
+            std::fs::write(root.join(FILE_NAME), file).unwrap();
+            let land = DistantLand::start(&root, false);
+            let expected = if read {
+                water::WaveFile::Loaded(b"waves".to_vec())
+            } else {
+                water::WaveFile::NotTried
+            };
+            assert_eq!(land.waves, expected, "{file}");
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 

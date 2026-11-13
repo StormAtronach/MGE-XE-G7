@@ -1480,9 +1480,10 @@ impl Water {
 /// The path of the wave texture under `Data Files`.
 pub(super) const WAVE_FILE: &str = "textures/MGE/water_NRM.dds";
 
-/// The bytes of the wave texture file, read at the first need: the first water object or
-/// the first post chain, whenever in the session that comes. Its only owner; a missing file
-/// is a fact of the session, not a setting, and is not read again.
+/// The bytes of the wave texture file, read at the start when the settings want the water or
+/// the post chain, else at the first need: the first water object or the first post chain,
+/// whenever in the session that comes. Its only owner; a missing file is a fact of the
+/// session, not a setting, and is not read again.
 #[derive(Debug, Default, PartialEq)]
 pub(super) enum WaveFile {
     #[default]
