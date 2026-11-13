@@ -77,6 +77,13 @@ unconfigured defaults. Unknown owned keys and invalid values warn and fall back 
 TOML syntax remains an error. MGEXEgui is the only product writer and persists this namespace inside
 `mgeXE.toml`.
 
+The CLI reads a job as mgeHost64 does, with one difference. It resolves the job's relative paths
+against the folder of `morrowind_ini`, which is the game folder in an install
+(`GenerationJob::resolve_paths_against_install`); mgeHost64 takes the game folder itself. With
+`auto_sync_plugins` on, the default, it replaces `plugins` with the live load order
+(`GenerationJob::sync_plugins_when_enabled`). So a job without `morrowind_ini` needs the
+install in the registry.
+
 ## Pipeline walkthrough
 
 `generate_with_output_root` ([src/generation.rs](src/generation.rs)) is a thin sequencer. Each
