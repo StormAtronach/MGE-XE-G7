@@ -1,4 +1,5 @@
 
+#include "mge/session.h"
 #include "funcmwui.h"
 
 
@@ -64,6 +65,9 @@ bool mwseUIShow::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&controlId)) {
         return false;
     }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWUI::Control* c = MWUI::selectControl(controlId);
     if (c) {
@@ -82,6 +86,9 @@ bool mwseUIHide::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&controlId)) {
         return false;
+    }
+    if (Session::plain()) {
+        return true;
     }
 
     MWUI::Control* c = MWUI::selectControl(controlId);

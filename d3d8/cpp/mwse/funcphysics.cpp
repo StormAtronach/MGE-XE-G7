@@ -1,4 +1,5 @@
 
+#include "mge/session.h"
 #include "funcphysics.h"
 #include "proxydx/d3d8header.h"
 #include "support/log.h"
@@ -98,6 +99,9 @@ bool mwseRayTest::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&dir.x)) { return false; }
     if (!_this->vmPop(&dir.y)) { return false; }
     if (!_this->vmPop(&dir.z)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     Reference* refr = mwseInstruction::vmGetTargetRef();
     if (refr) {
@@ -121,6 +125,9 @@ bool mwseRayTestFrom::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&dir.x)) { return false; }
     if (!_this->vmPop(&dir.y)) { return false; }
     if (!_this->vmPop(&dir.z)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     return invokeRayTest(_this, &pos, &dir);
 }
@@ -130,6 +137,12 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseRayHitPosition)
 
 // RayHitPosition -> <float x> <float y> <float z>
 bool mwseRayHitPosition::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     _this->vmPush(static_cast<VMFLOAT>(lastHit.intersection.z));
     _this->vmPush(static_cast<VMFLOAT>(lastHit.intersection.y));
     _this->vmPush(static_cast<VMFLOAT>(lastHit.intersection.x));
@@ -141,6 +154,12 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseRayHitNormal)
 
 // RayHitNormal -> <float nx> <float ny> <float nz>
 bool mwseRayHitNormal::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     _this->vmPush(static_cast<VMFLOAT>(lastHit.normal.z));
     _this->vmPush(static_cast<VMFLOAT>(lastHit.normal.y));
     _this->vmPush(static_cast<VMFLOAT>(lastHit.normal.x));
@@ -152,6 +171,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseRayHitRef)
 
 // RayHitRef -> <ref r>
 bool mwseRayHitRef::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMREGTYPE(0));
+        return true;
+    }
     Reference* refrHit = findNodeReference(lastHit.object);
     return _this->vmPush(reinterpret_cast<VMREGTYPE>(refrHit));
 }
@@ -161,6 +184,15 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseModelBounds)
 
 // [ref] ModelBounds -> <float min.x> <float min.y> <float min.z> <float max.x> <float max.y> <float max.z>
 bool mwseModelBounds::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     Reference* refr = vmGetTargetRef();
     PhysicalObject* entity = refr->baseObject;
 
@@ -192,6 +224,12 @@ bool mwseTransformVec::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&v.x)) { return false; }
     if (!_this->vmPop(&v.y)) { return false; }
     if (!_this->vmPop(&v.z)) { return false; }
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
 
     const float* m = &node->localRotation->m0.x;
     D3DXVec3Scale(&v, &v, node->localScale);
@@ -210,6 +248,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseIsAirborne)
 
 // [ref] IsAirborne -> <long>
 bool mwseIsAirborne::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMREGTYPE(0));
+        return true;
+    }
     void* actor = vmGetTargetActor();
     VMREGTYPE ret = 0;
 
@@ -230,6 +272,9 @@ bool mwseSetAirVelocity::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&v.x)) { return false; }
     if (!_this->vmPop(&v.y)) { return false; }
     if (!_this->vmPop(&v.z)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (actor) {
         *reinterpret_cast<D3DXVECTOR3*>(reinterpret_cast<BYTE*>(actor) + 0x3c) = v;

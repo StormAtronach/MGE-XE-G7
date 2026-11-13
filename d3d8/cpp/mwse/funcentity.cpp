@@ -1,4 +1,5 @@
 
+#include "mge/session.h"
 #include "mge/mwbridge.h"
 #include "funcentity.h"
 #include "tes3/nitypes.h"
@@ -22,6 +23,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseGetBaseHealth)
 
 // [ref] GetBaseHealth -> returns <float>
 bool mwseGetBaseHealth::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     VMFLOAT ret = 0;
     const BYTE* actor = reinterpret_cast<const BYTE*>(vmGetTargetActor());
 
@@ -37,6 +42,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseGetBaseMagicka)
 
 // [ref] GetBaseMagicka -> returns <float>
 bool mwseGetBaseMagicka::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     VMFLOAT ret = 0;
     const BYTE* actor = reinterpret_cast<const BYTE*>(vmGetTargetActor());
 
@@ -52,6 +61,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseGetBaseFatigue)
 
 // [ref] GetBaseFatigue -> returns <float>
 bool mwseGetBaseFatigue::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     VMFLOAT ret = 0;
     const BYTE* actor = reinterpret_cast<const BYTE*>(vmGetTargetActor());
 
@@ -67,6 +80,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseLastActorHit)
 
 // [ref] LastActorHit -> returns <ref>
 bool mwseLastActorHit::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMREGTYPE(0));
+        return true;
+    }
     VMREGTYPE ret = 0;
     const BYTE* actor = reinterpret_cast<const BYTE*>(vmGetTargetActor());
 
@@ -85,6 +102,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseGetDeleted)
 
 // [ref] GetDeleted -> returns <long>
 bool mwseGetDeleted::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMREGTYPE(0));
+        return true;
+    }
     const Reference* refr = vmGetTargetRef();
     VMREGTYPE ret = (refr->objectFlags & ObjectFlag::Delete) != 0;
     return _this->vmPush(ret);
@@ -95,6 +116,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseIsScripted)
 
 // [ref] IsScripted -> returns <long>
 bool mwseIsScripted::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMREGTYPE(0));
+        return true;
+    }
     const Reference* refr = vmGetTargetRef();
     const BaseObject* entity = refr->baseObject;
 
@@ -115,6 +140,9 @@ bool mwseSetEntityName::execute(mwseInstruction* _this) {
     Reference* refr = vmGetTargetRef();
     BaseObject* entity = refr->baseObject;
     const char* name = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!name) { return false; }
 
     // Check if entity is an actor clone, as only the base entity can set the name
@@ -164,6 +192,10 @@ bool mwseSetOwner::execute(mwseInstruction* _this) {
     VMREGTYPE ret = 0;
     Reference* refr = vmGetTargetRef();
     const char* id = _this->vmPopString();
+    if (Session::plain()) {
+        _this->vmPush(VMREGTYPE(0));
+        return true;
+    }
     if (!id) { return false; }
 
     typedef DWORD * (__thiscall *getConditionData_t)(Reference*);
@@ -196,6 +228,9 @@ bool mwseModelSwitchNode::execute(mwseInstruction* _this) {
     const char* node_name = _this->vmPopString();
     if (!node_name) { return false; }
     if (!_this->vmPop(&index)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (refr->sceneNode) {
         NI::Node* node = refr->sceneNode;

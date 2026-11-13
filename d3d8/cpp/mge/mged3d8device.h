@@ -73,4 +73,8 @@ namespace Deviceless {
     void message(unsigned id, const void* data, unsigned length);
     // The build of this d3d8.dll and the format of its records, for the helper's check.
     void sendHello();
+    // Takes the two events of MWSE that the wgpu renderer needs: the resolve of the game's ids
+    // and the player's change of cell. DllMain asks it, before the path is chosen. Returns the
+    // name of the event that MWSE refused, or null when both are taken.
+    const char* listenNeededEvents();
 }

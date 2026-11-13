@@ -1,4 +1,5 @@
 
+#include "mge/session.h"
 #include "funchud.h"
 #include "mge/userhud.h"
 
@@ -19,6 +20,9 @@ void resetMWSEHud() {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseWipeHUDElements)
 
 bool mwseWipeHUDElements::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     resetMWSEHud();
     return true;
 }
@@ -29,6 +33,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseWithHUD)
 // WithHUD <string hud>
 bool mwseWithHUD::execute(mwseInstruction* _this) {
     const char* hud = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!hud) { return false; }
 
     currentHUDName = hud;
@@ -40,6 +47,9 @@ bool mwseWithHUD::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseCancelWithHUD)
 
 bool mwseCancelWithHUD::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     currentHUDName.clear();
     currentHUD = MGEhud::invalid_hud_id;
     return true;
@@ -54,6 +64,9 @@ bool mwseLoadHUD::execute(mwseInstruction* _this) {
     if (!hud) { return false; }
 
     const char* tex = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!tex) { return false; }
 
     MGEhud::load(hud, tex);
@@ -73,6 +86,9 @@ bool mwsePositionHUD::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&x)) { return false; }
     if (!_this->vmPop(&y)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MGEhud::hud_id id = MGEhud::resolveName(hud);
     if (id != MGEhud::invalid_hud_id) {
@@ -94,6 +110,9 @@ bool mwseScaleHUD::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&xscale)) { return false; }
     if (!_this->vmPop(&yscale)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MGEhud::hud_id id = MGEhud::resolveName(hud);
     if (id != MGEhud::invalid_hud_id) {
@@ -108,6 +127,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseFullscreenHUD)
 
 bool mwseFullscreenHUD::execute(mwseInstruction* _this) {
     const char* hud = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!hud) { return false; }
 
     MGEhud::hud_id id = MGEhud::resolveName(hud);
@@ -123,6 +145,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseEnableHUD)
 
 bool mwseEnableHUD::execute(mwseInstruction* _this) {
     const char* hud = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!hud) { return false; }
 
     MGEhud::hud_id id = MGEhud::resolveName(hud);
@@ -138,6 +163,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseDisableHUD)
 
 bool mwseDisableHUD::execute(mwseInstruction* _this) {
     const char* hud = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!hud) { return false; }
 
     MGEhud::hud_id id = MGEhud::resolveName(hud);
@@ -157,6 +185,9 @@ bool mwseChangeHUDTexture::execute(mwseInstruction* _this) {
     if (!hud) { return false; }
 
     const char* tex = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!tex) { return false; }
 
     MGEhud::hud_id id = MGEhud::resolveName(hud);
@@ -176,6 +207,9 @@ bool mwseChangeHUDEffect::execute(mwseInstruction* _this) {
     if (!hud) { return false; }
 
     const char* fx = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!fx) { return false; }
 
     MGEhud::hud_id id = MGEhud::resolveName(hud);
@@ -191,6 +225,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseFreeHUD)
 
 bool mwseFreeHUD::execute(mwseInstruction* _this) {
     const char* hud = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!hud) { return false; }
 
     MGEhud::hud_id id = MGEhud::resolveName(hud);
@@ -207,6 +244,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseNIDLoadHUD)
 // NIDLoadHUD <string texture>
 bool mwseNIDLoadHUD::execute(mwseInstruction* _this) {
     const char* tex = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!tex) { return false; }
 
     currentHUD = MGEhud::load(currentHUDName.c_str(), tex);
@@ -222,6 +262,9 @@ bool mwseNIDPositionHUD::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&x)) { return false; }
     if (!_this->vmPop(&y)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::setPosition(currentHUD, x, y);
@@ -238,6 +281,9 @@ bool mwseNIDScaleHUD::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&xscale)) { return false; }
     if (!_this->vmPop(&yscale)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::setScale(currentHUD, xscale, yscale);
@@ -249,6 +295,9 @@ bool mwseNIDScaleHUD::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseNIDFullscreenHUD)
 
 bool mwseNIDFullscreenHUD::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::setFullscreen(currentHUD);
     }
@@ -259,6 +308,9 @@ bool mwseNIDFullscreenHUD::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseNIDEnableHUD)
 
 bool mwseNIDEnableHUD::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::setEnabled(currentHUD, true);
     }
@@ -269,6 +321,9 @@ bool mwseNIDEnableHUD::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseNIDDisableHUD)
 
 bool mwseNIDDisableHUD::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::setEnabled(currentHUD, false);
     }
@@ -281,6 +336,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseNIDChangeHUDTexture)
 // NIDChangeHUDTexture <string texture>
 bool mwseNIDChangeHUDTexture::execute(mwseInstruction* _this) {
     const char* tex = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!tex) { return false; }
 
     if (currentHUD != MGEhud::invalid_hud_id) {
@@ -295,6 +353,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseNIDChangeHUDEffect)
 // NIDChangeHUDEffect <string effect>
 bool mwseNIDChangeHUDEffect::execute(mwseInstruction* _this) {
     const char* fx = _this->vmPopString();
+    if (Session::plain()) {
+        return true;
+    }
     if (!fx) { return false; }
 
     if (currentHUD != MGEhud::invalid_hud_id) {
@@ -307,6 +368,9 @@ bool mwseNIDChangeHUDEffect::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseNIDFreeHUD)
 
 bool mwseNIDFreeHUD::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::free(currentHUD);
         currentHUD = MGEhud::invalid_hud_id;
@@ -326,6 +390,9 @@ bool mwseNIDSetHUDEffectLong::execute(mwseInstruction* _this) {
     varName = _this->vmPopString();
     if (!varName) { return false; }
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::setEffectInt(currentHUD, varName, x);
@@ -343,6 +410,9 @@ bool mwseNIDSetHUDEffectFloat::execute(mwseInstruction* _this) {
     varName = _this->vmPopString();
     if (!varName) { return false; }
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::setEffectFloat(currentHUD, varName, x);
@@ -363,6 +433,9 @@ bool mwseNIDSetHUDEffectVec::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&v[1])) { return false; }
     if (!_this->vmPop(&v[2])) { return false; }
     if (!_this->vmPop(&v[3])) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (currentHUD != MGEhud::invalid_hud_id) {
         MGEhud::setEffectVec4(currentHUD, varName, v);

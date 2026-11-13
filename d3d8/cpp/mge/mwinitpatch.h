@@ -4,15 +4,18 @@
 
 class MWInitPatch {
 public:
+    // The start of the Direct3D 9 path: its engine changes, written by MGE XE.
     static void patch();
-    // The engine changes of MGE XE on the wgpu path, after MWSE.dll is loaded: through MWSE's
-    // native ABI when MWSE has it.
-    static void patchWgpu(HMODULE mwse);
-    // The engine changes that only Direct3D 9 needs. The wgpu path can turn off after patchWgpu,
-    // so this also runs then. A second call writes the same byte.
-    static void patchDirect3D9EngineChanges();
+    // The start of the wgpu path, after DllMain's tests have passed: the clock's start and the
+    // BC7 reader, before the MWSE-MGE link.
+    static void patchWgpuStart();
+    // The engine changes of MGE XE on the wgpu path, after the MWSE-MGE link: all through
+    // MWSE's native ABI, whose table DllMain found.
+    static void patchWgpu();
 
 private:
     // The intro movies and the frame timer.
     static void patchEarlyEngineChanges();
+    // The engine changes that only Direct3D 9 needs.
+    static void patchDirect3D9EngineChanges();
 };

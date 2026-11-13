@@ -12,6 +12,12 @@ namespace NI {
 
 namespace MWPatches {
 
+// True when MGE XE may write the engine's code itself for a change that MWSE refused or does
+// not have: only with no table of MWSE's native ABI (the Direct3D 9 path). With the table (the
+// wgpu path) a refusal turns the feature off for the session; in the plain game nothing of
+// MGE XE goes into the game's code.
+bool mayWriteEngineCode();
+
 class VirtualMemWriteAccessor {
     void* address;
     size_t length;
@@ -92,7 +98,8 @@ void patchLightParticleMaterialModifier();
 // Alter rendering of cells without water, so that alphas are deferred to a new scene, enabling detection
 void patchWorldRenderingAccumulation();
 
-// Raises the per-node local light effect limit from 7 to 32
+// Raises the per-node local light effect limit from 7 to 32. With MWSE's table a refusal
+// keeps the engine's 7, with a warning.
 void patchExpandedLightLimit();
 
 // Routes every light's record radius through newfunc before the engine attaches

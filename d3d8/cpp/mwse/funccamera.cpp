@@ -1,4 +1,5 @@
 
+#include "mge/session.h"
 #include "funccamera.h"
 #include "mge/configuration.h"
 
@@ -9,6 +10,9 @@
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseEnableZoom)
 
 bool mwseEnableZoom::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.MGEFlags |= ZOOM_ASPECT;
     return true;
 }
@@ -17,6 +21,9 @@ bool mwseEnableZoom::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseDisableZoom)
 
 bool mwseDisableZoom::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.MGEFlags &= ~ZOOM_ASPECT;
     return true;
 }
@@ -25,6 +32,9 @@ bool mwseDisableZoom::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseToggleZoom)
 
 bool mwseToggleZoom::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.MGEFlags ^= ZOOM_ASPECT;
     return true;
 }
@@ -33,6 +43,9 @@ bool mwseToggleZoom::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseZoomIn)
 
 bool mwseZoomIn::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.CameraEffects.zoom = std::min(Configuration.CameraEffects.zoom + 0.0625f, 40.0f);
     return true;
 }
@@ -41,6 +54,9 @@ bool mwseZoomIn::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseZoomOut)
 
 bool mwseZoomOut::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.CameraEffects.zoom = std::max(1.0f, Configuration.CameraEffects.zoom - 0.0625f);
     return true;
 }
@@ -52,6 +68,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseZoomInBy)
 bool mwseZoomInBy::execute(mwseInstruction* _this) {
     VMFLOAT x;
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     Configuration.CameraEffects.zoom = std::min(Configuration.CameraEffects.zoom + x, 8.0f);
     return true;
@@ -64,6 +83,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseZoomOutBy)
 bool mwseZoomOutBy::execute(mwseInstruction* _this) {
     VMFLOAT x;
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     Configuration.CameraEffects.zoom = std::max(1.0f, Configuration.CameraEffects.zoom - x);
     return true;
@@ -76,6 +98,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseSetZoom)
 bool mwseSetZoom::execute(mwseInstruction* _this) {
     VMFLOAT x;
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     Configuration.CameraEffects.zoom = std::max(1.0f, x);
     return true;
@@ -88,6 +113,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseZoom)
 bool mwseZoom::execute(mwseInstruction* _this) {
     VMFLOAT x;
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     Configuration.CameraEffects.zoomRateTarget = x;
     Configuration.CameraEffects.zoomRate = (x < 0) ? x : 0;
@@ -98,6 +126,9 @@ bool mwseZoom::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseStopZoom)
 
 bool mwseStopZoom::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.CameraEffects.zoomRateTarget = 0;
     Configuration.CameraEffects.zoomRate = 0;
     return true;
@@ -108,6 +139,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseGetZoom)
 
 // GetZoom -> returns <float scale>
 bool mwseGetZoom::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     return _this->vmPush((VMFLOAT)Configuration.CameraEffects.zoom);
 }
 
@@ -115,6 +150,9 @@ bool mwseGetZoom::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseEnableCameraShake)
 
 bool mwseEnableCameraShake::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.CameraEffects.shake = true;
     return true;
 }
@@ -123,6 +161,9 @@ bool mwseEnableCameraShake::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseDisableCameraShake)
 
 bool mwseDisableCameraShake::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.CameraEffects.shake = false;
     return true;
 }
@@ -133,6 +174,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseSetCameraShakeMagnitude)
 // SetCameraShakeMagnitude <float>
 bool mwseSetCameraShakeMagnitude::execute(mwseInstruction* _this) {
     _this->vmPop(&Configuration.CameraEffects.shakeMagnitude);
+    if (Session::plain()) {
+        return true;
+    }
     return true;
 }
 
@@ -142,6 +186,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseCameraShakeAccel)
 // CameraShakeAccel <float>
 bool mwseCameraShakeAccel::execute(mwseInstruction* _this) {
     _this->vmPop(&Configuration.CameraEffects.shakeAccel);
+    if (Session::plain()) {
+        return true;
+    }
     return true;
 }
 
@@ -149,6 +196,9 @@ bool mwseCameraShakeAccel::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseStopCameraShakeAccel)
 
 bool mwseStopCameraShakeAccel::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.CameraEffects.shakeAccel = 0;
 	return true;
 }
@@ -160,6 +210,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseRotateScreenBy)
 bool mwseRotateScreenBy::execute(mwseInstruction* _this) {
     VMFLOAT x;
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     Configuration.CameraEffects.rotateUpdate = true;
     Configuration.CameraEffects.rotation += x;
@@ -173,6 +226,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseSetScreenRotation)
 bool mwseSetScreenRotation::execute(mwseInstruction* _this) {
     VMFLOAT x;
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     Configuration.CameraEffects.rotateUpdate = true;
     Configuration.CameraEffects.rotation = x;
@@ -185,6 +241,9 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseScreenSpin)
 bool mwseScreenSpin::execute(mwseInstruction* _this) {
     VMFLOAT x;
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     Configuration.CameraEffects.rotateUpdate = true;
     Configuration.CameraEffects.rotationRate = x;
@@ -195,6 +254,9 @@ bool mwseScreenSpin::execute(mwseInstruction* _this) {
 MWSEINSTRUCTION_DECLARE_VTABLE(mwseStopScreenSpin)
 
 bool mwseStopScreenSpin::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        return true;
+    }
     Configuration.CameraEffects.rotateUpdate = true;
     Configuration.CameraEffects.rotationRate = 0;
     return true;
@@ -205,6 +267,10 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseGetScreenRotation)
 
 // GetScreenRotation -> <float rads>
 bool mwseGetScreenRotation::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     VMFLOAT x = Configuration.CameraEffects.rotation;
     return _this->vmPush(x);
 }

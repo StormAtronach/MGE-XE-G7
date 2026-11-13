@@ -1,4 +1,5 @@
 
+#include "mge/session.h"
 #include "mge/mwbridge.h"
 #include "funcgmst.h"
 
@@ -12,6 +13,10 @@ bool mwseGetGS::execute(mwseInstruction* _this) {
     VMREGTYPE ret;
 
     if (!_this->vmPop(&Arg1)) { return false; }
+    if (Session::plain()) {
+        _this->vmPush(VMREGTYPE(0));
+        return true;
+    }
 
     ret = *(VMREGTYPE*)MWBridge::get()->getGMSTPointer(Arg1);
 
@@ -28,6 +33,9 @@ bool mwseSetGS::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&Arg1)) { return false; }
     if (!_this->vmPop(&Arg2)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     void* gmst = MWBridge::get()->getGMSTPointer(Arg1);
     *(VMLONG*)gmst = Arg2;
