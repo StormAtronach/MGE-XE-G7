@@ -603,6 +603,34 @@ impl GenerationJob {
         Ok(())
     }
 
+    /// Rebases the job's relative paths through the same [`resolve_generation_job_paths`] that
+    /// `load_startup_job` in mgeHost64 calls. The root is the folder of `morrowind_ini` (the job's
+    /// value, else the registry's install), which is the game folder in an install; mgeHost64
+    /// takes the game folder itself. A relative `morrowind_ini` is made absolute against the
+    /// working folder first, and `morrowind_ini` is pinned to that absolute path. A caller that
+    /// generates from a job file without this resolves a relative path, such as an entry of
+    /// `override_files`, against its own working folder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the job names no `morrowind_ini` and the registry has no install, or if
+    /// the path of `morrowind_ini` is empty.
+    pub fn resolve_paths_against_install(&mut self) -> Result<()> {
+        let named = match &self.morrowind_ini {
+            Some(path) => path.clone(),
+            None => find_morrowind_ini().context("Failed to find Morrowind.ini of the registry's install")?,
+        };
+        let morrowind_ini =
+            std::path::absolute(&named).with_context(|| format!("Failed to make {} an absolute path", named.display()))?;
+        let root = morrowind_ini
+            .parent()
+            .with_context(|| format!("{} has no folder", morrowind_ini.display()))?
+            .to_path_buf();
+        resolve_generation_job_paths(self, &root);
+        self.morrowind_ini = Some(morrowind_ini);
+        Ok(())
+    }
+
     /// Applies the job's own `auto_sync_plugins`, as `load_startup_job` in mgeHost64 does: when
     /// the key is on, pins `morrowind_ini` (the job's value, else the registry's install) and
     /// replaces `plugins` with the live load order through [`sync_plugins_from_load_order`].

@@ -42,7 +42,9 @@ fn main() -> Result<()> {
 
     let mut job = load_generation_job_file(job_path)?;
 
-    // As mgeHost64 does: the plugins of the live load order, not the saved list.
+    // As mgeHost64 does: relative paths against the game root, and the plugins of the live load
+    // order, not the saved list.
+    job.resolve_paths_against_install()?;
     if job.sync_plugins_when_enabled()? {
         info!(
             plugins = job.plugins.as_ref().map_or(0, Vec::len),

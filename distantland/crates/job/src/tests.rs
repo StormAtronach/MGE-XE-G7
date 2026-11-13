@@ -957,3 +957,38 @@ fn a_job_with_auto_sync_off_keeps_its_saved_list() {
     assert_eq!(job.plugins, Some(vec![PathBuf::from("Saved.esp")]));
     assert_eq!(job.morrowind_ini, Some(ini));
 }
+
+#[test]
+fn a_job_resolves_its_relative_paths_against_the_folder_of_its_ini() {
+    let dir = tempfile::tempdir().unwrap();
+    let ini = dir.path().join("Morrowind.ini");
+    let elsewhere = dir.path().join("elsewhere").join("rules.toml");
+    let mut job = GenerationJob {
+        morrowind_ini: Some(ini.clone()),
+        output_root: Some(PathBuf::from("Data Files")),
+        ..GenerationJob::default()
+    };
+    job.settings.override_files = vec![PathBuf::from("mge3/rules.toml"), elsewhere.clone()];
+
+    job.resolve_paths_against_install().unwrap();
+    assert_eq!(job.output_root, Some(dir.path().join("Data Files")));
+    assert_eq!(
+        job.settings.override_files,
+        vec![dir.path().join("mge3/rules.toml"), elsewhere]
+    );
+    assert_eq!(job.morrowind_ini, Some(ini));
+}
+
+#[test]
+fn a_bare_ini_name_resolves_against_the_working_folder_not_an_empty_root() {
+    let working = std::env::current_dir().unwrap();
+    let mut job = GenerationJob {
+        morrowind_ini: Some(PathBuf::from("Morrowind.ini")),
+        output_root: Some(PathBuf::from("Data Files")),
+        ..GenerationJob::default()
+    };
+
+    job.resolve_paths_against_install().unwrap();
+    assert_eq!(job.morrowind_ini, Some(working.join("Morrowind.ini")));
+    assert_eq!(job.output_root, Some(working.join("Data Files")));
+}
