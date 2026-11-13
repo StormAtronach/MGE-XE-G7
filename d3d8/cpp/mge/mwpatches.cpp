@@ -1,4 +1,5 @@
 #include "mge/mwpatches.h"
+#include "mge/session.h"
 #include "mwse/mwsenative.h"
 #include "support/log.h"
 #include "tes3/nitypes.h"
@@ -13,6 +14,10 @@
 
 namespace MWPatches {
 
+bool mayWriteEngineCode() {
+    return !MwseNative::available() && !Session::plain();
+}
+
 void disableScreenshotFunc() {
     DWORD addr = TES3::Address::patch_screenshotKey;
 
@@ -24,7 +29,7 @@ void disableScreenshotFunc() {
 //-----------------------------------------------------------------------------
 
 void disableSunglare() {
-    if (MwseNative::requestSunGlareOff()) {
+    if (MwseNative::requestSunGlareOff() || !mayWriteEngineCode()) {
         return;
     }
     DWORD addr = TES3::Address::patch_sunglare;
@@ -38,7 +43,7 @@ void disableSunglare() {
 //-----------------------------------------------------------------------------
 
 void disableIntroMovies() {
-    if (MwseNative::requestIntroMoviesSkipped()) {
+    if (MwseNative::requestIntroMoviesSkipped() || !mayWriteEngineCode()) {
         return;
     }
     DWORD addr = TES3::Address::patch_bethesdaLogoMovie;
@@ -129,7 +134,7 @@ void patchSplashScreen(unsigned int width, unsigned int height) {
 static int (__cdecl* patchFrameTimerTarget)();
 
 void patchFrameTimer(int (__cdecl* newfunc)()) {
-    if (MwseNative::claimFrameTimer(newfunc)) {
+    if (MwseNative::claimFrameTimer(newfunc) || !mayWriteEngineCode()) {
         return;
     }
     const auto& addrs = TES3::Address::patch_frameTimer;
@@ -157,7 +162,7 @@ static void __fastcall patchResolveDuringInitShim(void* worldController) {
 }
 
 void patchResolveDuringInit(void (__cdecl* newfunc)()) {
-    if (MwseNative::listenGameIdsResolved(newfunc)) {
+    if (MwseNative::listenGameIdsResolved(newfunc) || !mayWriteEngineCode()) {
         return;
     }
     const auto& addrs = TES3::Address::patch_resolveDuringInit;
@@ -173,7 +178,7 @@ void patchResolveDuringInit(void (__cdecl* newfunc)()) {
 //-----------------------------------------------------------------------------
 
 void patchLightParticleMaterialModifier() {
-    if (MwseNative::requestLightParticlesFix()) {
+    if (MwseNative::requestLightParticlesFix() || !mayWriteEngineCode()) {
         return;
     }
     DWORD addr = TES3::Address::patch_particleEmissiveMaterial;
@@ -226,6 +231,10 @@ void patchWorldRenderingAccumulation() {
 void patchExpandedLightLimit() {
     if (MwseNative::requestLightLimit(32)) {
         LOG::logline("-- Expanded per-node light limit to 32 (through MWSE)");
+        return;
+    }
+    if (!mayWriteEngineCode()) {
+        LOG::logline("!! Light limit 32 asked, 7 in force (a node's own lights): MWSE refused the request");
         return;
     }
     const DWORD addr = TES3::Address::patch_localEffectsLimit;
@@ -284,6 +293,9 @@ static void retargetCall(DWORD site, DWORD target) {
 void patchLightAttachRadius(int (__cdecl* newfunc)(const NI::PointLight* light, int radius)) {
     if (MwseNative::claimLightAttachRadius(reinterpret_cast<int (__cdecl*)(const void*, int)>(newfunc))) {
         LOG::logline("-- Light attach radius follows the per-pixel light fade (through MWSE)");
+        return;
+    }
+    if (!mayWriteEngineCode()) {
         return;
     }
     struct Site { DWORD address, original, shim; };

@@ -124,7 +124,7 @@ the Morrowind folder must be in the Morrowind folder itself, in one of two ways:
 In both ways, add `MGEXEgui.exe` as an executable of Mod Organizer 2 and run it from
 there, so that the distant land generator sees your mods. Check that the mod has the
 `.dll` files (`MWSE\lib\akulakhan.dll`, `MWSE\lib\watervolumes.dll`): a mod manager that
-leaves them out gives you MGE XE on Direct3D 9 without the distant land, and `MWSE.log`
+leaves them out gives you the game without MGE XE's renderer (a box says so), and `MWSE.log`
 has the line `[nirender] akulakhan.dll not loaded. If you use a mod manager, check that it
 did not leave .dll files out.`
 
@@ -195,8 +195,9 @@ change. That start can take some minutes. With an older file, set it below
   Windows 10 or 11.
 - MWSE 2.1 with the native ABI for DLL modules. Public MWSE does not have it yet, so this
   test build ships an `MWSE.dll` in its Morrowind folder: install it over yours. With an
-  MWSE.dll without the ABI the renderer is refused for the session, the game runs on
-  Direct3D 9, and `mgeXE.log` says "the MWSE.dll of the game has no native ABI". Do not
+  MWSE.dll without the ABI the renderer is not used for the session: the game runs as
+  without MGE XE, on its own Direct3D 8, a box says why, and `mgeXE.log` says "MWSE has no
+  native ABI of version 1". Do not
   run `MWSE-Update.exe` while you test this build: it puts the public MWSE.dll back. The
   plugin loads as an MWSE plugin (`Data Files/MWSE/lib/akulakhan.dll`,
   `Data Files/MWSE/mods/nirender/main.lua`); with a mod manager, check that it does not leave
@@ -204,11 +205,10 @@ change. That start can take some minutes. With an older file, set it below
 - The Morrowind Code Patch, 2.5 beta 19 or later as shipped with recent MWSE. The plugin
   replaces 301 functions of the game's renderer with its own code and follows the changes
   that the Code Patch makes in them. At the start it compares the code of each function
-  with its database; a change that it does not know turns the renderer off for the session,
-  and the game runs on Direct3D 9 through MGE XE's proxy, without the distant land for that
-  session. The message box after the load says so; the reasons are in `mgeXE.log`. Set
-  `renderer_wgpu = false` to get MGE XE with its distant land back until the cause is
-  known.
+  with its database; a change that it does not know turns the renderer off. The plugin has
+  changed the game's code by then, so a box says so and the game closes with the exit code
+  12; the reasons are in `mgeXE.log`. Set `renderer_wgpu = false` to play with MGE XE on
+  Direct3D 9 until the cause is known.
 - Another mod that changes the renderer code of the game (not its Lua) has the same effect.
 - A graphics card without the binding arrays of textures draws with texture tier C: each
   draw binds its own textures. The log names the tier (`texture tier: a` or `c`).
@@ -222,15 +222,19 @@ change. That start can take some minutes. With an older file, set it below
   the step, and the game closes when you close it.
   `nirender-host.log` has the details. Set `renderer_wgpu = false` under `[runtime]` to play
   with MGE XE on Direct3D 9.
-- When `numidium.exe` or `MWSE.dll` is not in the Morrowind folder, MGE XE runs on
-  Direct3D 9 as without the switch, and `mgeXE.log` names the file. A virus scanner can
-  take a program away, and an archive can be extracted in part.
-- When the plugin `Data Files/MWSE/lib/akulakhan.dll` is missing, the game runs on
-  Direct3D 9 through the proxy for that session, without the distant land, and `mgeXE.log`
-  says so.
-- The same fallback applies when the Lua side of the plugin does not run (the Lua of MWSE
-  failed to start, or `Data Files/MWSE/mods/nirender/main.lua` is missing): the game runs
-  on Direct3D 9 through the proxy for that session, and `mgeXE.log` says why.
+- When the renderer cannot be used in a session, the game runs as it does without MGE XE:
+  its own renderer on its own Direct3D 8, with MWSE and its mods, and no distant land and no
+  graphics of MGE XE. One box at the start says why and what to do, and `mgeXE.log` has the
+  line `!! wgpu renderer: not in use, ...`. The cases:
+  - `numidium.exe` or `MWSE.dll` is not in the Morrowind folder, or MWSE is turned off
+    (`mwse_disabled`). A virus scanner can take a program away, and an archive can be
+    extracted in part;
+  - MWSE has no native ABI (above);
+  - MWSE refuses one of the two events that the renderer needs; `MWSE.log` says why;
+  - the plugin `Data Files/MWSE/lib/akulakhan.dll` is missing or does not load, or its Lua
+    side did not run (the Lua of MWSE failed to start, or
+    `Data Files/MWSE/mods/nirender/main.lua` is missing).
+- `disabled = true` under `[runtime]` gives the same game without MGE XE, with no box.
 
 ## What you get
 
@@ -526,6 +530,13 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_BOX_SECONDS=<n>`: a message box of d3d8.dll, of the helper or of the plugin
   closes itself after n seconds, and its text is in that part's log as `box:` lines
   (always); unset or 0, the box waits for the click. The test runner sets 5.
+- `MGE_XE_NATIVE_ABI_VERSION=<n>` (d3d8.dll): MWSE's native ABI is asked at version n, so
+  an MWSE that is too old is made for a test of the game without MGE XE's renderer. Only a
+  version above d3d8.dll's own is taken; mgeXE.log has the line of its use.
+- `MGE_XE_NATIVE_REFUSE_EVENT=<id>` (d3d8.dll; 3 the resolve of the game's ids, 5 the
+  player's change of cell): that needed event counts as refused after MWSE took it, for a
+  test of the switch to the game without MGE XE's renderer and of the give-back to MWSE
+  (MWSE.log). It can only turn the renderer off; mgeXE.log has the line of its use.
 - `MGE_XE_SLOW_STEP=<seconds>`: one step of the helper's frame thread sleeps that long inside a
   long-step guard, then 600 ms more outside it in the same step, 300 frames after the loads ended,
   for a test of the long limits: 12 goes on, and 40 ends at the watchdog's 30 s with the exit code

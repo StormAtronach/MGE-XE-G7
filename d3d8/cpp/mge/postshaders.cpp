@@ -4,6 +4,7 @@
 #include "configuration.h"
 #include "mwpatches.h"
 #include "postshaders.h"
+#include "session.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -362,7 +363,7 @@ static std::unique_ptr<MGEShader> placeholderShader(const char* name) {
 
 void PostShaders::initShaderChainPlaceholders() {
     static bool made = false;
-    if (made || device || !Configuration.RendererWgpu) {
+    if (made || device || !Session::wgpu()) {
         return;
     }
     made = true;

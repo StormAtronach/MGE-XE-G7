@@ -5,10 +5,22 @@
 // The native ABI of MWSE (MWSENativeApi.h, a copy of the header of MWSE): MGE XE asks MWSE for
 // engine behaviour instead of writing engine code itself. Only the wgpu path uses it; the
 // Direct3D 9 path keeps its own patches. Each function returns false when MWSE's table is not in
-// use or MWSE refuses: the caller then patches the engine itself, as before.
+// use or MWSE refuses. With the table, a refusal turns that feature off for the session, and
+// the caller writes no engine code (available()); without it (the Direct3D 9 path) the caller
+// patches the engine itself, as before.
 namespace MwseNative {
-    // Looks for the table in MWSE.dll. True when MWSE has the native ABI.
-    bool init(HMODULE mwse);
+    // Looks for the table in MWSE.dll (null: no MWSE). True when MWSE has the native ABI.
+    // `askedVersion` gets the version asked (the switch MGE_XE_NATIVE_ABI_VERSION can raise
+    // it); it may be null.
+    bool init(HMODULE mwse, unsigned* askedVersion);
+
+    // MWSE's table is in use: a refusal of MWSE ends the feature, with no engine code of MGE XE.
+    bool available();
+
+    // Gives MWSE back each subscription and each claim of MGE XE, and stops asking MWSE:
+    // the switch to the plain game. MWSE's redirects of the game's code stay, with no
+    // listener of MGE XE.
+    void giveBack();
 
     // The UI scale through MWSE.
     bool requestUIScale(float scale);

@@ -4,8 +4,10 @@
 #include "mge/mwinitpatch.h"
 #include "mge/mged3d8device.h"
 #include "mge/mwbridge.h"
+#include "mge/session.h"
 #include "mge/startupgen.h"
 #include "mwse/mgebridge.h"
+#include "mwse/mwsenative.h"
 #include "support/winheader.h"
 #include "support/log.h"
 #include "support/crashlog.h"
@@ -23,22 +25,88 @@ static FARPROC getProc1(const char* lib, const char* funcname);
 static void setDPIScalingAware();
 
 static const char* welcomeMessage = MGE_BUILD_ID;
-static bool isMW;
-// The wgpu path was turned off for this session (wgpuPathOff). A latch of its own: mge.loadConfig
-// reads the settings again and sets Configuration.RendererWgpu back to the value of the file,
-// and a later Direct3DCreate8 (a restart of the renderer) must not take the wgpu path then.
-static bool wgpuOff = false;
 
-// The wgpu path is off for this session: the log line with the reason, the latch, and the
-// setting of the session. The callers: DllMain, when a part of the renderer is missing, and
-// the game's Direct3DCreate8, when the plugin does not give the game its Direct3D 8 (the
-// proxy, no distant land). A graphics device that cannot run the renderer is not a caller:
-// the helper refuses it with its own box, and the game closes (the owner's D386).
-static void wgpuPathOff(const char* reason) {
-    LOG::logline("!! wgpu renderer: not in use, %s. MGE XE continues with Direct3D 9", reason);
-    wgpuOff = true;
-    Configuration.RendererWgpu = false;
-    MWInitPatch::patchDirect3D9EngineChanges();
+// Loads MWSE.dll, which injects by itself, unless the setting runtime.mwse_disabled is on.
+// With `link`, the MWSE-MGE integration (the mge Lua API and MGE XE's MWScript instructions)
+// is set up. Returns MWSE's module, or null.
+static HMODULE loadMwse(bool link) {
+    if (Configuration.MGEFlags & MWSE_DISABLED) {
+        LOG::logline("MWSE is disabled.");
+        return NULL;
+    }
+    HMODULE dll = LoadLibraryA("MWSE.dll");
+    if (!dll) {
+        LOG::logline("MWSE.dll failed to load.");
+        return NULL;
+    }
+    if (link) {
+        MWSE_MGEPlugin::init(dll);
+    }
+    LOG::logline("MWSE.dll injected.");
+    return dll;
+}
+
+// Direct3D 9 (renderer_wgpu = false): the start as before the new renderer, a frozen path.
+static void startDirect3D9() {
+    Session::choose(Session::Path::Direct3D9);
+    // Early startup patches
+    MWInitPatch::patch();
+    loadMwse(!Configuration.OnlyProxyD3D8To9);
+}
+
+// The new renderer. It needs the helper program, which draws, and MWSE with its native ABI
+// and the two events of the renderer. When one of them is not there, the session is the
+// plain game. Nothing of MGE XE goes into the game's code, and nothing is asked of MWSE,
+// before these tests have passed.
+static void startWgpu() {
+    // Only the files in the folder of the game are examined. This code runs when the game
+    // loads d3d8.dll. At that time a mod manager with a virtual file system (Mod Organizer)
+    // does not show the files of its mods: a file below `Data Files` that is there looks
+    // missing. The plugin below `Data Files` is examined later, when the game asks for its
+    // Direct3D 8.
+    static const char* const parts[] = {
+        "numidium.exe",
+        "MWSE.dll",
+    };
+    for (const char* part : parts) {
+        if (GetFileAttributesA(part) == INVALID_FILE_ATTRIBUTES) {
+            Session::toPlainGame(Session::Why::PartMissing, part);
+            loadMwse(false);
+            return;
+        }
+    }
+    if (Configuration.MGEFlags & MWSE_DISABLED) {
+        Session::toPlainGame(Session::Why::MwseDisabled, nullptr);
+        loadMwse(false);
+        return;
+    }
+
+    HMODULE dll = loadMwse(false);
+    if (!dll) {
+        Session::toPlainGame(Session::Why::PartMissing, "MWSE.dll (it is there, but it did not load)");
+        return;
+    }
+    unsigned askedVersion = 0;
+    if (!MwseNative::init(dll, &askedVersion)) {
+        const std::string version = std::to_string(askedVersion);
+        Session::toPlainGame(Session::Why::NoNativeAbi, version.c_str());
+        return;
+    }
+    if (const char* refused = Deviceless::listenNeededEvents()) {
+        Session::toPlainGame(Session::Why::EventRefused, refused);
+        return;
+    }
+
+    Session::choose(Session::Path::Wgpu);
+    // The wgpu renderer of the helper draws the picture, and no Direct3D device exists. The
+    // parts of MGE XE that need its device stay off, as in proxy-only mode.
+    LOG::logline(">> Using the wgpu renderer: no Direct3D device");
+    Configuration.OnlyProxyD3D8To9 = true;
+    MWInitPatch::patchWgpuStart();
+    // MWSE-MGE integration
+    MWSE_MGEPlugin::init(dll);
+    // MWSE applies MGE XE's early engine changes on the wgpu path.
+    MWInitPatch::patchWgpu();
 }
 
 
@@ -58,9 +126,7 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
     }
 
     // Check if MW is in-process, avoid hooking the CS
-    isMW = bool(GetModuleHandle("Morrowind.exe"));
-
-    if (isMW) {
+    if (GetModuleHandle("Morrowind.exe")) {
         LOG::open("mgeXE.log");
         LOG::logline(welcomeMessage);
         CrashLog::install();
@@ -69,80 +135,20 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
 
         if (!Configuration.LoadSettings()) {
             LOG::logline("Error: MGE XE is not configured. MGE XE will be disabled for this session.");
-            isMW = false;
+            // As before: this session does not load MWSE.
+            Session::toPlainGame(Session::Why::NotConfigured, nullptr);
             return true;
         }
 
         if (Configuration.MGEFlags & MGE_DISABLED) {
-            // Signal that DirectX proxies should not load
-            isMW = false;
-        }
-
-        if (Configuration.RendererWgpu) {
-            // The wgpu renderer is on by default. It needs the helper program, which draws,
-            // and the nirender plugin with MWSE, which gives the game its Direct3D 8. When a
-            // part is missing, MGE XE runs as without the switch: all of MGE XE on
-            // Direct3D 9. A program that is missing was taken away (a virus scanner) or was
-            // not installed. The decision is made here, before the plugin asks, so the
-            // plugin stays idle.
-            //
-            // Only the files in the folder of the game are examined. This code runs when
-            // the game loads d3d8.dll. At that time a mod manager with a virtual file
-            // system (Mod Organizer) does not show the files of its mods: a file below
-            // `Data Files` that is there looks missing. The plugin below `Data Files` is
-            // examined later, when the game asks for its Direct3D 8.
-            static const char* const parts[] = {
-                "numidium.exe",
-                "MWSE.dll",
-            };
-            const char* missing = nullptr;
-            for (const char* part : parts) {
-                if (GetFileAttributesA(part) == INVALID_FILE_ATTRIBUTES) {
-                    missing = part;
-                    break;
-                }
-            }
-            if (!missing && (Configuration.MGEFlags & MWSE_DISABLED)) {
-                missing = "MWSE (the setting runtime.mwse_disabled is on)";
-            }
-            if (missing) {
-                wgpuPathOff((std::string("a part is missing: ") + missing).c_str());
-            }
-        }
-        // The choice of this session: a file with renderer_wgpu = false never calls
-        // wgpuPathOff, and a later loadConfig must not turn the path on.
-        wgpuOff = !Configuration.RendererWgpu;
-
-        if (Configuration.RendererWgpu) {
-            // The wgpu renderer of the helper draws the picture, and no Direct3D device
-            // exists. The parts of MGE XE that need its device stay off, as in proxy-only mode.
-            LOG::logline(">> Using the wgpu renderer: no Direct3D device");
-            Configuration.OnlyProxyD3D8To9 = true;
-        }
-
-        // Early startup patches
-        MWInitPatch::patch();
-
-        if (~Configuration.MGEFlags & MWSE_DISABLED) {
-            // Load MWSE dll, it injects by itself
-            HMODULE dll = LoadLibraryA("MWSE.dll");
-
-            if (dll) {
-                if ((~Configuration.MGEFlags & MGE_DISABLED) && (!Configuration.OnlyProxyD3D8To9 || Configuration.RendererWgpu)) {
-                    // MWSE-MGE integration
-                    MWSE_MGEPlugin::init(dll);
-                }
-                LOG::logline("MWSE.dll injected.");
-            } else {
-                LOG::logline("MWSE.dll failed to load.");
-            }
-            if (Configuration.RendererWgpu) {
-                // MWSE applies MGE XE's early engine changes on the wgpu path (MWInitPatch::patch
-                // left them out).
-                MWInitPatch::patchWgpu(dll);
-            }
+            // The player's choice: the plain game, with MWSE, and nothing of MGE XE in the
+            // game's code.
+            Session::toPlainGame(Session::Why::Disabled, nullptr);
+            loadMwse(false);
+        } else if (Configuration.RendererWgpu) {
+            startWgpu();
         } else {
-            LOG::logline("MWSE is disabled.");
+            startDirect3D9();
         }
 
         CrashLog::installUnhandledFilter();
@@ -207,15 +213,17 @@ static void* createStreamedD3D(UINT version) {
     // The plugin starts the program that this variable names as its renderer.
     SetEnvironmentVariableA("NIRENDER_HOST_EXE", (folder + "numidium.exe").c_str());
 
+    // Nothing of the plugin ran when it is missing, does not load, or has no create: the
+    // plain game (case d1).
     HMODULE plugin = LoadLibraryA((folder + "Data Files\\MWSE\\lib\\akulakhan.dll").c_str());
     if (!plugin) {
-        LOG::logline("!! wgpu renderer: Data Files\\MWSE\\lib\\akulakhan.dll did not load");
+        Session::toPlainGame(Session::Why::PluginFailed, "Data Files\\MWSE\\lib\\akulakhan.dll did not load");
         return nullptr;
     }
     typedef void* (__cdecl * CreateProc) (UINT);
     CreateProc create = (CreateProc)GetProcAddress(plugin, "nirender_direct3d_create8");
     if (!create) {
-        LOG::logline("!! wgpu renderer: the nirender plugin has no nirender_direct3d_create8");
+        Session::toPlainGame(Session::Why::PluginFailed, "the nirender plugin has no nirender_direct3d_create8");
         return nullptr;
     }
     streamExtension = (void (__cdecl *)(UINT, const void*, UINT))GetProcAddress(plugin, "nirender_stream_extension");
@@ -241,35 +249,46 @@ static void* createStreamedD3D(UINT version) {
         Deviceless::sendHello();
     }
     void* d3d = create(version);
-    // A plugin that refuses (no ports) gives the game no device: the Direct3D 9 path must not
-    // send the plugin its records then.
-    if (!d3d) {
-        streamExtension = nullptr;
-        viewOptionsExport = nullptr;
-        viewOptionsGetExport = nullptr;
+    if (d3d) {
+        return d3d;
     }
-    return d3d;
-}
-
-// The wgpu path for this session: the game is Morrowind, the path was not turned off
-// (wgpuPathOff), and the setting is on. Two ask it: the plugin when it loads
-// (MgeRendererWgpuActive), and the game when it asks for its Direct3D 8. No process is started
-// and nothing waits here: a graphics device that cannot run the renderer gets the helper's
-// refusal at its start, with a box and the code 20 (the owner's D386).
-static bool wgpuPathOn() {
-    return isMW && !wgpuOff && Configuration.RendererWgpu;
+    // The plugin refused: nothing may send it records. When it changed the game's code first
+    // (its detours stay), the game closes (case d2); a plugin without nirender_refused is
+    // from before that answer and counts as such. Else nothing of it is in the game's code,
+    // and the session is the plain game (case d1).
+    streamExtension = nullptr;
+    viewOptionsExport = nullptr;
+    viewOptionsGetExport = nullptr;
+    typedef const char* (__cdecl * RefusalProc) (UINT*);
+    RefusalProc refusal = (RefusalProc)GetProcAddress(plugin, "nirender_refusal");
+    if (!refusal) {
+        Session::closeAfterPluginRefusal("the plugin gave no Direct3D 8 and has no nirender_refusal");
+    }
+    UINT codeChanged = 1;
+    const char* cause = refusal(&codeChanged);
+    if (!cause) {
+        cause = "the plugin gave no Direct3D 8 and names no refusal";
+    }
+    if (codeChanged != 0) {
+        Session::closeAfterPluginRefusal(cause);
+    }
+    Session::toPlainGame(Session::Why::PluginRefused, cause);
+    return nullptr;
 }
 
 // The nirender plugin asks this when it loads: nonzero when the game gets its Direct3D 8
-// from the plugin. The plugin then puts its renderer code on before the game makes its renderer.
+// from the plugin (Session::wgpu, decided in DllMain). The plugin then puts its renderer code
+// on before the game makes its renderer. No process is started and nothing waits here: a
+// graphics device that cannot run the renderer gets the helper's refusal at its start, with a
+// box and the code 20 (the owner's D386).
 extern "C" UINT _stdcall MgeRendererWgpuActive() {
-    return wgpuPathOn() ? 1 : 0;
+    return Session::wgpu() ? 1 : 0;
 }
 
 // The nirender plugin calls these two at the points of a frame where the proxy device ran
 // the logic of MGE XE that is not drawing. See Deviceless in mge/mged3d8device.cpp.
 extern "C" void __cdecl MGE_StreamPresent(UINT width, UINT height) {
-    if (isMW && Configuration.RendererWgpu) {
+    if (Session::wgpu()) {
         Deviceless::present(width, height);
     }
 }
@@ -278,13 +297,13 @@ extern "C" void __cdecl MGE_StreamPresent(UINT width, UINT height) {
 // with the scene packet of its contract (mge_render_link.h, MgeLinkSceneV2: nirender stream
 // format 10).
 extern "C" void __cdecl MGE_StreamSceneBegin(MgeLinkSceneV2* scene) {
-    if (isMW && Configuration.RendererWgpu && scene) {
+    if (Session::wgpu() && scene) {
         Deviceless::sceneBegin(scene);
     }
 }
 
 extern "C" void __cdecl MGE_StreamTransform(UINT state, float* matrix, UINT targetIsBackBuffer) {
-    if (isMW && Configuration.RendererWgpu) {
+    if (Session::wgpu()) {
         Deviceless::transform(state, reinterpret_cast<D3DMATRIX*>(matrix), targetIsBackBuffer != 0);
     }
 }
@@ -293,32 +312,35 @@ extern "C" void __cdecl MGE_StreamTransform(UINT state, float* matrix, UINT targ
 // from a light's attenuation, which lightAttachRadius also takes, so that the fade ends inside
 // the attach radius. 0 when the attenuation gives no radius: the light has no fade.
 extern "C" float __cdecl MGE_LightFadeRadius(float constant, float linear, float quadratic) {
+    if (!Session::wgpu()) {
+        return 0.0f;
+    }
     return MWBridge::get()->pointLightRadius(constant, linear, quadratic);
 }
 
 // The nirender plugin calls this for each message of the extension in the helper, at the end
 // of a frame of the game. See Deviceless::message.
 extern "C" void __cdecl MGE_StreamMessage(UINT id, const void* data, UINT length) {
-    if (isMW && Configuration.RendererWgpu && data) {
+    if (Session::wgpu() && data) {
         Deviceless::message(id, data, length);
     }
 }
 
 extern "C" void* _stdcall FakeDirect3DCreate(UINT version) {
-    // Wrap Morrowind only, not TESCS
-    if (wgpuPathOn()) {
+    // The box of a switch to the plain game in DllMain.
+    Session::showPendingBox();
+    if (Session::wgpu()) {
         Configuration.EnsureSettingsFile();
         if (void* d3d = createStreamedD3D(version)) {
             return d3d;
         }
-        // The plugin did not serve; a caller that said why has turned the path off already.
-        if (Configuration.RendererWgpu) {
-            wgpuPathOff("the plugin did not give the game its Direct3D 8 (proxy-only mode)");
-        }
+        // The plugin did not serve: createStreamedD3D switched to the plain game.
+        Session::showPendingBox();
     }
-    if (isMW) {
+    // Wrap Morrowind only, not TESCS
+    if (Session::direct3D9()) {
         Configuration.EnsureSettingsFile();
-        StartupGeneration::launchEarlyHost(isMW);
+        StartupGeneration::launchEarlyHost(true);
         return CreateD3DWrapper(version);
     } else {
         // Use system D3D8
@@ -336,7 +358,8 @@ extern "C" HRESULT _stdcall FakeDirectInputCreate(HINSTANCE a, DWORD b, REFIID c
     HRESULT hr = (func)(a, b, c, &dinput, e);
 
     if (hr == S_OK) {
-        if (isMW) {
+        // The plain game's input is not wrapped.
+        if (Session::wgpu() || Session::direct3D9()) {
             *d = CreateInputWrapper(dinput);
         } else {
             *d = dinput;

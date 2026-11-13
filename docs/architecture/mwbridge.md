@@ -47,11 +47,15 @@ in `MWPatches::patchExpandedLightLimit`.
 
 ## Two-phase patch install
 
-**Phase 1, pre-device.** `MWInitPatch::patch()` runs during DLL attach, before any D3D device
-exists. It may only touch static addresses, since nothing has been allocated yet: UI-scale patch
-(only when MGE is disabled or in proxy-only mode), intro-movie skip,
+**Phase 1, pre-device.** On the Direct3D 9 path `MWInitPatch::patch()` runs during DLL attach,
+before any D3D device exists. It may only touch static addresses, since nothing has been allocated
+yet: UI-scale patch (only in proxy-only mode), intro-movie skip,
 `MWTextureLoader::patchLoadTexture2D`, `MWPatches::patchFrameTimer`, and
-`MWPatches::patchLightParticleMaterialModifier`.
+`MWPatches::patchLightParticleMaterialModifier`. On the wgpu path DllMain first tests MWSE's native
+ABI and takes the two events that the renderer needs; only then do `MWInitPatch::patchWgpuStart()`
+(the clock, the BC7 reader) and `MWInitPatch::patchWgpu()` (requests of MWSE, no engine code of
+MGE XE) run. When a test fails, or with `runtime.disabled`, the session is the plain game
+(`mge/session.h`): nothing of MGE XE goes into the game's code.
 
 **Phase 2, first usable Present.** `MGEProxyDevice::Present` tests `!IsLoaded() && CanLoad()`,
 then calls `Load()` followed by `MWPatches::patchGameLoading`,

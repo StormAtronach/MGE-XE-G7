@@ -921,7 +921,7 @@ bool MWBridge::getExteriorGrid(int& x, int& y) {
 
 // toggleRipples - Turns off ripple generation from all sources
 void MWBridge::toggleRipples(BOOL enabled) {
-    if (MwseNative::requestRipples(enabled != FALSE)) {
+    if (MwseNative::requestRipples(enabled != FALSE) || !MWPatches::mayWriteEngineCode()) {
         return;
     }
     auto* site = reinterpret_cast<DWORD*>(TES3::Address::patch_ripples);
@@ -1119,7 +1119,7 @@ float MWBridge::getUIScale() {
 //              MWBridge is not required to be loaded for this function.
 //              With MWSE's native ABI in use (the wgpu path), MWSE applies the scale.
 void MWBridge::setUIScale(float scale) {
-    if (MwseNative::requestUIScale(scale)) {
+    if (MwseNative::requestUIScale(scale) || !MWPatches::mayWriteEngineCode()) {
         return;
     }
 

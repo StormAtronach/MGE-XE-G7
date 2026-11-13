@@ -1,4 +1,5 @@
 
+#include "mge/session.h"
 #include "funcweather.h"
 #include "mge/mwbridge.h"
 #include "mge/configuration.h"
@@ -39,6 +40,9 @@ bool mwseSetSkyColour::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&r)) { return false; }
     if (!_this->vmPop(&g)) { return false; }
     if (!_this->vmPop(&b)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWWeather* w = (MWWeather*)MWBridge::get()->GetWthrStruct(weather_id);
     if (w && time_enum >= 0 && time_enum <= 3) {
@@ -61,6 +65,9 @@ bool mwseSetFogColour::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&r)) { return false; }
     if (!_this->vmPop(&g)) { return false; }
     if (!_this->vmPop(&b)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWWeather* w = (MWWeather*)MWBridge::get()->GetWthrStruct(weather_id);
     if (w && time_enum >= 0 && time_enum <= 3) {
@@ -83,6 +90,9 @@ bool mwseSetAmbientColour::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&r)) { return false; }
     if (!_this->vmPop(&g)) { return false; }
     if (!_this->vmPop(&b)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWWeather* w = (MWWeather*)MWBridge::get()->GetWthrStruct(weather_id);
     if (w && time_enum >= 0 && time_enum <= 3) {
@@ -105,6 +115,9 @@ bool mwseSetSunColour::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&r)) { return false; }
     if (!_this->vmPop(&g)) { return false; }
     if (!_this->vmPop(&b)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWWeather* w = (MWWeather*)MWBridge::get()->GetWthrStruct(weather_id);
     if (w && time_enum >= 0 && time_enum <= 3) {
@@ -126,6 +139,9 @@ bool mwseSetSunriseSunset::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&rise_dur)) { return false; }
     if (!_this->vmPop(&set_time)) { return false; }
     if (!_this->vmPop(&set_dur)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWBridge::get()->setSunriseSunset(rise_time, rise_dur, set_time, set_dur);
     return true;
@@ -136,6 +152,15 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseGetScattering)
 
 // GetWeatherScattering -> <float outscatter_red> <float outscatter_green> <float outscatter_blue> <float inscatter_red> <float inscatter_geen> <float inscatter_blue>
 bool mwseGetScattering::execute(mwseInstruction* _this) {
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
     _this->vmPush(DistantLand::atmOutscatter.r);
     _this->vmPush(DistantLand::atmOutscatter.g);
     _this->vmPush(DistantLand::atmOutscatter.b);
@@ -160,6 +185,9 @@ bool mwseSetScattering::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&inscatter_r)) { return false; }
     if (!_this->vmPop(&inscatter_g)) { return false; }
     if (!_this->vmPop(&inscatter_b)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     RGBVECTOR outscatter(outscatter_r, outscatter_g, outscatter_b), inscatter(inscatter_r, inscatter_g, inscatter_b);
     DistantLand::setScattering(outscatter, inscatter);
@@ -176,6 +204,9 @@ bool mwseSetWeatherGlare::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&weather_id)) { return false; }
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWWeather* w = (MWWeather*)MWBridge::get()->GetWthrStruct(weather_id);
     w->glareView = x;
@@ -193,6 +224,9 @@ bool mwseSetWeatherCloudSpeed::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&weather_id)) { return false; }
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWWeather* w = (MWWeather*)MWBridge::get()->GetWthrStruct(weather_id);
     w->cloudSpeed = x;
@@ -210,6 +244,9 @@ bool mwseSetWeatherWindSpeed::execute(mwseInstruction* _this) {
 
     if (!_this->vmPop(&weather_id)) { return false; }
     if (!_this->vmPop(&x)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     MWWeather* w = (MWWeather*)MWBridge::get()->GetWthrStruct(weather_id);
     w->windSpeed = x;
@@ -225,6 +262,11 @@ bool mwseGetWeatherDLFog::execute(mwseInstruction* _this) {
     VMREGTYPE weather_id;
 
     if (!_this->vmPop(&weather_id)) { return false; }
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
 
     if (weather_id >= 0 && weather_id <= 9) {
         _this->vmPush(Configuration.DL.FogD[weather_id]);
@@ -245,6 +287,9 @@ bool mwseSetWeatherDLFog::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&weather_id)) { return false; }
     if (!_this->vmPop(&dist)) { return false; }
     if (!_this->vmPop(&offset)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (weather_id >= 0 && weather_id <= 9) {
         Configuration.DL.FogD[weather_id] = dist;
@@ -262,6 +307,11 @@ bool mwseGetWeatherPPLLight::execute(mwseInstruction* _this) {
     VMREGTYPE weather_id;
 
     if (!_this->vmPop(&weather_id)) { return false; }
+    if (Session::plain()) {
+        _this->vmPush(VMFLOAT(0));
+        _this->vmPush(VMFLOAT(0));
+        return true;
+    }
 
     if (weather_id >= 0 && weather_id <= 9) {
         _this->vmPush(Configuration.Lighting.SunMult[weather_id]);
@@ -282,6 +332,9 @@ bool mwseSetWeatherPPLLight::execute(mwseInstruction* _this) {
     if (!_this->vmPop(&weather_id)) { return false; }
     if (!_this->vmPop(&sun)) { return false; }
     if (!_this->vmPop(&amb)) { return false; }
+    if (Session::plain()) {
+        return true;
+    }
 
     if (weather_id >= 0 && weather_id <= 9) {
         Configuration.Lighting.SunMult[weather_id] = sun;

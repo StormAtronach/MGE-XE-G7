@@ -21,6 +21,7 @@
 #include "morrowindskinning.h"
 #include "mwbridge.h"
 #include "postshaders.h"
+#include "session.h"
 #include "waterlook.h"
 #include "mwpatches.h"
 #include "statusoverlay.h"
@@ -1797,7 +1798,16 @@ namespace Deviceless {
     // The game resolved the objects of a save or of a new game. The player is still at the
     // place from before the load: the wait for the distant land comes at the move to the
     // loaded place (onPlayerCellChanged).
-    static void onResolveDuringInit() {
+    // MWSE's native event 3, taken in DllMain. It acts only after the game's load in the first
+    // frame (MWBridge loaded), the point where it was taken before: a call before that load
+    // (the game's start resolves its ids too) changes nothing.
+    static void __cdecl onGameIdsResolved() {
+        static unsigned count = 0;
+        if (!Session::wgpu() || !MWBridge::get()->IsLoaded()) {
+            return;
+        }
+        ++count;
+        LOG::logline("-- wgpu renderer: the game's ids were resolved (%u): the vis groups are loaded", count);
         loadVisGroups();
         DistantLand::resolveDynamicVisGroups();
         visGroupsUnsent = true;
@@ -1824,7 +1834,7 @@ namespace Deviceless {
     // with its loading bar still up. The engine has drawn no frame of the new place yet.
     static void __cdecl onPlayerCellChanged(const void* previousCell, const void* cell, bool gameLoad) {
         auto mwBridge = MWBridge::get();
-        if (!mwBridge->IsLoaded()) {
+        if (!Session::wgpu() || !mwBridge->IsLoaded()) {
             return;
         }
         if (!gameLoad && !isFarMove(static_cast<const TES3::Cell*>(previousCell), static_cast<const TES3::Cell*>(cell))) {
@@ -1836,6 +1846,16 @@ namespace Deviceless {
     // The messages of the helper. 1: the distant land, version 1, then the reason
     // (DistantLandReady::Reason), then the number of the wait it answers (0 for none).
     // MESSAGE_DISTANT_LAND in mgeHost64/src/renderer.rs.
+    const char* listenNeededEvents() {
+        if (!MwseNative::listenGameIdsResolved(&onGameIdsResolved)) {
+            return "the event of the resolve of the game's ids";
+        }
+        if (!MwseNative::listenPlayerCellChanged(&onPlayerCellChanged)) {
+            return "the event of the player's change of cell";
+        }
+        return nullptr;
+    }
+
     void message(unsigned id, const void* data, unsigned length) {
         static const unsigned DistantLandId = 1;
         if (id == DistantLandId && length >= 8) {
@@ -1911,10 +1931,6 @@ namespace Deviceless {
             // it while its neighbour fades: a light seam.
             if (Configuration.PerPixelLightFade) {
                 MWPatches::patchLightAttachRadius(&FixedFunctionShader::lightAttachRadius);
-            }
-            MWPatches::patchResolveDuringInit(&onResolveDuringInit);
-            if (!MwseNative::listenPlayerCellChanged(&onPlayerCellChanged)) {
-                LOG::logline("-- wgpu renderer: MWSE has no event of the player's change of cell; neither a game load nor a teleport waits for the distant land or says when it is there");
             }
             // As the proxy device at its first scene of the loaded game.
             StatusOverlay::setStatus(XE_VERSION_STRING);

@@ -8,6 +8,7 @@
 #include "mmefunctiondefs.h"
 #include "mgeversion.h"
 #include "postshaders.h"
+#include "session.h"
 #include "userhud.h"
 #include "mwbridge.h"
 #include "support/log.h"
@@ -969,7 +970,7 @@ namespace api {
     static void saveScreenshotCallback(IDirect3DSurface9* surface);
 
     void MGEAPIv2::saveScreenshot(const char* path, bool captureWithUI) {
-        if (path && Configuration.RendererWgpu) {
+        if (path && Session::wgpu()) {
             // The wgpu renderer mode: the renderer in the helper writes the file. A file
             // that is there stays, as with a device. A request before the first frame waits
             // for it.

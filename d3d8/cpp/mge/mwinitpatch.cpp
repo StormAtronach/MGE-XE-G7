@@ -32,30 +32,31 @@ static void _stdcall onUIScaleInit() {
 }
 
 void MWInitPatch::patch() {
-    // With the wgpu renderer MWSE configures the UI scale (patchUIScaleWgpu, after MWSE loads).
-    if (((Configuration.MGEFlags & MGE_DISABLED) || Configuration.OnlyProxyD3D8To9) && !Configuration.RendererWgpu) {
+    if (Configuration.OnlyProxyD3D8To9) {
         // User interface still needs to be scaled, normally done by the D3DDevice proxy
         // Without the proxy, patch Morrowind UI creation instead
         MWPatches::patchUIConfigure(onUIScaleInit);
     }
 
     // Patch texture loading to reduce process memory footprint
-    // The patch gives its textures to a Direct3D device with UpdateTexture. With the wgpu
-    // renderer the game has no Direct3D device, and the game code loads the textures.
-    if (!Configuration.RendererWgpu) {
-        MWTextureLoader::patchLoadTexture2D();
-    }
+    MWTextureLoader::patchLoadTexture2D();
     // The reader of BC7 DDS textures, for both renderers (the owner's D17: listed in the hook
     // plan for a later move into an MWSE request).
     MWTextureLoader::patchDDSReader();
 
     HighResolutionTimer::init();
 
-    // With the wgpu renderer MWSE applies these (patchWgpu, after MWSE loads).
-    if (!Configuration.RendererWgpu) {
-        patchEarlyEngineChanges();
-        patchDirect3D9EngineChanges();
-    }
+    patchEarlyEngineChanges();
+    patchDirect3D9EngineChanges();
+}
+
+void MWInitPatch::patchWgpuStart() {
+    // Before the frame timer's claim in patchWgpu: the clock reads its start here.
+    HighResolutionTimer::init();
+    // The reader of BC7 DDS textures (the owner's D17: listed in the hook plan for a later move
+    // into an MWSE request). The game has no Direct3D device here, and the game code loads
+    // the textures: no texture loader patch.
+    MWTextureLoader::patchDDSReader();
 }
 
 void MWInitPatch::patchDirect3D9EngineChanges() {
@@ -73,16 +74,14 @@ void MWInitPatch::patchEarlyEngineChanges() {
     MWPatches::patchFrameTimer(&HighResolutionTimer::getMilliseconds);
 }
 
-void MWInitPatch::patchWgpu(HMODULE mwse) {
-    // MWSE applies the engine changes of MGE XE at its requests (MWPatches asks MWSE first). An
-    // MWSE without its native ABI: MGE XE changes the engine code itself, as before.
-    MwseNative::init(mwse);
-
+void MWInitPatch::patchWgpu() {
+    // MWSE applies the engine changes of MGE XE at its requests (DllMain tested its native ABI
+    // before). A refusal turns that feature off for the session; MGE XE writes no engine code.
+    //
     // MWSE sets the UI scale when the engine makes its UI and tells when it did, for the
-    // borderless window.
-    if (!(MwseNative::listenUIConfigured(setupBorderlessWindow) && MwseNative::requestUIScale(Configuration.UIScale))) {
-        MWPatches::patchUIConfigure(onUIScaleInit);
-    }
+    // borderless window. Each is asked on its own: a refusal of one keeps the other.
+    MwseNative::listenUIConfigured(setupBorderlessWindow);
+    MwseNative::requestUIScale(Configuration.UIScale);
 
     patchEarlyEngineChanges();
 }

@@ -2,6 +2,7 @@
 #include "mge/mwpatches.h"
 #include "mge/bc7format.h"
 #include "mge/configuration.h"
+#include "mge/session.h"
 #include "support/log.h"
 #include "tes3/nitypes.h"
 
@@ -114,7 +115,7 @@ static bool __fastcall patchDDSReaderDecodeHeader(
     // The wgpu renderer takes BC7 while it is in use. On Direct3D 9 the texture-create patch
     // must be installed and the runtime must support the format: else the engine would make
     // a DXT5 texture of BC7 blocks.
-    if (!Configuration.RendererWgpu && !(loadTexturePatched && bc7TextureSupported)) {
+    if (!Session::wgpu() && !(loadTexturePatched && bc7TextureSupported)) {
         LOG::logline("BC7 DDS texture rejected: the active D3D9 runtime does not support MGE XE's BC7 format.");
         return false;
     }

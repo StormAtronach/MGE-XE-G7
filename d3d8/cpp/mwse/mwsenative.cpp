@@ -3,6 +3,8 @@
 #include "support/log.h"
 
 #include <cstdint>
+#include <cstdlib>
+#include <vector>
 #include "MWSENativeApi.h"
 
 namespace MwseNative {
@@ -13,16 +15,87 @@ namespace MwseNative {
     static void (__cdecl* gameIdsResolvedListener)() = nullptr;
     static void (__cdecl* playerCellChangedListener)(const void*, const void*, bool) = nullptr;
 
-    bool init(HMODULE mwse) {
-        auto getNativeApi = reinterpret_cast<MwseGetNativeApi>(GetProcAddress(mwse, "MWSE_GetNativeApi"));
-        const MwseNativeApiV1* found = getNativeApi ? getNativeApi(MWSE_NATIVE_API_VERSION) : nullptr;
+    // The handles of the subscriptions and of the claims: giveBack returns them to MWSE.
+    static std::vector<MwseNativeHandle> subscriptions;
+    static std::vector<MwseNativeHandle> claims;
+
+    // A test switch: a number, or 0 when it is not set or is not a number. Its use is logged.
+    static unsigned testSwitch(const char* name) {
+        char value[16];
+        const DWORD length = GetEnvironmentVariableA(name, value, sizeof(value));
+        if (length == 0 || length >= sizeof(value)) {
+            return 0;
+        }
+        char* end = nullptr;
+        const unsigned long number = std::strtoul(value, &end, 10);
+        if (!end || *end != '\0') {
+            LOG::logline("-- switch %s=%s: not a number; not used", name, value);
+            return 0;
+        }
+        return static_cast<unsigned>(number);
+    }
+
+    // MGE_XE_NATIVE_ABI_VERSION=<n>: the table is asked at version n. Only a version above
+    // MGE XE's own is taken, so the switch can only take the table away (a test of the plain
+    // game with an MWSE that is too old).
+    static uint32_t versionToAsk() {
+        const unsigned asked = testSwitch("MGE_XE_NATIVE_ABI_VERSION");
+        if (asked == 0) {
+            return MWSE_NATIVE_API_VERSION;
+        }
+        if (asked <= MWSE_NATIVE_API_VERSION) {
+            LOG::logline("-- switch MGE_XE_NATIVE_ABI_VERSION=%u: not above %u; not used", asked, MWSE_NATIVE_API_VERSION);
+            return MWSE_NATIVE_API_VERSION;
+        }
+        LOG::logline("-- switch MGE_XE_NATIVE_ABI_VERSION=%u: the native ABI is asked at version %u (a test)", asked, asked);
+        return asked;
+    }
+
+    bool init(HMODULE mwse, unsigned* askedVersion) {
+        const uint32_t version = versionToAsk();
+        if (askedVersion) {
+            *askedVersion = version;
+        }
+        auto getNativeApi = mwse ? reinterpret_cast<MwseGetNativeApi>(GetProcAddress(mwse, "MWSE_GetNativeApi")) : nullptr;
+        const MwseNativeApiV1* found = getNativeApi ? getNativeApi(version) : nullptr;
         if (!found || found->structSize < sizeof(MwseNativeApiV1)) {
-            LOG::logline("-- MWSE has no native ABI of version %u: MGE XE changes the engine code itself", MWSE_NATIVE_API_VERSION);
+            LOG::logline("-- MWSE has no native ABI of version %u", version);
             return false;
         }
         table = found;
         LOG::logline("-- MWSE native ABI: MWSE %s", table->mwseVersion);
         return true;
+    }
+
+    bool available() {
+        return table != nullptr;
+    }
+
+    void giveBack() {
+        if (!table) {
+            return;
+        }
+        for (auto handle : subscriptions) {
+            table->unsubscribe(handle);
+        }
+        for (auto handle : claims) {
+            table->release(handle);
+        }
+        if (!subscriptions.empty() || !claims.empty()) {
+            LOG::logline("-- MWSE native ABI: %u subscriptions and %u claims given back to MWSE",
+                         unsigned(subscriptions.size()), unsigned(claims.size()));
+        }
+        subscriptions.clear();
+        claims.clear();
+        uiConfiguredListener = nullptr;
+        gameIdsResolvedListener = nullptr;
+        playerCellChangedListener = nullptr;
+        table = nullptr;
+    }
+
+    // The log line of a refusal: the feature is off for the session.
+    static void logRefusal(const char* what, MwseNativeStatus status) {
+        LOG::logline("!! MWSE native ABI: %s was refused (status %d, see MWSE.log): %s is off this session", what, int(status), what);
     }
 
     // A request of MWSE; `what` names it in the log of a refusal.
@@ -32,7 +105,7 @@ namespace MwseNative {
         }
         auto status = table->request(MODULE, id, packet);
         if (status != MWSE_NATIVE_OK) {
-            LOG::logline("!! MWSE native ABI: %s was refused (status %d, see MWSE.log); MGE XE changes the engine code itself", what, int(status));
+            logRefusal(what, status);
             return false;
         }
         return true;
@@ -46,9 +119,10 @@ namespace MwseNative {
         void* engineFunction = nullptr;
         auto status = table->claim(MODULE, id, function, &engineFunction, &handle);
         if (status != MWSE_NATIVE_OK) {
-            LOG::logline("!! MWSE native ABI: %s was refused (status %d, see MWSE.log); MGE XE changes the engine code itself", what, int(status));
+            logRefusal(what, status);
             return false;
         }
+        claims.push_back(handle);
         return true;
     }
 
@@ -59,7 +133,16 @@ namespace MwseNative {
         MwseNativeHandle handle = 0;
         auto status = table->subscribe(MODULE, id, listener, nullptr, 0, &handle);
         if (status != MWSE_NATIVE_OK) {
-            LOG::logline("!! MWSE native ABI: %s was refused (status %d, see MWSE.log); MGE XE changes the engine code itself", what, int(status));
+            logRefusal(what, status);
+            return false;
+        }
+        subscriptions.push_back(handle);
+        // MGE_XE_NATIVE_REFUSE_EVENT=<id>: the subscription of that event counts as refused
+        // after MWSE took it, so the switch to the plain game and the give-back run (a test).
+        // It can only turn the new renderer off.
+        static const unsigned refuseEvent = testSwitch("MGE_XE_NATIVE_REFUSE_EVENT");
+        if (refuseEvent != 0 && refuseEvent == id) {
+            LOG::logline("-- switch MGE_XE_NATIVE_REFUSE_EVENT=%u: %s counts as refused (a test)", refuseEvent, what);
             return false;
         }
         return true;

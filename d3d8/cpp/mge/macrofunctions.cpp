@@ -8,6 +8,7 @@
 #include "distantland.h"
 #include "mged3d8device.h"
 #include "postshaders.h"
+#include "session.h"
 #include "support/pngsave.h"
 
 #include <cctype>
@@ -29,11 +30,15 @@ static int nextScreenshotOrdinal(const char* path);
 
 
 void MacroFunctions::TakeScreenshot() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     // Menu mode or Shift also captures the UI.
     bool captureWithUI = MWBridge::get()->IsMenu();
     captureWithUI |= (MGEProxyDirectInput::modifierKeys & 1) != 0;
 
-    if (Configuration.RendererWgpu) {
+    if (Session::wgpu()) {
         // The wgpu renderer mode: the renderer in the helper writes the file, in the format
         // that its extension names.
         char filename[MAX_PATH], path[MAX_PATH];
@@ -217,6 +222,10 @@ static void displayFlag(DWORD flag, const char* en, const char* ds) {
 }
 
 void MacroFunctions::ToggleStatusText() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags ^= DISPLAY_MESSAGES;
 
     if (Configuration.MGEFlags & DISPLAY_MESSAGES) {
@@ -225,25 +234,45 @@ void MacroFunctions::ToggleStatusText() {
 }
 
 void MacroFunctions::ToggleFpsCounter() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags ^= FPS_COUNTER;
 }
 
 void MacroFunctions::ShowLastMessage() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     StatusOverlay::showLastStatus();
 }
 
 void MacroFunctions::ToggleBlending() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags ^= NO_MW_MGE_BLEND;
     displayFlag(NO_MW_MGE_BLEND, "MW/MGE blend disabled", "MW/MGE blend enabled");
 }
 
 void MacroFunctions::ToggleShaders() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     PostShaders::updateShaderChain();
     Configuration.MGEFlags ^= USE_HW_SHADER;
     displayFlag(USE_HW_SHADER, "Shaders enabled", "Shaders disabled");
 }
 
 void MacroFunctions::ToggleDistantLand() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     if (!DistantLand::isDistantLandLoaded) {
         return;
     }
@@ -258,16 +287,28 @@ void MacroFunctions::ToggleDistantLand() {
 }
 
 void MacroFunctions::ToggleShadows() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags ^= USE_SHADOWS;
     displayFlag(USE_SHADOWS, "Shadows enabled", "Shadows disabled");
 }
 
 void MacroFunctions::ToggleGrass() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags ^= USE_GRASS;
     displayFlag(USE_GRASS, "Grass enabled", "Grass disabled");
 }
 
 void MacroFunctions::ToggleLightingMode() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     if (Configuration.MGEFlags & USE_FFESHADER) {
         if (Configuration.PerPixelLightFlags == 0) {
             Configuration.PerPixelLightFlags = 1;
@@ -284,60 +325,108 @@ void MacroFunctions::ToggleLightingMode() {
 }
 
 void MacroFunctions::ToggleTransparencyAA() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags ^= TRANSPARENCY_AA;
     displayFlag(TRANSPARENCY_AA, "Transparency AA enabled", "Transparency AA disabled");
 }
 
 void MacroFunctions::IncreaseViewRange() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     auto mwBridge = MWBridge::get();
     float r = mwBridge->GetViewDistance();
     mwBridge->SetViewDistance(std::min(7168.0f, r + 512.0f));
 }
 
 void MacroFunctions::DecreaseViewRange() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     auto mwBridge = MWBridge::get();
     float r = mwBridge->GetViewDistance();
     mwBridge->SetViewDistance(std::max(2500.0f, r - 512.0f));
 }
 
 void MacroFunctions::ToggleZoom() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags ^= ZOOM_ASPECT;
     displayFlag(ZOOM_ASPECT, "Zoom enabled", "Zoom disabled");
 }
 
 void MacroFunctions::ResetEnableZoom() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags |= ZOOM_ASPECT;
     Configuration.CameraEffects.zoom = 1.0;
     StatusOverlay::setStatus("Zoom reset");
 }
 
 void MacroFunctions::IncreaseZoom() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags |= ZOOM_ASPECT;
     Configuration.CameraEffects.zoom = std::min(Configuration.CameraEffects.zoom * 1.0078125f, 40.0f);
 }
 
 void MacroFunctions::DecreaseZoom() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.MGEFlags |= ZOOM_ASPECT;
     Configuration.CameraEffects.zoom = std::max(1.0f, Configuration.CameraEffects.zoom / 1.0078125f);
 }
 
 void MacroFunctions::ToggleCrosshair() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->ToggleCrosshair();
 }
 
 void MacroFunctions::NextTrack() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->SkipToNextTrack();
 }
 
 void MacroFunctions::DisableMusic() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->DisableMusic();
 }
 
 void MacroFunctions::IncreaseFOV() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.ScreenFOV = std::min(Configuration.ScreenFOV + 1.0f, 150.0f);
 }
 
 void MacroFunctions::DecreaseFOV() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     Configuration.ScreenFOV = std::max(60.0f, Configuration.ScreenFOV - 1.0f);
 }
 
@@ -346,34 +435,74 @@ int haggleMultiplier() {
 }
 
 void MacroFunctions::HaggleMore1() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleMore(1 * haggleMultiplier());
 }
 void MacroFunctions::HaggleMore10() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleMore(10 * haggleMultiplier());
 }
 void MacroFunctions::HaggleMore100() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleMore(100 * haggleMultiplier());
 }
 void MacroFunctions::HaggleMore1000() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleMore(1000 * haggleMultiplier());
 }
 void MacroFunctions::HaggleMore10000() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleMore(10000 * haggleMultiplier());
 }
 
 void MacroFunctions::HaggleLess1() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleLess(1 * haggleMultiplier());
 }
 void MacroFunctions::HaggleLess10() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleLess(10 * haggleMultiplier());
 }
 void MacroFunctions::HaggleLess100() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleLess(100 * haggleMultiplier());
 }
 void MacroFunctions::HaggleLess1000() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleLess(1000 * haggleMultiplier());
 }
 void MacroFunctions::HaggleLess10000() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     MWBridge::get()->HaggleLess(10000 * haggleMultiplier());
 }
 
@@ -385,6 +514,10 @@ static void displayCamPosition() {
 }
 
 void MacroFunctions::MoveForward3PCam() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     auto mwBridge = MWBridge::get();
     if (mwBridge->is3rdPerson() && !mwBridge->IsMenu()) {
         Configuration.Offset3rdPerson.y = std::min(-25.0f, Configuration.Offset3rdPerson.y * 0.96f);
@@ -393,6 +526,10 @@ void MacroFunctions::MoveForward3PCam() {
 }
 
 void MacroFunctions::MoveBack3PCam() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     auto mwBridge = MWBridge::get();
     if (mwBridge->is3rdPerson() && !mwBridge->IsMenu()) {
         Configuration.Offset3rdPerson.y = std::max(-2500.0f, Configuration.Offset3rdPerson.y * 1.04f);
@@ -401,6 +538,10 @@ void MacroFunctions::MoveBack3PCam() {
 }
 
 void MacroFunctions::MoveLeft3PCam() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     auto mwBridge = MWBridge::get();
     if (mwBridge->is3rdPerson() && !mwBridge->IsMenu()) {
         Configuration.Offset3rdPerson.x = std::max(-125.0f, Configuration.Offset3rdPerson.x - 1.0f);
@@ -409,6 +550,10 @@ void MacroFunctions::MoveLeft3PCam() {
 }
 
 void MacroFunctions::MoveRight3PCam() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     auto mwBridge = MWBridge::get();
     if (mwBridge->is3rdPerson() && !mwBridge->IsMenu()) {
         Configuration.Offset3rdPerson.x = std::min(125.0f, Configuration.Offset3rdPerson.x + 1.0f);
@@ -417,6 +562,10 @@ void MacroFunctions::MoveRight3PCam() {
 }
 
 void MacroFunctions::MoveDown3PCam() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     auto mwBridge = MWBridge::get();
     if (mwBridge->is3rdPerson() && !mwBridge->IsMenu()) {
         Configuration.Offset3rdPerson.z = std::max(-125.0f, Configuration.Offset3rdPerson.z - 1.0f);
@@ -425,6 +574,10 @@ void MacroFunctions::MoveDown3PCam() {
 }
 
 void MacroFunctions::MoveUp3PCam() {
+    // MWSE's copy of the macro table can call it in the plain game.
+    if (Session::plain()) {
+        return;
+    }
     auto mwBridge = MWBridge::get();
     if (mwBridge->is3rdPerson() && !mwBridge->IsMenu()) {
         Configuration.Offset3rdPerson.z = std::min(125.0f, Configuration.Offset3rdPerson.z + 1.0f);
