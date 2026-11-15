@@ -11,7 +11,7 @@
 #include "funcphysics.h"
 #include "mgebridge.h"
 #include "mge/api.h"
-#include "mge/apiplain.h"
+#include "mwsenative.h"
 #include "support/winheader.h"
 
 
@@ -24,8 +24,8 @@ typedef bool (__thiscall* addInstruction_t)(TES3MACHINE*, OPCODE, mwseInstructio
 
 static TES3MACHINE* vm;
 static addInstruction_t memberAddInstr;
-// MWSE's MGEInterface, kept by init for toPlainGame; null before init or without it.
-static MGEInterface_t mgeInterface = nullptr;
+// True after init gave MWSE the mge API through MGEInterface, until toPlainGame withdraws it.
+static bool apiLinked = false;
 
 
 // Perform MSVC thiscall vm->AddInstruction(op, instr) (MWSE 0.9.4a specific)
@@ -57,14 +57,13 @@ static void fixMWSE94Problems(HMODULE dll) {
 }
 
 void MWSE_MGEPlugin::toPlainGame() {
-    if (!mgeInterface) {
+    if (!apiLinked) {
         return;
     }
-    // MWSE reads its pointer at each call, so every later mge call goes to the plain API.
-    // d3d8.dll's own callers of api::api take it too.
-    api::api = new api::MGEAPI_Plain();
-    mgeInterface(api::api);
-    mgeInterface = nullptr;
+    // MWSE puts its own API that does nothing in the place of this one. MWSE reads its pointer
+    // at each call, so every later mge call goes there.
+    MwseNative::withdrawMgeApi();
+    apiLinked = false;
 }
 
 void MWSE_MGEPlugin::init(HMODULE dll) {
@@ -76,8 +75,7 @@ void MWSE_MGEPlugin::init(HMODULE dll) {
     if (MGEInterface) {
         // Create and pass API instance to MWSE 2.1+
         api::api = new api::MGEAPI_ExportVersion();
-        MGEInterface(api::api);
-        mgeInterface = MGEInterface;
+        apiLinked = MGEInterface(api::api);
     }
 
     if (MWSEGetVM && MWSEAddInstruction) {

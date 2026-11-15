@@ -92,6 +92,12 @@ static void startWgpu() {
         Session::toPlainGame(Session::Why::NoNativeAbi, version.c_str());
         return;
     }
+    // The switch to the plain game after the link withdraws the mge API through this request.
+    if (!MwseNative::hasMgeApiRequest()) {
+        const std::string version = std::to_string(askedVersion) + " with the request of MGE XE's API";
+        Session::toPlainGame(Session::Why::NoNativeAbi, version.c_str());
+        return;
+    }
     if (const char* refused = Deviceless::listenNeededEvents()) {
         Session::toPlainGame(Session::Why::EventRefused, refused);
         return;

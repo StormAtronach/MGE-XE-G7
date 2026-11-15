@@ -45,8 +45,8 @@ public:
     // Sets the path when DllMain chose the new renderer or Direct3D 9.
     static void choose(Path path);
 
-    // The one switch to the plain game. It logs the reason, gives MWSE back what d3d8.dll
-    // took (MwseNative::giveBack), makes the mge API do nothing (MWSE_MGEPlugin::toPlainGame),
+    // The one switch to the plain game. It logs the reason, withdraws the mge API from MWSE
+    // (MWSE_MGEPlugin::toPlainGame), gives MWSE back what d3d8.dll took (MwseNative::giveBack),
     // and keeps the text of the box for the game's first Direct3DCreate8. `detail` names the
     // part, the event or the plugin's failure; it may be null.
     static void toPlainGame(Why why, const char* detail);
