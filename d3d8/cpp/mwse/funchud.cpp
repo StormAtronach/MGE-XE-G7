@@ -61,13 +61,11 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseLoadHUD)
 // LoadHUD <string hud> <string texture>
 bool mwseLoadHUD::execute(mwseInstruction* _this) {
     const char* hud = _this->vmPopString();
-    if (!hud) { return false; }
-
     const char* tex = _this->vmPopString();
     if (Session::plain()) {
         return true;
     }
-    if (!tex) { return false; }
+    if (!hud || !tex) { return false; }
 
     MGEhud::load(hud, tex);
 
