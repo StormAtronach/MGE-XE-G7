@@ -245,17 +245,23 @@ MWSE binds the idle API in two cases (`LuaManager.cpp`, the binding of the mge t
 2. MGE XE gave its API and then withdrew it, at the switch to the plain game after the link.
    `d3d8.dll` sends the native request `MWSE_NATIVE_REQUEST_MGE_API` (7) with `inUse` 0
    (`MWSENativeApi.h`); MWSE puts the idle API in the place of MGE XE's API
-   (`IdleAPI::takeOver`) and writes "The idle mge API keeps the version of MGE XE's API: x.y.z".
-   `d3d8.dll` logs "[NativeApi] MGE XE withdraws MGE XE's API: the mge calls do nothing from now
-   on." The withdrawal comes before `d3d8.dll` ends its event subscriptions
+   (`IdleAPI::takeOver`) and writes to MWSE.log "The idle mge API keeps the version of MGE XE's
+   API: x.y.z" and "[NativeApi] MGE XE withdraws MGE XE's API: the mge calls do nothing from now
+   on." (MWSE `NativeApi.cpp`). The withdrawal comes before `d3d8.dll` ends its event subscriptions
    (`MwseNative::giveBack`, called by `Session::toPlainGame` in `session.cpp`), and it is final.
 
 At its start `d3d8.dll` sends the same request with `inUse` 1, which changes nothing, to learn
-that this MWSE has it ("[NativeApi] MGE XE keeps MGE XE's API in use."). An MWSE without the
-request is too old: `d3d8.dll` takes the plain game at once (`main.cpp`, the native ABI check),
-so a wgpu run with such an MWSE fails at the fall-back guard. Deploy an MWSE with the request
-before the `d3d8.dll` that asks for it, or with it. A probe for the request in the merge step and
-in `deploy_rest.py` is W495 (nirender `check_mwse_sites.py --mge`; at review on 2026-11-15).
+that this MWSE has it (MWSE.log: "[NativeApi] MGE XE keeps MGE XE's API in use."). An MWSE without
+the request is too old: `d3d8.dll` takes the plain game at once (`main.cpp`, the native ABI
+check), so a wgpu run with such an MWSE fails at the fall-back guard. Deploy an MWSE with the
+request before the `d3d8.dll` that asks for it, or with it.
+
+The merge step and `deploy_rest.py` refuse that pair before they write (nirender
+`check_mwse_sites.py --mge`, W495): a `d3d8.dll` whose source sends the request needs an
+MWSE.dll that holds MWSE's two answer texts of the request, the two log lines above
+(`MGE_API_ANSWERS` in nirender `src/mwse_sites.rs`). A change of either log line in MWSE needs
+the same change in `MGE_API_ANSWERS` first, else the probe finds no request and the round
+deploys nothing.
 
 `api::MGEAPI_Plain`, the API that `d3d8.dll` gave in the plain game before, is gone. The idle API
 overrides all 89 distinct methods of `MGEApi.h` (it declares 91 virtuals:
