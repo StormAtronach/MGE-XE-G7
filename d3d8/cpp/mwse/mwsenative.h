@@ -22,6 +22,14 @@ namespace MwseNative {
     // listener of MGE XE.
     void giveBack();
 
+    // True when MWSE has the request of MGE XE's API: the request that changes nothing, sent at
+    // the start. An MWSE without it is too old for the new renderer.
+    bool hasMgeApiRequest();
+
+    // MGE XE withdraws the API that it gave to MWSE's MGEInterface: MWSE's own API that does
+    // nothing takes its place, and mge.enabled() gives false. Before giveBack.
+    bool withdrawMgeApi();
+
     // The UI scale through MWSE.
     bool requestUIScale(float scale);
 

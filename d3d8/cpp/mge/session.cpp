@@ -145,8 +145,9 @@ void Session::toPlainGame(Why why, const char* detail) {
         LOG::logline("!! wgpu renderer: not in use, %s. The game runs on its own Direct3D 8", reason.c_str());
     }
     currentPath = Path::Plain;
-    MwseNative::giveBack();
+    // The withdrawal of the mge API is a request of MWSE's table: before the give-back.
     MWSE_MGEPlugin::toPlainGame();
+    MwseNative::giveBack();
     pendingBox = boxOf(why, detail);
 }
 

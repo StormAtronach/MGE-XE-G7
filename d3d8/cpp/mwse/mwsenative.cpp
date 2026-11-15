@@ -148,6 +148,21 @@ namespace MwseNative {
         return true;
     }
 
+    static bool requestMgeApi(bool inUse, const char* what) {
+        MwseNativeMgeApiRequestV1 packet = {};
+        packet.structSize = sizeof(packet);
+        packet.inUse = inUse ? 1 : 0;
+        return request(MWSE_NATIVE_REQUEST_MGE_API, &packet, what);
+    }
+
+    bool hasMgeApiRequest() {
+        return requestMgeApi(true, "the request of MGE XE's API");
+    }
+
+    bool withdrawMgeApi() {
+        return requestMgeApi(false, "the withdrawal of MGE XE's API");
+    }
+
     bool requestUIScale(float scale) {
         MwseNativeUIScaleRequestV1 packet = {};
         packet.structSize = sizeof(packet);

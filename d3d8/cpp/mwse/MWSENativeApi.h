@@ -316,6 +316,18 @@ typedef struct MwseNativeSunGlareRequestV1 {
 	uint32_t enabled;
 } MwseNativeSunGlareRequestV1;
 
+// MGE XE's API of the mge Lua library: the object that MGE XE gave to MWSE's export
+// `MGEInterface`. With `inUse` 0, MGE XE withdraws it: MWSE gives every later mge call to an API of
+// its own that does nothing, and `mge.enabled()` gives false. A withdrawal is final. With `inUse` 1
+// nothing changes: a module sends it at its start to learn that this MWSE has the request.
+// Latest request: none.
+#define MWSE_NATIVE_REQUEST_MGE_API 7u
+typedef struct MwseNativeMgeApiRequestV1 {
+	uint32_t structSize;
+	// 1: the API stays in use (MWSE's own behaviour). 0: MGE XE withdraws its API.
+	uint32_t inUse;
+} MwseNativeMgeApiRequestV1;
+
 //
 // Queries.
 //
