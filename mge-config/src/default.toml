@@ -165,7 +165,7 @@ per_pixel_mode = "always"
 # quarter of that distance. 1.75 matches OpenMW. Lights are also attached to
 # objects out to that distance, so they no longer pop on and off as actors
 # and carried lights move. Works best with expanded_light_limit.
-per_pixel_light_fade = true
+per_pixel_light_fade = false
 per_pixel_light_fade_radius = 1.75
 # The wgpu renderer lights each pixel with the lights of the game: each light with
 # its own colour and its whole falloff. On: the lights as MGE XE on Direct3D 9

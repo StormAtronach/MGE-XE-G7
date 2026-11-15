@@ -293,9 +293,9 @@ change. That start can take some minutes. With an older file, set it below
   light constant is 0.000 and whose lights use a linear falloff turns every object light
   grey (with a quadratic falloff only, the colour is kept): that is MGE XE's own rule, on
   Direct3D 9 too.
-- Each per-pixel point light fades to zero before 1.75 times its radius
-  (`per_pixel_light_fade`, on by default since this build; `per_pixel_light_fade_radius`).
-  A `mgeXE.toml` written by an older build keeps its own value.
+- With `per_pixel_light_fade = true` under `[distant_land]` (off by default), each per-pixel
+  point light fades to zero before 1.75 times its radius (`per_pixel_light_fade_radius`).
+  A `mgeXE.toml` that has the key keeps its value; a file without the key takes the default.
 - `clustered_lights = true` under `[distant_land]` (off by default): each pixel takes its
   lights from the clusters of the view. The picture is the same; it can pay with many lights
   for each object, and costs CPU time otherwise.

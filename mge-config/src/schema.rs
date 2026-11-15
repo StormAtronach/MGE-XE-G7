@@ -605,7 +605,7 @@ impl Default for DistantLandSettings {
             shadows: ShadowSettings::default(),
             per_pixel_lighting: true,
             per_pixel_mode: PerPixelMode::Always,
-            per_pixel_light_fade: true,
+            per_pixel_light_fade: false,
             per_pixel_light_fade_radius: 1.75,
             per_pixel_original_lights: false,
             per_pixel_particles: true,
