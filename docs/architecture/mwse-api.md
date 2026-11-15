@@ -35,7 +35,8 @@ gives MWSE no API object; the wgpu renderer does (see [On the wgpu renderer](#on
 - MWSE `MWSE/MGEIdleApi.cpp` (our test line, `test/abi-fixes-23`): `mge::IdleAPI`, the API
   that does nothing, used when MGE XE's API is not in use (see
   [When MGE XE's renderer is not in use](#when-mge-xes-renderer-is-not-in-use))
-- `mwse/mwsenative.cpp`: `MwseNative::hasMgeApiRequest`, the request that withdraws the API
+- `mwse/mwsenative.cpp`: `MwseNative::hasMgeApiRequest`, the start's question whether MWSE has
+  the request (`inUse` 1), and `MwseNative::withdrawMgeApi`, the withdrawal (`inUse` 0)
 
 ## Version negotiation
 
