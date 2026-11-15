@@ -361,8 +361,10 @@ fn plugin_dir(root: &Path) -> PathBuf {
 /// that it reaches ([`reached_lua`]). The other Lua files of the mod are its test harness.
 /// `noplugin.lua` is the stand-in of a run without the plugin: main.lua loads it only when a
 /// run spec asks for that, and the release check (`run_own_device.py --archive`) runs the
-/// archive's own main.lua, so a reference run of an archive needs it.
-const SHIPPED_LUA: [&str; 4] = ["main.lua", "failure.lua", "notifier.lua", "noplugin.lua"];
+/// archive's own main.lua, so a reference run of an archive needs it. `mgeview.lua` is the
+/// harness's view of `mge` (W486): main.lua loads it only for the after-load pictures of a run
+/// spec, for the same reason.
+const SHIPPED_LUA: [&str; 5] = ["main.lua", "failure.lua", "notifier.lua", "noplugin.lua", "mgeview.lua"];
 
 /// The names of the mod's files that a Lua text loads: a `dofile` of
 /// `mods\\nirender\\<name>.lua` or `mods/nirender/<name>.lua`, and a `require` or `include` of
