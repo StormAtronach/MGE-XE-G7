@@ -197,7 +197,10 @@ change. That start can take some minutes. With an older file, set it below
   test build ships an `MWSE.dll` in its Morrowind folder: install it over yours. With an
   MWSE.dll without the ABI the renderer is not used for the session: the game runs as
   without MGE XE, on its own Direct3D 8, a box says why, and `mgeXE.log` says "MWSE has no
-  native ABI of version 1". Do not
+  native ABI of version 1". An MWSE.dll with the ABI but without its request of MGE XE's API
+  (request 7; our MWSE builds before `test/abi-fixes-23` b343305464) is too old in the same
+  way: `mgeXE.log` says "MWSE has no native ABI of version 1 with the request of MGE XE's
+  API". Install the MWSE.dll of this build before or with its `d3d8.dll`. Do not
   run `MWSE-Update.exe` while you test this build: it puts the public MWSE.dll back. The
   plugin loads as an MWSE plugin (`Data Files/MWSE/lib/akulakhan.dll`,
   `Data Files/MWSE/mods/nirender/main.lua`); with a mod manager, check that it does not leave
@@ -234,6 +237,10 @@ change. That start can take some minutes. With an older file, set it below
   - the plugin `Data Files/MWSE/lib/akulakhan.dll` is missing or does not load, or its Lua
     side did not run (the Lua of MWSE failed to start, or
     `Data Files/MWSE/mods/nirender/main.lua` is missing).
+  In such a game a mod sees `mge.enabled()` false; every other `mge` call exists and does
+  nothing, and `mge.getVersion()` gives the version of the installed MGE XE, so a mod that needs
+  MGE XE still loads (the MWSE.dll of this build; see
+  [docs/architecture/mwse-api.md](docs/architecture/mwse-api.md)).
 - `disabled = true` under `[runtime]` gives the same game without MGE XE, with no box.
 
 ## What you get
@@ -354,7 +361,11 @@ change. That start can take some minutes. With an older file, set it below
 - MGE XE's menu background video (`Data Files\video\menu_background.bik`) plays on the wgpu
   renderer too, drawn as the game draws its films.
 - The window can be resized, and the game's own menu changes the resolution during play: the
-  picture scales into the window. A fullscreen game is a borderless window on its own monitor.
+  picture scales into the window. A fullscreen game is a borderless window on its own monitor;
+  Alt-Tab leaves it and comes back. A game resolution below the monitor's does not yet fill the
+  fullscreen monitor (open). With the MWSE.dll of this build the window of a game that is not
+  active can be dragged by its title bar or moved with the keyboard; while the game is active
+  it holds the mouse, so a drag does not move the window.
 - If the renderer program stops (`numidium.exe` crashed or was ended), the game saves as
   "MGE XE autosave <date>", and a message box says so and closes the game. Start again, load
   that save, and send `nirender-host.log`, `mgeXE.log`, and `numidium.dmp` if it is there.

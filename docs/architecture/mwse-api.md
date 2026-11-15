@@ -32,6 +32,10 @@ gives MWSE no API object; the wgpu renderer does (see [On the wgpu renderer](#on
 - MWSE `MWSE/main.cpp`: `MGEInterface`, the version gate
 - MWSE `MWSE/MGEApiLua.cpp`: `CoreInterface::getVersion`, the only vtable consumer of
   `getMGEVersion`
+- MWSE `MWSE/MGEIdleApi.cpp` (our test line, `test/abi-fixes-23`): `mge::IdleAPI`, the API
+  that does nothing, used when MGE XE's API is not in use (see
+  [When MGE XE's renderer is not in use](#when-mge-xes-renderer-is-not-in-use))
+- `mwse/mwsenative.cpp`: `MwseNative::hasMgeApiRequest`, the request that withdraws the API
 
 ## Version negotiation
 
@@ -206,14 +210,56 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `macros.increaseViewRange`, `decreaseViewRange`, `nextTrack`, `disableMusic`, `haggleMore*`, `haggleLess*` | run without a fault; their effect is not tested (the haggle macros with no barter menu open) |
 | `macros.toggleCrosshair` | runs without a fault; a screenshot with the UI shows the crosshair before and after it (open) |
 | the camera macros of the third person view | work (tested 2026-10-15) |
-| HUD calls | do nothing (no device; MWSE does not bind them) |
-| legacy `mge.*` opcode wrappers (`mge.log`, the HUD calls, `stopZoom`, the camera shake and screen rotation calls) | not bound by MWSE when the MGE API is present: `LuaManager.cpp` calls `bindLegacyMGEScriptUtil` only when `isMGEAPIAvailable()` is false, so each is nil. `tes3.runLegacyScript` does not run MGE's function names either (run 20261112-183552-w423-d397). The same on Direct3D 9: MGE's API is present on both renderers (not in the proxy-only mode, see [Direction](#direction)). A plugin's compiled script still reaches MGE's functions through MWSE's script machine; this path is not tested on the new renderer (`XE Sky Variations.esp` of Morrowind Refreshed calls `XSetWeatherScattering` and `XSetWeatherFog` that way) |
+| HUD calls | do nothing (no device). MWSE master does not bind them (nil). Our MWSE test line (`test/abi-fixes-23`, W475) binds the 15 HUD names in the new table: each does nothing, and the first call writes one warning with a stack trace (`LegacyInterface::warnHUDOnce`, `MGEApiLua.cpp`) |
+| legacy `mge.*` opcode wrappers (`mge.log`, the HUD calls, `stopZoom`, the camera shake and screen rotation calls) | in our MWSE test line (`test/abi-fixes-23`, W471, W473, W474): `mge.log` is in the new table and runs MGE XE's script function `MGEOutputDebugString`; the renamed old names (`stopZoom`, the camera shake calls, `setShaderVector4`) call the new forms; the five screen-rotation names run MGE XE's script functions, and `startScreenRotation()` with no rate is a stop (`MGEUtilLua.cpp`, `bindMGEUtil`). In MWSE master they are not bound when the MGE API is present: `LuaManager.cpp` calls `bindLegacyMGEScriptUtil` only when `isMGEAPIAvailable()` is false, so each is nil. `tes3.runLegacyScript` does not run MGE's function names either (run 20261112-183552-w423-d397). The same on Direct3D 9: MGE's API is present on both renderers (not in the proxy-only mode, see [Direction](#direction)). A plugin's compiled script still reaches MGE's functions through MWSE's script machine; this path is not tested on the new renderer (`XE Sky Variations.esp` of Morrowind Refreshed calls `XSetWeatherScattering` and `XSetWeatherFog` that way) |
 | `viewOptionsSet`, `viewOptionsGet` (v4) | the plugin keeps the options (the exports `nirender_view_options` and `nirender_view_options_get`, which `main.cpp` finds) and drops them when the key's object is freed. On Direct3D 9, `api.cpp` keeps a copy by the key's address that nothing draws from; an address that the engine reuses keeps the old options. MWSE master does not call them. Our MWSE test branches call both from `MGEApiLua.cpp` and bind `mge.camera.setViewOptions` and `getViewOptions` only when `apiVersion >= 4` (`MGEUtilLua.cpp`) |
 
 The FFI exports outside the vtable (`MGE_HorizonGet/SetParam`, `MGE_WaterVolumesSet`,
 `MGE_WaterLookSet`, `MGE_WaterMasksSet`, `MGE_WaterDrySet`, `MGE_DistantLandReadyNext`, in
 `mge/apiffi.cpp` and `exports.def`) work on both renderers; the water ones reach the helper
 as records 6 and 7.
+
+## When MGE XE's renderer is not in use
+
+This section describes our MWSE test line (`test/abi-fixes-23` from b343305464, W489), not MWSE
+master. A game can run without MGE XE's renderer: with no MGE XE, or in the plain game, where
+`d3d8.dll` gives the game the engine's own Direct3D 8 (see [RENDERER.md](../../RENDERER.md)).
+Then a mod sees one `mge` table in every case:
+
+- `mge.enabled()` gives false (`CoreInterface::enabled` asks `IdleAPI::isRealAPIInUse`).
+- Every other name of the new table exists. Each acting call does nothing; `loadConfig` and
+  `saveConfig` answer "done"; a shader `load` gives a shader object with no variables (one
+  object for each name), `find` gives nil, and `list` is empty. The first call writes one line to
+  MWSE.log: "MGE XE's renderer is not in use: the mge calls do nothing."
+- `mge.getVersion()` gives the version of the MGE XE that is installed, so that a mod's
+  dependency check passes as with MGE XE's API (`IdleAPI::getMGEVersion`, `MGEIdleApi.cpp`), in
+  this order: the version that MGE XE's API gave in this session before its withdrawal; else the
+  version of `MGEXEgui.exe`; else nil (no MGE XE). With nil, MWSE's dependency check
+  says that MGE XE is not installed, a mod whose metadata names an MGE XE version is not loaded
+  (MWSE core `startLuaMods.lua`), and the player gets a "Failed Dependencies" menu, as before.
+
+MWSE binds the idle API in two cases (`LuaManager.cpp`, the binding of the mge tables):
+
+1. MGE XE gave no API (no MGE XE, or its renderer is not in use). The old table stays only for
+   an MGE XE that gives MWSE its script functions and no API.
+2. MGE XE gave its API and then withdrew it, at the switch to the plain game after the link.
+   `d3d8.dll` sends the native request `MWSE_NATIVE_REQUEST_MGE_API` (7) with `inUse` 0
+   (`MWSENativeApi.h`); MWSE puts the idle API in the place of MGE XE's API
+   (`IdleAPI::takeOver`) and writes "The idle mge API keeps the version of MGE XE's API: x.y.z".
+   `d3d8.dll` logs "[NativeApi] MGE XE withdraws MGE XE's API: the mge calls do nothing from now
+   on." The withdrawal comes before `d3d8.dll` ends its event subscriptions
+   (`MwseNative::giveBack`, called by `Session::toPlainGame` in `session.cpp`), and it is final.
+
+At its start `d3d8.dll` sends the same request with `inUse` 1, which changes nothing, to learn
+that this MWSE has it ("[NativeApi] MGE XE keeps MGE XE's API in use."). An MWSE without the
+request is too old: `d3d8.dll` takes the plain game at once (`main.cpp`, the native ABI check),
+so a wgpu run with such an MWSE fails at the fall-back guard. Deploy an MWSE with the request
+before the `d3d8.dll` that asks for it, or with it. A probe for the request in the merge step and
+in `deploy_rest.py` is W495 (nirender `check_mwse_sites.py --mge`; at review on 2026-11-15).
+
+`api::MGEAPI_Plain`, the API that `d3d8.dll` gave in the plain game before, is gone. The idle API
+overrides all 89 distinct methods of `MGEApi.h` (it declares 91 virtuals:
+`getAPIVersion` and `getMGEVersion` twice).
 
 ## The event distantLandReady
 
