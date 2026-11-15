@@ -173,10 +173,13 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseSetCameraShakeMagnitude)
 
 // SetCameraShakeMagnitude <float>
 bool mwseSetCameraShakeMagnitude::execute(mwseInstruction* _this) {
-    _this->vmPop(&Configuration.CameraEffects.shakeMagnitude);
+    VMFLOAT magnitude;
+    if (!_this->vmPop(&magnitude)) { return false; }
     if (Session::plain()) {
         return true;
     }
+
+    Configuration.CameraEffects.shakeMagnitude = magnitude;
     return true;
 }
 
@@ -185,10 +188,13 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseCameraShakeAccel)
 
 // CameraShakeAccel <float>
 bool mwseCameraShakeAccel::execute(mwseInstruction* _this) {
-    _this->vmPop(&Configuration.CameraEffects.shakeAccel);
+    VMFLOAT acceleration;
+    if (!_this->vmPop(&acceleration)) { return false; }
     if (Session::plain()) {
         return true;
     }
+
+    Configuration.CameraEffects.shakeAccel = acceleration;
     return true;
 }
 
