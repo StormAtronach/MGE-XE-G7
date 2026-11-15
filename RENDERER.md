@@ -295,7 +295,7 @@ change. That start can take some minutes. With an older file, set it below
   Direct3D 9 too.
 - With `per_pixel_light_fade = true` under `[distant_land]` (off by default), each per-pixel
   point light fades to zero before 1.75 times its radius (`per_pixel_light_fade_radius`).
-  A `mgeXE.toml` written by an older build keeps its own value.
+  A `mgeXE.toml` that has the key keeps its value; a file without the key takes the default.
 - `clustered_lights = true` under `[distant_land]` (off by default): each pixel takes its
   lights from the clusters of the view. The picture is the same; it can pay with many lights
   for each object, and costs CPU time otherwise.
