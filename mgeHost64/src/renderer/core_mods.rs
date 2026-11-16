@@ -2061,7 +2061,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             BuildMarkers::default(),
             Plant::parse("Shadow@world shader"),
         );
-        let built_in = CoreMods::built_in().shadow_hooks();
+        let built_in = CoreMods::built_in().shadow_hooks().to_string();
 
         assert!(shared.world_hooks().0.starts_with(nirender_wgpu::CORE_MOD_FAULT_PLANT));
         assert_eq!(shared.world_hooks_without(&[ModFile::Shadow]).0, built_in);
