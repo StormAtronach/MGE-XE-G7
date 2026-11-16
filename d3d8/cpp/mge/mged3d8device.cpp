@@ -1781,6 +1781,11 @@ namespace Deviceless {
     static const ULONGLONG LightRecordsCheckInterval = 1000;
     // The time of the last check, from GetTickCount64.
     static ULONGLONG lightRecordsCheckedAt = 0;
+    // The game resolved its ids at least one time (onGameIdsResolved): its plugins are read, so
+    // MWSE's answer holds every light record. No check runs before that. While the game reads
+    // its plugins, a check would send the records that it has at that second, a part of them,
+    // and the helper would take the others as records that the game does not have.
+    static bool lightRecordsWhole = false;
 
     // Asks MWSE for the game's light records and sends them when its answer differs from its
     // last answer, or with no compare when `always` is set. `when` names the caller in the log.
@@ -1790,11 +1795,14 @@ namespace Deviceless {
     // and builds nothing. Limit: it does not see a record that was freed while another one,
     // with the same values and another id, was made at its address. The load of a game sends
     // always, so such a record is right again after it. [I] a record keeps the address of its
-    // id for its life.
+    // id for its life, and nothing changes the text of an id in place.
     static void checkLightRecords(const char* when, bool always) {
         static std::vector<MwseNative::LightRecord> records;
         static std::vector<MwseNative::LightRecord> lastRecords;
 
+        if (!lightRecordsWhole) {
+            return;
+        }
         lightRecordsCheckedAt = GetTickCount64();
 
         LARGE_INTEGER frequency, start, queried, compared, built;
@@ -1938,11 +1946,18 @@ namespace Deviceless {
     // (the game's start resolves its ids too) changes nothing.
     static void __cdecl onGameIdsResolved() {
         static unsigned count = 0;
-        if (!Session::wgpu() || !MWBridge::get()->IsLoaded()) {
+        if (!Session::wgpu()) {
+            return;
+        }
+        // The engine resolves its ids at the load or the start of a game, and at its own start
+        // only when Morrowind.ini names a starting cell: always after it read its plugins.
+        lightRecordsWhole = true;
+        if (!MWBridge::get()->IsLoaded()) {
             return;
         }
         ++count;
         LOG::logline("-- wgpu renderer: the game's ids were resolved (%u): the vis groups are loaded", count);
+        checkLightRecords("the resolve of the game's ids", false);
         loadVisGroups();
         DistantLand::resolveDynamicVisGroups();
         visGroupsUnsent = true;
