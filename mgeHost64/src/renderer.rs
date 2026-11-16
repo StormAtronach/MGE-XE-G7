@@ -932,30 +932,33 @@ impl Environment {
         self.surface_level()
     }
 
-    /// The values of the sky of MGE XE, when the record has the scattering (the flag 8). The
-    /// record does not say if the cell is like an exterior (the scene says it): the caller
-    /// checks that.
-    fn sky(&self) -> Option<[[f32; 4]; 8]> {
+    /// The values of the sky of MGE XE ([`SKY_SHADER`] has their places), when the record has
+    /// the scattering (the flag 8). The record does not say if the cell is like an exterior
+    /// (the scene says it): the caller checks that. `light` is the light of the scene: the sun
+    /// colour and the ambient light of the clouds hook take the weather's multipliers, as
+    /// those of the water do.
+    fn sky(&self, light: &SceneLight) -> Option<[[f32; 4]; 8]> {
         if self.flags & 8 == 0 {
             return None;
         }
         let far = self.sky_scatter_far;
         let sky: [f32; 3] = core::array::from_fn(|i| self.sky_col[i] + (far[i] - self.sky_col[i]) * far[3]);
         let altitude = (1.0 + self.sun_pos[2]).powi(10);
+        let (sun_color, ambient) = light.land(self.light_sun_mult, self.light_amb_mult);
         Some([
-            [self.fog_col_far[0], self.fog_col_far[1], self.fog_col_far[2], 0.0],
+            [self.fog_col_far[0], self.fog_col_far[1], self.fog_col_far[2], self.sun_vis],
             [self.sky_col[0], self.sky_col[1], self.sky_col[2], self.nice_weather],
             [sky[0], sky[1], sky[2], if self.eye[2] > self.sea_plane() { 1.0 } else { 0.0 }],
-            [self.sun_pos[0], self.sun_pos[1], self.sun_pos[2], 0.0],
-            [self.outscatter[0], self.outscatter[1], self.outscatter[2], 0.0],
-            [self.inscatter[0], self.inscatter[1], self.inscatter[2], 0.0],
+            [self.sun_pos[0], self.sun_pos[1], self.sun_pos[2], ambient[0]],
+            [self.outscatter[0], self.outscatter[1], self.outscatter[2], ambient[1]],
+            [self.inscatter[0], self.inscatter[1], self.inscatter[2], ambient[2]],
             [
                 2.8 + 4.3 / altitude.max(1e-6),
                 (1.0 - (-1.9 * altitude).exp2()).clamp(0.0, 1.0),
                 (-4.0 * self.sun_pos[2]).exp().clamp(0.0, 1.0) * altitude.clamp(0.0, 1.0),
                 0.0,
             ],
-            [0.0; 4],
+            [sun_color[0], sun_color[1], sun_color[2], self.time],
         ])
     }
 }
@@ -1601,16 +1604,20 @@ fn light_end_fade(distance: f32, end_inverse: f32) -> f32 {
 }
 ";
 
-/// The world shader with the text of this extension and the shadow hooks, as the host joins
-/// them (`extension_shaders` of `nirender_wgpu`).
-fn world_source(shadow_hooks: &str) -> String {
-    nirender_wgpu::world_shader_source(&format!("{SKY_SHADER}\n{}\n", draw_shader_text(shadow_hooks)))
+/// The world shader with the text of this extension, the shadow hooks and the clouds hook, as
+/// the host joins them (`extension_shaders` of `nirender_wgpu`).
+fn world_source(shadow_hooks: &str, sky_hooks: Option<&str>) -> String {
+    nirender_wgpu::world_shader_source(&format!(
+        "{}\n{}\n",
+        sky_shader_text(sky_hooks),
+        draw_shader_text(shadow_hooks)
+    ))
 }
 
 /// The world shader as the device checks it, in both texture tiers: tier A with the binding
 /// arrays of its request, tier C with the request of every adapter.
-fn check_world_source(shadow_hooks: &str) -> Result<(), String> {
-    let source = world_source(shadow_hooks);
+fn check_world_source(shadow_hooks: &str, sky_hooks: Option<&str>) -> Result<(), String> {
+    let source = world_source(shadow_hooks, sky_hooks);
     let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
     shader_check::check_with("the world shader, tier a", &source, tier_a)?;
     shader_check::check("the world shader, tier c", &nirender_wgpu::tier_c_shader_source(&source))?;
@@ -1623,7 +1630,7 @@ fn shadow_homes() -> [core_mods::Home; 3] {
     [
         core_mods::Home {
             name: "world shader",
-            check: check_world_source,
+            check: |hooks| check_world_source(hooks, None),
         },
         core_mods::Home {
             name: "grass",
@@ -1634,6 +1641,14 @@ fn shadow_homes() -> [core_mods::Home; 3] {
             check: |hooks| shader_check::check("water volume", &water::volume_source(hooks)).map(|_| ()),
         },
     ]
+}
+
+/// The shader that calls the clouds hook: the world shader, with the built-in shadow hooks.
+fn sky_homes() -> [core_mods::Home; 1] {
+    [core_mods::Home {
+        name: "world shader",
+        check: |hooks| check_world_source(core_mods::CoreMods::built_in().shadow_hooks(), Some(hooks)),
+    }]
 }
 
 /// The shader that calls the water hooks: the plane of the water. The surfaces of the water
@@ -1783,7 +1798,8 @@ impl DistantLand {
     pub fn start(root: &Path, live: bool) -> DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
-        let core_mods = core_mods::CoreMods::load(&|name| data_file(root, name), &shadow_homes(), &water_homes());
+        let core_mods =
+            core_mods::CoreMods::load(&|name| data_file(root, name), &shadow_homes(), &water_homes(), &sky_homes());
         let reflection_kept = Self::reflection_readers(root, core_mods.shadow_hooks());
         // The places of the full tier: the player's setting, or the environment variable for a
         // test, which may go up to the code's bound (one place for each view slot).
@@ -3307,23 +3323,40 @@ fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
 }
 ";
 
+/// True for a class of the sky: MGE_LINK_CLASS_SKY_DOME (1) to MGE_LINK_CLASS_SUN_GLARE (8).
+fn sky_class(class: u32) -> bool {
+    (1..=8).contains(&class)
+}
+
+/// True when a draw with these facts takes the sun's shadow (`DrawData::extension` 5 and 7):
+/// it writes depth, it does not add to the picture, and it is not of the sky, whose values have
+/// those places ([`SKY_SHADER`]).
+fn takes_sun_shadow(facts: &DrawFacts) -> bool {
+    facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) && !sky_class(facts.class)
+}
+
 /// The sky of MGE XE: `SkyVS` and `SkyPS` of `XE Mod Sky.fx` for the sky dome, with
-/// `fogColourSky` and `fogColourScatter` of `XE Common.fx`. The values of `draw.extension`:
-/// 0 the far fog colour; 1 the sky colour, and the nice weather number in w; 2 the sky colour
-/// for the scattering, and 1 in w when the camera is above the water; 3 the direction to the
-/// sun; 4 `outscatter`; 5 `inscatter`; 6 the three numbers of the altitude of the sun.
+/// `fogColourSky` and `fogColourScatter` of `XE Common.fx`. The values of `draw.extension`
+/// ([`Environment::sky`]):
+/// 0 the far fog colour, and `sunVis` in w; 1 the sky colour, and the nice weather number in w;
+/// 2 the sky colour for the scattering, and 1 in w when the camera is above the water; 3 the
+/// direction to the sun, and the red of `sunAmb` in w; 4 `outscatter`, and the green of
+/// `sunAmb` in w; 5 `inscatter`, and the blue of `sunAmb` in w; 6 the three numbers of the
+/// altitude of the sun; 7 `sunCol`, and `time` in w. `sunVis`, `sunAmb`, `sunCol` and `time`
+/// are for the clouds hook ([`SKY_LIBRARY_BODIES`]).
 const SKY_SHADER: &str = "
 // The dome of the game gets a height that puts its lower edge on the horizon.
 fn extension_sky_position(position: vec3f) -> vec3f {
     return vec3f(position.xy, 50.0 * (position.z + 200.0));
 }
 
-fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
+// fogColourSky: the colour of the fog of the sky in a direction from the eye. The far fog
+// colour at the horizon goes into the sky colour above it; with the scattering,
+// fogColourScatter with a fog distance of 1 and no fog.
+fn sky_fog_color(direction: vec3f) -> vec4f {
     let e = draw.extension;
-    // fogColourSky: the far fog colour at the horizon goes into the sky colour above it.
     let up = 1.0 - pow(clamp(1.0 - 2.22 * clamp(direction.z - 0.075, 0.0, 1.0), 0.0, 1.0), 1.15);
     var color = mix(e[0].rgb, e[1].rgb, up);
-    // fogColourScatter with a fog distance of 1 and no fog.
     if e[1].w > 0.001 && e[2].w > 0.5 {
         let sun_cos = dot(direction, e[3].xyz);
         let mie = (1.58 / (1.24 - sun_cos)) * e[6].z;
@@ -3335,12 +3368,42 @@ fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
         let scattered = (0.125 * mie + e[2].rgb * rayleigh) * lost * (1.17 * air + 0.89) * e[6].y;
         color = mix(color, scattered, e[1].w);
     }
+    // The alpha is the fog amount of fogColourScatter: 0 for the sky.
+    return vec4f(color, 0.0);
+}
+
+fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
+    let color = sky_fog_color(direction).rgb;
     // ditherSky: an ordered dither against bands in the sky.
     let dither = array<f32, 16>(0.001176, 0.001961, -0.001176, -0.001699, -0.000654, -0.000915, 0.000392, 0.000131, -0.000131, -0.001961, 0.000654, 0.000915, 0.001699, 0.001438, -0.000392, -0.001438);
     let at = vec2u(pixel) % 4u;
     return color + dither[at.x * 4u + at.y];
 }
 ";
+
+/// The library of the clouds hook (`core_mods::SKY_LIBRARY`) without `sky_fog_color`, which
+/// [`SKY_SHADER`] has: the values of the frame from the sky's values. `cloud_texture` and
+/// `CloudPixel` are the world shader's (`nirender_wgpu`).
+const SKY_LIBRARY_BODIES: &str = "
+fn sky_time() -> f32 { return draw.extension[7].w; }
+fn sky_sun_color() -> vec3f { return draw.extension[7].rgb; }
+fn sky_ambient_color() -> vec3f { return vec3f(draw.extension[3].w, draw.extension[4].w, draw.extension[5].w); }
+fn sky_sun_position() -> vec3f { return draw.extension[3].xyz; }
+fn sky_sun_visibility() -> f32 { return draw.extension[0].w; }
+fn sky_color_value() -> vec3f { return draw.extension[1].rgb; }
+fn sky_fog_far_color() -> vec3f { return draw.extension[0].rgb; }
+";
+
+/// The sky part of the world shader: [`SKY_SHADER`], and with the clouds hook of a core mod
+/// (`core_mods.rs`) its library and `extension_clouds_color`, which calls the hook.
+fn sky_shader_text(sky_hooks: Option<&str>) -> String {
+    match sky_hooks {
+        None => SKY_SHADER.to_string(),
+        Some(hooks) => format!(
+            "{SKY_SHADER}{SKY_LIBRARY_BODIES}{hooks}\nfn extension_clouds_color(p: CloudPixel) -> vec4f {{ return clouds_color(p); }}\n"
+        ),
+    }
+}
 
 impl Extension for DistantLand {
     fn name(&self) -> String {
@@ -3614,13 +3677,15 @@ impl Extension for DistantLand {
             sea_caustics: self.sea_caustics_skip(),
         });
         self.plan = self.make_plan(scene);
+        let sky = self.sky(scene);
         FrameParameters {
             fog_range: distant.then(|| {
                 self.environment
                     .map_or(self.settings_fog, |e| (e.fog_near_start, e.fog_near_end))
             }),
             shade: self.shade.is_some() || self.shadow_in_frame || self.under_water(),
-            sky: self.sky(),
+            sky,
+            clouds: sky.is_some() && self.core_mods.sky_hooks().is_some(),
             blend: distant,
             // The water plane of the game is class 10; the glare of the sun is class 8.
             watched: (if water { 1 << 10 } else { 0 }) | (if no_glare { 1 << 8 } else { 0 }),
@@ -3680,7 +3745,7 @@ impl Extension for DistantLand {
         // A draw of the sky has a fixed ambient light and no sun. The plugin names the sky by
         // its class: MGE_LINK_CLASS_SKY_DOME (1) to MGE_LINK_CLASS_SUN_GLARE (8). The colour of
         // the ambient is no test: a cell can have a white ambient light.
-        let sky = (1..=8).contains(&facts.class);
+        let sky = sky_class(facts.class);
         p.shade_lights(lights, camera_z, sky);
         draw.scene_ambient = if sky {
             [1.25, 1.25, 1.25, 1.0]
@@ -3724,7 +3789,7 @@ impl Extension for DistantLand {
     }
 
     fn sky_shader(&self) -> Option<String> {
-        Some(SKY_SHADER.to_string())
+        Some(sky_shader_text(self.core_mods.sky_hooks()))
     }
 
     /// The events of the distant land for MGE XE (`distantLandReady` of its Lua), at the end
@@ -5826,11 +5891,11 @@ impl DistantLand {
     /// The sky of MGE XE is for a cell with a world space that is like an exterior, with the
     /// scattering on and the distant land in the frame, as `renderStage0` of the Direct3D 9
     /// path has it.
-    fn sky(&mut self) -> Option<[[f32; 4]; 8]> {
+    fn sky(&mut self, scene: &SceneView) -> Option<[[f32; 4]; 8]> {
         if !(self.facts.distant() && self.facts.like_exterior) {
             return None;
         }
-        self.environment.as_ref()?.sky()
+        self.environment.as_ref()?.sky(&SceneLight::of(scene))
     }
 
     /// The light for each pixel, by the setting `distant_land.per_pixel_lighting` and its
@@ -6327,7 +6392,7 @@ impl DistantLand {
     /// lights of a draw do not change the shadow. A scene without a sun gives no shadow.
     fn shadow_sun(&self, facts: &DrawFacts) -> Option<([f32; 4], [f32; 4])> {
         let shadows = self.shadow.is_some() && self.shadow_in_frame;
-        if !shadows || !facts.depth_write || (facts.blend_enable && facts.destination_blend == 2) {
+        if !shadows || !takes_sun_shadow(facts) {
             return None;
         }
         let (d, diffuse) = self.scene_sun?;
@@ -6454,7 +6519,7 @@ mod shader_tests {
     /// adapter.
     #[test]
     fn the_world_shader_with_the_extension_is_valid() {
-        check_world_source(core_mods::CoreMods::built_in().shadow_hooks()).unwrap();
+        check_world_source(core_mods::CoreMods::built_in().shadow_hooks(), None).unwrap();
     }
 
     /// Each home of the shadow hooks takes the built-in hooks, and the world shader has each
@@ -6464,7 +6529,7 @@ mod shader_tests {
     fn the_homes_of_the_shadow_hooks_give_their_library() {
         let hooks = core_mods::CoreMods::built_in();
         for (name, source) in [
-            ("world", world_source(hooks.shadow_hooks())),
+            ("world", world_source(hooks.shadow_hooks(), None)),
             ("grass", statics::grass_source(hooks.shadow_hooks())),
             ("water volume", water::volume_source(hooks.shadow_hooks())),
         ] {
@@ -6476,13 +6541,115 @@ mod shader_tests {
         }
     }
 
+    /// The interface of the clouds hook is the crate's: `CloudPixel` has the same members and
+    /// `cloud_texture` the same signature in the world shader as in the stub that checks a file
+    /// alone, and the world shader with a clouds hook gives the library of the interface.
+    #[test]
+    fn the_clouds_interface_is_the_world_shader_s() {
+        use nirender_wgpu::wgpu::naga;
+        let file = "//! interface: mge-xe-core 1\nfn clouds_color(p: CloudPixel) -> vec4f { return p.color * cloud_texture(p.texcoords) * sky_fog_color(p.direction); }\n";
+        let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", file)], &[], &[], &sky_homes());
+        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks(), mods.sky_hooks());
+        assert_eq!(
+            core_mods::library_differences(core_mods::SKY_LIBRARY, &source),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            core_mods::library_differences(core_mods::SKY_INTERFACE, &source),
+            Vec::<String>::new()
+        );
+        let members = |text: &str| {
+            let module = naga::front::wgsl::parse_str(text).unwrap();
+            module
+                .types
+                .iter()
+                .find_map(|(_, kind)| match (&kind.inner, kind.name.as_deref()) {
+                    (naga::TypeInner::Struct { members, .. }, Some("CloudPixel")) => Some(
+                        members
+                            .iter()
+                            .map(|m| (m.name.clone(), format!("{:?}", module.types[m.ty].inner)))
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                })
+                .expect("CloudPixel")
+        };
+        assert_eq!(members(core_mods::SKY_INTERFACE), members(&source));
+    }
+
+    /// The draws of the sky take no sun shadow: their values hold slots 5 and 7, also for a sky
+    /// draw that writes depth.
+    #[test]
+    fn the_sky_takes_no_sun_shadow() {
+        let mut facts = nirender_wgpu::TABLE_KINDS[1];
+        facts.depth_write = true;
+        facts.blend_enable = false;
+        facts.class = 0;
+        assert!(takes_sun_shadow(&facts));
+        for class in 1..=8 {
+            facts.class = class;
+            assert!(!takes_sun_shadow(&facts), "class {class}");
+        }
+        facts.class = 9;
+        assert!(takes_sun_shadow(&facts));
+    }
+
+    /// A Sky file joins the world shader only with its clouds hook; a file without the hook,
+    /// and a file that breaks a rule, leave the clouds as the game draws them.
+    #[test]
+    fn a_sky_file_gives_the_clouds_hook() {
+        let copy = "//! interface: mge-xe-core 1\nfn clouds_color(p: CloudPixel) -> vec4f { return p.color * cloud_texture(p.texcoords); }\n";
+        let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", copy)], &[], &[], &sky_homes());
+        let hooks = mods.sky_hooks().expect("the hook of the file");
+        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks(), Some(hooks));
+        assert_eq!(source.matches("fn clouds_color(").count(), 1);
+        assert_eq!(source.matches("fn extension_clouds_color(").count(), 1);
+        for file in [
+            "//! interface: mge-xe-core 1\nfn mod_nothing() -> f32 { return 1.0; }\n",
+            "//! interface: mge-xe-core 1\nfn clouds_color(p: CloudPixel) -> vec3f { return p.color.rgb; }\n",
+            "//! interface: mge-xe-core 1\nfn helper(p: CloudPixel) -> vec4f { return p.color; }\n",
+            "fn clouds_color(p: CloudPixel) -> vec4f { return p.color; }\n",
+        ] {
+            let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", file)], &[], &[], &sky_homes());
+            assert!(mods.sky_hooks().is_none(), "{file}");
+        }
+        let plain = world_source(core_mods::CoreMods::built_in().shadow_hooks(), None);
+        assert!(!plain.contains("fn clouds_color(") && !plain.contains("fn sky_time("));
+    }
+
+    /// A clouds hook may call each function of its library, and read the clouds' texture in a
+    /// loop and in a branch, with constants and helpers of its own: the world shader takes it.
+    #[test]
+    fn a_clouds_hook_may_use_its_whole_library() {
+        let file = "//! interface: mge-xe-core 1
+const mod_reads: i32 = 3;
+fn mod_light() -> vec3f {
+    return sky_sun_color() * sky_sun_visibility() + sky_ambient_color() + sky_color_value() * 0.0 + sky_fog_far_color() * 0.0;
+}
+fn clouds_color(p: CloudPixel) -> vec4f {
+    var sum = vec4f(0.0);
+    for (var i = 0; i < mod_reads; i++) {
+        sum += cloud_texture(p.texcoords + f32(i) * 0.01 * p.direction.xy + vec2f(sky_time() * 0.001));
+    }
+    if dot(p.direction, sky_sun_position()) > 0.9 {
+        sum += cloud_texture(p.texcoords * 2.0);
+    }
+    let fog = sky_fog_color(p.direction);
+    let light = mix(mod_light(), fog.rgb, 0.5);
+    let shade = p.color.rgb * light * sum.rgb / f32(mod_reads + 1);
+    return vec4f(shade + vec3f(p.pixel.x * 0.0), p.color.a * sum.a);
+}
+";
+        let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", file)], &[], &[], &sky_homes());
+        assert!(mods.sky_hooks().is_some());
+    }
     #[test]
     fn the_homes_of_the_shadow_hooks_take_the_built_ins() {
         let hooks = core_mods::CoreMods::built_in();
         for home in shadow_homes() {
             (home.check)(hooks.shadow_hooks()).unwrap_or_else(|problem| panic!("{}: {problem}", home.name));
         }
-        let source = world_source(hooks.shadow_hooks());
+        let source = world_source(hooks.shadow_hooks(), None);
         assert_eq!(source.matches("fn shadow_delta(").count(), 1);
         assert_eq!(source.matches("fn shadow_esm(").count(), 1);
         assert!(!DRAW_SHADER.contains("fn shadow_delta(") && !DRAW_SHADER.contains("fn shadow_esm("));
@@ -6499,7 +6666,7 @@ mod shader_tests {
             "one call in each form of light_terms"
         );
         assert!(!DRAW_SHADER.contains("fn spot_cone") && !DRAW_SHADER.contains("light.cone.x"));
-        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks());
+        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks(), None);
         assert_eq!(source.matches(nirender_wgpu::spot::WGSL).count(), 1);
         assert_eq!(source.matches("fn spot_cone").count(), 1);
     }
@@ -6545,7 +6712,7 @@ mod shader_tests {
         }
         assert_eq!(DRAW_SHADER.matches("DEBUG_VIEW").count(), tests);
 
-        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks());
+        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks(), None);
         let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
         for id in [view_id::LIGHTS, view_id::SHADOW_LAYERS] {
             let variant = nirender_wgpu::world_variant_source(&source, id).expect("the DEBUG_VIEW line");
@@ -6777,10 +6944,47 @@ mod environment_tests {
         e.version = Environment::VERSION;
         e.flags = 8;
         e.fog_col_far = [0.5, 0.6, 0.7];
-        let sky = e.sky().expect("a sky with the scattering");
+        let light = SceneLight {
+            sun_direction: Some([0.0, 0.6, -0.8]),
+            sun_color: [0.75, 0.625, 0.5],
+            sun_ambient: [0.25, 0.375, 0.5],
+            ambient: [0.25, 0.125, 0.0],
+        };
+        let sky = e.sky(&light).expect("a sky with the scattering");
         assert_eq!(sky[0], [0.5, 0.6, 0.7, 0.0]);
         e.flags = 0;
-        assert!(e.sky().is_none(), "no sky without the scattering");
+        assert!(e.sky(&light).is_none(), "no sky without the scattering");
+    }
+
+    /// The values of the clouds hook in the free places of the sky's values: the sun colour
+    /// and the time in slot 7, the sun's visibility in w of slot 0, the ambient light in w of
+    /// slots 3 to 5, with the weather's multipliers (binary fractions: exact in f32). The
+    /// dome's values keep their places.
+    #[test]
+    fn the_sky_values_carry_the_clouds_values() {
+        let mut e: Environment = bytemuck::Zeroable::zeroed();
+        e.version = Environment::VERSION;
+        e.flags = 8;
+        e.sun_pos = [0.0, 0.6, 0.8];
+        e.outscatter = [0.125, 0.25, 0.375];
+        e.inscatter = [0.5, 0.625, 0.75];
+        e.time = 12.5;
+        e.sun_vis = 0.75;
+        e.light_sun_mult = 2.0;
+        e.light_amb_mult = 0.5;
+        let light = SceneLight {
+            sun_direction: Some([0.0, 0.6, -0.8]),
+            sun_color: [0.75, 0.625, 0.5],
+            sun_ambient: [0.25, 0.375, 0.5],
+            ambient: [0.25, 0.125, 0.0],
+        };
+        let sky = e.sky(&light).unwrap();
+        assert_eq!(sky[7], [1.5, 1.25, 1.0, 12.5]);
+        assert_eq!(sky[0][3], 0.75);
+        assert_eq!([sky[3][3], sky[4][3], sky[5][3]], [0.25, 0.25, 0.25]);
+        assert_eq!(&sky[3][..3], &[0.0, 0.6, 0.8]);
+        assert_eq!(&sky[4][..3], &[0.125, 0.25, 0.375]);
+        assert_eq!(&sky[5][..3], &[0.5, 0.625, 0.75]);
     }
 }
 

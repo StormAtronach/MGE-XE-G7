@@ -18,7 +18,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
 use super::lamp_grid::SourceLamp;
-use distantland::mge_xe::lights::{EXTERIOR_KEY, parse_lights};
+use distantland::mge_xe::lights::{EXTERIOR_KEY, Key, parse_lights};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
 
@@ -40,8 +40,8 @@ struct LightsFile {
 /// plugins at the time of the generation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileLampRecord {
-    /// The id, in ASCII lower case.
-    pub id: String,
+    /// The key of the id.
+    pub id: Key,
     pub radius: f32,
     pub color: [u8; 3],
     /// The number of the exterior's lamps of this record.
@@ -87,7 +87,7 @@ fn source_lamp(lamp: &distantland::mge_xe::lights::Lamp) -> SourceLamp {
 fn read(path: &Path) -> Result<LightsFile, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let lights = parse_lights(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-    let exterior = lights.block(EXTERIOR_KEY);
+    let exterior = lights.block(&EXTERIOR_KEY);
     let (sources, source_count) = exterior.map_or((Vec::new(), 0), |block| (block.lamp_bytes(), block.lamps.len() as u32));
     Ok(LightsFile {
         sources,

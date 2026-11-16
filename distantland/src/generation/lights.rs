@@ -9,6 +9,10 @@
 //! as for the statics). Its radius, colour and flags are the plugins' values; the renderer takes
 //! the game's own when the game gives them.
 //!
+//! A block's key and a lamp's record id are keys of the format ([`key`]), made from the plugin's
+//! own bytes of the name ([`key_of_plugin_name`]). A name that the game cannot have gives no key:
+//! that cell or that lamp is left out with a warning, and the rest of the file is written.
+//!
 //! A smoke source is a placed object whose model path has "smoke" and not "nosmoke" (strength
 //! 1), or a lamp of a fire whose smoke is seen from far ([`LightRecord::smokes`], strength 0.5).
 //!
@@ -19,6 +23,8 @@
 //! list it.
 //!
 //! [`ArtifactKind::Lights`]: ArtifactKind::Lights
+//!
+//! [`key`]: crate::mge_xe::lights::key
 //!
 //! [`LightRecord::lights`]: crate::LightRecord::lights
 //! [`LightRecord::smokes`]: crate::LightRecord::smokes
@@ -33,7 +39,7 @@ use super::storage::durable::SyncClass;
 use super::storage::state::{self, ArtifactKind, CommittedState, RequiredArtifact};
 use super::{GenerationSettings, OutputPaths, PublicationWrites};
 use crate::UsageInfo;
-use crate::mge_xe::lights::{EXTERIOR_KEY, Lamp, LampRecord, LightBlock, Lights, SmokeSource};
+use crate::mge_xe::lights::{EXTERIOR_KEY, Key, Lamp, LampRecord, LightBlock, Lights, SmokeSource, key};
 
 /// The key of the exterior's references in [`UsageInfo::cells`].
 const EXTERIOR_CELL: &str = "\0";
@@ -55,8 +61,19 @@ pub(crate) struct LightsOutput {
 
 /// A lamp before its block's records are numbered.
 struct PlacedLamp {
-    id: String,
+    id: Key,
     lamp: Lamp,
+}
+
+/// The key of a name that the plugin reader gave. The reader decodes the bytes of a name as
+/// WINDOWS-1252, whatever the code page of the install is. That decode loses nothing, so the
+/// encode gives the plugin's own bytes back, which are the bytes that the game holds. `None` for a
+/// text with a zero in it or a text that is not such a decode: the game cannot have that name.
+fn key_of_plugin_name(encoder: &bytes_io::Writer, name: &str) -> Option<Key> {
+    if name.contains('\0') {
+        return None;
+    }
+    encoder.encode(name).ok().map(|bytes| key(&bytes))
 }
 
 /// The lamps and the smoke of one block, as the references give them.
@@ -69,14 +86,14 @@ struct BlockParts {
 impl BlockParts {
     /// The block, in an order that does not depend on the order of the references: the records
     /// by their ids, the lamps and the smoke by their places.
-    fn finish(mut self, key: String) -> LightBlock {
-        let mut ids: Vec<&str> = self.lamps.iter().map(|placed| placed.id.as_str()).collect();
+    fn finish(mut self, key: Key) -> LightBlock {
+        let mut ids: Vec<&Key> = self.lamps.iter().map(|placed| &placed.id).collect();
         ids.sort_unstable();
         ids.dedup();
         let records: Vec<LampRecord> = ids
             .iter()
             .map(|id| LampRecord {
-                id: (*id).to_string(),
+                id: (*id).clone(),
                 glow_radius: 0.0,
             })
             .collect();
@@ -85,7 +102,7 @@ impl BlockParts {
             .lamps
             .iter()
             .map(|placed| Lamp {
-                record: ids.binary_search(&placed.id.as_str()).expect("the id of a lamp is a record") as u32,
+                record: ids.binary_search(&&placed.id).expect("the id of a lamp is a record") as u32,
                 ..placed.lamp
             })
             .collect();
@@ -118,13 +135,22 @@ fn is_smoke_model(mesh: &str) -> bool {
 /// The lamps and the smoke sources of each block, before the references are remapped to meshes
 /// (the remap drops the lights without a mesh). Blocks with neither are left out.
 pub(crate) fn light_blocks(usage: &UsageInfo, include_behaves_like_exterior: bool, exclude_disable_targets: bool) -> Lights {
-    let mut parts: BTreeMap<String, BlockParts> = BTreeMap::new();
+    let encoder = bytes_io::Writer::default();
+    let mut parts: BTreeMap<Key, BlockParts> = BTreeMap::new();
+    let mut lamps_without_key = 0usize;
     for (cell, references) in &usage.cells {
         let key = if cell == EXTERIOR_CELL {
-            EXTERIOR_KEY.to_string()
+            EXTERIOR_KEY
         } else if !cell.is_empty() && include_behaves_like_exterior && usage.behaves_like_exterior(cell) {
-            // The game finds a cell by its name in any case: two spellings are one block.
-            cell.to_ascii_lowercase()
+            // Two spellings that differ in the case of A to Z give one key, and so one block.
+            let Some(key) = key_of_plugin_name(&encoder, cell) else {
+                crate::logging::warn!(
+                    "Distant lights: the cell '{}' has a name that the game cannot have; its lamps are left out",
+                    cell.escape_debug()
+                );
+                continue;
+            };
+            key
         } else {
             continue;
         };
@@ -153,8 +179,12 @@ pub(crate) fn light_blocks(usage: &UsageInfo, include_behaves_like_exterior: boo
                     strength: FIRE_SMOKE,
                 });
             }
+            let Some(id) = key_of_plugin_name(&encoder, id) else {
+                lamps_without_key += 1;
+                continue;
+            };
             block.lamps.push(PlacedLamp {
-                id: id.to_ascii_lowercase(),
+                id,
                 lamp: Lamp {
                     position,
                     radius: record.radius,
@@ -165,6 +195,12 @@ pub(crate) fn light_blocks(usage: &UsageInfo, include_behaves_like_exterior: boo
                 },
             });
         }
+    }
+
+    if lamps_without_key != 0 {
+        crate::logging::warn!(
+            "Distant lights: {lamps_without_key} lamps have a record id that the game cannot have; they are left out"
+        );
     }
 
     let blocks = parts

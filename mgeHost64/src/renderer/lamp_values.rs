@@ -7,6 +7,7 @@
 //! `distant-lights-from-fork-2026-11-12.md`, section 2.2.
 
 use super::distant_lights::FileLampRecord;
+use distantland::mge_xe::lights::{Key, key};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -171,12 +172,12 @@ pub struct LightRecord {
     pub flags: u32,
 }
 
-/// The game's light records, by the id in ASCII lower case: the values that the running game
+/// The game's light records, by the key of the id ([`key`]): the values that the running game
 /// uses. A mod can change them after the game read its plugins, so they can differ from the
 /// values of the lights file, which the generator takes from the plugins.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LightRecords {
-    records: BTreeMap<String, LightRecord>,
+    records: BTreeMap<Key, LightRecord>,
 }
 
 /// The difference between the game's light records and the records of the lights file.
@@ -195,8 +196,9 @@ pub struct FileDifference {
 impl LightRecords {
     /// Reads record 13: the version (1), the number of records, then for each record its
     /// radius, its colour (4 bytes), its flags, the length of its id, and the id padded to 4
-    /// bytes. [`None`] for another version, a count or a length that passes the end, bytes
-    /// after the last record, or an id that is not ASCII.
+    /// bytes. [`None`] for another version, a count or a length that passes the end, or bytes
+    /// after the last record. An id is the game's own bytes, and every id is taken: no id makes
+    /// the record refused.
     pub fn read(bytes: &[u8]) -> Option<LightRecords> {
         if word(bytes, 0)? != 1 {
             return None;
@@ -210,11 +212,7 @@ impl LightRecords {
             let flags = word(bytes, at + 8)?;
             let id_length = word(bytes, at + 12)? as usize;
             let id = bytes.get(at + 16..(at + 16).checked_add(id_length)?)?;
-            if !id.is_ascii() {
-                return None;
-            }
-            let id = String::from_utf8_lossy(id).to_ascii_lowercase();
-            records.insert(id, LightRecord { radius, color, flags });
+            records.insert(key(id), LightRecord { radius, color, flags });
             at = (at + 16).checked_add(id_length.checked_add(3)? & !3)?;
         }
         (at == bytes.len()).then_some(LightRecords { records })
@@ -225,8 +223,8 @@ impl LightRecords {
         self.records.len()
     }
 
-    /// The record of `id`, which is in ASCII lower case.
-    pub fn get(&self, id: &str) -> Option<&LightRecord> {
+    /// The record of `id`.
+    pub fn get(&self, id: &Key) -> Option<&LightRecord> {
         self.records.get(id)
     }
 
@@ -278,7 +276,7 @@ impl LightRecords {
     pub fn describe_against_file(&self, file: &[FileLampRecord]) -> String {
         let difference = self.difference_from_file(file);
         let mut line = format!(
-            "light records: of the {} records of the file's exterior lamps, the game holds {} with another radius or              colour ({} lamps)",
+            "light records: of the {} records of the file's exterior lamps, the game holds {} with another radius or colour ({} lamps)",
             difference.records, difference.changed, difference.changed_lamps
         );
         if difference.missing != 0 {
@@ -294,16 +292,49 @@ mod tests {
 
     /// Record 13 with the records `(id, radius, colour, flags)`.
     fn light_records(records: &[(&str, i32, [u8; 4], u32)]) -> Vec<u8> {
+        let records: Vec<(&[u8], i32, [u8; 4], u32)> = records
+            .iter()
+            .map(|&(id, radius, color, flags)| (id.as_bytes(), radius, color, flags))
+            .collect();
+        light_records_of_bytes(&records)
+    }
+
+    /// Record 13 with the records `(id, radius, colour, flags)`, the ids as the game's bytes.
+    fn light_records_of_bytes(records: &[(&[u8], i32, [u8; 4], u32)]) -> Vec<u8> {
         let mut bytes = words(&[1, records.len() as u32]);
         for (id, radius, color, flags) in records {
             bytes.extend_from_slice(&radius.to_le_bytes());
             bytes.extend_from_slice(color);
             bytes.extend_from_slice(&flags.to_le_bytes());
             bytes.extend_from_slice(&(id.len() as u32).to_le_bytes());
-            bytes.extend_from_slice(id.as_bytes());
+            bytes.extend_from_slice(id);
             bytes.resize(bytes.len().next_multiple_of(4), 0);
         }
         bytes
+    }
+
+    /// An id is the game's own bytes. An id with bytes over 127 is a record as any other, and
+    /// the record of the lights file with the same bytes finds it.
+    #[test]
+    fn an_id_with_bytes_over_127_is_a_record_as_any_other() {
+        let bytes = light_records_of_bytes(&[
+            (&b"Lampe_\xe9t\xe9"[..], 300, [1, 2, 3, 0], 0),
+            (&b"lamp"[..], 450, [255, 255, 255, 0], 0),
+        ]);
+        let records = LightRecords::read(&bytes).expect("no id makes the record refused");
+        assert_eq!(records.count(), 2);
+        assert_eq!(records.get(&key(b"LAMPE_\xe9T\xe9")).map(|record| record.radius), Some(300));
+        // 0xC9 is the letter of 0xE9 in the other case in WINDOWS-1252: another key.
+        assert_eq!(records.get(&key(b"lampe_\xc9t\xc9")), None);
+
+        let file = [FileLampRecord {
+            id: key(b"Lampe_\xe9t\xe9"),
+            radius: 300.0,
+            color: [1, 2, 3],
+            lamps: 7,
+        }];
+        let difference = records.difference_from_file(&file);
+        assert_eq!((difference.changed, difference.missing), (0, 0));
     }
 
     #[test]
@@ -315,14 +346,15 @@ mod tests {
         let records = LightRecords::read(&bytes).unwrap();
         assert_eq!(records.count(), 2);
         assert_eq!(
-            records.get("light_com_lantern_02_128"),
+            records.get(&key(b"light_com_lantern_02_128")),
             Some(&LightRecord {
                 radius: 256,
                 color: [240, 135, 50, 0],
                 flags: 0x13
             })
         );
-        assert_eq!(records.get("Light_Com_Lantern_02_128"), None);
+        assert!(records.get(&key(b"Light_Com_Lantern_02_128")).is_some());
+        assert_eq!(records.get(&key(b"light_com_lantern_02_129")), None);
         assert_eq!(LightRecords::read(&words(&[1, 0])).map(|records| records.count()), Some(0));
     }
 
@@ -344,7 +376,9 @@ mod tests {
         let mut id_past_the_end = words(&[1, 1, 0, 0, 0, u32::MAX]);
         id_past_the_end.extend_from_slice(&[0; 8]);
         assert_eq!(LightRecords::read(&id_past_the_end), None);
-        assert_eq!(LightRecords::read(&light_records(&[("l\u{e4}mp", 1, [0; 4], 0)])), None);
+        // An id of any bytes is not a broken record: it is taken.
+        let any_bytes = LightRecords::read(&light_records(&[("l\u{e4}mp", 1, [0; 4], 0)]));
+        assert_eq!(any_bytes.map(|records| records.count()), Some(1));
     }
 
     #[test]
@@ -379,7 +413,7 @@ mod tests {
         ]))
         .unwrap();
         let file = |id: &str, lamps| FileLampRecord {
-            id: id.to_string(),
+            id: key(id.as_bytes()),
             radius: 350.0,
             color: [240, 135, 50],
             lamps,

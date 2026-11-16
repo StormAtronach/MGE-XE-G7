@@ -292,8 +292,8 @@ change. That start can take some minutes. With an older file, set it below
   them when the sky is dark, as a near light of the same record lights an object. They come from the file `distantland\lights.data`, which the generator of this build
   writes; distant land made by an earlier build is refused (see below), so generate it again.
   Without the file, `nirender-host.log` has the line `distant lights: none`. The MGE XE GUI
-  has no option for them yet; to turn them off, set `distant_lights = false` (or `bake_lights = false` for the
-  glows only) under `[generation.settings]` in `mgeXE.toml`, and generate again.
+  has no option for them yet; to turn them off, set `distant_lights = false` under
+  `[generation.settings]` in `mgeXE.toml`, and generate again.
 - The light of each pixel uses the lights of the game: each light keeps its colour and its
   whole falloff. To get the lights as MGE XE on Direct3D 9 decodes them, set
   `per_pixel_original_lights = true` under `[distant_land]`. With it on, an install whose
