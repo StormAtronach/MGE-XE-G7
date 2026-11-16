@@ -1921,10 +1921,19 @@ namespace Deviceless {
             // (distant land, alpha scenes, water mark, light limit). None is for this mode.
             mwBridge->Load();
             LOG::logline("-- wgpu renderer: the game is loaded, the frame logic of MGE XE runs from the stream");
-            // The wgpu renderer takes all lights of a node: the patch of the engine to 32
-            // needs no capability of the device here.
+            // The wgpu renderer takes all lights of a node, with no capability of the device:
+            // it asks MWSE for 48 lights of a node's own (the owner: "we could match 48 in the
+            // active cell with wgpu"). It has no patch of the game's code of its own: refused,
+            // a node keeps the engine's 7 (D424, "fail safely").
             if (Configuration.ExpandedLightLimit) {
-                MWPatches::patchExpandedLightLimit();
+                const unsigned lightLimit = 48;
+                if (MwseNative::requestLightLimit(lightLimit)) {
+                    LOG::logline("-- wgpu renderer: light limit %u (a node's own lights), through MWSE", lightLimit);
+                } else {
+                    LOG::logline("!! wgpu renderer: light limit %u asked, the engine's limit stays (7 unless another module changed it): MWSE refused the request", lightLimit);
+                }
+            } else {
+                LOG::logline("-- wgpu renderer: light limit 7 (a node's own lights): the setting ExpandedLightLimit is off");
             }
             // As on Direct3D 9: the engine attaches a light out to where the per-pixel fade
             // of the renderer ends. Without it a mesh past the radius of a light gets none of
