@@ -93,6 +93,8 @@ pub struct RebuildCounts {
     delay_frames_longest: u64,
     /// The changes of the inputs that a newer change followed before their grid was in use.
     pub taken_over: u32,
+    /// The rebuilds of another block than the cell's, dropped.
+    pub other_block: u32,
 }
 
 impl RebuildCounts {
@@ -120,7 +122,8 @@ impl RebuildCounts {
         format!(
             "distant lamps: {} rebuilds of the list and the grid; the frame thread's time in them: mean {:.3} ms, longest {:.3} ms; \
              the worker's: mean {:.3} ms, longest {:.3} ms; from a change of their inputs to the grid in use ({} changes): \
-             mean {:.3} ms and {:.1} frames, longest {:.3} ms and {} frames; {} changes followed by a newer one before their grid",
+             mean {:.3} ms and {:.1} frames, longest {:.3} ms and {} frames; {} changes followed by a newer one before their grid; \
+             {} rebuilds of another block dropped",
             self.rebuilds,
             mean(self.frame_ms, self.rebuilds),
             self.frame_ms_longest,
@@ -131,7 +134,8 @@ impl RebuildCounts {
             mean(self.delay_frames as f64, self.changes),
             self.delay_ms_longest,
             self.delay_frames_longest,
-            self.taken_over
+            self.taken_over,
+            self.other_block
         )
     }
 }
@@ -234,6 +238,116 @@ impl LampBuilder {
             Ok(made) => self.running.take().map(|(key, _)| Ok((key, made))),
             Err(TryRecvError::Disconnected) => self.running.take().map(|(key, _)| Err(key)),
         }
+    }
+}
+
+/// A finished rebuild for the frame thread to hand over: the list and the grid, and the time and
+/// the frames since the change of the inputs that it was made for. None for a grid of older
+/// inputs, and for a rebuild without such a change (a new block, a new setting).
+pub struct HandOver {
+    pub made: MadeLamps,
+    pub delay: Option<(f64, u64)>,
+}
+
+/// What a finished rebuild gives the frame thread.
+pub enum Finished {
+    /// The list and the grid to put into the buffers.
+    HandOver(HandOver),
+    /// A list and a grid of another block than the cell's: the lamps of another world space,
+    /// which must not light this one. Dropped.
+    OtherBlock(LampKey),
+    /// The worker ended without the list and the grid (a panic).
+    Failed(LampKey),
+}
+
+/// The rebuilds of the lamps' list and grid: the worker, what the grid in use was made for, the
+/// changes of the inputs, and the counts. One rebuild runs at a time. A change that comes while
+/// one runs waits for it, then the newest inputs start: none waits in a queue. The rebuild of
+/// older inputs is handed over all the same, so that a stream of changes faster than the worker
+/// still gives a grid at each rebuild; the newest is never more than one rebuild away. A rebuild
+/// of another block than the cell's is dropped, and the lamps light only while the grid in use is
+/// of the cell's block ([`LampRebuilds::lit`]).
+#[derive(Default)]
+pub struct LampRebuilds {
+    builder: LampBuilder,
+    made_for: Option<LampKey>,
+    inputs: u64,
+    /// When the newest change of the inputs came and its frame, until its grid is in use.
+    changed: Option<(Instant, u64)>,
+    pub counts: RebuildCounts,
+}
+
+impl LampRebuilds {
+    /// The inputs of the lamps changed at the frame `frame`: a new lights file, other light
+    /// records. A change whose grid is not in use yet is followed by this one.
+    pub fn inputs_changed(&mut self, frame: u64) {
+        if self.changed.is_some() {
+            self.counts.taken_over += 1;
+        }
+        self.inputs += 1;
+        self.changed = Some((Instant::now(), frame));
+    }
+
+    /// Starts the rebuild of the cell's lamps when none runs and the grid in use was made for
+    /// other inputs. `lamps` gives the file's lamps of a block, only for a start. True when a
+    /// rebuild started.
+    pub fn want(
+        &mut self,
+        settings: LightSettings,
+        near: NearLights,
+        block: Key,
+        lamps: impl FnOnce(&Key) -> Arc<FileLamps>,
+        records: Option<Arc<LightRecords>>,
+    ) -> bool {
+        if self.builder.running().is_some() {
+            return false;
+        }
+        let key = LampKey {
+            settings,
+            near,
+            block,
+            inputs: self.inputs,
+        };
+        if self.made_for.as_ref() == Some(&key) {
+            return false;
+        }
+        let file = lamps(&key.block);
+        self.builder.start(key, file, records);
+        true
+    }
+
+    /// The rebuild that the worker finished; with `wait` (a replay, whose loads are synchronous),
+    /// it waits for the one that runs. `frame` is the frame of now and `block` the cell's block
+    /// ([`None`] in an interior without distant lamps, where a rebuild is handed over: it does
+    /// not light there).
+    pub fn finished(&mut self, wait: bool, frame: u64, block: Option<&Key>) -> Option<Finished> {
+        let rebuild = self.builder.finished(wait)?;
+        Some(match rebuild {
+            Err(key) => {
+                self.made_for = Some(key.clone());
+                Finished::Failed(key)
+            }
+            Ok((key, _)) if block.is_some_and(|block| *block != key.block) => {
+                self.counts.other_block += 1;
+                Finished::OtherBlock(key)
+            }
+            Ok((key, made)) => {
+                let delay = if key.inputs == self.inputs {
+                    self.changed
+                        .take()
+                        .map(|(at, from)| (at.elapsed().as_secs_f64() * 1000.0, frame - from))
+                } else {
+                    None
+                };
+                self.made_for = Some(key);
+                Finished::HandOver(HandOver { made, delay })
+            }
+        })
+    }
+
+    /// The lamps light the cell of the block `block`: the grid in use was made for it.
+    pub fn lit(&self, block: Option<&Key>) -> bool {
+        block.is_some_and(|block| self.made_for.as_ref().is_some_and(|made| made.block == *block))
     }
 }
 
@@ -1046,6 +1160,7 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("3 changes followed by a newer one"), "{line}");
+        assert!(line.contains("0 rebuilds of another block dropped"), "{line}");
     }
 
     fn lamp_key(inputs: u64) -> LampKey {
@@ -1083,6 +1198,81 @@ mod tests {
         }
         assert_eq!(made.values, values);
         assert!(made.worker_ms() >= 0.0);
+    }
+
+    /// A newer change of the inputs while a rebuild runs: it waits; the rebuild of the older
+    /// inputs is handed over, then the newest starts, and the grid in use at the end is the
+    /// newest one's. The older change counts as followed by a newer one. A change of the block
+    /// takes the same path.
+    #[test]
+    fn a_change_during_a_rebuild_is_made_after_it_with_the_newest_inputs() {
+        let file = Arc::new(file_lamps());
+        let lamps = |_: &Key| Arc::clone(&file);
+        let record = |radius| Some(Arc::new(record_13(&[("light_com_lantern", radius, [180, 120, 60, 0], 0)])));
+        let end = |radius: u32| end_of(radius as f32, outlander_test().terms(radius, false), 1.75);
+        let mut rebuilds = LampRebuilds::default();
+
+        rebuilds.inputs_changed(0);
+        assert!(rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, record(256)));
+        // The second record comes while the first rebuild runs: no second rebuild starts.
+        rebuilds.inputs_changed(1);
+        assert!(!rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, record(512)));
+
+        let hand_over = |finished: Option<Finished>| match finished {
+            Some(Finished::HandOver(hand_over)) => hand_over,
+            _ => panic!("no hand-over"),
+        };
+        let older = hand_over(rebuilds.finished(true, 2, Some(&EXTERIOR_KEY)));
+        assert_eq!(older.made.grid.lamps[0].end, end(256));
+        assert_eq!(older.delay, None);
+        assert!(rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, record(512)));
+        let newer = hand_over(rebuilds.finished(true, 3, Some(&EXTERIOR_KEY)));
+        assert_eq!(newer.made.grid.lamps[0].end, end(512));
+        assert_eq!(newer.delay.map(|(_, frames)| frames), Some(2));
+        // The grid in use is the newest one's: nothing more to make.
+        assert!(!rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, record(512)));
+        assert_eq!(rebuilds.counts.taken_over, 1);
+        assert!(rebuilds.lit(Some(&EXTERIOR_KEY)));
+    }
+
+    /// A change of the block while a rebuild runs: the rebuild of the old block is dropped and
+    /// counted, and from the change until the grid of the new block is in use no lamp lights.
+    #[test]
+    fn the_lamps_of_another_block_do_not_light_the_cell() {
+        let file = Arc::new(file_lamps());
+        let lamps = |_: &Key| Arc::clone(&file);
+        let interior = key(b"mournhold, temple");
+        let mut rebuilds = LampRebuilds::default();
+        assert!(!rebuilds.lit(Some(&EXTERIOR_KEY)));
+        assert!(rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, None));
+        assert!(matches!(
+            rebuilds.finished(true, 1, Some(&EXTERIOR_KEY)),
+            Some(Finished::HandOver(_))
+        ));
+        assert!(rebuilds.lit(Some(&EXTERIOR_KEY)));
+        // An interior without distant lamps: the grid stays, and it does not light.
+        assert!(!rebuilds.lit(None));
+
+        // Another change in the exterior, then the player goes into an interior like an
+        // exterior while its rebuild runs.
+        rebuilds.inputs_changed(2);
+        assert!(rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, None));
+        assert!(!rebuilds.lit(Some(&interior)));
+        assert!(!rebuilds.want(outlander_test(), FADED, interior.clone(), lamps, None));
+        assert!(matches!(
+            rebuilds.finished(true, 3, Some(&interior)),
+            Some(Finished::OtherBlock(_))
+        ));
+        assert_eq!(rebuilds.counts.other_block, 1);
+        assert!(!rebuilds.lit(Some(&interior)));
+        // The rebuild of the interior's block, then its lamps light.
+        assert!(rebuilds.want(outlander_test(), FADED, interior.clone(), lamps, None));
+        assert!(matches!(
+            rebuilds.finished(true, 4, Some(&interior)),
+            Some(Finished::HandOver(_))
+        ));
+        assert!(rebuilds.lit(Some(&interior)));
+        assert!(!rebuilds.lit(Some(&EXTERIOR_KEY)));
     }
 
     /// The block of a cell: the exterior's; an interior like an exterior by its name, with A to

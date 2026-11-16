@@ -1264,21 +1264,15 @@ pub struct DistantLand {
     /// the statics read; [`None`] before the first frame.
     lights: Option<distant_lights::DistantLights>,
     light_binding: Option<lamp_grid::LampBinding>,
-    /// What the lamps' grid in use was made for; [`None`] before the first.
-    lamps_made_for: Option<lamp_grid::LampKey>,
-    /// The worker that makes the lamps' lists and grids.
-    lamp_builder: lamp_grid::LampBuilder,
-    /// The number of the changes of the lamps' inputs: a new lights file, other light records.
-    lamp_inputs: u64,
+    /// The rebuilds of the lamps' list and grid on a worker, and their counts for the log at the
+    /// end.
+    lamp_rebuilds: lamp_grid::LampRebuilds,
     /// The line that the lamps wait for the light settings (record 12) is in the log.
     lamps_wait_told: bool,
-    /// The rebuilds of the lamps' list and grid, for the log at the end.
-    lamp_rebuilds: lamp_grid::RebuildCounts,
     /// The frames of the session.
     frames_seen: u64,
-    /// When the inputs of the lamps changed (a new record 13, a new lights file) and the frame
-    /// of it, until their grid is made.
-    lamp_inputs_changed: Option<(Instant, u64)>,
+    /// The grid of the lamps in use is of the block of the cell: they may light it.
+    lamps_lit: bool,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
@@ -1894,12 +1888,9 @@ impl DistantLand {
             statics: None,
             lights: None,
             light_binding: None,
-            lamps_made_for: None,
-            lamp_builder: lamp_grid::LampBuilder::default(),
-            lamp_inputs: 0,
-            lamp_rebuilds: lamp_grid::RebuildCounts::default(),
+            lamp_rebuilds: lamp_grid::LampRebuilds::default(),
             frames_seen: 0,
-            lamp_inputs_changed: None,
+            lamps_lit: false,
             lamps_wait_told: false,
             view_binding: None,
             shadow: None,
@@ -2090,11 +2081,10 @@ impl DistantLand {
         if let Some(lights) = self.lights.as_mut()
             && lights.poll(scene, &views.layout, self.synchronous)
         {
-            self.lamp_inputs += 1;
-            self.lamp_inputs_changed.get_or_insert((Instant::now(), self.frames_seen));
+            self.lamp_rebuilds.inputs_changed(self.frames_seen);
         }
         let blocks = self.lights.as_ref().and_then(distant_lights::DistantLights::file_lamps);
-        if let (Some(blocks), Some(block)) = (blocks, block) {
+        if let (Some(blocks), Some(block)) = (blocks, block.clone()) {
             match self.light_settings {
                 // The terms of a lamp come from the engine's settings only (the page, section
                 // 2.1): without them the lamps wait.
@@ -2105,51 +2095,41 @@ impl DistantLand {
                 }
                 // One rebuild at a time: a change that comes while one runs starts after it,
                 // with the newest inputs.
-                Some(settings) if self.lamp_builder.running().is_none() => {
-                    let key = lamp_grid::LampKey {
-                        settings,
-                        near,
-                        block,
-                        inputs: self.lamp_inputs,
-                    };
-                    if self.lamps_made_for.as_ref() != Some(&key) {
-                        let lamps = blocks.get(&key.block).cloned().unwrap_or_else(|| {
+                Some(settings) => {
+                    let lamps = |block: &distantland::mge_xe::lights::Key| {
+                        blocks.get(block).cloned().unwrap_or_else(|| {
                             println!(
                                 "distant lamps: no lamps here: the lights file has no block for {}",
-                                lamp_grid::block_name(&key.block)
+                                lamp_grid::block_name(block)
                             );
                             Arc::default()
-                        });
-                        self.lamp_builder.start(key, lamps, self.light_records.clone());
-                    }
+                        })
+                    };
+                    let records = self.light_records.clone();
+                    self.lamp_rebuilds.want(settings, near, block, lamps, records);
                 }
-                _ => {}
+                None => {}
             }
         }
         // A finished rebuild: its list and grid go into the buffers, the frame thread's only part.
         // The old ones draw until then. A replay waits for it, as for its loads.
-        match self.lamp_builder.finished(self.synchronous) {
+        match self
+            .lamp_rebuilds
+            .finished(self.synchronous, self.frames_seen, block.as_ref())
+        {
             None => {}
-            Some(Err(key)) => {
-                println!(
-                    "distant lamps: the worker ended without the list and the grid (block {})",
-                    lamp_grid::block_name(&key.block)
-                );
-                self.lamps_made_for = Some(key);
-            }
-            Some(Ok((key, made))) => {
+            Some(lamp_grid::Finished::Failed(key)) => println!(
+                "distant lamps: the worker ended without the list and the grid ({})",
+                lamp_grid::block_name(&key.block)
+            ),
+            Some(lamp_grid::Finished::OtherBlock(key)) => println!(
+                "distant lamps: the list and the grid of {} are dropped: the cell's block is another",
+                lamp_grid::block_name(&key.block)
+            ),
+            Some(lamp_grid::Finished::HandOver(lamp_grid::HandOver { made, delay })) => {
                 let start = Instant::now();
                 let new_buffers = binding.set(scene.device, scene.queue, &made.grid);
                 let frame_ms = start.elapsed().as_secs_f64() * 1000.0;
-                // The change of the inputs that this grid was made for waited until now; a grid of
-                // older inputs leaves the newest change waiting.
-                let delay = if key.inputs == self.lamp_inputs {
-                    self.lamp_inputs_changed
-                        .take()
-                        .map(|(at, frame)| (at.elapsed().as_secs_f64() * 1000.0, self.frames_seen - frame))
-                } else {
-                    None
-                };
                 let waited = match delay {
                     Some((ms, frames)) => format!("; {ms:.3} ms and {frames} frames after the change of its inputs"),
                     None => String::new(),
@@ -2168,10 +2148,10 @@ impl DistantLand {
                         "written into the buffers"
                     }
                 );
-                self.lamp_rebuilds.note(frame_ms, made.worker_ms(), delay);
-                self.lamps_made_for = Some(key);
+                self.lamp_rebuilds.counts.note(frame_ms, made.worker_ms(), delay);
             }
         }
+        self.lamps_lit = self.lamp_rebuilds.lit(block.as_ref());
         if self.light_records_line_due {
             let file = self.lights.as_ref().and_then(distant_lights::DistantLights::file_records);
             if let (Some(records), Some(file)) = (self.light_records.as_deref(), file) {
@@ -2241,7 +2221,7 @@ impl DistantLand {
 
 impl Drop for DistantLand {
     fn drop(&mut self) {
-        println!("{}", self.lamp_rebuilds.line());
+        println!("{}", self.lamp_rebuilds.counts.line());
         println!(
             "distant land: {} terrain mesh draws, fog distances {}",
             self.meshes_drawn,
@@ -4041,13 +4021,8 @@ impl Extension for DistantLand {
                         );
                         self.light_records = Some(Arc::new(records));
                         self.light_records_line_due = true;
-                        // The lamps take the new values. A change whose grid is not in use yet is
-                        // followed by this one.
-                        self.lamp_inputs += 1;
-                        if self.lamp_inputs_changed.is_some() {
-                            self.lamp_rebuilds.taken_over += 1;
-                        }
-                        self.lamp_inputs_changed = Some((Instant::now(), self.frames_seen));
+                        // The lamps take the new values.
+                        self.lamp_rebuilds.inputs_changed(self.frames_seen);
                     }
                 }
                 None => println!(
@@ -6510,11 +6485,11 @@ impl DistantLand {
     }
 
     /// The strength of the distant lamps' light in the frame of `main_view`: by the darkness of
-    /// its sun and ambient light ([`lamp_grid::darkness_gate`]) in an exterior and in an
-    /// interior like one, 0 in another interior. The lamps are those of the cell's block of the
-    /// lights file ([`lamp_grid::lamp_block_key`]).
+    /// its sun and ambient light ([`lamp_grid::darkness_gate`]) while the grid in use is of the
+    /// cell's block of the lights file ([`lamp_grid::lamp_block_key`]); else 0: in an interior
+    /// without distant lamps, and from a change of the block until the grid of the new block.
     fn lamp_strength(&self, main_view: &view::View) -> f32 {
-        if self.interior && !self.like_exterior {
+        if !self.lamps_lit {
             return 0.0;
         }
         let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
