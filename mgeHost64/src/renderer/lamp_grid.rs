@@ -121,7 +121,8 @@ impl RebuildCounts {
         let mean = |sum: f64, count: u32| if count == 0 { 0.0 } else { sum / f64::from(count) };
         format!(
             "distant lamps: {} rebuilds of the list and the grid; the frame thread's time in them: mean {:.3} ms, longest {:.3} ms; \
-             the worker's: mean {:.3} ms, longest {:.3} ms; from a change of their inputs to the grid in use ({} changes): \
+             the worker's: mean {:.3} ms, longest {:.3} ms; from a change of their inputs to the grid in use ({} changes; \
+             at the start with the wait for the light settings and a cell with lamps): \
              mean {:.3} ms and {:.1} frames, longest {:.3} ms and {} frames; {} changes followed by a newer one before their grid; \
              {} rebuilds of another block dropped",
             self.rebuilds,
@@ -270,7 +271,11 @@ pub enum Finished {
 #[derive(Default)]
 pub struct LampRebuilds {
     builder: LampBuilder,
+    /// What the grid in use was made for; [`None`] before the first.
     made_for: Option<LampKey>,
+    /// The key of the last rebuild that ended without the list and the grid: it does not start
+    /// again until its inputs change. The grid in use stays.
+    failed: Option<LampKey>,
     inputs: u64,
     /// When the newest change of the inputs came and its frame, until its grid is in use.
     changed: Option<(Instant, u64)>,
@@ -308,7 +313,7 @@ impl LampRebuilds {
             block,
             inputs: self.inputs,
         };
-        if self.made_for.as_ref() == Some(&key) {
+        if self.made_for.as_ref() == Some(&key) || self.failed.as_ref() == Some(&key) {
             return false;
         }
         let file = lamps(&key.block);
@@ -322,9 +327,16 @@ impl LampRebuilds {
     /// not light there).
     pub fn finished(&mut self, wait: bool, frame: u64, block: Option<&Key>) -> Option<Finished> {
         let rebuild = self.builder.finished(wait)?;
-        Some(match rebuild {
+        Some(self.take(rebuild, frame, block))
+    }
+
+    /// What a finished rebuild gives at the frame `frame` with the cell's block `block`: a
+    /// rebuild that failed leaves the grid in use as it was, and the lamps light only where they
+    /// lit before ([`LampRebuilds::lit`]).
+    fn take(&mut self, rebuild: Rebuild, frame: u64, block: Option<&Key>) -> Finished {
+        match rebuild {
             Err(key) => {
-                self.made_for = Some(key.clone());
+                self.failed = Some(key.clone());
                 Finished::Failed(key)
             }
             Ok((key, _)) if block.is_some_and(|block| *block != key.block) => {
@@ -342,7 +354,7 @@ impl LampRebuilds {
                 self.made_for = Some(key);
                 Finished::HandOver(HandOver { made, delay })
             }
-        })
+        }
     }
 
     /// The lamps light the cell of the block `block`: the grid in use was made for it.
@@ -1173,7 +1185,7 @@ mod tests {
         assert!(line.contains("the worker's: mean 7.000 ms, longest 8.000 ms"), "{line}");
         // The delay is of the rebuilds that a change waited for only.
         assert!(
-            line.contains("(1 changes): mean 20.000 ms and 1.0 frames, longest 20.000 ms and 1 frames"),
+            line.contains("(1 changes; at the start with the wait for the light settings and a cell with lamps): mean 20.000 ms and 1.0 frames, longest 20.000 ms and 1 frames"),
             "{line}"
         );
         assert!(line.contains("3 changes followed by a newer one"), "{line}");
@@ -1250,6 +1262,44 @@ mod tests {
         assert!(!rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, record(512)));
         assert_eq!(rebuilds.counts.taken_over, 1);
         assert!(rebuilds.lit(Some(&EXTERIOR_KEY)));
+    }
+
+    /// A rebuild that ends without the list and the grid (a panic of the worker) leaves the grid
+    /// in use as it was: the lamps of the block before do not light the new block, and the same
+    /// key does not start again until its inputs change.
+    #[test]
+    fn a_failed_rebuild_keeps_the_grid_in_use_and_does_not_start_again() {
+        let file = Arc::new(file_lamps());
+        let lamps = |_: &Key| Arc::clone(&file);
+        let interior = key(b"mournhold, temple");
+        let mut rebuilds = LampRebuilds::default();
+        assert!(rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, None));
+        assert!(matches!(
+            rebuilds.finished(true, 1, Some(&EXTERIOR_KEY)),
+            Some(Finished::HandOver(_))
+        ));
+
+        // The player goes into an interior like an exterior, and the worker of its rebuild ends
+        // without a grid.
+        let failed = LampKey {
+            settings: outlander_test(),
+            near: FADED,
+            block: interior.clone(),
+            inputs: 0,
+        };
+        assert!(matches!(rebuilds.take(Err(failed), 2, Some(&interior)), Finished::Failed(_)));
+        assert!(!rebuilds.lit(Some(&interior)));
+        assert!(rebuilds.lit(Some(&EXTERIOR_KEY)));
+        assert!(!rebuilds.want(outlander_test(), FADED, interior.clone(), lamps, None));
+
+        // New inputs start it again, and then its lamps light.
+        rebuilds.inputs_changed(3);
+        assert!(rebuilds.want(outlander_test(), FADED, interior.clone(), lamps, None));
+        assert!(matches!(
+            rebuilds.finished(true, 4, Some(&interior)),
+            Some(Finished::HandOver(_))
+        ));
+        assert!(rebuilds.lit(Some(&interior)));
     }
 
     /// A change of the block while a rebuild runs: the rebuild of the old block is dropped and
