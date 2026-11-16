@@ -66,13 +66,64 @@ At its start the renderer writes one line for each event:
   nothing;
 - `core mod: XE Mod <name>.fx is for Direct3D 9; the wgpu renderer reads XE Mod <name>.wgsl,
   and there is none`: a Direct3D 9 core mod with no `.wgsl` file beside it;
-- `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set.
+- `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set;
+- `core mods: read <path>`: a core mod file was read from that place;
+- `core mods: only the folder <folder> (MGE_XE_CORE_MODS_DIR)`, or `core mods:
+  MGE_XE_CORE_MODS_DIR=<folder> is not a folder: no core mod is read`: see "Read the core mods
+  from one folder";
+- `core mod: <file>: the <home> failed with it on the device (<error>); the built-in hooks are
+  used`: the file passed the check at the start, but a shader of the home failed in the back end
+  or the driver. The file is dropped for the rest of the session: the homes built after it take
+  the built-in hooks, and the world shader takes a new text at the next frame. `<home>` is the
+  world shader, the grass, the water plane or the water volume;
+- `core mod: <file>: a start before ended in the build of the <home> with it; it is not used
+  until it changes`: the helper ended while it built that home with the file (a lost device or
+  a crash in the driver). The file is not used until its text changes. The debug overlay shows
+  this line and the one above;
+- `core mods: the world shader's pipeline failed with the built-in text too (<error>); no core
+  mod is dropped`: a pipeline of the world shader failed, and the same pipeline also fails with
+  the world shader's text without any core mod. The fault is not a core mod's: no file is
+  dropped, and the failed pipeline is kept as it is. For the rest of that session, a later fault
+  of the world shader is kept too and drops no file.
+
+A fault that ends the helper in a home's first build leaves a marker file in
+`%LOCALAPPDATA%\MGE XE` (`core-mod-build-<home>.txt`): it names the files of that build, and
+the next start reads it. The marker is up only during that first build. A game that closes
+while it loads leaves no marker.
+
+How long a file stays dropped:
+
+- A file that ended the helper in a home's first build is not used until its text changes,
+  over any number of starts.
+- A file dropped for an error of the device (the lines "the <home> failed with it on the
+  device") is dropped for that session only. The next start uses it again.
+
+In the world shader, a fault can come at a later pipeline than the first one: in that frame,
+the draws whose pipelines held keep the file's hooks, and the draws of the failed pipeline are
+skipped. Before the next frame, the renderer builds the failed pipeline one time with the text
+without any core mod. When that build fails too, nothing is dropped. Else the world shader
+tries the text without each file in turn, then without all of them. A text holds only when the
+first world pipeline and the failed one build with it.
+
+A limit: the device can give an internal error that is no fault of a file and that does not
+come again (for example, the driver runs out of a resource one time). When the build without
+any core mod then passes, a file is dropped that is not at fault. That costs the file for one
+session; the next start uses it again.
 
 ## Turn the core mods off
 
 Set the environment variable `MGE_XE_CORE_MODS=0` to start with the built-in hooks only. No
 file is read. The renderer's own test gate sets it, so its accepted pictures do not depend on
 the installed mods.
+
+## Read the core mods from one folder
+
+Set `MGE_XE_CORE_MODS_DIR=<folder>` to read the core mods only from that folder, by their file
+names (`XE Mod Shadow.wgsl` and the others). The game folder and the mods of Mod Organizer are
+not searched. A path that is not a folder reads no core mod; the log says so. With
+`MGE_XE_CORE_MODS=0` no file is read, with or without the folder. The build markers stay in
+their own folder and are never written into this one. The test gate reads its hook fixtures
+this way.
 
 ## The contract
 

@@ -112,7 +112,7 @@ mod part {
 }
 use nirender_wgpu::{
     Additions, DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay,
-    SceneView, Status, TableShade,
+    SceneView, ShaderText, Status, TableShade,
 };
 use post::{Post, Variables};
 use shadow::Shadow;
@@ -1186,8 +1186,14 @@ pub struct DistantLand {
     /// The light for each pixel of this frame, or [`None`].
     shade: Option<PerPixel>,
     /// The core mods of the session (`Data Files/shaders/core-mods`): the hooks of the shaders
-    /// and the values of the shadow.
-    core_mods: core_mods::CoreMods,
+    /// and the values of the shadow, shared with the homes that take them at their first build.
+    core_mods: core_mods::Shared,
+    /// The texts of the world shader to try after its text failed on the device (W317): attempt
+    /// n of [`Extension::shader_fallback`] drops the units of entry n - 1. Made at the text that
+    /// failed: each unit of the world alone, then all of them.
+    world_trials: Vec<Vec<core_mods::ModFile>>,
+    /// The error of the device with the world shader's text that failed, for the log.
+    world_error: String,
     /// The sun of the frame for the shadow of a draw: the direction the light goes in and
     /// its colour, from the scene's sun (the weather's sky light, the plugin's scene record),
     /// [`None`] when the scene has none. A draw's own directional light never serves: it can
@@ -1587,6 +1593,19 @@ fn shown(path: &Path) -> String {
     text.strip_prefix(r"\\?\").map_or(text.clone(), str::to_owned)
 }
 
+/// The bytes of a core mod file (`relative` under `Data Files`). With `folder`
+/// (`MGE_XE_CORE_MODS_DIR`) the file comes only from that folder, by its name; else from the
+/// places of [`data_file`]. The log names the place of each file read.
+fn core_mod_file(root: &Path, folder: Option<&Path>, relative: &str) -> Option<Vec<u8>> {
+    let place = match folder {
+        Some(folder) => folder.join(Path::new(relative).file_name()?),
+        None => data_places(root, relative).into_iter().find(|place| place.is_file())?,
+    };
+    let bytes = std::fs::read(&place).ok()?;
+    println!("core mods: read {}", shown(&place));
+    Some(bytes)
+}
+
 /// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`).
 fn draw_shader_text(shadow_hooks: &str) -> String {
     format!("{LIGHT_FUNCTIONS}{DRAW_SHADER}{shadow_hooks}")
@@ -1811,9 +1830,17 @@ impl DistantLand {
     pub fn start(root: &Path, live: bool) -> DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
-        let core_mods =
-            core_mods::CoreMods::load(&|name| data_file(root, name), &shadow_homes(), &water_homes(), &sky_homes());
-        let reflection_kept = Self::reflection_readers(root, core_mods.shadow_hooks());
+        let mods_folder = core_mods::folder_of_switch();
+        let markers = core_mods::BuildMarkers::of_user().apart_from(mods_folder.as_deref());
+        let mods = core_mods::CoreMods::load(
+            &|name| core_mod_file(root, mods_folder.as_deref(), name),
+            &shadow_homes(),
+            &water_homes(),
+            &sky_homes(),
+            &markers,
+        );
+        let core_mods = core_mods::Shared::new(mods, markers, core_mods::Plant::of_env());
+        let reflection_kept = Self::reflection_readers(root, &core_mods.shadow_hooks());
         // The places of the full tier: the player's setting, or the environment variable for a
         // test, which may go up to the code's bound (one place for each view slot).
         let full_tier_max = std::env::var("MGE_XE_FULL_TIER_MAX")
@@ -1858,6 +1885,8 @@ impl DistantLand {
             plan: Plan::default(),
             shade: None,
             core_mods,
+            world_trials: Vec::new(),
+            world_error: String::new(),
             scene_sun: None,
             shadow_day: 1.0,
             synchronous: false,
@@ -2016,11 +2045,7 @@ impl DistantLand {
             } else {
                 // Data of another version: `load` gives the problem, and no statics start.
                 if statics_wanted && version_problem(&folder).is_none() {
-                    land.statics = Some(statics::Statics::start(
-                        &document,
-                        folder.clone(),
-                        land.core_mods.shadow_hooks(),
-                    ));
+                    land.statics = Some(statics::Statics::start(&document, folder.clone(), &land.core_mods));
                     land.lights = Some(distant_lights::DistantLights::start(&folder));
                 }
                 thread::spawn(move || {
@@ -2050,7 +2075,7 @@ impl DistantLand {
         if let Some(folder) = folder.filter(|folder| version_problem(folder).is_none()) {
             let document = ConfigDocument::open(self.root.join(FILE_NAME));
             self.lights = Some(distant_lights::DistantLights::start(&folder));
-            let mut statics = statics::Statics::start(&document, folder, self.core_mods.shadow_hooks());
+            let mut statics = statics::Statics::start(&document, folder, &self.core_mods);
             statics.set_groups(&self.vis_groups);
             statics.set_places(self.tier_views.places());
             self.statics = Some(statics);
@@ -3503,7 +3528,12 @@ impl Extension for DistantLand {
     }
 
     fn overlay_lines(&self) -> Vec<String> {
-        self.problem.iter().cloned().chain(self.tunables.lines()).collect()
+        self.problem
+            .iter()
+            .cloned()
+            .chain(self.core_mods.problems())
+            .chain(self.tunables.lines())
+            .collect()
     }
 
     /// The status text and the frame rate of MGE XE, as `StatusOverlay::show` draws them on
@@ -3778,7 +3808,7 @@ impl Extension for DistantLand {
             }),
             shade: self.shade.is_some() || self.shadow_in_frame || self.under_water(),
             sky,
-            clouds: sky.is_some() && self.core_mods.sky_hooks().is_some(),
+            clouds: sky.is_some() && self.core_mods.has_sky_hooks(),
             blend: distant,
             // The water plane of the game is class 10; the glare of the sun is class 8.
             watched: (if water { 1 << 10 } else { 0 }) | (if no_glare { 1 << 8 } else { 0 }),
@@ -3813,8 +3843,10 @@ impl Extension for DistantLand {
         }
     }
 
+    /// The shadow hooks of the session now. The marker of the world shader goes up only around the
+    /// first build of a text ([`Extension::world_shader_building`]).
     fn draw_shader(&self) -> Option<String> {
-        Some(draw_shader_text(self.core_mods.shadow_hooks()))
+        Some(draw_shader_text(&self.core_mods.world_hooks().0))
     }
 
     /// Packs the lights of a world draw for the light of a pixel. A point light stays as the
@@ -3882,7 +3914,95 @@ impl Extension for DistantLand {
     }
 
     fn sky_shader(&self) -> Option<String> {
-        Some(sky_shader_text(self.core_mods.sky_hooks()))
+        Some(sky_shader_text(self.core_mods.world_hooks().1.as_deref()))
+    }
+
+    /// The list of W317: the text without each unit of the world shader alone, then without all
+    /// of them. None under the plant's `:keep` (the null test), or when the list is done.
+    fn shader_fallback(&mut self, attempt: u32, error: &str) -> Option<ShaderText> {
+        if attempt == 1 {
+            if self.core_mods.plant_keeps(core_mods::WORLD_HOME) {
+                println!("core mods: the world shader failed ({error}); MGE_XE_CORE_MOD_FAULT keeps it");
+                // The helper goes on with the failed text: the marker of the world goes.
+                self.core_mods.world_held(&[], error);
+                return None;
+            }
+            self.world_error = error.to_string();
+            let units = self.core_mods.world_files();
+            self.world_trials = units.iter().map(|unit| vec![*unit]).collect();
+            if units.len() > 1 {
+                self.world_trials.push(units);
+            }
+        }
+        let dropped = self.world_trials.get(attempt as usize - 1)?;
+        let (shadow, sky) = self.core_mods.world_hooks_without(dropped);
+        let label = dropped.iter().map(|unit| unit.label()).collect::<Vec<_>>().join(" and ");
+        Some(ShaderText {
+            sky: Some(sky_shader_text(sky.as_deref())),
+            draw: Some(draw_shader_text(&shadow)),
+            label: format!("without {label}"),
+        })
+    }
+
+    /// The marker of the world shader goes up around the first build of the text of `attempt`,
+    /// for the units in it: the build that a fault of the driver can end. The plant's `:exit`
+    /// ends the helper here.
+    fn world_shader_building(&mut self, attempt: u32) {
+        let dropped = match attempt {
+            0 => &[][..],
+            n => self.world_trials.get(n as usize - 1).map_or(&[][..], Vec::as_slice),
+        };
+        let units: Vec<_> = self
+            .core_mods
+            .world_files()
+            .into_iter()
+            .filter(|unit| !dropped.contains(unit))
+            .collect();
+        self.core_mods.mark_world(&units);
+    }
+
+    /// The world shader's text without every unit of the world: the probe of a fault (W317).
+    /// None when no unit is in the world shader.
+    fn built_in_text(&mut self) -> Option<ShaderText> {
+        let units = self.core_mods.world_files();
+        if units.is_empty() {
+            return None;
+        }
+        let (shadow, sky) = self.core_mods.world_hooks_without(&units);
+        Some(ShaderText {
+            sky: Some(sky_shader_text(sky.as_deref())),
+            draw: Some(draw_shader_text(&shadow)),
+            label: "built in".to_string(),
+        })
+    }
+
+    /// The fault is no core mod's: no unit is dropped, and the marker of the world goes.
+    fn world_shader_kept(&mut self, error: &str) {
+        self.core_mods.world_held(&[], error);
+    }
+
+    /// The text of `attempt` holds: the units its entry of the list dropped leave the session
+    /// (the homes not yet built take the built-ins), and the marker of the world goes.
+    fn world_shader_held(&mut self, attempt: u32) {
+        let dropped = match attempt {
+            0 => &[][..],
+            n => self.world_trials.get(n as usize - 1).map_or(&[][..], Vec::as_slice),
+        };
+        self.core_mods.world_held(dropped, &self.world_error);
+    }
+
+    /// A home dropped a unit of the world shader since the last frame: the world takes the
+    /// hooks of the session now ([`Extension::world_shader_building`] puts up its marker).
+    fn world_shader_changed(&mut self) -> Option<ShaderText> {
+        if !self.core_mods.take_world_changed() {
+            return None;
+        }
+        let (shadow, sky) = self.core_mods.world_hooks();
+        Some(ShaderText {
+            sky: Some(sky_shader_text(sky.as_deref())),
+            draw: Some(draw_shader_text(&shadow)),
+            label: "of the core mods now".to_string(),
+        })
     }
 
     /// The events of the distant land for MGE XE (`distantLandReady` of its Lua), at the end
@@ -7818,11 +7938,7 @@ mod set_free_tests {
     fn a_free_of_a_set_calls_the_free_of_every_part_and_ends_the_hold() {
         let (mut land, root) = land_with_no_data("calls");
         let document = ConfigDocument::open(root.join(FILE_NAME));
-        land.statics = Some(statics::Statics::start(
-            &document,
-            root.join("no-statics"),
-            land.core_mods.shadow_hooks(),
-        ));
+        land.statics = Some(statics::Statics::start(&document, root.join("no-statics"), &land.core_mods));
         land.tier_views.creation_failed();
         assert!(land.tier_views.held(), "an out-of-memory error holds the views");
 
@@ -8301,5 +8417,37 @@ mod frame_value_tests {
         assert!(parameters.post && !parameters.blend, "the menu frame shows the kept picture");
         assert!(!before_world(&mut land, &scene), "under a menu: no land");
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod core_mod_file_tests {
+    use super::*;
+
+    /// With the folder of `MGE_XE_CORE_MODS_DIR` a core mod comes only from it: the plant, a file
+    /// in the game folder, is not read, and a folder that is missing reads nothing. The null:
+    /// without the folder the game folder's file is read.
+    #[test]
+    fn the_folder_of_the_switch_is_the_only_place_of_the_core_mods() {
+        let root = std::env::temp_dir().join(format!("mge-core-mods-dir-{}", std::process::id()));
+        let game = root.join("Data Files/shaders/core-mods");
+        let folder = root.join("fixtures");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(game.join("XE Mod Shadow.wgsl"), "game").unwrap();
+        std::fs::write(folder.join("XE Mod Water.wgsl"), "fixture").unwrap();
+        let shadow = "shaders/core-mods/XE Mod Shadow.wgsl";
+        let water = "shaders/core-mods/XE Mod Water.wgsl";
+
+        assert_eq!(
+            core_mod_file(&root, Some(&folder), shadow),
+            None,
+            "the game folder's file is read"
+        );
+        assert_eq!(core_mod_file(&root, Some(&folder), water), Some(b"fixture".to_vec()));
+        assert_eq!(core_mod_file(&root, Some(&root.join("missing")), shadow), None);
+        assert_eq!(core_mod_file(&root, None, shadow), Some(b"game".to_vec()));
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

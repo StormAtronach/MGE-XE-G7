@@ -53,6 +53,10 @@
 //! A hook may call the other hooks of its file, also those that the file leaves to the
 //! built-ins. A hook that never ends stops the GPU: the renderer does not limit a hook.
 
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::naga;
 
 use super::shadow;
@@ -426,6 +430,7 @@ impl ShadowValues {
 
 /// A shader that calls the hooks of a file: its name for the log, and the device's check of
 /// its whole source with a hook text in it.
+#[derive(Clone, Copy)]
 pub(crate) struct Home {
     pub name: &'static str,
     pub check: fn(&str) -> Result<(), String>,
@@ -446,6 +451,11 @@ pub(crate) struct CoreMods {
     sky_hooks: Option<String>,
     /// What the log says about the files, one line each.
     report: Vec<String>,
+    /// The problems for the debug overlay: the files that a build marker drops.
+    problems: Vec<String>,
+    /// The texts of the files and the homes, for the hooks of the session without a file.
+    texts: Texts,
+    homes: Homes,
 }
 
 impl CoreMods {
@@ -458,25 +468,30 @@ impl CoreMods {
             water_debug_hooks: hook_text(&WATER_HOOKS, &[], ""),
             sky_hooks: None,
             report: Vec::new(),
+            problems: Vec::new(),
+            texts: Texts::default(),
+            homes: Homes::default(),
         }
     }
 
     /// The files under `Data Files` (`read` gives the bytes of a path there), checked with the
     /// homes of the shadow hooks, of the water hooks and of the clouds hook; nothing with
-    /// `MGE_XE_CORE_MODS=0`. The report is printed.
+    /// `MGE_XE_CORE_MODS=0`. A file that a build marker of `markers` names is not used. The
+    /// report is printed.
     pub fn load(
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
         shadow_homes: &[Home],
         water_homes: &[Home],
         sky_homes: &[Home],
+        markers: &BuildMarkers,
     ) -> CoreMods {
-        let mods = if nirender_wgpu::switches::on("MGE_XE_CORE_MODS") == Some(false) {
+        let mods = if off() {
             CoreMods {
                 report: vec!["core mods: off (MGE_XE_CORE_MODS=0)".to_string()],
                 ..CoreMods::built_in()
             }
         } else {
-            CoreMods::read(read, shadow_homes, water_homes, sky_homes)
+            CoreMods::read(read, shadow_homes, water_homes, sky_homes, markers)
         };
         for line in &mods.report {
             println!("{line}");
@@ -490,20 +505,52 @@ impl CoreMods {
         shadow_homes: &[Home],
         water_homes: &[Home],
         sky_homes: &[Home],
+        markers: &BuildMarkers,
     ) -> CoreMods {
-        let mut mods = CoreMods::built_in();
         // A byte order mark, which an editor on Windows can put first, is not part of the text.
         let file = |name: &str, extension: &str| {
             read(&format!("{FOLDER}/XE Mod {name}.{extension}"))
                 .map(|bytes| String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string())
         };
+        let mut report = Vec::new();
         for name in DIRECT3D9_FILES {
             if file(name, "wgsl").is_none() && file(name, "fx").is_some() {
-                mods.report.push(format!("core mod: XE Mod {name}.fx is for Direct3D 9; the wgpu renderer reads XE Mod {name}.wgsl, and there is none"));
+                report.push(format!("core mod: XE Mod {name}.fx is for Direct3D 9; the wgpu renderer reads XE Mod {name}.wgsl, and there is none"));
             }
         }
+        let mut texts = Texts {
+            shadow: file("Shadow", "wgsl"),
+            shadow_data: file("Shadow Data", "wgsl"),
+            water: file("Water", "wgsl"),
+            sky: file("Sky", "wgsl"),
+        };
+        let mut problems = Vec::new();
+        for (dropped, home) in markers.left(&texts) {
+            texts = texts.without(dropped);
+            problems.push(format!(
+                "core mod: {}: a start before ended in the build of the {home} with it; it is not used until it changes",
+                dropped.label()
+            ));
+        }
+        report.extend(problems.iter().cloned());
+        let homes = Homes {
+            shadow: shadow_homes.to_vec(),
+            water: water_homes.to_vec(),
+            sky: sky_homes.to_vec(),
+        };
+        let mut mods = CoreMods::of_texts(texts, homes);
+        report.append(&mut mods.report);
+        mods.report = report;
+        mods.problems = problems;
+        mods
+    }
+
+    /// The hooks of the files of `texts`, checked with `homes`.
+    fn of_texts(texts: Texts, homes: Homes) -> CoreMods {
+        let mut mods = CoreMods::built_in();
+        let (shadow_homes, water_homes, sky_homes) = (&homes.shadow[..], &homes.water[..], &homes.sky[..]);
         let mut used = Vec::new();
-        let (shadow_file, data_file) = (file("Shadow", "wgsl"), file("Shadow Data", "wgsl"));
+        let (shadow_file, data_file) = (texts.shadow.clone(), texts.shadow_data.clone());
         if shadow_file.is_some() || data_file.is_some() {
             match shadow_mod(shadow_file.as_deref(), data_file.as_deref(), shadow_homes) {
                 Ok(shadow) => {
@@ -536,9 +583,9 @@ impl CoreMods {
                 }
             }
         }
-        if let Some(text) = file("Water", "wgsl") {
+        if let Some(text) = &texts.water {
             match hook_file(
-                &text,
+                text,
                 &WATER_HOOKS,
                 &format!("{WATER_INTERFACE}{WATER_LIBRARY}"),
                 &WATER_LIBRARY_NAMES,
@@ -548,7 +595,7 @@ impl CoreMods {
                     mods.water_hooks = hooks;
                     // The debug text must pass the homes as the file's text does; else the
                     // view shows the built-in water.
-                    let debug = water_debug_hooks(&text, &defined);
+                    let debug = water_debug_hooks(text, &defined);
                     if water_homes.iter().all(|home| (home.check)(&debug).is_ok()) {
                         mods.water_debug_hooks = debug;
                     }
@@ -570,9 +617,9 @@ impl CoreMods {
                     .push(format!("core mod: XE Mod Water.wgsl: {problem}; the built-in water is used")),
             }
         }
-        if let Some(text) = file("Sky", "wgsl") {
+        if let Some(text) = &texts.sky {
             match hook_file(
-                &text,
+                text,
                 &SKY_HOOKS,
                 &format!("{SKY_INTERFACE}{SKY_LIBRARY}"),
                 &SKY_LIBRARY_NAMES,
@@ -594,7 +641,35 @@ impl CoreMods {
         } else {
             format!("core mods: {} (interface {INTERFACE})", used.join(", "))
         });
+        mods.texts = texts;
+        mods.homes = homes;
         mods
+    }
+
+    /// The hooks of the session without the file `dropped`: its hooks take the built-ins.
+    fn without(&self, dropped: ModFile) -> CoreMods {
+        let mut mods = CoreMods::of_texts(self.texts.without(dropped), self.homes.clone());
+        mods.problems = self.problems.clone();
+        mods
+    }
+
+    /// The hooks of `file` join a home: the session uses the file.
+    pub fn uses(&self, file: ModFile) -> bool {
+        match file {
+            ModFile::Shadow => self.shadow_hooks != hook_text(&SHADOW_HOOKS, &[], ""),
+            ModFile::Water => self.water_hooks != hook_text(&WATER_HOOKS, &[], ""),
+            ModFile::Sky => self.sky_hooks.is_some(),
+        }
+    }
+
+    /// The hook text of `file` for its homes: the shadow hooks, the water hooks of the plane, or
+    /// the clouds hook (empty without one).
+    fn hooks(&self, file: ModFile) -> String {
+        match file {
+            ModFile::Shadow => self.shadow_hooks.clone(),
+            ModFile::Water => self.water_hooks.clone(),
+            ModFile::Sky => self.sky_hooks.clone().unwrap_or_default(),
+        }
     }
 
     /// The shadow hooks for a home: the text joins the home's source after its library.
@@ -602,25 +677,23 @@ impl CoreMods {
         &self.shadow_hooks
     }
 
-    /// The values of the shadow for the shaders.
-    pub fn shadow_values(&self) -> ShadowValues {
-        self.shadow_values
-    }
-
     /// The water hooks for the plane of the water: the text joins the plane's source after its
     /// library and [`WATER_INTERFACE`].
+    #[cfg(test)]
     pub fn water_hooks(&self) -> &str {
         &self.water_hooks
     }
 
     /// The water hooks of the plane for the debug view `water`: those of
     /// [`water_hooks`](Self::water_hooks) with the built-in colour hooks.
+    #[cfg(test)]
     pub fn water_debug_hooks(&self) -> &str {
         &self.water_debug_hooks
     }
 
     /// The clouds hook of a file that defines it, for the world shader after
     /// [`SKY_INTERFACE`] and the library; [`None`] without one.
+    #[cfg(test)]
     pub fn sky_hooks(&self) -> Option<&str> {
         self.sky_hooks.as_deref()
     }
@@ -637,6 +710,7 @@ impl CoreMods {
             shadow_homes,
             water_homes,
             sky_homes,
+            &BuildMarkers::default(),
         )
     }
 
@@ -646,6 +720,589 @@ impl CoreMods {
         &self.report
     }
 }
+
+/// A unit of the core mods that a fault on the device drops as one (W317): the shadow
+/// (`XE Mod Shadow` with `XE Mod Shadow Data`), the water, or the sky.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModFile {
+    Shadow,
+    Water,
+    Sky,
+}
+
+impl ModFile {
+    const ALL: [ModFile; 3] = [ModFile::Shadow, ModFile::Water, ModFile::Sky];
+
+    /// The name of the unit in a build marker and in `MGE_XE_CORE_MOD_FAULT`.
+    fn key(self) -> &'static str {
+        match self {
+            ModFile::Shadow => "Shadow",
+            ModFile::Water => "Water",
+            ModFile::Sky => "Sky",
+        }
+    }
+
+    fn of_key(key: &str) -> Option<ModFile> {
+        ModFile::ALL
+            .into_iter()
+            .find(|file| file.key().eq_ignore_ascii_case(key.trim()))
+    }
+
+    /// The files of the unit, for the log.
+    pub fn label(self) -> &'static str {
+        match self {
+            ModFile::Shadow => "XE Mod Shadow.wgsl (with XE Mod Shadow Data.wgsl)",
+            ModFile::Water => "XE Mod Water.wgsl",
+            ModFile::Sky => "XE Mod Sky.wgsl",
+        }
+    }
+
+    /// The world shader takes the hooks of the unit.
+    pub fn in_world(self) -> bool {
+        self != ModFile::Water
+    }
+}
+
+/// The texts of the files as the start read them.
+#[derive(Clone, Default)]
+struct Texts {
+    shadow: Option<String>,
+    shadow_data: Option<String>,
+    water: Option<String>,
+    sky: Option<String>,
+}
+
+impl Texts {
+    fn without(&self, file: ModFile) -> Texts {
+        let mut texts = self.clone();
+        match file {
+            ModFile::Shadow => {
+                texts.shadow = None;
+                texts.shadow_data = None;
+            }
+            ModFile::Water => texts.water = None,
+            ModFile::Sky => texts.sky = None,
+        }
+        texts
+    }
+
+    /// The text of the unit's file with the hooks: a build marker names it by this text.
+    fn hook_text(&self, file: ModFile) -> Option<&str> {
+        match file {
+            ModFile::Shadow => self.shadow.as_deref(),
+            ModFile::Water => self.water.as_deref(),
+            ModFile::Sky => self.sky.as_deref(),
+        }
+    }
+}
+
+/// The homes of each file.
+#[derive(Clone, Default)]
+struct Homes {
+    shadow: Vec<Home>,
+    water: Vec<Home>,
+    sky: Vec<Home>,
+}
+
+/// The length of a text and its FNV-1a hash: a build marker names a file by them, so that a
+/// changed file is used again.
+fn identity(text: &str) -> (usize, u64) {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    (text.len(), hash)
+}
+
+/// The start of the name of a build marker; the home follows, with `-` for each space.
+const MARKER_PREFIX: &str = "core-mod-build-";
+
+/// The build markers of the core mods (W317): a file in the user's folder
+/// (`%LOCALAPPDATA%\MGE XE`, or the folder of `MGE_XE_CORE_MOD_MARKERS`) around the first build
+/// of each home with the hooks of a mod. A build that ends the helper (a lost device, a fault
+/// of the driver) leaves its marker. The next start does not use the files that the marker
+/// names, until a file changes.
+#[derive(Clone, Default)]
+pub(crate) struct BuildMarkers {
+    folder: Option<PathBuf>,
+    /// The lines of the files that a marker held off at this start ([`BuildMarkers::left`]), each
+    /// with the home of its marker. A new marker of that home keeps them, and its removal writes
+    /// them back, so that a file stays held off until it changes.
+    held_off: std::cell::RefCell<Vec<(String, String)>>,
+}
+
+impl BuildMarkers {
+    /// The markers in the user's folder, or in the folder of `MGE_XE_CORE_MOD_MARKERS`.
+    pub fn of_user() -> BuildMarkers {
+        let folder = std::env::var_os("MGE_XE_CORE_MOD_MARKERS")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE")));
+        BuildMarkers {
+            folder,
+            ..BuildMarkers::default()
+        }
+    }
+
+    /// No marker is written into `mods_folder`, the folder of `MGE_XE_CORE_MODS_DIR`: its files
+    /// are fixtures of a repository. When the marker folder is that folder, no marker is kept.
+    pub fn apart_from(self, mods_folder: Option<&std::path::Path>) -> BuildMarkers {
+        let same = |a: &std::path::Path, b: &std::path::Path| {
+            std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf())
+                == std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf())
+        };
+        match (&self.folder, mods_folder) {
+            (Some(markers), Some(mods)) if same(markers, mods) => {
+                println!(
+                    "core mods: the build markers are not written: their folder is that of MGE_XE_CORE_MODS_DIR ({})",
+                    mods.display()
+                );
+                BuildMarkers::default()
+            }
+            _ => self,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn in_folder(folder: &std::path::Path) -> BuildMarkers {
+        BuildMarkers {
+            folder: Some(folder.to_path_buf()),
+            ..BuildMarkers::default()
+        }
+    }
+
+    fn path(&self, home: &str) -> Option<PathBuf> {
+        let name = format!("{MARKER_PREFIX}{}.txt", home.replace(' ', "-"));
+        self.folder.as_ref().map(|folder| folder.join(name))
+    }
+
+    /// Writes the marker of `home` with the files of its build: a line for each, with the unit,
+    /// the length and the hash of its text. The lines that the home's marker held off at this
+    /// start stay in it.
+    fn write(&self, home: &str, files: &[(ModFile, String)]) {
+        let built: String = files
+            .iter()
+            .map(|(file, text)| {
+                let (length, hash) = identity(text);
+                format!("{}\t{length}\t{hash:016x}\n", file.key())
+            })
+            .collect();
+        self.write_lines(home, self.held_off_lines(home) + &built);
+    }
+
+    /// Takes down the marker of `home` after its build. The lines that it held off at this start
+    /// stay: their files are held off until they change.
+    fn remove(&self, home: &str) {
+        let held_off = self.held_off_lines(home);
+        if !held_off.is_empty() {
+            self.write_lines(home, held_off);
+        } else if let Some(path) = self.path(home) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    fn held_off_lines(&self, home: &str) -> String {
+        self.held_off
+            .borrow()
+            .iter()
+            .filter(|(of, _)| of == home)
+            .map(|(_, line)| format!("{line}\n"))
+            .collect()
+    }
+
+    fn write_lines(&self, home: &str, lines: String) {
+        let Some(path) = self.path(home) else { return };
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, lines));
+        if let Err(error) = written {
+            println!("core mods: no build marker {} ({error})", path.display());
+        }
+    }
+
+    /// The files of `texts` that a marker names with the same text, each with the home of its
+    /// marker. A marker whose files all changed is removed. The lines of the files held off are
+    /// kept for the markers of this start ([`BuildMarkers::write`], [`BuildMarkers::remove`]).
+    fn left(&self, texts: &Texts) -> Vec<(ModFile, String)> {
+        self.held_off.borrow_mut().clear();
+        let Some(entries) = self.folder.as_ref().and_then(|folder| std::fs::read_dir(folder).ok()) else {
+            return Vec::new();
+        };
+        let mut left: Vec<(ModFile, String)> = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(home) = name.strip_prefix(MARKER_PREFIX).and_then(|rest| rest.strip_suffix(".txt")) else {
+                continue;
+            };
+            let home = home.replace('-', " ");
+            let marker = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            let unchanged: Vec<(ModFile, &str)> = marker
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.split('\t');
+                    let file = ModFile::of_key(parts.next()?)?;
+                    let length: usize = parts.next()?.parse().ok()?;
+                    let hash = u64::from_str_radix(parts.next()?, 16).ok()?;
+                    (texts.hook_text(file).map(identity) == Some((length, hash))).then_some((file, line))
+                })
+                .collect();
+            if unchanged.is_empty() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+            for (file, line) in unchanged {
+                self.held_off.borrow_mut().push((home.clone(), line.to_string()));
+                if !left.iter().any(|(known, _)| *known == file) {
+                    left.push((file, home.clone()));
+                }
+            }
+        }
+        left
+    }
+}
+
+/// The fragment entry point of a pipeline that a plant of `MGE_XE_CORE_MOD_FAULT` breaks: no
+/// module has it.
+const PLANTED_ENTRY: &str = "fs_core_mod_fault_plant";
+
+/// The fragment entry point `entry` of a home's pipeline, or [`PLANTED_ENTRY`] when the source
+/// has the plant's line ([`nirender_wgpu::CORE_MOD_FAULT_PLANT`]).
+pub(crate) fn fragment_entry(source: &str, entry: &'static str) -> &'static str {
+    if source.contains(nirender_wgpu::CORE_MOD_FAULT_PLANT) {
+        PLANTED_ENTRY
+    } else {
+        entry
+    }
+}
+
+/// What a planted build does after its fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlantEnd {
+    /// The fallback, as for a real fault.
+    Fallback,
+    /// The failed build stays: the null test of the fallback.
+    Keep,
+    /// The helper ends in the build, after the marker.
+    Exit,
+}
+
+/// The plant of a test of the fallback (W317): `MGE_XE_CORE_MOD_FAULT=<file>[@<home>][:keep|:exit]`,
+/// with `<file>` Shadow, Water or Sky and `<home>` a home's name of the log (`world shader`,
+/// `grass`, `water plane`, `water volume`). The homes of the file (or the one home) build its
+/// hooks with a fragment entry point that the module lacks: the device refuses the pipeline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Plant {
+    file: ModFile,
+    home: Option<String>,
+    end: PlantEnd,
+}
+
+impl Plant {
+    /// The plant of `MGE_XE_CORE_MOD_FAULT`, or [`None`].
+    pub fn of_env() -> Option<Plant> {
+        let text = std::env::var("MGE_XE_CORE_MOD_FAULT").ok()?;
+        if text.trim() == "world key" {
+            println!(
+                "core mods: MGE_XE_CORE_MOD_FAULT plants a fault in the first world key, whatever the text (no core mod's)"
+            );
+            return None;
+        }
+        let plant = Plant::parse(&text);
+        match &plant {
+            Some(plant) => println!("core mods: MGE_XE_CORE_MOD_FAULT plants a fault: {plant:?}"),
+            None => println!("core mods: MGE_XE_CORE_MOD_FAULT=`{text}` is not <file>[@<home>][:keep|:exit]"),
+        }
+        plant
+    }
+
+    fn parse(text: &str) -> Option<Plant> {
+        let (rest, end) = match text.trim().rsplit_once(':') {
+            Some((rest, "keep")) => (rest, PlantEnd::Keep),
+            Some((rest, "exit")) => (rest, PlantEnd::Exit),
+            Some(_) => return None,
+            None => (text.trim(), PlantEnd::Fallback),
+        };
+        let (file, home) = match rest.split_once('@') {
+            Some((file, home)) => (file, Some(home.trim().to_string())),
+            None => (rest, None),
+        };
+        Some(Plant {
+            file: ModFile::of_key(file)?,
+            home,
+            end,
+        })
+    }
+
+    fn plants(&self, file: ModFile, home: &str) -> bool {
+        self.file == file && self.home.as_deref().is_none_or(|planted| planted == home)
+    }
+}
+
+/// The core mods of a running session, shared by the homes (W317). Each home takes its hooks at
+/// its first build, so a file that failed on the device in one home is dropped for the homes
+/// built after it.
+#[derive(Clone)]
+pub(crate) struct Shared(Arc<Mutex<Session>>);
+
+struct Session {
+    mods: CoreMods,
+    markers: BuildMarkers,
+    plant: Option<Plant>,
+    /// The problems for the debug overlay.
+    problems: Vec<String>,
+    /// A home dropped a file that the world shader has: the world takes a new text.
+    world_changed: bool,
+}
+
+impl Session {
+    /// The hooks of `file` for `home`, with the plant's line when it plants there.
+    fn hooks_for(&self, file: ModFile, home: &str) -> String {
+        self.hooks_in(&self.mods, file, home)
+    }
+
+    /// The hooks of `file` in `mods` for `home`. The plant's line goes only on the hooks of a
+    /// file that `mods` uses: the built-in hooks of a dropped file never take it.
+    fn hooks_in(&self, mods: &CoreMods, file: ModFile, home: &str) -> String {
+        let hooks = mods.hooks(file);
+        let planted = mods.uses(file) && self.plant.as_ref().is_some_and(|plant| plant.plants(file, home));
+        if planted {
+            format!("{}\n{hooks}", nirender_wgpu::CORE_MOD_FAULT_PLANT)
+        } else {
+            hooks
+        }
+    }
+
+    /// Drops `file` from the session: its hooks take the built-ins in the homes built after now.
+    fn drop_file(&mut self, file: ModFile, line: String) {
+        if !self.mods.uses(file) {
+            return;
+        }
+        println!("{line}");
+        self.problems.push(line);
+        self.mods = self.mods.without(file);
+        self.world_changed |= file.in_world();
+    }
+}
+
+impl Shared {
+    pub fn new(mods: CoreMods, markers: BuildMarkers, plant: Option<Plant>) -> Shared {
+        let problems = mods.problems.clone();
+        Shared(Arc::new(Mutex::new(Session {
+            mods,
+            markers,
+            plant,
+            problems,
+            world_changed: false,
+        })))
+    }
+
+    /// The built-in hooks, with no marker and no plant.
+    pub fn built_in() -> Shared {
+        Shared::new(CoreMods::built_in(), BuildMarkers::default(), None)
+    }
+
+    fn session(&self) -> MutexGuard<'_, Session> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// [`CoreMods::shadow_hooks`] of the session now.
+    pub fn shadow_hooks(&self) -> String {
+        self.session().mods.shadow_hooks.clone()
+    }
+
+    pub fn shadow_values(&self) -> ShadowValues {
+        self.session().mods.shadow_values
+    }
+
+    /// The water hooks of the plane for the debug view `water`, of the session now: the file's
+    /// hooks with the built-in colour hooks ([`water_debug_hooks`]).
+    pub fn water_debug_hooks(&self) -> String {
+        self.session().mods.water_debug_hooks.clone()
+    }
+
+    /// The session has a clouds hook.
+    pub fn has_sky_hooks(&self) -> bool {
+        self.session().mods.sky_hooks.is_some()
+    }
+
+    /// The problems for the debug overlay.
+    pub fn problems(&self) -> Vec<String> {
+        self.session().problems.clone()
+    }
+
+    /// The hooks of the world shader now, with the plant's line where it plants: the shadow
+    /// hooks and the clouds hook.
+    pub fn world_hooks(&self) -> (String, Option<String>) {
+        let session = self.session();
+        let sky = session
+            .mods
+            .uses(ModFile::Sky)
+            .then(|| session.hooks_for(ModFile::Sky, WORLD_HOME));
+        (session.hooks_for(ModFile::Shadow, WORLD_HOME), sky)
+    }
+
+    /// The units in the world shader now.
+    pub fn world_files(&self) -> Vec<ModFile> {
+        let session = self.session();
+        ModFile::ALL
+            .into_iter()
+            .filter(|file| file.in_world() && session.mods.uses(*file))
+            .collect()
+    }
+
+    /// The hooks of the world shader without the units `dropped`, with the plant's line where
+    /// it plants.
+    pub fn world_hooks_without(&self, dropped: &[ModFile]) -> (String, Option<String>) {
+        let session = self.session();
+        let mut mods = None::<CoreMods>;
+        for file in dropped {
+            mods = Some(mods.as_ref().unwrap_or(&session.mods).without(*file));
+        }
+        let mods = mods.as_ref().unwrap_or(&session.mods);
+        let sky = mods
+            .uses(ModFile::Sky)
+            .then(|| session.hooks_in(mods, ModFile::Sky, WORLD_HOME));
+        (session.hooks_in(mods, ModFile::Shadow, WORLD_HOME), sky)
+    }
+
+    /// The plant keeps a failed build of `home`: the null test of the fallback.
+    pub fn plant_keeps(&self, home: &str) -> bool {
+        let session = self.session();
+        session.plant.as_ref().is_some_and(|plant| {
+            plant.end == PlantEnd::Keep && ModFile::ALL.into_iter().any(|file| plant.plants(file, home))
+        })
+    }
+
+    /// Writes the marker of the world shader for the units `files` (none: no marker). The plant's
+    /// `:exit` for one of them in the world shader ends the helper here, after the marker.
+    pub fn mark_world(&self, files: &[ModFile]) {
+        let session = self.session();
+        let marked: Vec<(ModFile, String)> = files
+            .iter()
+            .filter_map(|file| Some((*file, session.mods.texts.hook_text(*file)?.to_string())))
+            .collect();
+        if marked.is_empty() {
+            session.markers.remove(WORLD_HOME);
+            return;
+        }
+        session.markers.write(WORLD_HOME, &marked);
+        let exits = session
+            .plant
+            .as_ref()
+            .is_some_and(|plant| plant.end == PlantEnd::Exit && files.iter().any(|file| plant.plants(*file, WORLD_HOME)));
+        if exits {
+            println!("core mods: MGE_XE_CORE_MOD_FAULT ends the helper in the build of the {WORLD_HOME}");
+            std::process::exit(3);
+        }
+    }
+
+    /// The world shader holds without the units `dropped`: they are dropped for the homes not
+    /// yet built, and the marker of the world goes.
+    pub fn world_held(&self, dropped: &[ModFile], error: &str) {
+        let mut session = self.session();
+        for file in dropped {
+            let line = format!(
+                "core mod: {}: the world shader failed with it on the device ({error}); the built-in hooks are used",
+                file.label()
+            );
+            session.drop_file(*file, line);
+        }
+        // The world has the text of this drop already.
+        session.world_changed = false;
+        session.markers.remove(WORLD_HOME);
+    }
+
+    /// A home dropped a unit of the world shader since the last call.
+    pub fn take_world_changed(&self) -> bool {
+        std::mem::take(&mut self.session().world_changed)
+    }
+
+    /// Makes the first GPU objects of `home` with the hooks of `file` (`make` takes the hook
+    /// text), under the error scopes of the device and with the build marker around them. On a
+    /// fault the file is dropped from the session and `make` runs again with the built-in hooks.
+    /// A home whose hooks are the built-ins builds with no marker and no scope.
+    pub fn first_build<T>(
+        &self,
+        device: &wgpu::Device,
+        home: &'static str,
+        file: ModFile,
+        mut make: impl FnMut(&str) -> T,
+    ) -> T {
+        let (hooks, end) = {
+            let session = self.session();
+            if !session.mods.uses(file) {
+                let hooks = session.mods.hooks(file);
+                drop(session);
+                return make(&hooks);
+            }
+            let text = session.mods.texts.hook_text(file).unwrap_or_default().to_string();
+            session.markers.write(home, &[(file, text)]);
+            let end = session
+                .plant
+                .as_ref()
+                .filter(|plant| plant.plants(file, home))
+                .map(|plant| plant.end);
+            (session.hooks_for(file, home), end)
+        };
+        if end == Some(PlantEnd::Exit) {
+            println!("core mods: MGE_XE_CORE_MOD_FAULT ends the helper in the build of the {home}");
+            std::process::exit(3);
+        }
+        let (made, error) = nirender_wgpu::gpu::guarded(device, || make(&hooks));
+        let Some(error) = error else {
+            self.session().markers.remove(home);
+            return made;
+        };
+        if end == Some(PlantEnd::Keep) {
+            println!(
+                "core mods: the {home} failed with {} ({error}); MGE_XE_CORE_MOD_FAULT keeps it",
+                file.label()
+            );
+            self.session().markers.remove(home);
+            return made;
+        }
+        let built_in = {
+            let mut session = self.session();
+            let line = format!(
+                "core mod: {}: the {home} failed with it on the device ({error}); the built-in hooks are used",
+                file.label()
+            );
+            session.drop_file(file, line);
+            session.mods.hooks(file)
+        };
+        let made = make(&built_in);
+        self.session().markers.remove(home);
+        made
+    }
+}
+
+/// The core mods are off (`MGE_XE_CORE_MODS=0`): no file is read, with or without
+/// `MGE_XE_CORE_MODS_DIR`.
+fn off() -> bool {
+    nirender_wgpu::switches::on("MGE_XE_CORE_MODS") == Some(false)
+}
+
+/// The folder of `MGE_XE_CORE_MODS_DIR` (W528): the core mods are read only from it, never from
+/// `Data Files`. The log names it, or says that it is not a folder, and then no core mod is read.
+/// The build markers stay in their own folder ([`BuildMarkers::apart_from`]).
+pub(crate) fn folder_of_switch() -> Option<PathBuf> {
+    let folder = nirender_wgpu::switches::path("MGE_XE_CORE_MODS_DIR")?;
+    if !off() {
+        if folder.is_dir() {
+            println!("core mods: only the folder {} (MGE_XE_CORE_MODS_DIR)", folder.display());
+        } else {
+            println!(
+                "core mods: MGE_XE_CORE_MODS_DIR={} is not a folder: no core mod is read",
+                folder.display()
+            );
+        }
+    }
+    Some(folder)
+}
+
+/// The home names in a marker, in the log and in `MGE_XE_CORE_MOD_FAULT`.
+pub(crate) const WORLD_HOME: &str = "world shader";
+pub(crate) const GRASS_HOME: &str = "grass";
+pub(crate) const WATER_PLANE_HOME: &str = "water plane";
+pub(crate) const WATER_VOLUME_HOME: &str = "water volume";
 
 /// The shadow files that pass.
 struct ShadowMod {
@@ -990,6 +1647,7 @@ pub(crate) use tests::marker_water_file;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nirender_wgpu::objects::Create;
     use std::collections::HashMap;
 
     /// A home with a library that reads a texture, and an entry point that calls both hooks.
@@ -1026,7 +1684,17 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             .iter()
             .map(|(name, text)| (format!("{FOLDER}/XE Mod {name}"), text.to_string()))
             .collect();
-        CoreMods::read(&|path| files.get(path).map(|text| text.as_bytes().to_vec()), homes, &[], &[])
+        mods_with_markers(files, homes, &BuildMarkers::default())
+    }
+
+    fn mods_with_markers(files: HashMap<String, String>, homes: &[Home], markers: &BuildMarkers) -> CoreMods {
+        CoreMods::read(
+            &|path| files.get(path).map(|text| text.as_bytes().to_vec()),
+            homes,
+            &[],
+            &[],
+            markers,
+        )
     }
 
     fn header_line() -> String {
@@ -1169,7 +1837,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     fn the_values_of_shadow_data_replace_the_built_in_ones() {
         let data = format!("{}//! values: shade = 0.8, shade_color = 1 0.5 0.25\n", header_line());
         let mods = mods_of(&[("Shadow Data.wgsl", &data)], &HOMES);
-        let values = mods.shadow_values();
+        let values = mods.shadow_values;
         assert_eq!((values.shade, values.shade_color), (0.8, [1.0, 0.5, 0.25]));
         assert_eq!((values.esm_c, values.esm_bias), (shadow::ESM_C, shadow::ESM_BIAS));
         assert_eq!(values.shade(), [1.0, 0.5, 0.25, 0.8]);
@@ -1234,7 +1902,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             ),
         ] {
             let mods = mods_of(&[("Shadow.wgsl", &shadow_file), ("Shadow Data.wgsl", &data)], &HOMES);
-            assert_eq!(mods.shadow_values(), ShadowValues::default(), "{reason}");
+            assert_eq!(mods.shadow_values, ShadowValues::default(), "{reason}");
             assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks(), "{reason}");
             assert!(
                 mods.report()[0].contains(reason) && mods.report()[0].ends_with("is dropped with it"),
@@ -1270,10 +1938,10 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     fn the_header_takes_blank_lines_and_a_byte_order_mark() {
         let data = format!("\n{}\n//! values: shade = 0.8\n", header_line());
         let mods = mods_of(&[("Shadow Data.wgsl", &data)], &HOMES);
-        assert_eq!(mods.shadow_values().shade, 0.8, "{:?}", mods.report());
+        assert_eq!(mods.shadow_values.shade, 0.8, "{:?}", mods.report());
         let late = format!("{}fn mod_x() {{}}\n//! values: shade = 0.8\n", header_line());
         let mods = mods_of(&[("Shadow Data.wgsl", &late)], &HOMES);
-        assert_eq!(mods.shadow_values(), ShadowValues::default());
+        assert_eq!(mods.shadow_values, ShadowValues::default());
         assert!(
             mods.report()[0].contains("the line `//! values: shade = 0.8` comes after the code"),
             "{:?}",
@@ -1281,7 +1949,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         );
         let marked = format!("\u{feff}{}//! values: shade = 0.8\n", header_line());
         let mods = mods_of(&[("Shadow Data.wgsl", &marked)], &HOMES);
-        assert_eq!(mods.shadow_values().shade, 0.8, "{:?}", mods.report());
+        assert_eq!(mods.shadow_values.shade, 0.8, "{:?}", mods.report());
         let marked = format!("\u{feff}{}{SHADOW_ESM}", header_line());
         let mods = mods_of(&[("Shadow.wgsl", &marked)], &HOMES);
         assert!(
@@ -1433,5 +2101,280 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             declaration(&SHADOW_HOOKS[0]),
             "fn shadow_delta(a0: vec3<f32>, a1: vec3<f32>) -> f32 { return f32(); }\n"
         );
+    }
+
+    #[test]
+    fn a_plant_names_its_file_its_home_and_its_end() {
+        let plant = |file, home: Option<&str>, end| Plant {
+            file,
+            home: home.map(str::to_string),
+            end,
+        };
+        assert_eq!(Plant::parse("Sky"), Some(plant(ModFile::Sky, None, PlantEnd::Fallback)));
+        assert_eq!(
+            Plant::parse(" water@water plane:exit "),
+            Some(plant(ModFile::Water, Some(WATER_PLANE_HOME), PlantEnd::Exit))
+        );
+        assert_eq!(
+            Plant::parse("Shadow@grass:keep"),
+            Some(plant(ModFile::Shadow, Some(GRASS_HOME), PlantEnd::Keep))
+        );
+        for wrong in ["", "Fog", "Sky:stop", "@grass"] {
+            assert_eq!(Plant::parse(wrong), None, "{wrong}");
+        }
+        let grass = Plant::parse("Shadow@grass").unwrap();
+        assert!(grass.plants(ModFile::Shadow, GRASS_HOME));
+        assert!(!grass.plants(ModFile::Shadow, WORLD_HOME) && !grass.plants(ModFile::Sky, GRASS_HOME));
+        assert!(Plant::parse("Shadow").unwrap().plants(ModFile::Shadow, WORLD_HOME));
+    }
+
+    /// No build marker goes into the folder of `MGE_XE_CORE_MODS_DIR`. The null: a marker folder
+    /// that is another folder stays.
+    #[test]
+    fn the_markers_stay_out_of_the_folder_of_the_core_mods() {
+        let folder = std::env::temp_dir().join(format!("core-mods-apart-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let other = folder.join("markers");
+
+        assert_eq!(BuildMarkers::in_folder(&folder).apart_from(Some(&folder)).folder, None);
+        assert_eq!(
+            BuildMarkers::in_folder(&other).apart_from(Some(&folder)).folder,
+            Some(other.clone())
+        );
+        assert_eq!(BuildMarkers::in_folder(&other).apart_from(None).folder, Some(other));
+        std::fs::remove_dir(&folder).unwrap();
+    }
+
+    /// The plant marks the hooks of the world only while the file is in use: the text without the
+    /// planted file, and the world after the file is dropped, have the built-in hooks with no plant
+    /// (live run R2 of 2026-11-16 failed again on the planted built-in hooks). The null: the text
+    /// with the file has the plant.
+    #[test]
+    fn the_world_without_the_planted_file_has_no_plant() {
+        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow)].into();
+        let shared = Shared::new(
+            mods_with_markers(files, &HOMES, &BuildMarkers::default()),
+            BuildMarkers::default(),
+            Plant::parse("Shadow@world shader"),
+        );
+        let built_in = CoreMods::built_in().shadow_hooks().to_string();
+
+        assert!(shared.world_hooks().0.starts_with(nirender_wgpu::CORE_MOD_FAULT_PLANT));
+        assert_eq!(shared.world_hooks_without(&[ModFile::Shadow]).0, built_in);
+
+        shared.world_held(&[ModFile::Shadow], "planted");
+        assert_eq!(shared.world_hooks().0, built_in);
+    }
+
+    /// Without `MGE_XE_CORE_MOD_FAULT` there is no plant, and no text of the world has the plant's
+    /// line, with the file in use or without it. The null is
+    /// [`the_world_without_the_planted_file_has_no_plant`]: the same file with the plant has it.
+    #[test]
+    fn without_the_switch_no_text_has_the_plant() {
+        assert!(
+            std::env::var_os("MGE_XE_CORE_MOD_FAULT").is_none(),
+            "the test runs without the switch"
+        );
+        assert_eq!(Plant::of_env(), None);
+
+        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
+        let shared = Shared::new(
+            mods_with_markers(files, &HOMES, &BuildMarkers::default()),
+            BuildMarkers::default(),
+            Plant::of_env(),
+        );
+        let texts = [shared.world_hooks().0, shared.world_hooks_without(&[ModFile::Shadow]).0];
+        assert_eq!(texts[0], shadow);
+        for text in texts {
+            assert!(!text.contains(nirender_wgpu::CORE_MOD_FAULT_PLANT));
+        }
+    }
+
+    /// A marker drops the files it names with the same text; a changed file is used again, and
+    /// a marker whose files all changed goes. The null: the start without markers uses the file.
+    #[test]
+    fn a_build_marker_drops_its_files_until_they_change() {
+        let folder = std::env::temp_dir().join(format!("core-mod-markers-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let markers = BuildMarkers::in_folder(&folder);
+        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        markers.write(WATER_PLANE_HOME, &[(ModFile::Water, "water".to_string())]);
+        markers.write(
+            WORLD_HOME,
+            &[(ModFile::Shadow, shadow.clone()), (ModFile::Sky, "sky".to_string())],
+        );
+        let texts = Texts {
+            shadow: Some(shadow.clone()),
+            water: Some("water".to_string()),
+            ..Texts::default()
+        };
+        let mut left = markers.left(&texts);
+        left.sort_by_key(|(file, _)| file.key());
+        assert_eq!(
+            left,
+            [
+                (ModFile::Shadow, WORLD_HOME.to_string()),
+                (ModFile::Water, WATER_PLANE_HOME.to_string())
+            ]
+        );
+
+        // The start drops the shadow file with the line of its marker; the null uses it.
+        let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
+        let mods = mods_with_markers(files.clone(), &HOMES, &markers);
+        assert!(!mods.uses(ModFile::Shadow));
+        assert_eq!(
+            mods.problems,
+            [
+                "core mod: XE Mod Shadow.wgsl (with XE Mod Shadow Data.wgsl): a start before ended in the build of the world shader with it; it is not used until it changes"
+            ]
+        );
+        assert!(mods_with_markers(files, &HOMES, &BuildMarkers::default()).uses(ModFile::Shadow));
+
+        // A changed water file is used again, and its marker goes.
+        let changed = Texts {
+            water: Some("water, changed".to_string()),
+            ..texts
+        };
+        assert_eq!(markers.left(&changed), [(ModFile::Shadow, WORLD_HOME.to_string())]);
+        assert!(!folder.join("core-mod-build-water-plane.txt").exists());
+
+        // The removal of the world marker after a build keeps the line of the file it held off.
+        markers.remove(WORLD_HOME);
+        assert_eq!(markers.left(&changed), [(ModFile::Shadow, WORLD_HOME.to_string())]);
+
+        // A changed shadow file is used again, and the last marker goes.
+        let all_changed = Texts {
+            shadow: Some(format!("{shadow}// changed\n")),
+            ..changed
+        };
+        assert!(markers.left(&all_changed).is_empty());
+        assert!(!folder.join("core-mod-build-world-shader.txt").exists());
+        std::fs::remove_dir(&folder).unwrap();
+    }
+
+    /// A file that ended the helper in the world shader's build stays held off over the start that
+    /// obeys the marker: that start writes the world's marker for its own units and takes it down
+    /// after the build ([`Shared::mark_world`], [`Shared::world_held`]), and the next start still
+    /// does not use the file. The null: a start with the marker's lines not kept uses it again.
+    #[test]
+    fn the_world_marker_holds_its_file_over_the_start_that_obeys_it() {
+        let folder = std::env::temp_dir().join(format!("core-mod-world-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
+        BuildMarkers::in_folder(&folder).write(WORLD_HOME, &[(ModFile::Shadow, shadow.clone())]);
+
+        // Start 1 obeys the marker, and its world shader builds and holds.
+        let markers = BuildMarkers::in_folder(&folder);
+        let mods = mods_with_markers(files.clone(), &HOMES, &markers);
+        assert!(!mods.uses(ModFile::Shadow));
+        let shared = Shared::new(mods, markers, None);
+        shared.mark_world(&shared.world_files());
+        shared.world_held(&[], "");
+
+        // Start 2 still holds the file off.
+        let markers = BuildMarkers::in_folder(&folder);
+        assert!(!mods_with_markers(files.clone(), &HOMES, &markers).uses(ModFile::Shadow));
+
+        // The null: the same start 1 without the kept lines takes the marker down.
+        let markers = BuildMarkers::in_folder(&folder);
+        let mods = mods_with_markers(files.clone(), &HOMES, &markers);
+        markers.held_off.borrow_mut().clear();
+        let shared = Shared::new(mods, markers, None);
+        shared.mark_world(&shared.world_files());
+        shared.world_held(&[], "");
+        assert!(mods_with_markers(files, &HOMES, &BuildMarkers::in_folder(&folder)).uses(ModFile::Shadow));
+        assert!(!folder.join("core-mod-build-world-shader.txt").exists());
+        std::fs::remove_dir(&folder).unwrap();
+    }
+
+    /// The vertex stage of the test home of [`first_build_a_planted_fault_gives_way_to_the_built_in_hooks`].
+    const TEST_VERTEX: &str = "
+struct TestOut { @builtin(position) position: vec4f, @location(0) s0: vec3f, @location(1) s1: vec3f }
+@vertex fn vs() -> TestOut { return TestOut(vec4f(0.0), vec3f(0.0), vec3f(0.0)); }
+";
+
+    /// A planted fault in a home's first build gives way to the built-in hooks, drops the file
+    /// for the homes after it and takes the marker down. The null: under `:keep` the failed
+    /// build stays and the file stays in use. Needs a GPU:
+    /// `cargo test -p mgeHost64 -- --ignored first_build --test-threads=1`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn first_build_a_planted_fault_gives_way_to_the_built_in_hooks() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let folder = std::env::temp_dir().join(format!("core-mod-first-build-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
+        let build = |plant: &str| {
+            let markers = BuildMarkers::in_folder(&folder);
+            let shared = Shared::new(
+                mods_with_markers(files.clone(), &HOMES, &markers),
+                markers,
+                Plant::parse(plant),
+            );
+            let mut texts = Vec::new();
+            shared.first_build(&device, GRASS_HOME, ModFile::Shadow, |hooks| {
+                texts.push(hooks.to_string());
+                let source = format!("{TEST_HOME}{hooks}{TEST_VERTEX}");
+                let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("test home"),
+                    source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
+                });
+                // The pipeline is made for its error alone.
+                let _pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("test home"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some(fragment_entry(&source, "fs")),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            });
+            assert!(!folder.join("core-mod-build-grass.txt").exists(), "{plant}: the marker stays");
+            (shared, texts)
+        };
+
+        let (shared, texts) = build("Shadow@grass");
+        assert_eq!(texts.len(), 2);
+        assert!(texts[0].starts_with(nirender_wgpu::CORE_MOD_FAULT_PLANT));
+        assert_eq!(texts[1], CoreMods::built_in().shadow_hooks());
+        assert_eq!(shared.shadow_hooks(), CoreMods::built_in().shadow_hooks());
+        assert!(
+            shared
+                .problems()
+                .iter()
+                .any(|line| line.contains("the grass failed with it on the device"))
+        );
+        assert!(shared.take_world_changed() && !shared.take_world_changed());
+
+        let (shared, texts) = build("Shadow@grass:keep");
+        assert_eq!(texts.len(), 1);
+        assert_eq!(shared.shadow_hooks(), shadow);
+        assert!(shared.problems().is_empty());
+
+        let (shared, texts) = build("Sky");
+        assert_eq!(texts, [shadow.as_str()]);
+        assert_eq!(shared.shadow_hooks(), shadow);
+        std::fs::remove_dir(&folder).unwrap();
     }
 }

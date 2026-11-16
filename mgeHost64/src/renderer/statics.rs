@@ -1966,8 +1966,9 @@ pub struct Statics {
     /// sample): the `beginAlphaToCoverage` of the Direct3D 9 path around the statics and the
     /// grass.
     alpha_to_coverage: bool,
-    /// The shadow hooks of the session for the grass shader (`core_mods.rs`).
-    shadow_hooks: String,
+    /// The core mods of the session: the shadow hooks of the grass shader at its first build
+    /// (`core_mods.rs`).
+    core_mods: super::core_mods::Shared,
     loading: Option<Receiver<Result<Loaded, CatalogError>>>,
     catalog: Option<Arc<Catalog>>,
     gpu: Option<Gpu>,
@@ -2121,10 +2122,10 @@ pub struct Statics {
 
 impl Statics {
     /// Reads the settings and starts the load of the catalog and of the textures.
-    /// `shadow_hooks`: the shadow hooks of the session, for the grass shader.
-    pub fn start(document: &ConfigDocument, folder: PathBuf, shadow_hooks: &str) -> Statics {
+    /// `core_mods`: the core mods of the session, for the grass shader.
+    pub fn start(document: &ConfigDocument, folder: PathBuf, core_mods: &super::core_mods::Shared) -> Statics {
         let (mut statics, sender) = Statics::waiting(document);
-        statics.shadow_hooks = shadow_hooks.to_string();
+        statics.core_mods = core_mods.clone();
         let settings = statics.settings;
         thread::spawn(move || {
             let result = read_catalog(&folder, &settings).map(|catalog| {
@@ -2161,7 +2162,7 @@ impl Statics {
         let statics = Statics {
             settings,
             alpha_to_coverage: document.settings().graphics.transparency_antialiasing,
-            shadow_hooks: super::core_mods::CoreMods::built_in().shadow_hooks().to_string(),
+            core_mods: super::core_mods::Shared::built_in(),
             loading: Some(receiver),
             catalog: None,
             gpu: None,
@@ -2963,7 +2964,7 @@ impl Statics {
         self.device = Some(scene.device.clone());
         self.queue = Some(scene.queue.clone());
         self.gpu = Some(super::timed("the distant statics' GPU objects", || {
-            make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage, &self.shadow_hooks)
+            make_gpu(scene, &loaded, &view_layout, self.alpha_to_coverage, &self.core_mods)
         }));
         let (request_sender, request_receiver) = channel();
         let (arrival_sender, arrival_receiver) = channel();
@@ -4539,7 +4540,7 @@ fn make_gpu(
     loaded: &Loaded,
     view_layout: &wgpu::BindGroupLayout,
     alpha_to_coverage: bool,
-    shadow_hooks: &str,
+    core_mods: &super::core_mods::Shared,
 ) -> Gpu {
     let device = scene.device;
     let catalog = &loaded.catalog;
@@ -5005,75 +5006,45 @@ fn make_gpu(
         &no_shadow,
         &grass_shadow_sampler,
     );
-    let grass_source = grass_source(shadow_hooks);
-    let grass_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("grass"),
-        source: wgpu::ShaderSource::Wgsl(grass_source.into()),
-    });
     let grass_pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("grass"),
         bind_group_layouts: &[Some(view_layout), Some(&grass_layout), Some(&texture_layout)],
         immediate_size: 0,
     });
     let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
-    let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| {
-        device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    // The grass takes the shadow hooks of the session at its first build (W317): a core mod
+    // that fails there on the device gives way to the built-in hooks.
+    let grass_pipelines = |shadow_hooks: &str| {
+        let grass_source = grass_source(shadow_hooks);
+        let fragment_entry = super::core_mods::fragment_entry(&grass_source, "fs");
+        let grass_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("grass"),
-            layout: Some(&grass_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &grass_module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: VERTEX as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &vertex,
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: GRASS_RECORD as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &grass_place,
-                    }),
-                ],
-            },
-            // `CullMode = none` of the grass pass: the two sides of a blade.
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
+            source: wgpu::ShaderSource::Wgsl(grass_source.into()),
+        });
+        let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| {
+            grass_pipeline_of(
+                scene,
+                &grass_pipeline_layout,
+                &grass_module,
+                fragment_entry,
+                &vertex,
+                &grass_place,
                 polygon_mode,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: scene.depth_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            // The alpha of the blade is the coverage of its pixel with `alpha_to_coverage`; the
-            // alpha of the back buffer stays 1.
-            multisample,
-            fragment: Some(wgpu::FragmentState {
-                module: &grass_module,
-                entry_point: Some("fs"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
-                    ..Default::default()
-                },
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: scene.target_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::COLOR,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        })
+                multisample,
+            )
+        };
+        (
+            make_grass_pipeline(wgpu::PolygonMode::Fill, scene.multisample(alpha_to_coverage)),
+            lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage))),
+            make_grass_pipeline(wgpu::PolygonMode::Fill, Default::default()),
+        )
     };
-    let grass_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill, scene.multisample(alpha_to_coverage));
-    let grass_pipeline_lines =
-        lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage)));
-    let grass_picture_pipeline = make_grass_pipeline(wgpu::PolygonMode::Fill, Default::default());
+    let (grass_pipeline, grass_pipeline_lines, grass_picture_pipeline) = core_mods.first_build(
+        device,
+        super::core_mods::GRASS_HOME,
+        super::core_mods::ModFile::Shadow,
+        grass_pipelines,
+    );
     let grass_records = device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("grass, the places of a frame"),
         size: (GRASS_RECORDS * GRASS_RECORD) as u64,
@@ -5111,6 +5082,73 @@ fn make_gpu(
         grass_uniforms,
         grass_records,
     }
+}
+
+/// A pipeline of the grass: `module` with its fragment entry point `fragment_entry`, the
+/// vertices and the places of the blades, and `polygon_mode` and `multisample`.
+#[allow(clippy::too_many_arguments)]
+fn grass_pipeline_of(
+    scene: &SceneView,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    fragment_entry: &str,
+    vertex: &[wgpu::VertexAttribute],
+    grass_place: &[wgpu::VertexAttribute],
+    polygon_mode: wgpu::PolygonMode,
+    multisample: wgpu::MultisampleState,
+) -> wgpu::RenderPipeline {
+    scene.device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("grass"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: VERTEX as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: vertex,
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: GRASS_RECORD as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: grass_place,
+                }),
+            ],
+        },
+        // `CullMode = none` of the grass pass: the two sides of a blade.
+        primitive: wgpu::PrimitiveState {
+            cull_mode: None,
+            polygon_mode,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: scene.depth_format,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        // The alpha of the blade is the coverage of its pixel with `alpha_to_coverage`; the
+        // alpha of the back buffer stays 1.
+        multisample,
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment_entry),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState {
+                format: scene.target_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::COLOR,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// The frame group of the grass: its uniforms, the sampler of its textures, and the shadow
@@ -5860,11 +5898,7 @@ mod tests {
     fn the_statics_load_counts_while_the_catalog_is_on_its_way() {
         let folder = std::env::temp_dir().join(format!("statics-loading-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(
-            &document,
-            folder,
-            crate::renderer::core_mods::CoreMods::built_in().shadow_hooks(),
-        );
+        let mut statics = super::Statics::start(&document, folder, &crate::renderer::core_mods::Shared::built_in());
         statics.settings.statics = true;
         assert!(statics.loading());
         statics.settings.statics = false;
@@ -5880,11 +5914,7 @@ mod tests {
     fn a_loader_thread_that_ends_without_an_answer_is_a_failed_load() {
         let folder = std::env::temp_dir().join(format!("statics-disconnected-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(
-            &document,
-            folder,
-            crate::renderer::core_mods::CoreMods::built_in().shadow_hooks(),
-        );
+        let mut statics = super::Statics::start(&document, folder, &crate::renderer::core_mods::Shared::built_in());
         statics.settings.statics = true;
         let (sender, receiver) = std::sync::mpsc::channel();
         statics.loading = Some(receiver);
@@ -5909,7 +5939,7 @@ mod tests {
         land.statics = Some(super::Statics::start(
             &document,
             root.join("distantland"),
-            crate::renderer::core_mods::CoreMods::built_in().shadow_hooks(),
+            &crate::renderer::core_mods::Shared::built_in(),
         ));
         land.arrival = Some((std::time::Instant::now(), 2));
         assert!(land.messages().is_empty());
@@ -5930,11 +5960,7 @@ mod tests {
     fn a_reader_thread_that_ends_turns_the_statics_off_and_ends_the_wait() {
         let folder = std::env::temp_dir().join(format!("statics-reader-{}", std::process::id()));
         let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
-        let mut statics = super::Statics::start(
-            &document,
-            folder,
-            crate::renderer::core_mods::CoreMods::built_in().shadow_hooks(),
-        );
+        let mut statics = super::Statics::start(&document, folder, &crate::renderer::core_mods::Shared::built_in());
         let (_sender, receiver) = std::sync::mpsc::channel();
         statics.arrivals = Some(receiver);
         statics.requested.insert(7);

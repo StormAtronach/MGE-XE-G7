@@ -420,6 +420,7 @@ struct PlanePipelines {
 impl PlanePipelines {
     fn new(scene: &SceneView, layout: &wgpu::PipelineLayout, label: &str, source: &str) -> PlanePipelines {
         let device = scene.device;
+        let fragment_entry = super::core_mods::fragment_entry(source, "fs");
         let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -454,7 +455,7 @@ impl PlanePipelines {
                 multisample: scene.multisample(false),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("fs"),
+                    entry_point: Some(fragment_entry),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: scene.target_format,
@@ -536,13 +537,13 @@ impl Water {
     /// Makes the plane, the pipeline and the reflection target. `waves` is the DDS file of
     /// the wave texture, a volume of 32-bit pixels. `view_layout` is that of the view group
     /// (`view.rs`), group 0 of each pipeline of the water.
-    /// `core_mods`: the hooks of the session, the water hooks for the plane and the shadow hooks
-    /// for the surfaces of the water volumes.
+    /// `core_mods`: the core mods of the session, the water hooks for the plane and the shadow
+    /// hooks for the surfaces of the water volumes, each taken at the first build of its home.
     pub fn new(
         scene: &SceneView,
         waves: &[u8],
         view_layout: &wgpu::BindGroupLayout,
-        core_mods: &super::core_mods::CoreMods,
+        core_mods: &super::core_mods::Shared,
     ) -> Result<Water, String> {
         let device = scene.device;
         let waves = wave_texture(scene, waves)?;
@@ -666,8 +667,14 @@ impl Water {
             bind_group_layouts: &[Some(view_layout), Some(&layout)],
             immediate_size: 0,
         });
-        let plane = PlanePipelines::new(scene, &pipeline_layout, "water", &plane_source(core_mods.water_hooks()));
-        let debug_source = shading::debug_source(&plane_source(core_mods.water_debug_hooks()));
+        let plane = core_mods.first_build(
+            device,
+            super::core_mods::WATER_PLANE_HOME,
+            super::core_mods::ModFile::Water,
+            |water_hooks| PlanePipelines::new(scene, &pipeline_layout, "water", &plane_source(water_hooks)),
+        );
+        // After the plane: a file that failed there leaves the debug view the built-in hooks.
+        let debug_source = shading::debug_source(&plane_source(&core_mods.water_debug_hooks()));
         let uniforms = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("water"),
             size: size_of::<Uniforms>() as u64,
@@ -680,7 +687,7 @@ impl Water {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let volumes = volume::Volumes::new(scene, view_layout, &layout, core_mods.shadow_hooks());
+        let volumes = volume::Volumes::new(scene, view_layout, &layout, core_mods);
         let dry = dry::Dry::new(scene, view_layout, &layout);
         // Between two levels too: the blur that is sharp at the waterline reads the levels
         // of the reflection. Each other read names the first level.
