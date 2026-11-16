@@ -907,8 +907,11 @@ pub(super) struct Volumes {
     /// The debug view `water` is on in this frame.
     debug: bool,
     shaders: HashMap<String, u16>,
-    /// The shadow hooks of the session (`core_mods.rs`), for the shaders of mods.
-    shadow_hooks: String,
+    /// The core mods of the session (`core_mods.rs`): the shadow hooks of the standard shader at
+    /// its first pipeline, and of the shaders of mods.
+    core_mods: crate::renderer::core_mods::Shared,
+    /// The standard shader has had its first pipeline, the first build of its home.
+    standard_built: bool,
     /// The group of the textures of the mesh, its sampler, and a group of white textures for
     /// the standard look.
     mesh_layout: wgpu::BindGroupLayout,
@@ -949,15 +952,16 @@ pub(super) struct Volumes {
 impl Volumes {
     /// `view_layout` is that of the view group (`view.rs`), `frame_layout` that of the group
     /// of the shared shading (`Water::layout`, with `light_layout_entries`).
-    /// `shadow_hooks`: the shadow hooks of the session, which join every shader of the surfaces.
+    /// `core_mods`: the core mods of the session, whose shadow hooks join every shader of the
+    /// surfaces.
     pub fn new(
         scene: &SceneView,
         view_layout: &wgpu::BindGroupLayout,
         frame_layout: &wgpu::BindGroupLayout,
-        shadow_hooks: &str,
+        core_mods: &crate::renderer::core_mods::Shared,
     ) -> Volumes {
         let device = scene.device;
-        let source = standard_source(shadow_hooks);
+        let source = standard_source(&core_mods.shadow_hooks());
         let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water volume"),
             source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
@@ -1109,7 +1113,8 @@ impl Volumes {
             debug_modules: HashMap::new(),
             debug: false,
             shaders: HashMap::new(),
-            shadow_hooks: shadow_hooks.to_string(),
+            core_mods: core_mods.clone(),
+            standard_built: false,
             mesh_layout,
             mesh_sampler,
             white,
@@ -1252,7 +1257,7 @@ impl Volumes {
     pub fn add_shader(&mut self, device: &wgpu::Device, name: &str, file: Option<&str>) -> Result<(), String> {
         let result = file
             .ok_or_else(|| "no file shaders/water/<name>.wgsl".to_string())
-            .and_then(|file| water_shader_source(name, file, &self.shadow_hooks));
+            .and_then(|file| water_shader_source(name, file, &self.core_mods.shadow_hooks()));
         let index = match &result {
             Ok(source) => {
                 let label = format!("water shader {name}");
@@ -1376,6 +1381,41 @@ impl Volumes {
     }
 
     fn pipeline(&mut self, device: &wgpu::Device, key: Key) -> &wgpu::RenderPipeline {
+        let (layout, target_format, depth_format, multisample) = (
+            self.pipeline_layout.clone(),
+            self.target_format,
+            self.depth_format,
+            self.multisample,
+        );
+        let make = |module: &wgpu::ShaderModule, source: &str| {
+            Self::make_pipeline(device, key, module, source, &layout, target_format, depth_format, multisample)
+        };
+        // The first pipeline of the standard shader is the first build of its home (W317): its
+        // module is made again from the shadow hooks of the session now, under the guard of
+        // the core mods. The water shaders of mods stay outside it.
+        if key.shader == 0 && !key.debug && !self.standard_built {
+            self.standard_built = true;
+            let core_mods = self.core_mods.clone();
+            let (module, source, pipeline) = core_mods.first_build(
+                device,
+                crate::renderer::core_mods::WATER_VOLUME_HOME,
+                crate::renderer::core_mods::ModFile::Shadow,
+                |shadow_hooks| {
+                    let source = standard_source(shadow_hooks);
+                    let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("water volume"),
+                        source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
+                    });
+                    let pipeline = make(&module, &source);
+                    (module, source, pipeline)
+                },
+            );
+            self.modules[0] = module;
+            self.sources[0] = source;
+            self.debug_modules.remove(&0);
+            self.pipelines.retain(|kept, _| kept.shader != 0);
+            self.pipelines.insert(key, pipeline);
+        }
         if key.debug && !self.debug_modules.contains_key(&key.shader) {
             let text = shading::debug_source(&self.sources[key.shader as usize]);
             let module = text.map(|text| {
@@ -1391,14 +1431,25 @@ impl Volumes {
             .debug
             .then(|| self.debug_modules.get(&key.shader).and_then(Option::as_ref))
             .flatten();
-        let (module, layout, target_format, depth_format, multisample) = (
-            debug_module.unwrap_or(&self.modules[key.shader as usize]),
-            &self.pipeline_layout,
-            self.target_format,
-            self.depth_format,
-            self.multisample,
-        );
-        self.pipelines.entry(key).or_insert_with(|| {
+        let module = debug_module.unwrap_or(&self.modules[key.shader as usize]);
+        let source = &self.sources[key.shader as usize];
+        self.pipelines.entry(key).or_insert_with(|| make(module, source))
+    }
+
+    /// The pipeline of `key` with `module`, whose text is `source`.
+    #[allow(clippy::too_many_arguments)]
+    fn make_pipeline(
+        device: &wgpu::Device,
+        key: Key,
+        module: &wgpu::ShaderModule,
+        source: &str,
+        layout: &wgpu::PipelineLayout,
+        target_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        multisample: wgpu::MultisampleState,
+    ) -> wgpu::RenderPipeline {
+        let fragment_entry = |entry: &'static str| crate::renderer::core_mods::fragment_entry(source, entry);
+        {
             let _long = nirender_wgpu::LongStep::begin();
             if key.far {
                 // A distant static: the position with the palette entry, the normal with the
@@ -1436,7 +1487,7 @@ impl Volumes {
                     multisample,
                     fragment: Some(wgpu::FragmentState {
                         module,
-                        entry_point: Some("fs"),
+                        entry_point: Some(fragment_entry("fs")),
                         compilation_options: Default::default(),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: target_format,
@@ -1560,7 +1611,7 @@ impl Volumes {
                 multisample,
                 fragment: Some(wgpu::FragmentState {
                     module,
-                    entry_point: Some(if key.depth_only { "fs_depth" } else { "fs" }),
+                    entry_point: Some(fragment_entry(if key.depth_only { "fs_depth" } else { "fs" })),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: target_format,
@@ -1575,7 +1626,7 @@ impl Volumes {
                 multiview_mask: None,
                 cache: None,
             })
-        })
+        }
     }
 
     /// Draws the water among the distant statics, then the marked surfaces among `held`,
