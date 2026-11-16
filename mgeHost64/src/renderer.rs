@@ -6787,6 +6787,18 @@ mod shader_tests {
         shader_check::check("distant land shadow", &format!("{}{LAND_SHADOW_SHADER}", view::wgsl())).unwrap();
     }
 
+    /// The land's shader takes no core mod (D498, test 7): its source names none of the hooks,
+    /// so a core mod cannot replace a part of the lamps' haze in it.
+    #[test]
+    fn the_land_shader_names_no_hook() {
+        let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
+        let hooks = core_mods::hook_names();
+        assert_eq!(hooks.len(), 6);
+        for hook in hooks {
+            assert!(!land.contains(hook), "the land's shader names the hook {hook}");
+        }
+    }
+
     /// The world shader of the host with the text of this extension compiles as the device
     /// checks it: the sky part and the draw part joined as `extension_shaders` of
     /// `nirender_wgpu` joins them, through the host's own `world_shader_source`. Both texture

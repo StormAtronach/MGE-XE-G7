@@ -193,6 +193,7 @@ mod tests {
             STATICS_FADE,
             GRASS_SHADOW,
             PARTICLES,
+            LAMP_HAZE,
         ] {
             let tunable = tunables
                 .list
@@ -221,6 +222,15 @@ mod tests {
             );
         }
         assert_eq!(tunables.blur(), [0.004, 0.18, 2.0]);
+    }
+
+    /// The lamps' haze starts at the owner's k 0.5 (D533), inside 0 to 2.
+    #[test]
+    fn the_lamp_haze_starts_at_half() {
+        let tunables = Tunables::new();
+        let haze = tunables.list.iter().find(|tunable| tunable.name == LAMP_HAZE).unwrap();
+        assert_eq!((haze.start, haze.least, haze.most), (0.5, 0.0, 2.0));
+        assert_eq!(tunables.get(LAMP_HAZE), 0.5);
     }
 
     #[test]

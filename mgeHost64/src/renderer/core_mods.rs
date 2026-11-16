@@ -1641,6 +1641,18 @@ pub(crate) fn library_differences(library: &str, home_source: &str) -> Vec<Strin
     differences
 }
 
+/// The name of every hook that a core mod may replace: the shadow's, the water's and the sky's.
+/// For the test that a shader without hooks names none of them.
+#[cfg(test)]
+pub(crate) fn hook_names() -> Vec<&'static str> {
+    SHADOW_HOOKS
+        .iter()
+        .chain(WATER_HOOKS.iter())
+        .chain(SKY_HOOKS.iter())
+        .map(|hook| hook.name)
+        .collect()
+}
+
 #[cfg(test)]
 pub(crate) use tests::marker_water_file;
 

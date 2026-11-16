@@ -1782,4 +1782,48 @@ mod tests {
         );
         crate::renderer::shader_check::check("the lamps' light", &code).unwrap();
     }
+
+    /// The line of the lamps' haze comes at the first frame for every water plane, 0 and the
+    /// lowest float included, and again only when k or the plane changes.
+    #[test]
+    fn the_haze_line_comes_first_and_on_each_change() {
+        let frame = |k: f32, water_plane: f32| HazeFrame {
+            k,
+            draw_distance: 8192.0 * 10.0,
+            water_plane,
+        };
+        for plane in [0.0, -1.0, f32::MIN] {
+            let mut route = HazeRoute::default();
+            assert!(route.line(&frame(0.5, plane), "the tunable").is_some(), "plane {plane}");
+            assert_eq!(route.line(&frame(0.5, plane), "the tunable"), None, "plane {plane}");
+        }
+
+        let mut route = HazeRoute::default();
+        assert_eq!(
+            route.line(&frame(0.5, -1.0), "the tunable").as_deref(),
+            Some(
+                "lamps' haze: k 0.5 (the tunable), reach 4, near 4096, far 8192; the air takes the lights at or above \
+                 the water plane -1"
+            )
+        );
+        assert_eq!(
+            route.line(&frame(0.5, f32::MIN), "the tunable").as_deref(),
+            Some(
+                "lamps' haze: k 0.5 (the tunable), reach 4, near 4096, far 8192; no water plane: the air takes every light"
+            )
+        );
+        assert!(route.line(&frame(0.0, f32::MIN), "the tunable").is_some());
+        assert_eq!(route.line(&frame(0.0, f32::MIN), "the tunable"), None);
+        // The draw distance alone does not change the line.
+        assert_eq!(
+            route.line(
+                &HazeFrame {
+                    draw_distance: 1.0,
+                    ..frame(0.0, f32::MIN)
+                },
+                "the tunable"
+            ),
+            None
+        );
+    }
 }

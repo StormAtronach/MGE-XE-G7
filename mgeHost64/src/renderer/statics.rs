@@ -5198,6 +5198,12 @@ mod shader_tests {
         let view = crate::renderer::view::wgsl();
         check("distant statics", &super::shader_source()).unwrap();
         check("distant statics shadow", &format!("{view}{SET_WGSL}{SHADOW_SHADER}")).unwrap();
+        // The statics take no core mod (D498, test 7): no hook name, so the lamps' haze in
+        // their fog stays as built.
+        let statics = super::shader_source();
+        for hook in crate::renderer::core_mods::hook_names() {
+            assert!(!statics.contains(hook), "the statics' shader names the hook {hook}");
+        }
         check(
             "grass",
             &super::grass_source(crate::renderer::core_mods::CoreMods::built_in().shadow_hooks()),
