@@ -67,6 +67,10 @@ At its start the renderer writes one line for each event:
 - `core mod: XE Mod <name>.fx is for Direct3D 9; the wgpu renderer reads XE Mod <name>.wgsl,
   and there is none`: a Direct3D 9 core mod with no `.wgsl` file beside it;
 - `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set;
+- `core mods: read <path>`: a core mod file was read from that place;
+- `core mods: only the folder <folder> (MGE_XE_CORE_MODS_DIR)`, or `core mods:
+  MGE_XE_CORE_MODS_DIR=<folder> is not a folder: no core mod is read`: see "Read the core mods
+  from one folder";
 - `core mod: <file>: the <home> failed with it on the device (<error>); the built-in hooks are
   used`: the file passed the check at the start, but a shader of the home failed in the back end
   or the driver. The file is dropped for the rest of the session: the homes built after it take
@@ -88,6 +92,15 @@ the failed pipeline is skipped. The world shader takes the built-in hooks before
 Set the environment variable `MGE_XE_CORE_MODS=0` to start with the built-in hooks only. No
 file is read. The renderer's own test gate sets it, so its accepted pictures do not depend on
 the installed mods.
+
+## Read the core mods from one folder
+
+Set `MGE_XE_CORE_MODS_DIR=<folder>` to read the core mods only from that folder, by their file
+names (`XE Mod Shadow.wgsl` and the others). The game folder and the mods of Mod Organizer are
+not searched. A path that is not a folder reads no core mod; the log says so. With
+`MGE_XE_CORE_MODS=0` no file is read, with or without the folder. The build markers stay in
+their own folder and are never written into this one. The test gate reads its hook fixtures
+this way.
 
 ## The contract
 

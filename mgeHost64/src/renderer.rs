@@ -1533,6 +1533,19 @@ fn shown(path: &Path) -> String {
     text.strip_prefix(r"\\?\").map_or(text.clone(), str::to_owned)
 }
 
+/// The bytes of a core mod file (`relative` under `Data Files`). With `folder`
+/// (`MGE_XE_CORE_MODS_DIR`) the file comes only from that folder, by its name; else from the
+/// places of [`data_file`]. The log names the place of each file read.
+fn core_mod_file(root: &Path, folder: Option<&Path>, relative: &str) -> Option<Vec<u8>> {
+    let place = match folder {
+        Some(folder) => folder.join(Path::new(relative).file_name()?),
+        None => data_places(root, relative).into_iter().find(|place| place.is_file())?,
+    };
+    let bytes = std::fs::read(&place).ok()?;
+    println!("core mods: read {}", shown(&place));
+    Some(bytes)
+}
+
 /// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`).
 fn draw_shader_text(shadow_hooks: &str) -> String {
     format!("{DRAW_SHADER}{shadow_hooks}")
@@ -1732,9 +1745,10 @@ impl DistantLand {
     pub fn start(root: &Path, live: bool) -> DistantLand {
         let document = ConfigDocument::open(root.join(FILE_NAME));
         let settings = &document.settings().distant_land;
-        let markers = core_mods::BuildMarkers::of_user();
+        let mods_folder = core_mods::folder_of_switch();
+        let markers = core_mods::BuildMarkers::of_user().apart_from(mods_folder.as_deref());
         let mods = core_mods::CoreMods::load(
-            &|name| data_file(root, name),
+            &|name| core_mod_file(root, mods_folder.as_deref(), name),
             &shadow_homes(),
             &water_homes(),
             &sky_homes(),
@@ -7985,5 +7999,37 @@ mod frame_value_tests {
         assert!(parameters.post && !parameters.blend, "the menu frame shows the kept picture");
         assert!(!before_world(&mut land, &scene), "under a menu: no land");
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod core_mod_file_tests {
+    use super::*;
+
+    /// With the folder of `MGE_XE_CORE_MODS_DIR` a core mod comes only from it: the plant, a file
+    /// in the game folder, is not read, and a folder that is missing reads nothing. The null:
+    /// without the folder the game folder's file is read.
+    #[test]
+    fn the_folder_of_the_switch_is_the_only_place_of_the_core_mods() {
+        let root = std::env::temp_dir().join(format!("mge-core-mods-dir-{}", std::process::id()));
+        let game = root.join("Data Files/shaders/core-mods");
+        let folder = root.join("fixtures");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(game.join("XE Mod Shadow.wgsl"), "game").unwrap();
+        std::fs::write(folder.join("XE Mod Water.wgsl"), "fixture").unwrap();
+        let shadow = "shaders/core-mods/XE Mod Shadow.wgsl";
+        let water = "shaders/core-mods/XE Mod Water.wgsl";
+
+        assert_eq!(
+            core_mod_file(&root, Some(&folder), shadow),
+            None,
+            "the game folder's file is read"
+        );
+        assert_eq!(core_mod_file(&root, Some(&folder), water), Some(b"fixture".to_vec()));
+        assert_eq!(core_mod_file(&root, Some(&root.join("missing")), shadow), None);
+        assert_eq!(core_mod_file(&root, None, shadow), Some(b"game".to_vec()));
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

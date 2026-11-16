@@ -485,7 +485,7 @@ impl CoreMods {
         sky_homes: &[Home],
         markers: &BuildMarkers,
     ) -> CoreMods {
-        let mods = if nirender_wgpu::switches::on("MGE_XE_CORE_MODS") == Some(false) {
+        let mods = if off() {
             CoreMods {
                 report: vec!["core mods: off (MGE_XE_CORE_MODS=0)".to_string()],
                 ..CoreMods::built_in()
@@ -833,6 +833,25 @@ impl BuildMarkers {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE")));
         BuildMarkers { folder }
+    }
+
+    /// No marker is written into `mods_folder`, the folder of `MGE_XE_CORE_MODS_DIR`: its files
+    /// are fixtures of a repository. When the marker folder is that folder, no marker is kept.
+    pub fn apart_from(self, mods_folder: Option<&std::path::Path>) -> BuildMarkers {
+        let same = |a: &std::path::Path, b: &std::path::Path| {
+            std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf())
+                == std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf())
+        };
+        match (&self.folder, mods_folder) {
+            (Some(markers), Some(mods)) if same(markers, mods) => {
+                println!(
+                    "core mods: the build markers are not written: their folder is that of MGE_XE_CORE_MODS_DIR ({})",
+                    mods.display()
+                );
+                BuildMarkers::default()
+            }
+            _ => self,
+        }
     }
 
     #[cfg(test)]
@@ -1216,6 +1235,30 @@ impl Shared {
         self.session().markers.remove(home);
         made
     }
+}
+
+/// The core mods are off (`MGE_XE_CORE_MODS=0`): no file is read, with or without
+/// `MGE_XE_CORE_MODS_DIR`.
+fn off() -> bool {
+    nirender_wgpu::switches::on("MGE_XE_CORE_MODS") == Some(false)
+}
+
+/// The folder of `MGE_XE_CORE_MODS_DIR` (W528): the core mods are read only from it, never from
+/// `Data Files`. The log names it, or says that it is not a folder, and then no core mod is read.
+/// The build markers stay in their own folder ([`BuildMarkers::apart_from`]).
+pub(crate) fn folder_of_switch() -> Option<PathBuf> {
+    let folder = nirender_wgpu::switches::path("MGE_XE_CORE_MODS_DIR")?;
+    if !off() {
+        if folder.is_dir() {
+            println!("core mods: only the folder {} (MGE_XE_CORE_MODS_DIR)", folder.display());
+        } else {
+            println!(
+                "core mods: MGE_XE_CORE_MODS_DIR={} is not a folder: no core mod is read",
+                folder.display()
+            );
+        }
+    }
+    Some(folder)
 }
 
 /// The home names in a marker, in the log and in `MGE_XE_CORE_MOD_FAULT`.
@@ -2046,6 +2089,23 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert!(grass.plants(ModFile::Shadow, GRASS_HOME));
         assert!(!grass.plants(ModFile::Shadow, WORLD_HOME) && !grass.plants(ModFile::Sky, GRASS_HOME));
         assert!(Plant::parse("Shadow").unwrap().plants(ModFile::Shadow, WORLD_HOME));
+    }
+
+    /// No build marker goes into the folder of `MGE_XE_CORE_MODS_DIR`. The null: a marker folder
+    /// that is another folder stays.
+    #[test]
+    fn the_markers_stay_out_of_the_folder_of_the_core_mods() {
+        let folder = std::env::temp_dir().join(format!("core-mods-apart-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let other = folder.join("markers");
+
+        assert_eq!(BuildMarkers::in_folder(&folder).apart_from(Some(&folder)).folder, None);
+        assert_eq!(
+            BuildMarkers::in_folder(&other).apart_from(Some(&folder)).folder,
+            Some(other.clone())
+        );
+        assert_eq!(BuildMarkers::in_folder(&other).apart_from(None).folder, Some(other));
+        std::fs::remove_dir(&folder).unwrap();
     }
 
     /// The plant marks the hooks of the world only while the file is in use: the text without the

@@ -538,6 +538,11 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   WGSL hook files of `mgeHost64/src/renderer/core_mods.rs`) joins the shaders: the built-in
   hooks only. The baseline gate of the plugin sets it for its replays. The log names the files
   in use, or each file that is dropped and why, in its `core mods:` and `core mod:` lines.
+- `MGE_XE_CORE_MODS_DIR=<folder>` (W528): the core mods come only from this folder, by their
+  file names (`XE Mod <name>.wgsl`), and never from `Data Files`. A path that is not a folder
+  reads no core mod. `MGE_XE_CORE_MODS=0` still turns them off. No build marker goes into the
+  folder. The log names the folder, and `core mods: read <path>` names each file read, with or
+  without the switch.
 - `MGE_XE_CORE_MOD_FAULT=<file>[@<home>][:keep|:exit]` (W317's test): `<file>` is `Shadow`,
   `Water` or `Sky`, `<home>` one of `world shader`, `grass`, `water plane`, `water volume`
   (without it, every home of the file). Each pipeline of that home with the file's hooks names
