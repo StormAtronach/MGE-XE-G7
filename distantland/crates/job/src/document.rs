@@ -409,11 +409,7 @@ const SETTINGS_KEY_COMMENTS: &[(&str, &str)] = &[
     ("static_texture_sizing", "Static texture downscaling policy."),
     (
         "distant_lights",
-        "Write the exterior light sources for the distant lights of the renderer.",
-    ),
-    (
-        "bake_lights",
-        "Bake the light of those sources onto the distant land and statics.",
+        "Write the lamps and the smoke sources for the distant lights of the renderer.",
     ),
     (
         "discover_override_files",

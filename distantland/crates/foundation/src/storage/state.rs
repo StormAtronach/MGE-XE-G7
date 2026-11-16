@@ -15,6 +15,7 @@ use rkyv::rancor::Error as RkyvError;
 use crate::framed_archive::{self, FrameError};
 use crate::mge_xe::distant_statics::{STATIC_MESHES_MAGIC, STATIC_MESHES_VERSION};
 use crate::mge_xe::distant_terrain::{TERRAIN_FILE_MAGIC, TERRAIN_FILE_VERSION};
+use crate::mge_xe::lights::{LIGHTS_MAGIC, LIGHTS_VERSION};
 use crate::mge_xe::terrain_occlusion::{TERRAIN_OCCLUSION_MAGIC, TERRAIN_OCCLUSION_VERSION};
 use crate::output::MGE_DL_VERSION;
 use crate::output::{STATIC_MESH_SHARD_COUNT, static_mesh_shard_relative_path};
@@ -48,6 +49,9 @@ pub enum ArtifactKind {
     TerrainDds = 6,
     /// `distantland\terrain_occlusion.bin`.
     TerrainOcclusion = 7,
+    /// `distantland\lights.data`: at most one, none when the distant lights are off. An
+    /// inventory without it is valid, so an output from before this kind stays valid.
+    Lights = 8,
 }
 
 /// One required artifact recorded in a published state.
@@ -302,6 +306,7 @@ impl CommittedState {
         let mut terrain_payload = 0usize;
         let mut terrain_dds = 0usize;
         let mut terrain_occlusion = 0usize;
+        let mut lights = 0usize;
         for entry in &self.artifacts {
             validate_path_grammar(&entry.relative_path, entry.kind)?;
             match entry.kind {
@@ -363,7 +368,18 @@ impl CommittedState {
                         ));
                     }
                 }
+                ArtifactKind::Lights => {
+                    lights += 1;
+                    if entry.relative_path != "lights.data" {
+                        return Err(StateError::InvalidInventory("lights path must be \"lights.data\"".into()));
+                    }
+                }
             }
+        }
+        if lights > 1 {
+            return Err(StateError::InvalidInventory(
+                "inventory lists more than one lights file".into(),
+            ));
         }
 
         if version != 1 || usage != 1 || !static_shards.into_iter().all(std::convert::identity) {
@@ -662,6 +678,9 @@ fn validate_header(file: &mut File, path: &Path, kind: ArtifactKind) -> Result<(
         }
         ArtifactKind::TerrainOcclusion => {
             validate_magic_version(file, path, &TERRAIN_OCCLUSION_MAGIC, TERRAIN_OCCLUSION_VERSION)?;
+        }
+        ArtifactKind::Lights => {
+            validate_magic_version(file, path, LIGHTS_MAGIC, LIGHTS_VERSION)?;
         }
         ArtifactKind::AtlasDds | ArtifactKind::TerrainDds => {
             let mut magic = [0_u8; 4];

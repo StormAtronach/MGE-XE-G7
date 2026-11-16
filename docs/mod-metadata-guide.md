@@ -35,11 +35,11 @@ plugin metadata of this guide for new mods.
 ### Distant lights
 
 The distant lights need no rules: with `[generation.settings] distant_lights = true` (the
-default) the generator writes every light source of the exterior (its light record's colour,
-radius and flags, from the load order) to `distantland\lights.data`, and with `bake_lights =
-true` (the default) also the light that they give the land far away. The renderer draws a glow
-for each light with a mesh beyond the cells that the game has loaded. A light that is off by
-default, or a negative light, is left out.
+default) the generator writes every placed light of the exterior, and of each interior that
+behaves like an exterior (its light record's colour, radius and flags, from the load order), to
+`distantland\lights.data`. The renderer draws a glow for each light with a mesh beyond the cells
+that the game has loaded. A light that is off by default, a negative light, a light with no
+radius or a black colour, or a light that a script disables is left out.
 
 ### Global Override TOML
 

@@ -20,10 +20,10 @@ the formats involved. Companion to [`ARCHITECTURE.md`](../../ARCHITECTURE.md) §
 | `terrain_patch_albedo.dds` | DXT1 low-frequency albedo, mipped | generator | d3d8.dll |
 | `terrain_blend_patterns.dds` | A8B8G8R8 blend-pattern tile sheet | generator | d3d8.dll |
 | `statics\usage.data` | placements + vis groups (§4) | generator | d3d8.dll (vis groups), host (placements), wgpu helper (placements), MGEXEgui (trailing stat) |
-| `lights.data` | `XELIGHT1` v2, light sources and baked light (§4a) | generator (`generation/lights.rs`) | wgpu helper only (`renderer/distant_lights.rs`) |
+| `lights.data` | `XELIGHT1` v3, the placed lights and the smoke sources by block (§4a) | generator (`generation/lights.rs`) | wgpu helper only (`renderer/distant_lights.rs`) |
 
-All payloads use fixed paths. `generation_state.bin` is the sole publication authority, with one
-exception: `lights.data` is outside the inventory (see §4a). The
+All payloads use fixed paths. `generation_state.bin` is the sole publication authority;
+`lights.data` is an optional entry of its inventory (see §4a). The
 fixed shard set is complete only when all 128 files are inventoried and validated. Routine startup
 does not parse `generation_report.toml`, so a missing, malformed, or edited report cannot change
 serveability.
@@ -250,45 +250,61 @@ f32   min_static_size                     end of file; readers reject trailing b
 
 ## 4a. Distant lights (`lights.data`)
 
-Written by `distantland/src/generation/lights.rs` (`build`) with the generation setting
-`distant_lights`, and read only by the wgpu helper (`read` in
-`mgeHost64/src/renderer/distant_lights.rs`), which draws a glow for each source at night and
-adds the baked light to the land and the distant statics. All values are little-endian.
+Written by `distantland/src/generation/lights.rs` (`light_blocks`, `build`) with the generation
+setting `distant_lights`, and read only by the wgpu helper (`read` in
+`mgeHost64/src/renderer/distant_lights.rs`). The layout, its writer (`Lights::to_bytes`) and its
+reader (`parse_lights`) are in one module, `distantland/crates/formats/src/lights.rs`. All values
+are little-endian, and every part is a whole number of 4-byte words.
 
-| Offset | Type | Field |
+The file holds the placed lights (the lamps) and the smoke sources by block. A block is a part of
+the world that has distant land: the exterior, or an interior that behaves like an exterior when
+the job includes those. The blocks are sorted by their keys, with no key two times.
+
+| Part | Type | Field |
 | --- | --- | --- |
-| 0 | `u8[8]` | magic `XELIGHT1` |
-| 8 | `u32` | version, 2 (`LIGHTS_VERSION`) |
-| 12 | `u32` | source count S |
-| 16 | `u32` | tile count T |
-| 20 | `u32` | tile side, 65 (the land vertices on a side of a cell) |
-| 24 | `f32` | cell size, 8192 |
-| 28 | `f32` | grid step, 128 |
-| 32 | `u32[2]` | zero |
-| 40 | S x 32 bytes | the sources |
-| 40 + 32S | T x 8 bytes | `{i32 x, i32 y}`: the cell of each tile, ascending by (x, y) |
-| 40 + 32S + 8T | T x 16900 bytes | the texels of each tile, in the order of the cell table |
+| header | `u8[8]` | magic `XELIGHT1` |
+| | `u32` | version, 3 (`LIGHTS_VERSION`) |
+| | `u32` | block count |
+| each block | `u32`, bytes | the key: its length in bytes, then the bytes, with zeros to the next word. The exterior has the empty key; an interior has the key of its cell name |
+| | `u32[3]` | the numbers of the block's records R, lamps L and smoke sources S |
+| | R records | the light records that the block's lamps are, sorted by their ids. Each: the length of the id (`u32`), the id with zeros to the next word, and the radius of the glowing parts of the record's model (`f32`; 0 when not known, and the generator writes 0 now) |
+| | L x 32 bytes | the lamps |
+| | S x 16 bytes | the smoke sources: `f32[3]` position, `f32` strength (1 for a smoke effect, 0.5 for a fire) |
 
-A source is 32 bytes: `f32[3]` position, `f32` radius, `u8[3]` colour, `u8` 255 when the light
-has a mesh (else 0), `u32` flags of the light record (the helper uses flicker and pulse:
-`0x08`, `0x40`, `0x80`, `0x100`), `u32[2]` zero. The sources are the placed exterior lights
-of the load order with a radius above 0 that are not negative (`0x04`) and not off by default
-(`0x20`).
+A lamp is 32 bytes, the layout that the helper's shaders read: `f32[3]` position, `f32` radius,
+`u8[3]` colour, `u8` 255 when the record has a model (else 0), `u32` flags of the light record,
+`u32` the index of its record in the block, `u32` zero. A lamp is a placed reference of a light
+record that lights: a radius above 0, a colour that is not black, not negative (`0x04`) and not
+off by default (`0x20`). The reference is not deleted, and no script disables it (under the job's
+`exclude_script_disable_targets`, as for the statics). The radius, the colour and the flags are
+the plugins' values at the time of the generation. The running game can hold other values, because
+a mod's Lua can change a light record; d3d8.dll sends the game's own values to the helper as the
+stream record 13.
 
-A tile is the 65 x 65 land vertices of one exterior cell, rows from the south-west corner
-(y outer, x inner), as RGBA8: each colour channel is `round(light * 0.5 * 255)`, so a byte
-holds light up to 2, and alpha is 255. Tiles exist only with the setting `bake_lights`, and
-only for cells with land and some light.
+A smoke source is a placed object whose model path has "smoke" and not "nosmoke", or a lamp of a
+fire with a radius large enough for its smoke to be seen from far.
 
-The helper requires version 2, a tile side of 65, and a file length of exactly
-`40 + 32S + 8T + 16900T`. If the read fails, it logs `distant lights: none (...)` and the rest
-of distant land goes on.
+A block's key and a record's id are the engine's own bytes of the name, with A to Z lowered and
+nothing else changed. They are in the code page of the install, so they are compared as bytes
+and never as text. One function makes a key, `key` of the format's module: the generator uses it
+on the plugin's bytes of a name, and the helper uses it on the bytes that the game gives. The
+generator leaves out a cell or a lamp only when its name is one that the game cannot have, with a
+warning.
 
-`lights.data` is outside the units and the `generation_state.bin` inventory. The generator
-builds it at every run and writes it when its bytes change, also when the rest of the output
-is current; the inspection reports it as stale when it differs. With `distant_lights = false`
-there is no file. Garbage collection keeps it (`storage/authority.rs`). Both settings are on in
-a new job.
+The reader checks each count and length against the bytes that are left before it reads a part.
+It refuses a file only for a broken structure: a cut file, another magic or version, a capital
+A to Z in a key or an id, keys out of order, a lamp that names a record outside its block, or
+bytes after the last block. No name makes a file refused. If the read fails, the helper logs
+`distant lights: none (...)` with the reason, and the rest of distant land goes on.
+
+`lights.data` is an optional entry of the committed state in `generation_state.bin`
+(`ArtifactKind::Lights`), outside the units. It is current when the state lists it with the
+length and the BLAKE3 of the bytes made now, or when the distant lights are off and the state
+lists none. The generator writes it in place inside the writer's dirty session, with the rest of
+a publication or alone (`lights::publish_alone`: the state not valid, the one file written, the
+state valid again). The pruner removes the file when the state does not list it, so with
+`distant_lights = false` there is no file. An inventory without the entry stays valid. The
+setting is on in a new job. The file holds no baked light, and the setting `bake_lights` is gone.
 
 ## 5. Generation pipeline
 

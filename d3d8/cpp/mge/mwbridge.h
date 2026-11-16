@@ -73,6 +73,24 @@ public:
     // The TES3 radius a point light's D3D attenuation was derived from, or 0
     // when the coefficients do not encode one.
     float pointLightRadius(float constant, float linear, float quadratic);
+    // The engine's values of [LightAttenuation] in Morrowind.ini, as its parser
+    // (0x4D1720) holds them.
+    struct LightAttenuation {
+        // 1 UseConstant, 2 UseLinear, 4 UseQuadratic.
+        unsigned int flags = 0;
+        int linearMethod = 0;
+        int quadraticMethod = 0;
+        float constantValue = 0.0f;
+        float linearValue = 0.0f;
+        float quadraticValue = 0.0f;
+        float linearRadiusMultiplier = 1.0f;
+        float quadraticRadiusMultiplier = 1.0f;
+        // The engine adds the quadratic term outdoors and the linear term indoors,
+        // whatever the flags say.
+        bool outQuadInLin = false;
+    };
+    // The values, read one time and kept: the engine parses them at its start.
+    const LightAttenuation& lightAttenuation();
     void setSunriseSunset(float rise_time, float rise_dur, float set_time, float set_dur);
 
     DWORD IntCurCellAddr();
@@ -203,6 +221,9 @@ protected:
     // engine patching and DistantLand::init() off `!IsLoaded() && CanLoad()`,
     // which only ever fires while the two disagree.
     bool m_loaded;
+
+    LightAttenuation m_lightAttenuation;
+    bool m_lightAttenuationKept = false;
 
     std::vector<WaterVolume> m_waterVolumes;
     bool m_inWaterVolume = false;

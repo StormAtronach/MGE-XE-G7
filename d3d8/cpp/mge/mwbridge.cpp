@@ -7,6 +7,7 @@
 #include "camerafov.h"
 #include "mwpatches.h"
 #include "mwse/mwsenative.h"
+#include "support/log.h"
 #include "tes3/nitypes.h"
 #include "tes3/tes3addresses.h"
 #include "tes3/tes3types.h"
@@ -66,6 +67,8 @@ MWBridge* MWBridge::get() {
 // !IsLoaded() && CanLoad() edge.
 void MWBridge::Load() {
     m_loaded = true;
+    // The values are kept here, on the main thread, before a light asks for them.
+    lightAttenuation();
 }
 
 //-----------------------------------------------------------------------------
@@ -468,13 +471,37 @@ static bool isIntegerRadius(float radius) {
     return std::fabs(radius - std::round(radius)) <= allowance;
 }
 
+const MWBridge::LightAttenuation& MWBridge::lightAttenuation() {
+    if (m_lightAttenuationKept) {
+        return m_lightAttenuation;
+    }
+    m_lightAttenuationKept = true;
+    using namespace TES3::Address;
+    auto& values = m_lightAttenuation;
+    values.flags = globalAt<unsigned int>(LightAttenuation_Flags);
+    values.linearMethod = globalAt<int>(LightAttenuation_LinearMethod);
+    values.quadraticMethod = globalAt<int>(LightAttenuation_QuadraticMethod);
+    values.constantValue = globalAt<float>(LightAttenuation_ConstantValue);
+    values.linearValue = globalAt<float>(LightAttenuation_LinearValue);
+    values.quadraticValue = globalAt<float>(LightAttenuation_QuadraticValue);
+    values.linearRadiusMultiplier = globalAt<float>(LightAttenuation_LinearRadiusMultiplier);
+    values.quadraticRadiusMultiplier = globalAt<float>(LightAttenuation_QuadraticRadiusMultiplier);
+    values.outQuadInLin = globalAt<BYTE>(LightAttenuation_QuadraticInLinear) != 0;
+    LOG::logline("-- [LightAttenuation]: flags %u, constant %g, linear method %d value %g radius x %g, quadratic method %d value %g radius x %g, OutQuadInLin %d",
+        values.flags, values.constantValue,
+        values.linearMethod, values.linearValue, values.linearRadiusMultiplier,
+        values.quadraticMethod, values.quadraticValue, values.quadraticRadiusMultiplier,
+        values.outQuadInLin ? 1 : 0);
+    return values;
+}
+
 // Inverts the two ways Morrowind derives point-light attenuation from a radius.
 // The coefficients reach D3D unchanged, so each inversion is exact up to
 // rounding, but the coefficients do not always say which one applies; see the
 // first branch. A radius that cannot be recovered is returned as 0 and does
 // not fade.
 float MWBridge::pointLightRadius(float constant, float linear, float quadratic) {
-    using namespace TES3::Address;
+    const auto& attenuation = lightAttenuation();
     float radius = 0.0f;
 
     // EntityLight::createLightOnReference copies the INI constant as-is, which is
@@ -483,14 +510,14 @@ float MWBridge::pointLightRadius(float constant, float linear, float quadratic) 
     // the two the light was created in is not tested here, and need not be: the
     // term the engine skipped was left at zero, so the coefficient guards below
     // reject that branch on their own.
-    const auto flags = globalAt<unsigned int>(LightAttenuation_Flags);
-    const bool quadraticInLinear = globalAt<BYTE>(LightAttenuation_QuadraticInLinear) != 0;
-    const float iniConstant = (flags & 1) ? globalAt<float>(LightAttenuation_ConstantValue) : 0.0f;
+    const auto flags = attenuation.flags;
+    const bool quadraticInLinear = attenuation.outQuadInLin;
+    const float iniConstant = (flags & 1) ? attenuation.constantValue : 0.0f;
 
-    const int quadraticMethod = globalAt<int>(LightAttenuation_QuadraticMethod);
-    const float quadraticValue = globalAt<float>(LightAttenuation_QuadraticValue);
-    const int linearMethod = globalAt<int>(LightAttenuation_LinearMethod);
-    const float linearValue = globalAt<float>(LightAttenuation_LinearValue);
+    const int quadraticMethod = attenuation.quadraticMethod;
+    const float quadraticValue = attenuation.quadraticValue;
+    const int linearMethod = attenuation.linearMethod;
+    const float linearValue = attenuation.linearValue;
 
     if (constant == iniConstant
      && quadratic > 0 && quadraticValue > 0 && quadraticMethod != 0
@@ -499,7 +526,7 @@ float MWBridge::pointLightRadius(float constant, float linear, float quadratic) 
         radius = quadraticMethod == 1
             ? quadraticValue / quadratic
             : std::sqrt(quadraticValue / quadratic)
-                / globalAt<float>(LightAttenuation_QuadraticRadiusMultiplier);
+                / attenuation.quadraticRadiusMultiplier;
 
         // With no INI constant, a body light from setLightEffectFalloff has this
         // same shape: constant 0, linear 0, quadratic positive. That is every
@@ -524,7 +551,7 @@ float MWBridge::pointLightRadius(float constant, float linear, float quadratic) 
      && linear > 0 && linearValue > 0 && linearMethod != 0
      && ((flags & 2) || quadraticInLinear)) {
         radius = (linearMethod == 2 ? std::sqrt(linearValue / linear) : linearValue / linear)
-            / globalAt<float>(LightAttenuation_LinearRadiusMultiplier);
+            / attenuation.linearRadiusMultiplier;
     } else if (constant == 0 && linear == 0 && quadratic > 0) {
         // MobileObject::setLightEffectFalloff: spell and projectile lights, and
         // through EntityLight::setupInternalLight every light an actor carries.

@@ -139,8 +139,8 @@ pub struct OutputPaths {
     pub terrain_blend_patterns_path: PathBuf,
     /// `distantland\statics\usage.data`.
     pub usage_data_path: PathBuf,
-    /// `distantland\lights.data`: the light sources and the baked light (`distant_lights`). It is
-    /// written apart from the committed inventory, when its bytes change.
+    /// `distantland\lights.data`: the lamps and the smoke of the distant land (`distant_lights`),
+    /// an entry of the committed inventory (`ArtifactKind::Lights`).
     pub lights_path: PathBuf,
     /// Fixed static-mesh shard payload set for this build's shard count.
     pub static_mesh_shard_paths: [PathBuf; STATIC_MESH_SHARD_COUNT],

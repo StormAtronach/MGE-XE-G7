@@ -1,7 +1,7 @@
 //! The view group: group 0 of the pipelines of MGE XE, with one layout for all of them and one
 //! group for each view of the frame (the main view, the mirror of the water, the two layers of
 //! the shadow map, the game view). It has the values of the view ([`View`], the uniform `u` of a
-//! shader) and the baked light of the distant lights (`baked_light`, from [`LightBinding`]). The
+//! shader) and the distant lamps (`lamps` and their grid, from [`LampBinding`]). The
 //! values of one pipeline only (the terrain of the land, the view range of a handoff, the
 //! light of the frame on the water volumes) are in its group 1. The pipelines that draw into
 //! the world take it: the land, the statics (with their shadow casters), the glows, the grass,
@@ -16,7 +16,7 @@ use nirender_wgpu::wgpu;
 const REPEATED: Skip = "the place had its call in this frame";
 const REFUSED: Skip = "no place for the view (none in its key, or one past the places)";
 
-use super::distant_lights::{self, LightBinding};
+use super::lamp_grid::{self, LampBinding};
 
 /// The views of a frame, and the group of each. The main view and its mirror have the
 /// projection of the land (a far plane at the draw distance); the game view has the
@@ -150,9 +150,9 @@ fn clip_of(world: vec3f) -> vec4f {
 }
 ";
 
-/// The code of the view group for the start of a shader: `u` and `baked_light`.
+/// The code of the view group for the start of a shader: `u` and the lamps.
 pub fn wgsl() -> String {
-    format!("{VIEW_WGSL}{}", distant_lights::baked_wgsl_at(0, 1))
+    format!("{VIEW_WGSL}{}", lamp_grid::wgsl_at(1))
 }
 
 /// The views of their own that drew the full tier (the places that the player allows): which
@@ -777,7 +777,7 @@ pub struct ViewBinding {
     pub layout: wgpu::BindGroupLayout,
     buffers: Vec<Option<wgpu::Buffer>>,
     groups: Vec<Option<wgpu::BindGroup>>,
-    /// The [`LightBinding::generation`] of the groups.
+    /// The [`LampBinding::generation`] of the groups.
     generation: Option<u64>,
 }
 
@@ -793,7 +793,7 @@ impl ViewBinding {
             },
             count: None,
         }];
-        entries.extend(LightBinding::layout_entries(1));
+        entries.extend(LampBinding::layout_entries(1));
         let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("view"),
             entries: &entries,
@@ -816,7 +816,7 @@ impl ViewBinding {
         })
     }
 
-    fn make_group(&self, device: &wgpu::Device, light: &LightBinding, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn make_group(&self, device: &wgpu::Device, light: &LampBinding, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
         let mut entries = vec![wgpu::BindGroupEntry {
             binding: 0,
             resource: buffer.as_entire_binding(),
@@ -829,9 +829,9 @@ impl ViewBinding {
         })
     }
 
-    /// Makes the groups again when the baked light has changed since they were made: the fixed
+    /// Makes the groups again when the lamps have changed since they were made: the fixed
     /// views and the sets that exist.
-    pub fn refresh(&mut self, device: &wgpu::Device, light: &LightBinding) {
+    pub fn refresh(&mut self, device: &wgpu::Device, light: &LampBinding) {
         if self.generation == Some(light.generation) {
             return;
         }
@@ -851,7 +851,7 @@ impl ViewBinding {
 
     /// Makes the two groups of the set `set` (and their buffers) when they are not there. Gives
     /// false before `refresh` has made the groups of the fixed views: the light is not known.
-    pub fn ensure_set(&mut self, device: &wgpu::Device, light: &LightBinding, set: usize) -> bool {
+    pub fn ensure_set(&mut self, device: &wgpu::Device, light: &LampBinding, set: usize) -> bool {
         if self.generation != Some(light.generation) {
             return false;
         }
@@ -1409,7 +1409,7 @@ mod tests {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
-        let mut light = LightBinding::new(&device, &queue);
+        let mut light = LampBinding::new(&device);
         let mut views = ViewBinding::new(&device);
         assert!(!views.is_ready());
         // Before a refresh there is no light: no set is made.
@@ -1477,9 +1477,9 @@ mod tests {
     }
 
     #[test]
-    fn the_baked_light_of_the_view_group_starts_at_binding_1() {
+    fn the_lamps_of_the_view_group_start_at_binding_1() {
         let code = wgsl();
-        assert!(code.contains("@group(0) @binding(1) var<uniform> light_map"));
-        assert!(code.contains("@group(0) @binding(4) var light_sampler"));
+        assert!(code.contains("@group(0) @binding(1) var<uniform> lamp_values"));
+        assert!(code.contains("@group(0) @binding(3) var<storage, read> lamp_grid"));
     }
 }

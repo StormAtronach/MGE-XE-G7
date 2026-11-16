@@ -246,9 +246,7 @@ impl<'a> UsageInfo<'a> {
                 // holds references loaded from a plugin's persistent block, and
                 // `findFirstReferenceById` returns one match. Therefore this reaches persistent
                 // references only, and never the base object.
-                if args.exclude_script_disable_targets
-                    && object.disable_target
-                    && reference.persistent
+                if object.is_disable_target_of(reference, args.exclude_script_disable_targets)
                     && !object.force_mesh_generation
                 {
                     // Still the object id here; the mesh remap only happens on the way out.

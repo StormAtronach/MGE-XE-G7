@@ -330,13 +330,15 @@ impl<'a> UsageInfo<'a> {
                 continue;
             }
             let [r, g, b, _] = light.data.color;
+            let has_mesh = !light.mesh.trim().is_empty();
             info.lights.insert(
                 light.id.to_ascii_lowercase(),
                 LightRecord {
                     radius: light.data.radius as f32,
                     color: [r, g, b],
                     flags: light.data.flags.bits(),
-                    has_mesh: !light.mesh.trim().is_empty(),
+                    has_mesh,
+                    smoky: has_mesh && !light.mesh.to_ascii_lowercase().contains("nosmoke"),
                 },
             );
         }

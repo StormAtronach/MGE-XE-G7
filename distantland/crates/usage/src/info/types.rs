@@ -186,6 +186,21 @@ pub struct ObjectDefinition<'a> {
     pub disable_target: bool,
 }
 
+impl ObjectDefinition<'_> {
+    /// Whether a `SomeId->Disable` call of a script reaches `reference` (Rule B): the object is
+    /// named as a target, and the reference is persistent, the only kind that such a call finds.
+    /// Off when the job does not exclude disable targets.
+    pub fn is_disable_target_of(&self, reference: &DistantReference<'_>, exclude_disable_targets: bool) -> bool {
+        exclude_disable_targets && self.disable_target && reference.persistent
+    }
+
+    /// Whether a script disables `reference` in the game: its own script disables the object
+    /// (Rule A), or a script names it as a disable target (Rule B, [`Self::is_disable_target_of`]).
+    pub fn script_disables(&self, reference: &DistantReference<'_>, exclude_disable_targets: bool) -> bool {
+        self.script_disabled || self.is_disable_target_of(reference, exclude_disable_targets)
+    }
+}
+
 /// Broad categorizations of objects used for inclusion filtering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectKind {
@@ -244,6 +259,28 @@ pub struct LightRecord {
     pub flags: u32,
     /// The light has a mesh: something that glows can be seen.
     pub has_mesh: bool,
+    /// The light's model can smoke: it has a model, and its path has no "nosmoke".
+    pub smoky: bool,
+}
+
+impl LightRecord {
+    /// `tes3::esp::LightFlags`.
+    const NEGATIVE: u32 = 0x4;
+    const FIRE: u32 = 0x10;
+    const OFF_BY_DEFAULT: u32 = 0x20;
+    /// The least radius of a fire whose smoke is seen from far: a campfire, a brazier.
+    const SMOKE_RADIUS: f32 = 256.0;
+
+    /// Whether a placed light of this record lights its place: a radius, a colour that is not
+    /// black, not negative and not off by default.
+    pub fn lights(&self) -> bool {
+        self.radius > 0.0 && self.color != [0; 3] && self.flags & (Self::NEGATIVE | Self::OFF_BY_DEFAULT) == 0
+    }
+
+    /// Whether a placed light of this record is a fire whose smoke is seen from far.
+    pub fn smokes(&self) -> bool {
+        self.smoky && self.lights() && self.flags & Self::FIRE != 0 && self.radius >= Self::SMOKE_RADIUS
+    }
 }
 
 /// Global repository of collected object and placement data from plugins.
@@ -408,6 +445,13 @@ impl<'a> UsageInfo<'a> {
 
     pub fn interior_cells(&self) -> impl Iterator<Item = (&String, &References<'a>)> {
         self.cells.iter().filter(|(name, _)| *name != "\0")
+    }
+
+    /// Whether the interior cell `name` behaves like an exterior, by its metadata.
+    pub fn behaves_like_exterior(&self, name: &str) -> bool {
+        self.interior_metadata
+            .get(name.as_uncased())
+            .is_some_and(|metadata| metadata.behaves_like_exterior)
     }
 
     pub fn total_references_count(&self) -> usize {

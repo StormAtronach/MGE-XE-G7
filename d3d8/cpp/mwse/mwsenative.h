@@ -2,6 +2,8 @@
 
 #include "support/winheader.h"
 
+#include <vector>
+
 // The native ABI of MWSE (MWSENativeApi.h, a copy of the header of MWSE): MGE XE asks MWSE for
 // engine behaviour instead of writing engine code itself. Only the wgpu path uses it; the
 // Direct3D 9 path keeps its own patches. Each function returns false when MWSE's table is not in
@@ -46,6 +48,20 @@ namespace MwseNative {
 
     // The most local lights of a node.
     bool requestLightLimit(unsigned int limit);
+
+    // One light record of the game, as MWSE gives it (MwseNativeLightRecordV1). `id` is the
+    // record's own string: read it before control goes back to the game.
+    struct LightRecord {
+        const char* id;
+        int radius;
+        // Red, green and blue, then the fourth byte as the game holds it.
+        unsigned char color[4];
+        unsigned int flags;
+    };
+
+    // The game's light records, with the values that the game holds now. False when MWSE's
+    // table is not in use or this MWSE does not have the query; `records` is then empty.
+    bool queryLightRecords(std::vector<LightRecord>& records);
 
     // The engine's ripples on or off.
     bool requestRipples(bool enabled);

@@ -289,11 +289,12 @@ change. That start can take some minutes. With an older file, set it below
   hidden, for example the Ghostfence after the end of the main quest.
 - Distant lights at night: each placed light of the exterior has a glow far away, in the
   colour of its light, and the land and the distant statics get the light of the lamps near
-  them. They come from the file `distantland\lights.data`, which the generator of this build
+  them when the sky is dark, as a near light of the same record lights an object. An interior
+  that is like an exterior has the lamps of its own cell. They come from the file `distantland\lights.data`, which the generator of this build
   writes; distant land made by an earlier build is refused (see below), so generate it again.
   Without the file, `nirender-host.log` has the line `distant lights: none`. The MGE XE GUI
-  has no option for them yet; to turn them off, set `distant_lights = false` (or `bake_lights = false` for the
-  glows only) under `[generation.settings]` in `mgeXE.toml`, and generate again.
+  has no option for them yet; to turn them off, set `distant_lights = false` under
+  `[generation.settings]` in `mgeXE.toml`, and generate again.
 - The light of each pixel uses the lights of the game: each light keeps its colour and its
   whole falloff. To get the lights as MGE XE on Direct3D 9 decodes them, set
   `per_pixel_original_lights = true` under `[distant_land]`. With it on, an install whose
@@ -531,8 +532,13 @@ Never for a game. Each is an environment variable of the game process or of a re
 by MGE XE's part of `numidium.exe`. The helper's other switches are in the README of the
 `nirender` plugin.
 
-- `MGE_XE_SKIP=water,terrain,statics,grass,blend`: the parts named are not drawn, for a
-  replay that tests one suspect at a time.
+- `MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps`: the parts named are not
+  drawn, for a replay that tests one suspect at a time. `glows` leaves out the glows of the
+  distant lights; `lamps` leaves out the light of the distant lamps on the land and the
+  distant statics.
+- `MGE_XE_LAMP_VIEW=1`: the land and the distant statics show the light of the distant lamps
+  alone, without their colour, their texture, the sun and the fog; `2`: the light times the
+  colour and the texture, without the sun and the fog. For the test of the lamps' light.
 - `MGE_XE_FULL_TIER_MAX=<n>` (0 to 32, the view slots of the plugin; the setting of the file takes 0 to 8): how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`, in place of `views.full_tier_max` of `mgeXE.toml` (default 1; 0 refuses every request).
 - `MGE_XE_CORE_MODS=0`: no core mod (`Data Files/shaders/core-mods/XE Mod <name>.wgsl`, the
   WGSL hook files of `mgeHost64/src/renderer/core_mods.rs`) joins the shaders: the built-in

@@ -424,8 +424,9 @@ Key contracts:
   placements/quadtrees.
 - Mod authors influence generation via per-plugin `-metadata.toml` files
   ([guide](docs/mod-metadata-guide.md)) and legacy `.ovr` classifier files.
-- `lights.data` (`XELIGHT1` v2) - the exterior light sources and their baked light, for the
-  distant lights of the wgpu renderer only. Outside the `generation_state.bin` inventory.
+- `lights.data` (`XELIGHT1` v3) - the placed lights and the smoke sources by block (the
+  exterior, and each interior that behaves like an exterior), for the distant lights of the wgpu
+  renderer only. An optional entry of the `generation_state.bin` inventory.
 - With the wgpu renderer, the helper reads `version`, `terrain.bin` and its textures, the
   shards, `usage.data` and `lights.data` itself, with no IPC client.
 
@@ -496,8 +497,8 @@ These constants gate interop and must move together:
 | UV-bound palette cap (128) | `distantland` `UV_BOUND_PALETTE_CAP`, `dlformat.h` `StaticMeshesBin::MaxPaletteEntries` | `uvBoundPalette[128]` in `assets/Data Files/shaders/core/XE Common.fx`. Rust and C++ disagreeing fails at load; HLSL disagreeing does not, so all three sites cross-reference each other |
 | Subset flag mask (`0x1F`) | `dlformat.h` `KnownFlagsMask`, `distantland` `static_mesh_writer.rs` | `KNOWN_SUBSET_FLAGS` in `mgeHost64/src/renderer/statics.rs`; a new bit needs an `MGE_DL_VERSION` bump |
 | `terrain_occlusion.bin` (`XEOCCL02` v2) | `distantland` `terrain_occlusion.rs` | `mgeHost64/src/abi/occlusion.rs`, [`horizon-occlusion-asset.md`](docs/architecture/horizon-occlusion-asset.md) |
-| `lights.data` (`XELIGHT1` v2) | `distantland/src/generation/lights.rs` (`LIGHTS_VERSION`) | `read` in `mgeHost64/src/renderer/distant_lights.rs` (its own copy of the version and the tile side; no shared test), [`distantland-data.md`](docs/architecture/distantland-data.md) section 4a |
-| Stream extension record ids (1-8) | `Deviceless` in `d3d8/cpp/mge/mged3d8device.cpp` | the `*_ID` constants of `mgeHost64/src/renderer.rs`, [`wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) |
+| `lights.data` (`XELIGHT1` v3) | `distantland/crates/formats/src/lights.rs` (`LIGHTS_VERSION`, `Lights::to_bytes`), filled by `distantland/src/generation/lights.rs` | `parse_lights` of the same module, called by `read` in `mgeHost64/src/renderer/distant_lights.rs`: one layout with its writer, its reader and their tests, [`distantland-data.md`](docs/architecture/distantland-data.md) section 4a |
+| Stream extension record ids (1-13) | `Deviceless` in `d3d8/cpp/mge/mged3d8device.cpp` | the `*_ID` constants of `mgeHost64/src/renderer.rs`, [`wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) |
 | Host exit codes | `mgeHost64/src/error.rs` | C++ launcher interpretation |
 | Core shader passes/variables | `d3d8/cpp/mge/distantshader.h`, `distantland.h` handles | `assets/Data Files/shaders/core/*.fx` |
 

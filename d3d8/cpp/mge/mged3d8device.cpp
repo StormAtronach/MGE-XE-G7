@@ -1724,6 +1724,149 @@ namespace Deviceless {
         sendToRenderer(HelloId, &hello, sizeof(hello));
     }
 
+    // The light settings: record 12 (LIGHT_SETTINGS_ID in mgeHost64/src/renderer.rs), kept. The
+    // engine's values of [LightAttenuation] (MWBridge::lightAttenuation), from which the helper
+    // makes the terms of a distant lamp as the engine makes those of a near one, and the light
+    // limit. Sent one time, when the game is loaded: the values do not change after the start.
+    struct LightSettings {
+        UINT version;
+        // 1 UseConstant, 2 UseLinear, 4 UseQuadratic.
+        UINT flags;
+        INT linearMethod;
+        INT quadraticMethod;
+        float constantValue;
+        float linearValue;
+        float quadraticValue;
+        float linearRadiusMultiplier;
+        float quadraticRadiusMultiplier;
+        // 1 when OutQuadInLin is set, else 0.
+        UINT outQuadInLin;
+        // The most lights of a node that MGE XE asked of the engine: 0 when the setting
+        // ExpandedLightLimit is off.
+        UINT lightLimitAsked;
+        // The most lights of a node in force: the number asked when MWSE took it, else the
+        // engine's 7.
+        UINT lightLimit;
+    };
+    static const UINT LightSettingsId = 12 | 0x80000000u;
+
+    static void sendLightSettings(MWBridge* mwBridge, unsigned lightLimitAsked, unsigned lightLimit) {
+        const auto& attenuation = mwBridge->lightAttenuation();
+        LightSettings s = {};
+        s.version = 1;
+        s.flags = attenuation.flags;
+        s.linearMethod = attenuation.linearMethod;
+        s.quadraticMethod = attenuation.quadraticMethod;
+        s.constantValue = attenuation.constantValue;
+        s.linearValue = attenuation.linearValue;
+        s.quadraticValue = attenuation.quadraticValue;
+        s.linearRadiusMultiplier = attenuation.linearRadiusMultiplier;
+        s.quadraticRadiusMultiplier = attenuation.quadraticRadiusMultiplier;
+        s.outQuadInLin = attenuation.outQuadInLin ? 1 : 0;
+        s.lightLimitAsked = lightLimitAsked;
+        s.lightLimit = lightLimit;
+        sendToRenderer(LightSettingsId, &s, sizeof(s));
+    }
+
+    // The game's light records: record 13 (LIGHT_RECORDS_ID in mgeHost64/src/renderer.rs), kept.
+    // The version (1), the number of records, then for each record its radius, its colour (4
+    // bytes), its flags, the length of its id, and the id padded with zeros to 4 bytes.
+    static const UINT LightRecordsId = 13 | 0x80000000u;
+    // The plugin drops a record of this length or more (nirender_stream_extension).
+    static const size_t StreamRecordLimit = 1u << 20;
+    // The records are checked again at the next frame: set by the load of a game.
+    static bool lightRecordsCheckDue = true;
+    // The game's Lua can change a light record at any time, with no event for d3d8.dll. So
+    // Present also checks the records when this much real time passed since the last check.
+    static const ULONGLONG LightRecordsCheckInterval = 1000;
+    // The time of the last check, from GetTickCount64.
+    static ULONGLONG lightRecordsCheckedAt = 0;
+    // The game resolved its ids at least one time (onGameIdsResolved): its plugins are read, so
+    // MWSE's answer holds every light record. No check runs before that. While the game reads
+    // its plugins, a check would send the records that it has at that second, a part of them,
+    // and the helper would take the others as records that the game does not have.
+    static bool lightRecordsWhole = false;
+
+    // Asks MWSE for the game's light records and sends them when its answer differs from its
+    // last answer, or with no compare when `always` is set. `when` names the caller in the log.
+    //
+    // The compare is over the answer as MWSE gives it: for each record the address of its id,
+    // its radius, its colour and its flags. So a check that finds no change reads no id text
+    // and builds nothing. Limit: it does not see a record that was freed while another one,
+    // with the same values and another id, was made at its address. The load of a game sends
+    // always, so such a record is right again after it. [I] a record keeps the address of its
+    // id for its life, and nothing changes the text of an id in place.
+    static void checkLightRecords(const char* when, bool always) {
+        static std::vector<MwseNative::LightRecord> records;
+        static std::vector<MwseNative::LightRecord> lastRecords;
+
+        if (!lightRecordsWhole) {
+            return;
+        }
+        lightRecordsCheckedAt = GetTickCount64();
+
+        LARGE_INTEGER frequency, start, queried, compared, built;
+        QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&start);
+        if (!MwseNative::queryLightRecords(records)) {
+            return;
+        }
+        QueryPerformanceCounter(&queried);
+
+        // Before the game read its plugins it has no light record. A record 13 with no
+        // record in it would tell the helper that no lamp has a record.
+        if (records.empty()) {
+            return;
+        }
+
+        const bool same = records.size() == lastRecords.size()
+            && memcmp(records.data(), lastRecords.data(), records.size() * sizeof(MwseNative::LightRecord)) == 0;
+        QueryPerformanceCounter(&compared);
+        if (same && !always) {
+            return;
+        }
+        lastRecords = records;
+
+        size_t length = 8;
+        for (const auto& record : records) {
+            const size_t idLength = record.id ? strlen(record.id) : 0;
+            length += 16 + ((idLength + 3) & ~size_t(3));
+        }
+
+        const UINT count = static_cast<UINT>(records.size());
+        if (length >= StreamRecordLimit) {
+            LOG::logline("!! wgpu renderer: %u light records make a record of %u bytes, too long for the stream: the distant lamps keep the values of the distant land file",
+                count, static_cast<UINT>(length));
+            return;
+        }
+
+        std::vector<BYTE> data(length);
+        const UINT version = 1;
+        memcpy(data.data(), &version, 4);
+        memcpy(data.data() + 4, &count, 4);
+        size_t at = 8;
+        for (const auto& record : records) {
+            const UINT idLength = record.id ? static_cast<UINT>(strlen(record.id)) : 0;
+            memcpy(data.data() + at, &record.radius, 4);
+            memcpy(data.data() + at + 4, record.color, 4);
+            memcpy(data.data() + at + 8, &record.flags, 4);
+            memcpy(data.data() + at + 12, &idLength, 4);
+            if (idLength != 0) {
+                memcpy(data.data() + at + 16, record.id, idLength);
+            }
+            at += 16 + ((idLength + 3) & ~size_t(3));
+        }
+        QueryPerformanceCounter(&built);
+        sendToRenderer(LightRecordsId, data.data(), static_cast<UINT>(data.size()));
+
+        const double milliseconds = 1000.0 / double(frequency.QuadPart);
+        LOG::logline("-- wgpu renderer: light records sent (%s): %u records, %u bytes; the query %.3f ms, the compare %.3f ms, the build %.3f ms",
+            when, count, static_cast<UINT>(data.size()),
+            double(queried.QuadPart - start.QuadPart) * milliseconds,
+            double(compared.QuadPart - queried.QuadPart) * milliseconds,
+            double(built.QuadPart - compared.QuadPart) * milliseconds);
+    }
+
     // The place of the player goes to the helper (record 10): it streams the distant land
     // there, and says when the distant statics around the player are there (its arrival, the
     // event distantLandReady "arrived"). With `wait`, from distant_land.wait_on_load, the game
@@ -1803,11 +1946,18 @@ namespace Deviceless {
     // (the game's start resolves its ids too) changes nothing.
     static void __cdecl onGameIdsResolved() {
         static unsigned count = 0;
-        if (!Session::wgpu() || !MWBridge::get()->IsLoaded()) {
+        if (!Session::wgpu()) {
+            return;
+        }
+        // The engine resolves its ids at the load or the start of a game, and at its own start
+        // only when Morrowind.ini names a starting cell: always after it read its plugins.
+        lightRecordsWhole = true;
+        if (!MWBridge::get()->IsLoaded()) {
             return;
         }
         ++count;
         LOG::logline("-- wgpu renderer: the game's ids were resolved (%u): the vis groups are loaded", count);
+        checkLightRecords("the resolve of the game's ids", false);
         loadVisGroups();
         DistantLand::resolveDynamicVisGroups();
         visGroupsUnsent = true;
@@ -1836,6 +1986,11 @@ namespace Deviceless {
         auto mwBridge = MWBridge::get();
         if (!Session::wgpu() || !mwBridge->IsLoaded()) {
             return;
+        }
+        // A mod can change the light records after the plugins are read, and at a load.
+        checkLightRecords(gameLoad ? "the load of a game" : "a teleport or a door", gameLoad);
+        if (gameLoad) {
+            lightRecordsCheckDue = true;
         }
         if (!gameLoad && !isFarMove(static_cast<const TES3::Cell*>(previousCell), static_cast<const TES3::Cell*>(cell))) {
             return;
@@ -1921,11 +2076,24 @@ namespace Deviceless {
             // (distant land, alpha scenes, water mark, light limit). None is for this mode.
             mwBridge->Load();
             LOG::logline("-- wgpu renderer: the game is loaded, the frame logic of MGE XE runs from the stream");
-            // The wgpu renderer takes all lights of a node: the patch of the engine to 32
-            // needs no capability of the device here.
+            // The wgpu renderer takes all lights of a node, with no capability of the device:
+            // it asks MWSE for 48 lights of a node's own (the owner: "we could match 48 in the
+            // active cell with wgpu"). It has no patch of the game's code of its own: refused,
+            // a node keeps the engine's 7 (D424, "fail safely").
+            unsigned lightLimitAsked = 0;
+            unsigned lightLimit = 7;
             if (Configuration.ExpandedLightLimit) {
-                MWPatches::patchExpandedLightLimit();
+                lightLimitAsked = 48;
+                if (MwseNative::requestLightLimit(lightLimitAsked)) {
+                    lightLimit = lightLimitAsked;
+                    LOG::logline("-- wgpu renderer: light limit %u (a node's own lights), through MWSE", lightLimit);
+                } else {
+                    LOG::logline("!! wgpu renderer: light limit %u asked, the engine's limit stays (7 unless another module changed it): MWSE refused the request", lightLimitAsked);
+                }
+            } else {
+                LOG::logline("-- wgpu renderer: light limit 7 (a node's own lights): the setting ExpandedLightLimit is off");
             }
+            sendLightSettings(mwBridge, lightLimitAsked, lightLimit);
             // As on Direct3D 9: the engine attaches a light out to where the per-pixel fade
             // of the renderer ends. Without it a mesh past the radius of a light gets none of
             // it while its neighbour fades: a light seam.
@@ -1944,6 +2112,12 @@ namespace Deviceless {
             // go to the helper as the game's films do.
             VideoPatch::monitorStreamed(width, height);
             scanVisGroups(mwBridge);
+            if (lightRecordsCheckDue) {
+                lightRecordsCheckDue = false;
+                checkLightRecords("the first frame after a load", false);
+            } else if (GetTickCount64() - lightRecordsCheckedAt >= LightRecordsCheckInterval) {
+                checkLightRecords("the check of each second", false);
+            }
             if (Configuration.ScreenFOV > 0) {
                 mwBridge->SetFOV(Configuration.ScreenFOV);
             }
