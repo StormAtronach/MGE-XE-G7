@@ -7,7 +7,8 @@ functions of the renderer's shaders (the hooks). The renderer keeps everything e
 passes, the bindings, the entry points and the code around the hooks.
 
 This page describes interface 1 (`mge-xe-core 1`). The source is
-`mgeHost64/src/renderer/core_mods.rs`. Interface 1 has the shadow hooks and the water hooks.
+`mgeHost64/src/renderer/core_mods.rs`. Interface 1 has the shadow hooks, the water hooks and
+the clouds hook.
 
 ## The rules of a file
 
@@ -58,6 +59,11 @@ At its start the renderer writes one line for each event:
 - `core mod: XE Mod Water.wgsl: the debug view water shows the terms of the built-in colour on
   the surface of the file`: the water file defines `water_color` or `underwater_color` (see
   "The water debug views");
+- `core mod: XE Mod Sky.wgsl: the clouds take its clouds_color where the sky of MGE XE is drawn
+  (distant land with the scattering, in a place like an exterior)`: the sky file is in use;
+- `core mod: XE Mod Sky.wgsl: <reason>; the clouds stay as the game draws them`: the sky file
+  is dropped, and why. A sky file without `clouds_color` is listed as `(no hook)` and changes
+  nothing;
 - `core mod: XE Mod <name>.fx is for Direct3D 9; the wgpu renderer reads XE Mod <name>.wgsl,
   and there is none`: a Direct3D 9 core mod with no `.wgsl` file beside it;
 - `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set.
@@ -231,6 +237,60 @@ fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {
     close = ripples_on(close, texcoords.zw, world_xy);
     let n = 2.0 * mix(close, far, clamp(distance / 8000.0, 0.0, 1.0)) - 1.0;
     return normalize(vec3f(0.5 * n, 1.0));
+}
+```
+
+## The clouds hook: `XE Mod Sky.wgsl`
+
+| Hook | Signature | What it gives | Direct3D 9 function |
+| --- | --- | --- | --- |
+| `clouds_color` | `fn clouds_color(p: CloudPixel) -> vec4f` | The colour and the alpha of a pixel of the clouds. | `CloudsPS` |
+
+- **Where it acts.** On the draws of the clouds of the game's sky, where the sky of MGE XE is
+  drawn: distant land on with the atmosphere scattering, in an exterior or an interior that
+  behaves like one. That is where Direct3D 9 runs `CloudsPS`. In other places, and without a
+  file that defines the hook, the clouds stay as the game draws them.
+- **The result is final**, as the result of `CloudsPS` is. No light, no tone curve and no fog
+  act on it after the hook. The draw keeps its own blend, depth and stencil state, and its
+  alpha test acts on the hook's alpha.
+- **Only a file changes the clouds.** This hook has no built-in in that path: without
+  `clouds_color` in a file, nothing changes.
+- **`sky_color` is not a hook yet.** The sky dome (`SkyPS`) keeps the renderer's colour. No
+  installed mod changes it.
+
+The struct `CloudPixel` is part of the interface:
+
+| Field | Type | What it holds | Direct3D 9 |
+| --- | --- | --- | --- |
+| `texcoords` | `vec2f` | The coordinate of the clouds' texture. | `IN.texcoords` |
+| `color` | `vec4f` | The colour of the vertex. | `IN.color` |
+| `direction` | `vec3f` | The direction from the eye to the pixel, length 1, in the space of the world. | `normalize(IN.skypos.xyz)` |
+| `pixel` | `vec2f` | The screen pixel, for a dither. | `vpos` |
+
+The library of the clouds hook. Each value is the Direct3D 9 variable that it stands for:
+
+| Function | What it gives | Direct3D 9 |
+| --- | --- | --- |
+| `cloud_texture(uv: vec2f) -> vec4f` | The clouds' texture with its sampler, read at level 0. It may be called in a loop or a branch. | `tex2Dlod(sampBaseTex, float4(uv, 0, 0))` |
+| `sky_fog_color(direction: vec3f) -> vec4f` | The colour of the fog of the sky in a direction, with the scattering; the alpha is 0. The sky dome has the same colour. | `fogColourSky` |
+| `sky_time() -> f32` | The time. | `time` |
+| `sky_sun_color() -> vec3f` | The colour of the sun. | `sunCol` |
+| `sky_ambient_color() -> vec3f` | The ambient light: the sun's ambient and the scene's together. | `sunAmb` |
+| `sky_sun_position() -> vec3f` | The direction to the sun. | `sunPos` |
+| `sky_sun_visibility() -> f32` | The visibility of the sun. | `sunVis` |
+| `sky_color_value() -> vec3f` | The sky colour. | `skyCol` |
+| `sky_fog_far_color() -> vec3f` | The far fog colour. | `fogColFar` |
+
+The sun colour and the ambient light have the light multipliers of the weather in them, as
+those of the water do.
+
+An example: a file that gives the clouds of Direct3D 9's built-in `CloudsPS`, the colour of
+the vertex times the texture.
+
+```wgsl
+//! interface: mge-xe-core 1
+fn clouds_color(p: CloudPixel) -> vec4f {
+    return p.color * cloud_texture(p.texcoords);
 }
 ```
 
