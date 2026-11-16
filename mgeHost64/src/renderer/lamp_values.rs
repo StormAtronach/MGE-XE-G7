@@ -337,6 +337,19 @@ mod tests {
         assert_eq!((difference.changed, difference.missing), (0, 0));
     }
 
+    /// Each byte from 0 to 255 as the id of a record 13 is a record, found by the key of that byte.
+    #[test]
+    fn an_id_of_any_one_byte_is_a_record() {
+        let ids: Vec<[u8; 1]> = (0..=255u8).map(|byte| [byte]).collect();
+        let records: Vec<(&[u8], i32, [u8; 4], u32)> = ids.iter().map(|id| (&id[..], i32::from(id[0]), [0; 4], 0)).collect();
+        let read = LightRecords::read(&light_records_of_bytes(&records)).expect("no id makes the record refused");
+        // A to Z and a to z are one key each: 26 of the 256 ids fall together.
+        assert_eq!(read.count(), 256 - 26);
+        for id in &ids {
+            assert!(read.get(&key(id)).is_some(), "the byte {:#04x}", id[0]);
+        }
+    }
+
     #[test]
     fn the_light_records_read_whole_with_their_ids_in_lower_case() {
         let bytes = light_records(&[

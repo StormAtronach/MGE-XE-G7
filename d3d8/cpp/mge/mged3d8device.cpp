@@ -1776,15 +1776,28 @@ namespace Deviceless {
     static const size_t StreamRecordLimit = 1u << 20;
     // The records are checked again at the next frame: set by the load of a game.
     static bool lightRecordsCheckDue = true;
+    // The game's Lua can change a light record at any time, with no event for d3d8.dll. So
+    // Present also checks the records when this much real time passed since the last check.
+    static const ULONGLONG LightRecordsCheckInterval = 1000;
+    // The time of the last check, from GetTickCount64.
+    static ULONGLONG lightRecordsCheckedAt = 0;
 
-    // Asks MWSE for the game's light records and sends them when they differ from the last
-    // ones sent. `when` names the caller in the log.
-    static void checkLightRecords(const char* when) {
+    // Asks MWSE for the game's light records and sends them when its answer differs from its
+    // last answer, or with no compare when `always` is set. `when` names the caller in the log.
+    //
+    // The compare is over the answer as MWSE gives it: for each record the address of its id,
+    // its radius, its colour and its flags. So a check that finds no change reads no id text
+    // and builds nothing. Limit: it does not see a record that was freed while another one,
+    // with the same values and another id, was made at its address. The load of a game sends
+    // always, so such a record is right again after it. [I] a record keeps the address of its
+    // id for its life.
+    static void checkLightRecords(const char* when, bool always) {
         static std::vector<MwseNative::LightRecord> records;
-        static unsigned long long hashSent = 0;
-        static bool sent = false;
+        static std::vector<MwseNative::LightRecord> lastRecords;
 
-        LARGE_INTEGER frequency, start, queried, hashed;
+        lightRecordsCheckedAt = GetTickCount64();
+
+        LARGE_INTEGER frequency, start, queried, compared, built;
         QueryPerformanceFrequency(&frequency);
         QueryPerformanceCounter(&start);
         if (!MwseNative::queryLightRecords(records)) {
@@ -1792,30 +1805,25 @@ namespace Deviceless {
         }
         QueryPerformanceCounter(&queried);
 
-        // FNV-1a over each record's id, radius, colour and flags.
-        unsigned long long hash = 14695981039346656037ull;
-        const auto mix = [&hash](const void* data, size_t length) {
-            const auto bytes = static_cast<const unsigned char*>(data);
-            for (size_t i = 0; i != length; ++i) {
-                hash = (hash ^ bytes[i]) * 1099511628211ull;
-            }
-        };
-        size_t length = 8;
-        for (const auto& record : records) {
-            const UINT idLength = record.id ? static_cast<UINT>(strlen(record.id)) : 0;
-            mix(&idLength, sizeof(idLength));
-            mix(record.id, idLength);
-            mix(&record.radius, sizeof(record.radius));
-            mix(record.color, sizeof(record.color));
-            mix(&record.flags, sizeof(record.flags));
-            length += 16 + ((idLength + 3) & ~size_t(3));
-        }
-        QueryPerformanceCounter(&hashed);
-        if (sent && hash == hashSent) {
+        // Before the game read its plugins it has no light record. A record 13 with no
+        // record in it would tell the helper that no lamp has a record.
+        if (records.empty()) {
             return;
         }
-        sent = true;
-        hashSent = hash;
+
+        const bool same = records.size() == lastRecords.size()
+            && memcmp(records.data(), lastRecords.data(), records.size() * sizeof(MwseNative::LightRecord)) == 0;
+        QueryPerformanceCounter(&compared);
+        if (same && !always) {
+            return;
+        }
+        lastRecords = records;
+
+        size_t length = 8;
+        for (const auto& record : records) {
+            const size_t idLength = record.id ? strlen(record.id) : 0;
+            length += 16 + ((idLength + 3) & ~size_t(3));
+        }
 
         const UINT count = static_cast<UINT>(records.size());
         if (length >= StreamRecordLimit) {
@@ -1840,13 +1848,15 @@ namespace Deviceless {
             }
             at += 16 + ((idLength + 3) & ~size_t(3));
         }
+        QueryPerformanceCounter(&built);
         sendToRenderer(LightRecordsId, data.data(), static_cast<UINT>(data.size()));
 
         const double milliseconds = 1000.0 / double(frequency.QuadPart);
-        LOG::logline("-- wgpu renderer: light records sent (%s): %u records, %u bytes; the query %.3f ms, the hash %.3f ms",
+        LOG::logline("-- wgpu renderer: light records sent (%s): %u records, %u bytes; the query %.3f ms, the compare %.3f ms, the build %.3f ms",
             when, count, static_cast<UINT>(data.size()),
             double(queried.QuadPart - start.QuadPart) * milliseconds,
-            double(hashed.QuadPart - queried.QuadPart) * milliseconds);
+            double(compared.QuadPart - queried.QuadPart) * milliseconds,
+            double(built.QuadPart - compared.QuadPart) * milliseconds);
     }
 
     // The place of the player goes to the helper (record 10): it streams the distant land
@@ -1963,7 +1973,7 @@ namespace Deviceless {
             return;
         }
         // A mod can change the light records after the plugins are read, and at a load.
-        checkLightRecords(gameLoad ? "the load of a game" : "a cell change");
+        checkLightRecords(gameLoad ? "the load of a game" : "a teleport or a door", gameLoad);
         if (gameLoad) {
             lightRecordsCheckDue = true;
         }
@@ -2089,7 +2099,9 @@ namespace Deviceless {
             scanVisGroups(mwBridge);
             if (lightRecordsCheckDue) {
                 lightRecordsCheckDue = false;
-                checkLightRecords("the first frame after a load");
+                checkLightRecords("the first frame after a load", false);
+            } else if (GetTickCount64() - lightRecordsCheckedAt >= LightRecordsCheckInterval) {
+                checkLightRecords("the check of each second", false);
             }
             if (Configuration.ScreenFOV > 0) {
                 mwBridge->SetFOV(Configuration.ScreenFOV);

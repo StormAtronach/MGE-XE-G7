@@ -450,6 +450,26 @@ mod tests {
         assert_eq!(key(b"Caf\xe9's \\ \x00").to_string(), "caf\\xe9's \\\\ \\x00");
     }
 
+    /// A key and an id with every byte from 0 to 255 in them go through the writer and the reader.
+    #[test]
+    fn a_key_with_every_byte_reads_back() {
+        let every_byte: Vec<u8> = (0..=255).collect();
+        let lights = Lights {
+            blocks: vec![LightBlock {
+                key: key(&every_byte),
+                records: vec![LampRecord {
+                    id: key(&every_byte),
+                    glow_radius: 0.0,
+                }],
+                lamps: vec![lamp(1.0, 0)],
+                smoke: Vec::new(),
+            }],
+        };
+        let read = parse_lights(&lights.to_bytes()).unwrap();
+        assert_eq!(read, lights);
+        assert_eq!(read.blocks[0].key.as_bytes().len(), 256);
+    }
+
     /// A cell name and a record id with bytes over 127 are in the file as the engine's own bytes,
     /// and the reader gives the same keys back. `\xc1\xe0\xeb\xec\xee\xf0\xe0` is "Balmora" in
     /// WINDOWS-1251.

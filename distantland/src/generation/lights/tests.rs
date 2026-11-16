@@ -195,6 +195,18 @@ fn a_name_with_bytes_over_127_keeps_the_plugins_bytes() {
     assert_eq!(parse_lights(&output.bytes).unwrap(), lights);
 }
 
+/// Each byte from 1 to 255 comes back from the plugin reader's text as itself, so the key of a
+/// plugin's name is the key of the game's bytes. That holds also for the five bytes that have no
+/// letter in WINDOWS-1252 (0x81, 0x8D, 0x8F, 0x90, 0x9D), which are letters in WINDOWS-1251.
+#[test]
+fn each_byte_of_a_plugins_name_comes_back_as_the_games_byte() {
+    let encoder = bytes_io::Writer::default();
+    for byte in 1..=255u8 {
+        let from_plugin = key_of_plugin_name(&encoder, &plugin_text(&[byte]));
+        assert_eq!(from_plugin, Some(key(&[byte])), "the byte {byte:#04x}");
+    }
+}
+
 /// One cell in two spellings that differ in the case of A to Z is one block, and so is one record
 /// id in two spellings.
 #[test]
