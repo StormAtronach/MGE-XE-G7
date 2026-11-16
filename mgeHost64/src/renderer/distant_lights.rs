@@ -11,6 +11,7 @@
 //!   the grid of the light that the lamps give the distant land and statics.
 
 use nirender_wgpu::objects::Create;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nirender_wgpu::pass_report::Skip;
@@ -30,8 +31,8 @@ struct LightsFile {
     /// The sources as the file has them, 32 bytes each: the layout of `Source` of the shader.
     sources: Vec<u8>,
     source_count: u32,
-    /// The lamps, for their light on the distant land and statics.
-    lamps: FileLamps,
+    /// The lamps of each block, for their light on the distant land and statics.
+    lamps: BTreeMap<Key, FileLamps>,
     /// The light records of the exterior's lamps, with the values that the file has for them.
     records: Vec<FileLampRecord>,
 }
@@ -83,8 +84,9 @@ fn source_lamp(lamp: &distantland::mge_xe::lights::Lamp) -> SourceLamp {
 }
 
 /// Reads `lights.data` through the formats crate, which checks each count and length against
-/// the file's end and gives the reason of a refusal. Only the exterior's block: the lamps of an
-/// interior's block have that interior's coordinates.
+/// the file's end and gives the reason of a refusal. The glows and the records of the log are
+/// those of the exterior's block; the lamps are those of every block, each in the coordinates of
+/// its world space.
 fn read(path: &Path) -> Result<LightsFile, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let lights = parse_lights(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -93,10 +95,18 @@ fn read(path: &Path) -> Result<LightsFile, String> {
     Ok(LightsFile {
         sources,
         source_count,
-        lamps: exterior.map_or_else(FileLamps::default, |block| FileLamps {
-            lamps: block.lamps.iter().map(source_lamp).collect(),
-            record_ids: block.records.iter().map(|record| record.id.clone()).collect(),
-        }),
+        lamps: lights
+            .blocks
+            .iter()
+            .filter(|block| !block.lamps.is_empty())
+            .map(|block| {
+                let lamps = FileLamps {
+                    lamps: block.lamps.iter().map(source_lamp).collect(),
+                    record_ids: block.records.iter().map(|record| record.id.clone()).collect(),
+                };
+                (block.key.clone(), lamps)
+            })
+            .collect(),
         records: exterior.map_or_else(Vec::new, file_records),
     })
 }
@@ -375,8 +385,8 @@ pub struct DistantLights {
     glows: Option<Glows>,
     /// The light records of the file's exterior lamps, once the file is read.
     file_records: Option<Vec<FileLampRecord>>,
-    /// The lamps of the file's exterior block, once the file is read.
-    file_lamps: Option<FileLamps>,
+    /// The lamps of the file's blocks, once the file is read.
+    file_lamps: Option<BTreeMap<Key, FileLamps>>,
 }
 
 impl DistantLights {
@@ -387,7 +397,7 @@ impl DistantLights {
         let file = LightsFile {
             sources: vec![0; sources as usize * 32],
             source_count: sources,
-            lamps: FileLamps::default(),
+            lamps: BTreeMap::new(),
             records: Vec::new(),
         };
         DistantLights {
@@ -460,8 +470,8 @@ impl DistantLights {
         true
     }
 
-    /// The lamps of the file's exterior block; [`None`] until the file is read.
-    pub fn file_lamps(&self) -> Option<&FileLamps> {
+    /// The lamps of the file's blocks, by the key of the block; [`None`] until the file is read.
+    pub fn file_lamps(&self) -> Option<&BTreeMap<Key, FileLamps>> {
         self.file_lamps.as_ref()
     }
 

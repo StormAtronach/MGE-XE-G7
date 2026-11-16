@@ -28,7 +28,7 @@ use nirender_wgpu::wgpu;
 
 use super::lamp_values::{LightRecord, LightRecords, LightSettings};
 use super::{ORIGINAL_SHARED_CONSTANT, original_light};
-use distantland::mge_xe::lights::Key;
+use distantland::mge_xe::lights::{EXTERIOR_KEY, Key, key};
 
 /// The side of an exterior cell of the game.
 const CELL: f32 = 8192.0;
@@ -69,6 +69,27 @@ pub struct FileLamps {
     /// The ids of the light records, as the generator writes them
     /// (`distantland::mge_xe::lights::key`).
     pub record_ids: Vec<Key>,
+}
+
+/// The key of the block of the lights file whose lamps light the cell of a frame: the
+/// exterior's, or in an interior that is like an exterior the key of its name
+/// (`interior_name` of the environment record, padded with zeros). [`None`] in another
+/// interior, and in an interior without a name: it has no distant lamps.
+pub fn lamp_block_key(interior: bool, like_exterior: bool, interior_name: &[u8]) -> Option<Key> {
+    if !interior {
+        return Some(EXTERIOR_KEY);
+    }
+    let name = super::statics::unpadded(interior_name);
+    (like_exterior && !name.is_empty()).then(|| key(name))
+}
+
+/// The cell of the block `block` for a line of the log.
+pub fn block_name(block: &Key) -> String {
+    if *block == EXTERIOR_KEY {
+        "the exterior".to_owned()
+    } else {
+        format!("the cell \"{block}\"")
+    }
 }
 
 /// The flags of a light record that give a placed light no light of its own: a negative
@@ -726,8 +747,6 @@ mod tests {
         }
     }
 
-    use distantland::mge_xe::lights::key;
-
     fn lamp(x: f32, y: f32, radius: f32) -> SourceLamp {
         SourceLamp {
             position: [x, y, 0.0],
@@ -805,6 +824,23 @@ mod tests {
         assert_eq!(lamps, file_lamps().lamps[..1]);
         assert_eq!((values.changed, values.dropped, values.not_found), (0, 4, 0));
         assert!(!values.describe().contains("warning:"));
+    }
+
+    /// The block of a cell: the exterior's; an interior like an exterior by its name, with A to
+    /// Z lowered (the key of the generator); none in another interior.
+    #[test]
+    fn an_interior_like_an_exterior_takes_the_block_of_its_name() {
+        let mut name = [0u8; 64];
+        name[..17].copy_from_slice(b"Mournhold, Temple");
+        let block = lamp_block_key(true, true, &name).unwrap();
+        assert_eq!(block.as_bytes(), b"mournhold, temple");
+        assert_eq!(block, key(b"mournhold, temple"));
+        assert_eq!(block_name(&block), "the cell \"mournhold, temple\"");
+        assert_eq!(lamp_block_key(false, true, &name), Some(EXTERIOR_KEY));
+        assert_eq!(block_name(&EXTERIOR_KEY), "the exterior");
+        assert_eq!(lamp_block_key(true, false, &name), None);
+        // Without the environment record's name, no block: the empty key is the exterior's.
+        assert_eq!(lamp_block_key(true, true, &[0; 64]), None);
     }
 
     /// Before the game has its records, d3d8.dll sends record 13 with a count of 0 (8 bytes):

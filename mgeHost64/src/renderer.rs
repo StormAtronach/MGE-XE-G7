@@ -1263,9 +1263,10 @@ pub struct DistantLand {
     /// the statics read; [`None`] before the first frame.
     lights: Option<distant_lights::DistantLights>,
     light_binding: Option<lamp_grid::LampBinding>,
-    /// The light settings, the fade and the original lights that the lamps' grid was made
-    /// for; [`None`] before it was made, and again when a new lights file comes.
-    lamps_made_for: Option<(lamp_values::LightSettings, f32, bool)>,
+    /// The light settings, the fade, the original lights and the block of the lights file that
+    /// the lamps' grid was made for; [`None`] before it was made, and again when a new lights
+    /// file or other light records come.
+    lamps_made_for: Option<(lamp_values::LightSettings, f32, bool, distantland::mge_xe::lights::Key)>,
     /// The line that the lamps wait for the light settings (record 12) is in the log.
     lamps_wait_told: bool,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
@@ -2058,7 +2059,11 @@ impl DistantLand {
     /// light settings or the fade change, and the view groups with those buffers, for the
     /// statics too.
     fn poll_lights(&mut self, scene: &SceneView) {
-        let made_for = (self.lamp_fade(), self.lamp_original());
+        let (fade, original) = (self.lamp_fade(scene.interior), self.lamp_original(scene.interior));
+        let interior_name = self.environment.map_or([0; 64], |e| e.interior_name);
+        // In an interior that is not like an exterior the lamps do not light, and the grid
+        // stays for the next cell.
+        let block = lamp_grid::lamp_block_key(scene.interior, scene.like_exterior, &interior_name);
         let binding = self
             .light_binding
             .get_or_insert_with(|| lamp_grid::LampBinding::new(scene.device));
@@ -2068,19 +2073,30 @@ impl DistantLand {
         {
             self.lamps_made_for = None;
         }
-        if let Some(lamps) = self.lights.as_ref().and_then(distant_lights::DistantLights::file_lamps) {
+        let blocks = self.lights.as_ref().and_then(distant_lights::DistantLights::file_lamps);
+        if let (Some(blocks), Some(block)) = (blocks, block) {
             match self.light_settings {
                 // The terms of a lamp come from the engine's settings only (the page, section
                 // 2.1): without them the lamps wait.
                 None if !self.lamps_wait_told => {
-                    println!(
-                        "distant lamps: {} lamps wait for the light settings (record 12)",
-                        lamps.lamps.len()
-                    );
+                    let count: usize = blocks.values().map(|lamps| lamps.lamps.len()).sum();
+                    println!("distant lamps: {count} lamps wait for the light settings (record 12)");
                     self.lamps_wait_told = true;
                 }
-                Some(settings) if self.lamps_made_for != Some((settings, made_for.0, made_for.1)) => {
-                    let (fade, original) = made_for;
+                Some(settings)
+                    if self
+                        .lamps_made_for
+                        .as_ref()
+                        .is_none_or(|made| *made != (settings, fade, original, block.clone())) =>
+                {
+                    let no_lamps = lamp_grid::FileLamps::default();
+                    let lamps = blocks.get(&block).unwrap_or_else(|| {
+                        println!(
+                            "distant lamps: no lamps here: the lights file has no block for {}",
+                            lamp_grid::block_name(&block)
+                        );
+                        &no_lamps
+                    });
                     // The radius, the colour and the flags of the game's light records (record
                     // 13), else of the file.
                     let start = std::time::Instant::now();
@@ -2096,7 +2112,7 @@ impl DistantLand {
                     let made_in = start.elapsed().as_secs_f64() * 1000.0;
                     println!("{}", game_values.describe());
                     println!("{}; made in {made_in:.3} ms", grid.report.describe());
-                    self.lamps_made_for = Some((settings, fade, original));
+                    self.lamps_made_for = Some((settings, fade, original, block));
                 }
                 _ => {}
             }
@@ -6416,26 +6432,27 @@ impl DistantLand {
         Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [light, 0.0, 0.0, 0.0]))
     }
 
-    /// The fade of a near light in an exterior, which a distant lamp takes too: the number of
-    /// radii where a light ends, 0 when the light for each pixel is not on in an exterior or
-    /// the fade is off (the page, section 2.2).
-    fn lamp_fade(&self) -> f32 {
+    /// The fade of a near light in the cell, which a distant lamp takes too: the number of
+    /// radii where a light ends, 0 when the light for each pixel is not on in the cell or the
+    /// fade is off (the page, section 2.2).
+    fn lamp_fade(&self, interior: bool) -> f32 {
         let (on, interiors_only, fade, _) = self.per_pixel;
-        if on && !interiors_only { fade } else { 0.0 }
+        if on && (interior || !interiors_only) { fade } else { 0.0 }
     }
 
     /// A distant lamp is packed as MGE XE on Direct3D 9 packs a near light when the near lights
-    /// of an exterior are (`distant_land.per_pixel_original_lights`).
-    fn lamp_original(&self) -> bool {
+    /// of the cell are (`distant_land.per_pixel_original_lights`).
+    fn lamp_original(&self, interior: bool) -> bool {
         let (on, interiors_only, _, original) = self.per_pixel;
-        on && !interiors_only && original
+        on && (interior || !interiors_only) && original
     }
 
     /// The strength of the distant lamps' light in the frame of `main_view`: by the darkness of
-    /// its sun and ambient light ([`lamp_grid::darkness_gate`]) in an exterior, 0 in an
-    /// interior. The lamps are those of the exterior block of the lights file.
+    /// its sun and ambient light ([`lamp_grid::darkness_gate`]) in an exterior and in an
+    /// interior like one, 0 in another interior. The lamps are those of the cell's block of the
+    /// lights file ([`lamp_grid::lamp_block_key`]).
     fn lamp_strength(&self, main_view: &view::View) -> f32 {
-        if self.interior {
+        if self.interior && !self.like_exterior {
             return 0.0;
         }
         let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
