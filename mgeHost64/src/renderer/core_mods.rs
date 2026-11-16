@@ -273,7 +273,8 @@ const SKY_HOOKS: [Hook; 1] = [Hook {
 }];
 
 /// The built-in `clouds_color` (`CloudsPS` of `XE Mod Sky.fx`): the colour of the vertex times
-/// the clouds' texture.
+/// the clouds' texture. `cloud_texture` reads the largest level, and `CloudsPS` a smaller level
+/// where the texture is made smaller on the screen: the two are equal only where it is not.
 const CLOUDS_COLOR: &str = "
 // CloudsPS: the colour of a pixel of the clouds.
 fn clouds_color(p: CloudPixel) -> vec4f {

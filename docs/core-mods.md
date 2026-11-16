@@ -285,7 +285,9 @@ The sun colour and the ambient light have the light multipliers of the weather i
 those of the water do.
 
 An example: a file that gives the clouds of Direct3D 9's built-in `CloudsPS`, the colour of
-the vertex times the texture.
+the vertex times the texture. `cloud_texture` reads the texture's largest level, and
+`CloudsPS` reads a smaller level where the texture is made smaller on the screen, so the two
+are equal only where the texture is not made smaller.
 
 ```wgsl
 //! interface: mge-xe-core 1
