@@ -999,8 +999,15 @@ struct Session {
 impl Session {
     /// The hooks of `file` for `home`, with the plant's line when it plants there.
     fn hooks_for(&self, file: ModFile, home: &str) -> String {
-        let hooks = self.mods.hooks(file);
-        if self.plant.as_ref().is_some_and(|plant| plant.plants(file, home)) {
+        self.hooks_in(&self.mods, file, home)
+    }
+
+    /// The hooks of `file` in `mods` for `home`. The plant's line goes only on the hooks of a
+    /// file that `mods` uses: the built-in hooks of a dropped file never take it.
+    fn hooks_in(&self, mods: &CoreMods, file: ModFile, home: &str) -> String {
+        let hooks = mods.hooks(file);
+        let planted = mods.uses(file) && self.plant.as_ref().is_some_and(|plant| plant.plants(file, home));
+        if planted {
             format!("{}\n{hooks}", nirender_wgpu::CORE_MOD_FAULT_PLANT)
         } else {
             hooks
@@ -1094,17 +1101,10 @@ impl Shared {
             mods = Some(mods.as_ref().unwrap_or(&session.mods).without(*file));
         }
         let mods = mods.as_ref().unwrap_or(&session.mods);
-        let planted = |file: ModFile, hooks: String| {
-            if session.plant.as_ref().is_some_and(|plant| plant.plants(file, WORLD_HOME)) {
-                format!("{}\n{hooks}", nirender_wgpu::CORE_MOD_FAULT_PLANT)
-            } else {
-                hooks
-            }
-        };
         let sky = mods
             .uses(ModFile::Sky)
-            .then(|| planted(ModFile::Sky, mods.hooks(ModFile::Sky)));
-        (planted(ModFile::Shadow, mods.hooks(ModFile::Shadow)), sky)
+            .then(|| session.hooks_in(mods, ModFile::Sky, WORLD_HOME));
+        (session.hooks_in(mods, ModFile::Shadow, WORLD_HOME), sky)
     }
 
     /// The plant keeps a failed build of `home`: the null test of the fallback.
@@ -2046,6 +2046,28 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert!(grass.plants(ModFile::Shadow, GRASS_HOME));
         assert!(!grass.plants(ModFile::Shadow, WORLD_HOME) && !grass.plants(ModFile::Sky, GRASS_HOME));
         assert!(Plant::parse("Shadow").unwrap().plants(ModFile::Shadow, WORLD_HOME));
+    }
+
+    /// The plant marks the hooks of the world only while the file is in use: the text without the
+    /// planted file, and the world after the file is dropped, have the built-in hooks with no plant
+    /// (live run R2 of 2026-11-16 failed again on the planted built-in hooks). The null: the text
+    /// with the file has the plant.
+    #[test]
+    fn the_world_without_the_planted_file_has_no_plant() {
+        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow)].into();
+        let shared = Shared::new(
+            mods_with_markers(files, &HOMES, &BuildMarkers::default()),
+            BuildMarkers::default(),
+            Plant::parse("Shadow@world shader"),
+        );
+        let built_in = CoreMods::built_in().shadow_hooks();
+
+        assert!(shared.world_hooks().0.starts_with(nirender_wgpu::CORE_MOD_FAULT_PLANT));
+        assert_eq!(shared.world_hooks_without(&[ModFile::Shadow]).0, built_in);
+
+        shared.world_held(&[ModFile::Shadow], "planted");
+        assert_eq!(shared.world_hooks().0, built_in);
     }
 
     /// A marker drops the files it names with the same text; a changed file is used again, and
