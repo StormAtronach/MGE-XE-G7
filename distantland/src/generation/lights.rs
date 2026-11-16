@@ -69,6 +69,10 @@ struct PlacedLamp {
 /// WINDOWS-1252, whatever the code page of the install is. That decode loses nothing, so the
 /// encode gives the plugin's own bytes back, which are the bytes that the game holds. `None` for a
 /// text with a zero in it or a text that is not such a decode: the game cannot have that name.
+///
+/// One limit: the reader's `load_string` calls `Encoding::decode`, which looks for a byte order
+/// mark first. So a name that starts with the bytes EF BB BF, FF FE or FE FF is not decoded as
+/// WINDOWS-1252, and it gets another key or none. It costs only that name.
 fn key_of_plugin_name(encoder: &bytes_io::Writer, name: &str) -> Option<Key> {
     if name.contains('\0') {
         return None;
