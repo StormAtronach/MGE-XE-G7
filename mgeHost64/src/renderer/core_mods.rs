@@ -41,6 +41,14 @@
 //!   volumes and the dry spaces keep the built-ins, as Direct3D 9 has a core file of its own
 //!   for the volumes. The library is [`WATER_LIBRARY`]. Only the built-in `water_color` and
 //!   `underwater_color` show the terms of the debug view `water`.
+//! - `XE Mod Sky`: `fn clouds_color(p: CloudPixel) -> vec4f` (`CloudsPS`): the colour and the
+//!   alpha of a pixel of the clouds, final (no light, no tone curve, no fog after it; the draw's
+//!   alpha test still acts on it). Its home: the world shader, for the cloud draws where the sky
+//!   of MGE XE is drawn (distant land with the scattering, in a place like an exterior), as
+//!   Direct3D 9 runs `CloudsPS` there. Only a file that defines it changes the clouds: there is
+//!   no built-in in that path. The struct and the texture read are [`SKY_INTERFACE`], the
+//!   library [`SKY_LIBRARY`]. `sky_color` (`SkyPS`) is not a hook yet: no installed mod changes
+//!   it.
 //!
 //! A hook may call the other hooks of its file, also those that the file leaves to the
 //! built-ins. A hook that never ends stops the GPU: the renderer does not limit a hook.
@@ -257,6 +265,74 @@ const WATER_LIBRARY_NAMES: [&str; 23] = [
     "WaterPixel",
 ];
 
+const SKY_HOOKS: [Hook; 1] = [Hook {
+    name: "clouds_color",
+    arguments: &["CloudPixel"],
+    result: "vec4<f32>",
+    built_in: CLOUDS_COLOR,
+}];
+
+/// The built-in `clouds_color` (`CloudsPS` of `XE Mod Sky.fx`): the colour of the vertex times
+/// the clouds' texture. `cloud_texture` reads the largest level, and `CloudsPS` a smaller level
+/// where the texture is made smaller on the screen: the two are equal only where it is not.
+const CLOUDS_COLOR: &str = "
+// CloudsPS: the colour of a pixel of the clouds.
+fn clouds_color(p: CloudPixel) -> vec4f {
+    return p.color * cloud_texture(p.texcoords);
+}
+";
+
+/// The struct of the clouds hook and the texture read, part of the interface, as declarations
+/// for the check of a file alone. The world shader of `nirender_wgpu` defines both (a test
+/// compares them): `CloudPixel` has the coordinate of the clouds' texture (`IN.texcoords`), the
+/// colour of the vertex (`IN.color`), the direction from the eye, length 1, in the space of the
+/// world (`normalize(IN.skypos)`), and the screen pixel; `cloud_texture(uv)` reads the clouds'
+/// texture with its sampler at level 0 (`tex2Dlod(sampBaseTex, ...)`), also in a branch.
+pub(crate) const SKY_INTERFACE: &str = "
+struct CloudPixel {
+    texcoords: vec2f,
+    color: vec4f,
+    direction: vec3f,
+    pixel: vec2f,
+}
+fn cloud_texture(uv: vec2f) -> vec4f { return vec4f(0.0); }
+";
+
+/// The library of the clouds hook as declarations, for the check of a file alone. The world
+/// shader has the bodies (`SKY_LIBRARY_BODIES` of the renderer):
+///
+/// - `sky_fog_color(direction)`: the colour of the fog of the sky in a direction from the eye
+///   (`fogColourSky` of `XE Common.fx`), as the sky dome has it;
+/// - the values of the frame, each the variable of Direct3D 9 that it stands for: the time
+///   (`time`), the sun colour (`sunCol`), the ambient light (`sunAmb`: the sun's ambient and
+///   the scene's together), the direction to the sun (`sunPos`), its visibility (`sunVis`), the
+///   sky colour (`skyCol`) and the far fog colour (`fogColFar`). The sun colour and the ambient
+///   light have the light multipliers of the weather in them, as for the water.
+pub(crate) const SKY_LIBRARY: &str = "
+fn sky_fog_color(direction: vec3f) -> vec4f { return vec4f(0.0); }
+fn sky_time() -> f32 { return 0.0; }
+fn sky_sun_color() -> vec3f { return vec3f(0.0); }
+fn sky_ambient_color() -> vec3f { return vec3f(0.0); }
+fn sky_sun_position() -> vec3f { return vec3f(0.0); }
+fn sky_sun_visibility() -> f32 { return 0.0; }
+fn sky_color_value() -> vec3f { return vec3f(0.0); }
+fn sky_fog_far_color() -> vec3f { return vec3f(0.0); }
+";
+
+/// The names of [`SKY_LIBRARY`] and of [`SKY_INTERFACE`].
+const SKY_LIBRARY_NAMES: [&str; 10] = [
+    "sky_fog_color",
+    "sky_time",
+    "sky_sun_color",
+    "sky_ambient_color",
+    "sky_sun_position",
+    "sky_sun_visibility",
+    "sky_color_value",
+    "sky_fog_far_color",
+    "cloud_texture",
+    "CloudPixel",
+];
+
 /// The values of `XE Mod Shadow Data.fx` that a core mod may set: the shade of a shadow and
 /// the two numbers of the exponential shadow map.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -365,6 +441,9 @@ pub(crate) struct CoreMods {
     /// The water hooks of the plane for the debug view `water`: the built-in colour hooks with
     /// the file's other hooks ([`water_debug_hooks`]).
     water_debug_hooks: String,
+    /// The text of the clouds hook of a file that defines it, or [`None`]: the clouds then
+    /// stay as the game draws them.
+    sky_hooks: Option<String>,
     /// What the log says about the files, one line each.
     report: Vec<String>,
 }
@@ -377,21 +456,27 @@ impl CoreMods {
             shadow_values: ShadowValues::default(),
             water_hooks: hook_text(&WATER_HOOKS, &[], ""),
             water_debug_hooks: hook_text(&WATER_HOOKS, &[], ""),
+            sky_hooks: None,
             report: Vec::new(),
         }
     }
 
     /// The files under `Data Files` (`read` gives the bytes of a path there), checked with the
-    /// homes of the shadow hooks and of the water hooks; nothing with `MGE_XE_CORE_MODS=0`. The
-    /// report is printed.
-    pub fn load(read: &dyn Fn(&str) -> Option<Vec<u8>>, shadow_homes: &[Home], water_homes: &[Home]) -> CoreMods {
+    /// homes of the shadow hooks, of the water hooks and of the clouds hook; nothing with
+    /// `MGE_XE_CORE_MODS=0`. The report is printed.
+    pub fn load(
+        read: &dyn Fn(&str) -> Option<Vec<u8>>,
+        shadow_homes: &[Home],
+        water_homes: &[Home],
+        sky_homes: &[Home],
+    ) -> CoreMods {
         let mods = if nirender_wgpu::switches::on("MGE_XE_CORE_MODS") == Some(false) {
             CoreMods {
                 report: vec!["core mods: off (MGE_XE_CORE_MODS=0)".to_string()],
                 ..CoreMods::built_in()
             }
         } else {
-            CoreMods::read(read, shadow_homes, water_homes)
+            CoreMods::read(read, shadow_homes, water_homes, sky_homes)
         };
         for line in &mods.report {
             println!("{line}");
@@ -400,7 +485,12 @@ impl CoreMods {
     }
 
     /// [`load`](Self::load) without the switch and the print.
-    fn read(read: &dyn Fn(&str) -> Option<Vec<u8>>, shadow_homes: &[Home], water_homes: &[Home]) -> CoreMods {
+    fn read(
+        read: &dyn Fn(&str) -> Option<Vec<u8>>,
+        shadow_homes: &[Home],
+        water_homes: &[Home],
+        sky_homes: &[Home],
+    ) -> CoreMods {
         let mut mods = CoreMods::built_in();
         // A byte order mark, which an editor on Windows can put first, is not part of the text.
         let file = |name: &str, extension: &str| {
@@ -480,6 +570,25 @@ impl CoreMods {
                     .push(format!("core mod: XE Mod Water.wgsl: {problem}; the built-in water is used")),
             }
         }
+        if let Some(text) = file("Sky", "wgsl") {
+            match hook_file(
+                &text,
+                &SKY_HOOKS,
+                &format!("{SKY_INTERFACE}{SKY_LIBRARY}"),
+                &SKY_LIBRARY_NAMES,
+                sky_homes,
+            ) {
+                Ok((_, defined)) if defined.is_empty() => used.push("XE Mod Sky.wgsl (no hook)".to_string()),
+                Ok((hooks, defined)) => {
+                    mods.sky_hooks = Some(hooks);
+                    used.push(format!("XE Mod Sky.wgsl ({})", defined.join(", ")));
+                    mods.report.push("core mod: XE Mod Sky.wgsl: the clouds take its clouds_color where the sky of MGE XE is drawn (distant land with the scattering, in a place like an exterior)".to_string());
+                }
+                Err(problem) => mods.report.push(format!(
+                    "core mod: XE Mod Sky.wgsl: {problem}; the clouds stay as the game draws them"
+                )),
+            }
+        }
         mods.report.push(if used.is_empty() {
             format!("core mods: none used (Data Files/{FOLDER}, interface {INTERFACE})")
         } else {
@@ -510,9 +619,15 @@ impl CoreMods {
         &self.water_debug_hooks
     }
 
+    /// The clouds hook of a file that defines it, for the world shader after
+    /// [`SKY_INTERFACE`] and the library; [`None`] without one.
+    pub fn sky_hooks(&self) -> Option<&str> {
+        self.sky_hooks.as_deref()
+    }
+
     /// The core mods of `files` (names under the folder, and texts), for a test of a home.
     #[cfg(test)]
-    pub fn of_files(files: &[(&str, &str)], shadow_homes: &[Home], water_homes: &[Home]) -> CoreMods {
+    pub fn of_files(files: &[(&str, &str)], shadow_homes: &[Home], water_homes: &[Home], sky_homes: &[Home]) -> CoreMods {
         let files: std::collections::HashMap<String, String> = files
             .iter()
             .map(|(name, text)| (format!("{FOLDER}/XE Mod {name}"), text.to_string()))
@@ -521,6 +636,7 @@ impl CoreMods {
             &|path| files.get(path).map(|text| text.as_bytes().to_vec()),
             shadow_homes,
             water_homes,
+            sky_homes,
         )
     }
 
@@ -910,7 +1026,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             .iter()
             .map(|(name, text)| (format!("{FOLDER}/XE Mod {name}"), text.to_string()))
             .collect();
-        CoreMods::read(&|path| files.get(path).map(|text| text.as_bytes().to_vec()), homes, &[])
+        CoreMods::read(&|path| files.get(path).map(|text| text.as_bytes().to_vec()), homes, &[], &[])
     }
 
     fn header_line() -> String {
@@ -1130,11 +1246,12 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
 
     #[test]
     fn an_fx_file_without_its_wgsl_is_named() {
+        let sky = header_line();
         let mods = mods_of(
             &[
                 ("Water.fx", "technique T {}"),
                 ("Sky.fx", "technique T {}"),
-                ("Sky.wgsl", "not read yet"),
+                ("Sky.wgsl", &sky),
             ],
             &HOMES,
         );
@@ -1143,6 +1260,8 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             "core mod: XE Mod Water.fx is for Direct3D 9; the wgpu renderer reads XE Mod Water.wgsl, and there is none"
         );
         assert_eq!(mods.report().len(), 2, "{:?}", mods.report());
+        assert!(mods.report()[1].contains("XE Mod Sky.wgsl (no hook)"), "{:?}", mods.report());
+        assert!(mods.sky_hooks().is_none());
     }
 
     /// Blank lines between the `//!` lines keep the values; a `//!` line after the code drops
@@ -1214,7 +1333,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     #[test]
     fn a_water_file_joins_the_plane_with_the_built_ins_it_lacks() {
         let file = marker_water_file();
-        let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &HOMES, &[]);
+        let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &HOMES, &[], &[]);
         assert_eq!(
             mods.water_hooks(),
             format!(
@@ -1292,7 +1411,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
                 "water",
             ),
         ] {
-            let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &HOMES, &[]);
+            let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &HOMES, &[], &[]);
             assert_eq!(mods.water_hooks(), CoreMods::built_in().water_hooks(), "{file}");
             assert!(
                 mods.report()[0].starts_with("core mod: XE Mod Water.wgsl: ")

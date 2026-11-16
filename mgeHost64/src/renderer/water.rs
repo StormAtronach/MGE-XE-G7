@@ -1729,7 +1729,7 @@ mod tests {
             name: "water plane",
             check: |hooks| crate::renderer::shader_check::check("water plane", &plane_source(hooks)).map(|_| ()),
         }];
-        let mods = CoreMods::of_files(&[("Water.wgsl", &core_mods::marker_water_file())], &[], &homes);
+        let mods = CoreMods::of_files(&[("Water.wgsl", &core_mods::marker_water_file())], &[], &homes, &[]);
         let plane = plane_source(mods.water_hooks());
         assert!(plane.contains("fn mod_marker("), "the mod's hook is not in the plane");
         crate::renderer::shader_check::check("water plane with the marker", &plane).unwrap();
