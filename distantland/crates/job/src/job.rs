@@ -190,13 +190,10 @@ pub struct GenerationSettings {
     /// `protected_density`; set the mode to `Off` to keep baseline dimensions, `Report` to measure
     /// without downscaling, or `DownscaleOpaque` to spare alpha-tested art.
     pub static_texture_sizing: StaticTextureSizingSettings,
-    /// Writes the light sources of the exterior (the light records of the load order and
-    /// their placed references: position, colour, radius, flags) into `lights.data`, for the
-    /// distant lights of the renderer.
+    /// Writes the lamps and the smoke sources of the exterior and of the interiors that behave
+    /// like exteriors (the placed lights of the load order: place, radius, colour, flags, record)
+    /// into `lights.data`, for the distant lights of the renderer.
     pub distant_lights: bool,
-    /// Bakes the light of those sources onto the land and the statics far away: a light map
-    /// for each lit exterior cell in `lights.data`. Only with `distant_lights`.
-    pub bake_lights: bool,
     /// Legacy support: also applies every `.ovr` and `.toml` file in the `mge3` folder of the
     /// game, after `override_files`, so that an old mod with only an override file works
     /// without editing the list. Off by default: the list and the plugin metadata are the
@@ -246,7 +243,6 @@ impl Default for GenerationSettings {
             deep_water_static_cull_depth: 128.0,
             static_texture_sizing: StaticTextureSizingSettings::default(),
             distant_lights: true,
-            bake_lights: true,
             discover_override_files: false,
         }
     }

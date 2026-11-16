@@ -125,7 +125,6 @@ impl UnitSettingsPartitions {
             discover_override_files: _,
             // The lights go to a file of their own (`lights.rs`), outside the units.
             distant_lights: _,
-            bake_lights: _,
             // Control-map limits clip terrain cells and exterior references before capture,
             // so they affect statics membership, not just terrain globals.
             max_terrain_control_texture_size: _,

@@ -31,8 +31,9 @@ pub const GLOW_SIZE: &str = "lights.glow.size";
 pub const GLOW_STRENGTH: &str = "lights.glow.strength";
 /// The same: the least size of a glow on the screen, in pixels.
 pub const GLOW_PIXELS: &str = "lights.glow.pixels";
-/// The same: how strong the baked light is on the land and the statics at night.
-pub const BAKED_STRENGTH: &str = "lights.baked.strength";
+/// The light of the distant lamps on the land and the distant statics: a factor on the strength
+/// of the darkness gate; 0 has none.
+pub const LAMP_STRENGTH: &str = "lights.lamps.strength";
 /// The distant statics: the seconds that a subset takes to come in after its arrival.
 pub const STATICS_FADE: &str = "statics.fade";
 /// The shadow on the grass: 2 ends it as the shadow of the ground (the fade at the edge of
@@ -186,7 +187,6 @@ mod tests {
             GLOW_SIZE,
             GLOW_STRENGTH,
             GLOW_PIXELS,
-            BAKED_STRENGTH,
             STATICS_FADE,
             GRASS_SHADOW,
             PARTICLES,

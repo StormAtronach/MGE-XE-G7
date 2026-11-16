@@ -286,6 +286,7 @@ impl WriterSession {
                 if path::TERRAIN_DDS_PATHS.contains(&name.as_ref())
                     || name == "terrain.bin"
                     || name == "terrain_occlusion.bin"
+                    || name == "lights.data"
                 {
                     if !keep.contains(name.as_ref()) {
                         remove_file_if_exists(&entry.path())?;
@@ -293,10 +294,7 @@ impl WriterSession {
                     continue;
                 }
                 if keep.contains(name.as_ref())
-                    || matches!(
-                        name.as_ref(),
-                        ".writer.lock" | "generation_state.bin" | "version" | "lights.data"
-                    )
+                    || matches!(name.as_ref(), ".writer.lock" | "generation_state.bin" | "version")
                     || name == GENERATION_REPORT_NAME
                 {
                     continue;

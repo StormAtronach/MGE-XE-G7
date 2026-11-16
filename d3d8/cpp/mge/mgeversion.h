@@ -11,7 +11,7 @@
 // The format of the extension records that d3d8.dll sends to the helper. The twin is
 // EXTENSION_FORMAT in mgeHost64/src/renderer.rs (a unit test compares the two). Bump both
 // with any change of a record's layout or of an id's meaning.
-#define MGE_EXTENSION_FORMAT 3
+#define MGE_EXTENSION_FORMAT 4
 #define MGE_MAJOR_VERSION 4
 #define MGE_MINOR_VERSION 21
 #define MGE_BUILD_VERSION 0

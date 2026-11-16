@@ -31,6 +31,7 @@
 
 use nirender_wgpu::objects::{Create, CreateView};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,6 +43,8 @@ mod debug_view;
 use debug_view::DebugView;
 mod distant_lights;
 mod gpu_time;
+mod lamp_grid;
+mod lamp_values;
 mod menu_keep;
 mod post;
 mod post_jop;
@@ -123,7 +126,7 @@ const NEAR: f32 = 64.0;
 /// land as a part of the game's. A smaller near plane puts the land behind a draw of the game
 /// at the same distance, by 0.25 % of the distance, as Direct3D 9's 4 - 0.01 against 4.
 const LAND_NEAR_SCALE: f32 = 0.9975;
-/// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend`): the parts named are not drawn, for a
+/// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps`): the parts named are not drawn, for a
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
     static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -253,10 +256,16 @@ const PREFETCH_ID: u32 = 10;
 /// difference; a session without the record stops at its first world frame (a d3d8.dll from
 /// before the handshake). A replay stops in the same cases (D131).
 const HELLO_ID: u32 = 11;
+/// The light settings of MGE XE (`Deviceless::sendLightSettings`), kept: the engine's
+/// `[LightAttenuation]` values and the light limit, see [`lamp_values::LightSettings`].
+const LIGHT_SETTINGS_ID: u32 = 12;
+/// The game's light records (`Deviceless::checkLightRecords`), kept: the values that the game
+/// holds for each light record, see [`lamp_values::LightRecords`].
+const LIGHT_RECORDS_ID: u32 = 13;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
-const EXTENSION_FORMAT: u32 = 3;
+const EXTENSION_FORMAT: u32 = 4;
 /// The bytes of a hello record: the version, the format, then the build id.
 const HELLO_BUILD_ID_AT: usize = 8;
 const HELLO_BUILD_ID_BYTES: usize = 64;
@@ -274,6 +283,8 @@ fn changing_record_name(id: u32) -> Option<&'static str> {
         VIS_GROUPS_ID => Some("extension record vis groups"),
         PREFETCH_ID => Some("extension record prefetch"),
         HELLO_ID => Some("extension record hello"),
+        LIGHT_SETTINGS_ID => Some("extension record light settings"),
+        LIGHT_RECORDS_ID => Some("extension record light records"),
         _ => Some("extension record of an unknown id"),
     }
 }
@@ -436,7 +447,15 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
     // record of another version needs its version word, and its reader drops it.
     let version_1_only = matches!(
         id,
-        SHADER_STATE_ID | PICTURE_ID | WATER_LOOKS_ID | WATER_MASKS_ID | VIS_GROUPS_ID | STATUS_ID | PREFETCH_ID
+        SHADER_STATE_ID
+            | PICTURE_ID
+            | WATER_LOOKS_ID
+            | WATER_MASKS_ID
+            | VIS_GROUPS_ID
+            | STATUS_ID
+            | PREFETCH_ID
+            | LIGHT_SETTINGS_ID
+            | LIGHT_RECORDS_ID
     );
     if version_1_only && word(0) != 1 {
         return Some(4);
@@ -495,6 +514,20 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
         STATUS_ID => 12,
         // The version, the serial, the place (3 floats); the name of the cell to the end.
         PREFETCH_ID => 20,
+        // Twelve words.
+        LIGHT_SETTINGS_ID => lamp_values::LightSettings::BYTES,
+        // The version, the number of records, then for each its radius, colour, flags and the
+        // length of its id (16 bytes), and the id padded to 4 bytes.
+        LIGHT_RECORDS_ID => {
+            let mut at = 8usize;
+            for _ in 0..word(4) {
+                if bytes.len() < at.saturating_add(16) {
+                    return Some(at.saturating_add(16));
+                }
+                at = sum(&[at, 16, word(at + 12).saturating_add(3) & !3]);
+            }
+            at
+        }
         _ => return None,
     })
 }
@@ -513,6 +546,8 @@ fn extension_name(id: u32) -> &'static str {
         STATUS_ID => "status text",
         PREFETCH_ID => "prefetch",
         HELLO_ID => "hello",
+        LIGHT_SETTINGS_ID => "light settings",
+        LIGHT_RECORDS_ID => "light records",
         _ => "unknown",
     }
 }
@@ -1197,6 +1232,13 @@ pub struct DistantLand {
     arrival_serial: u32,
     /// The build id of d3d8.dll from its hello record ([`HELLO_ID`]), once it came.
     hello: Option<String>,
+    /// The engine's light settings from record 12 ([`LIGHT_SETTINGS_ID`]), once it came.
+    light_settings: Option<lamp_values::LightSettings>,
+    /// The game's light records from record 13 ([`LIGHT_RECORDS_ID`]), once they came.
+    light_records: Option<Arc<lamp_values::LightRecords>>,
+    /// The line that compares the game's light records with the lights file is still to
+    /// write: it waits for the file.
+    light_records_line_due: bool,
     /// The extension ids without a reader in this build that came: each is in the log once.
     unknown_ids: Vec<u32>,
     /// The ids whose first refused record is in the log, and the refused records counted.
@@ -1218,10 +1260,21 @@ pub struct DistantLand {
     /// a quarter of a cell or more.
     settings_told_distance: (f32, f32),
     statics: Option<statics::Statics>,
-    /// The distant lights (`lights.data`), and the bind group of their baked light that the
-    /// land and the statics read; [`None`] before the first frame.
+    /// The distant lights (`lights.data`), and the buffers of their lamps that the land and
+    /// the statics read; [`None`] before the first frame.
     lights: Option<distant_lights::DistantLights>,
-    light_binding: Option<distant_lights::LightBinding>,
+    light_binding: Option<lamp_grid::LampBinding>,
+    /// The rebuilds of the lamps' list and grid on a worker, and their counts for the log at the
+    /// end.
+    lamp_rebuilds: lamp_grid::LampRebuilds,
+    /// The line that the lamps wait for the light settings (record 12) is in the log.
+    lamps_wait_told: bool,
+    /// The frames of the session.
+    frames_seen: u64,
+    /// The grid of the lamps in use is of the block of the cell: they may light it.
+    lamps_lit: bool,
+    /// The strength of the lamps' light in the last log line about it.
+    lamp_strength_logged: f32,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
@@ -1472,8 +1525,15 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 
     let footprint = max(length(ddx_patch), length(ddy_patch));
     let albedo = mix(near_albedo, far_albedo, smoothstep(0.5, 1.5, footprint));
-    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0) + baked_light(in.world);
+    let normal = normalize(in.normal);
+    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + lamp_light(in.world, normal);
     let lit = albedo * in.color * light;
+    if lamp_values.values.w > 1.5 {
+        return vec4f(albedo * in.color * lamp_light(in.world, normal), 1.0);
+    }
+    if lamp_values.values.w > 0.5 {
+        return vec4f(lamp_light(in.world, normal), 1.0);
+    }
 
     // In a reflection, only one side of the water plane: flags.y is the side, flags.z the plane.
     if u.flags.y != 0.0 && (in.world.z - u.flags.z) * u.flags.y < 0.0 {
@@ -1529,8 +1589,33 @@ fn shown(path: &Path) -> String {
 
 /// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`).
 fn draw_shader_text(shadow_hooks: &str) -> String {
-    format!("{DRAW_SHADER}{shadow_hooks}")
+    format!("{LIGHT_FUNCTIONS}{DRAW_SHADER}{shadow_hooks}")
 }
+
+/// The light of a point light at a pixel, which the draws of the game ([`DRAW_SHADER`]) and the
+/// distant lamps (`lamp_grid::LAMP_LIGHT_WGSL`) share: one light near and far (the page
+/// `distant-lights-from-fork-2026-11-12.md`, section 2.1).
+pub(crate) const LIGHT_FUNCTIONS: &str = "
+// The falloff of a light of the game at a distance: 1 over its constant, linear and quadratic
+// terms, as the fixed function of Direct3D 8 lights a vertex.
+fn light_falloff(terms: vec3f, distance: f32, distance2: f32) -> f32 {
+    return 1.0 / max(terms.x + terms.y * distance + terms.z * distance2, 0.0001);
+}
+
+// The falloff of a light as MGE XE on Direct3D 9 decodes it: its quadratic term and the
+// constant that the lights of a draw share.
+fn light_original_falloff(constant: f32, quadratic: f32, distance2: f32) -> f32 {
+    return 1.0 / max(quadratic * distance2 + constant, 0.0001);
+}
+
+// The fade of MGE XE: the light goes to zero over the last quarter of its end. end_inverse is 1
+// over the end; 0 is no end.
+fn light_end_fade(distance: f32, end_inverse: f32) -> f32 {
+    var fade = clamp(4.0 * distance * end_inverse - 3.0, 0.0, 1.0);
+    fade = 1.0 - fade * fade;
+    return fade * fade;
+}
+";
 
 /// The world shader with the text of this extension, the shadow hooks and the clouds hook, as
 /// the host joins them (`extension_shaders` of `nirender_wgpu`).
@@ -1791,6 +1876,9 @@ impl DistantLand {
             prefetch: None,
             arrival_serial: 0,
             hello: None,
+            light_settings: None,
+            light_records: None,
+            light_records_line_due: false,
             unknown_ids: Vec::new(),
             refused_ids: Vec::new(),
             extension_refused: 0,
@@ -1808,6 +1896,11 @@ impl DistantLand {
             statics: None,
             lights: None,
             light_binding: None,
+            lamp_rebuilds: lamp_grid::LampRebuilds::default(),
+            frames_seen: 0,
+            lamps_lit: false,
+            lamp_strength_logged: -1.0,
+            lamps_wait_told: false,
             view_binding: None,
             shadow: None,
             shadow_in_frame: false,
@@ -1971,21 +2064,109 @@ impl DistantLand {
         let game_view = self.frame_view(scene, &scene.projection);
         let binding = self
             .light_binding
-            .get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+            .get_or_insert_with(|| lamp_grid::LampBinding::new(scene.device));
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
         views.refresh(scene.device, binding);
         views.write(scene.queue, view::GAME, &game_view);
     }
 
-    /// The distant lights: the bind group of their baked light, the file when it comes, and
-    /// the view groups with that light, for the statics too.
+    /// The distant lights: the file when it comes, the buffers of the lamps when the file, the
+    /// light settings or the fade change, and the view groups with those buffers, for the
+    /// statics too.
     fn poll_lights(&mut self, scene: &SceneView) {
+        let near = lamp_grid::NearLights {
+            fade: self.lamp_fade(scene.interior),
+            original: self.lamp_original(scene.interior),
+            interior: scene.interior,
+        };
+        let interior_name = self.environment.map_or([0; 64], |e| e.interior_name);
+        // In an interior that is not like an exterior the lamps do not light, and the grid
+        // stays for the next cell.
+        let block = lamp_grid::lamp_block_key(scene.interior, scene.like_exterior, &interior_name);
         let binding = self
             .light_binding
-            .get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+            .get_or_insert_with(|| lamp_grid::LampBinding::new(scene.device));
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
-        if let Some(lights) = self.lights.as_mut() {
-            lights.poll(scene, binding, &views.layout, self.synchronous);
+        if let Some(lights) = self.lights.as_mut()
+            && lights.poll(scene, &views.layout, self.synchronous)
+        {
+            self.lamp_rebuilds.inputs_changed(self.frames_seen);
+        }
+        let blocks = self.lights.as_ref().and_then(distant_lights::DistantLights::file_lamps);
+        if let (Some(blocks), Some(block)) = (blocks, block.clone()) {
+            match self.light_settings {
+                // The terms of a lamp come from the engine's settings only (the page, section
+                // 2.1): without them the lamps wait.
+                None if !self.lamps_wait_told => {
+                    let count: usize = blocks.values().map(|lamps| lamps.lamps.len()).sum();
+                    println!("distant lamps: {count} lamps wait for the light settings (record 12)");
+                    self.lamps_wait_told = true;
+                }
+                // One rebuild at a time: a change that comes while one runs starts after it,
+                // with the newest inputs.
+                Some(settings) => {
+                    let lamps = |block: &distantland::mge_xe::lights::Key| {
+                        blocks.get(block).cloned().unwrap_or_else(|| {
+                            println!(
+                                "distant lamps: no lamps here: the lights file has no block for {}",
+                                lamp_grid::block_name(block)
+                            );
+                            Arc::default()
+                        })
+                    };
+                    let records = self.light_records.clone();
+                    self.lamp_rebuilds.want(settings, near, block, lamps, records);
+                }
+                None => {}
+            }
+        }
+        // A finished rebuild: its list and grid go into the buffers, the frame thread's only part.
+        // The old ones draw until then. A replay waits for it, as for its loads.
+        match self
+            .lamp_rebuilds
+            .finished(self.synchronous, self.frames_seen, block.as_ref())
+        {
+            None => {}
+            Some(lamp_grid::Finished::Failed(key)) => println!(
+                "distant lamps: the worker ended without the list and the grid ({})",
+                lamp_grid::block_name(&key.block)
+            ),
+            Some(lamp_grid::Finished::OtherBlock(key)) => println!(
+                "distant lamps: the list and the grid of {} are dropped: the cell's block is another",
+                lamp_grid::block_name(&key.block)
+            ),
+            Some(lamp_grid::Finished::HandOver(lamp_grid::HandOver { made, delay })) => {
+                let start = Instant::now();
+                let new_buffers = binding.set(scene.device, scene.queue, &made.grid);
+                let frame_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let waited = match delay {
+                    Some((ms, frames)) => format!("; {ms:.3} ms and {frames} frames after the change of its inputs"),
+                    None => String::new(),
+                };
+                println!("{}", made.values.describe());
+                println!(
+                    "{}; made on a worker in {:.3} ms: the game's values {:.3}, the lamps {:.3}, the list and the grid {:.3}; the frame thread {frame_ms:.3} ms for the buffers ({}){waited}",
+                    made.grid.report.describe(),
+                    made.worker_ms(),
+                    made.values_ms,
+                    made.lamps_ms,
+                    made.grid_ms,
+                    if new_buffers {
+                        "new buffers"
+                    } else {
+                        "written into the buffers"
+                    }
+                );
+                self.lamp_rebuilds.counts.note(frame_ms, made.worker_ms(), delay);
+            }
+        }
+        self.lamps_lit = self.lamp_rebuilds.lit(block.as_ref());
+        if self.light_records_line_due {
+            let file = self.lights.as_ref().and_then(distant_lights::DistantLights::file_records);
+            if let (Some(records), Some(file)) = (self.light_records.as_deref(), file) {
+                println!("{}", records.describe_against_file(file));
+                self.light_records_line_due = false;
+            }
         }
         views.refresh(scene.device, binding);
         if let Some(statics) = self.statics.as_mut() {
@@ -2049,6 +2230,7 @@ impl DistantLand {
 
 impl Drop for DistantLand {
     fn drop(&mut self) {
+        println!("{}", self.lamp_rebuilds.counts.line());
         println!(
             "distant land: {} terrain mesh draws, fog distances {}",
             self.meshes_drawn,
@@ -2465,12 +2647,12 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         layout: &layout,
         entries: &entries,
     });
-    let source = format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl());
+    let source = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
     let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
-    // Group 0: the view group (the view of the pass and the baked light); group 1: the values
+    // Group 0: the view group (the view of the pass and the lamps); group 1: the values
     // and the textures of the land. The shadow map has the view group only.
     let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant land"),
@@ -2778,11 +2960,55 @@ struct PerPixel {
     original: bool,
 }
 
+/// The constant of the falloff that the lights of a draw share when none of them has one.
+pub(crate) const ORIGINAL_SHARED_CONSTANT: f32 = 0.33;
+
+/// A point light as MGE XE on Direct3D 9 decodes it (`distant_land.per_pixel_original_lights`):
+/// its colour, the part of its light that does not depend on the facing, its quadratic term,
+/// and the distance that it moves along the camera's z axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OriginalLight {
+    pub color: [f32; 3],
+    pub wrap: f32,
+    pub quadratic: f32,
+    pub bias: f32,
+}
+
+/// The packing of one point light with the `falloff` (constant, linear, quadratic) and the
+/// `color` of the game, for [`PerPixel::shade_lights`] and the distant lamps. A light with a
+/// constant term sets `shared_constant`, which the lights of the draw share; the lights after it
+/// read it.
+pub(crate) fn original_light(falloff: [f32; 3], color: [f32; 3], shared_constant: &mut f32) -> OriginalLight {
+    let mut color = color;
+    let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
+    if falloff[0] > 0.0 {
+        *shared_constant = falloff[0];
+        quadratic = falloff[2];
+    } else if falloff[2] > 0.0 {
+        color = color.map(|c| c * *shared_constant);
+        wrap = 1.0 + 1e-4 / falloff[2].sqrt();
+        quadratic = *shared_constant * falloff[2];
+    } else if falloff[1] == 0.100_000_01 {
+        quadratic = 5e-5;
+    } else if falloff[1] > 0.0 {
+        color = [0.25 + 1e-4 / falloff[1]; 3];
+        wrap = 1.0;
+        quadratic = 0.5555 * falloff[1] * falloff[1];
+        bias = 25.0;
+    }
+    OriginalLight {
+        color,
+        wrap,
+        quadratic,
+        bias,
+    }
+}
+
 impl PerPixel {
     /// The lights of a draw as the per-pixel light changes them; `camera_z` is the z axis of
     /// the camera in the space of the lights.
     fn shade_lights(&self, lights: &mut [LightData], camera_z: [f32; 3], sky: bool) {
-        let mut shared_constant = 0.33f32;
+        let mut shared_constant = ORIGINAL_SHARED_CONSTANT;
         for light in lights.iter_mut() {
             if light.position[3] == 3.0 {
                 let direction = light.direction;
@@ -2810,23 +3036,16 @@ impl PerPixel {
                 light.cone[3] = if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 };
             } else {
                 let falloff = light.attenuation;
-                let mut color = [light.diffuse[0], light.diffuse[1], light.diffuse[2]];
-                let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
-                if falloff[0] > 0.0 {
-                    shared_constant = falloff[0];
-                    quadratic = falloff[2];
-                } else if falloff[2] > 0.0 {
-                    color = color.map(|c| c * shared_constant);
-                    wrap = 1.0 + 1e-4 / falloff[2].sqrt();
-                    quadratic = shared_constant * falloff[2];
-                } else if falloff[1] == 0.100_000_01 {
-                    quadratic = 5e-5;
-                } else if falloff[1] > 0.0 {
-                    color = [0.25 + 1e-4 / falloff[1]; 3];
-                    wrap = 1.0;
-                    quadratic = 0.5555 * falloff[1] * falloff[1];
-                    bias = 25.0;
-                }
+                let OriginalLight {
+                    color,
+                    wrap,
+                    quadratic,
+                    bias,
+                } = original_light(
+                    [falloff[0], falloff[1], falloff[2]],
+                    [light.diffuse[0], light.diffuse[1], light.diffuse[2]],
+                    &mut shared_constant,
+                );
                 let radius = light.cone[2];
                 let cutoff = if self.fade > 0.0 && radius > 0.0 {
                     (self.fade * radius.max(16.0)).min(8192.0)
@@ -2938,12 +3157,9 @@ fn light_terms(light: Light, normal: vec3f, p: vec3f) -> LightTerms {
         let distance = sqrt(distance2);
         if distance <= light.direction.w {
             let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
-            let f = light.attenuation;
-            var strength = 1.0 / max(f.x + f.y * distance + f.z * distance2, 0.0001);
+            var strength = light_falloff(light.attenuation.xyz, distance, distance2);
             strength *= spot_cone(light, to_light / max(distance, 0.0001));
-            var fade = clamp(4.0 * distance * light.cone.w - 3.0, 0.0, 1.0);
-            fade = 1.0 - fade * fade;
-            strength *= fade * fade;
+            strength *= light_end_fade(distance, light.cone.w);
             terms.d = lambert * strength * light.diffuse.rgb;
             terms.a = strength * light.ambient.rgb;
         }
@@ -2952,12 +3168,9 @@ fn light_terms(light: Light, normal: vec3f, p: vec3f) -> LightTerms {
         let distance2 = dot(to_light, to_light);
         let distance = sqrt(distance2);
         let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
-        var strength = 1.0 / max(light.attenuation.z * distance2 + light.attenuation.x, 0.0001);
+        var strength = light_original_falloff(light.attenuation.x, light.attenuation.z, distance2);
         strength *= spot_cone(light, to_light / max(distance, 0.0001));
-        // The light goes to zero over the last quarter of its distance.
-        var fade = clamp(4.0 * distance * light.cone.w - 3.0, 0.0, 1.0);
-        fade = 1.0 - fade * fade;
-        strength *= fade * fade;
+        strength *= light_end_fade(distance, light.cone.w);
         terms.d = (lambert + light.ambient.x) * strength * light.diffuse.rgb;
     }
     return terms;
@@ -3345,6 +3558,7 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
+        self.frames_seen += 1;
         self.stop_without_hello();
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
@@ -3806,6 +4020,47 @@ impl Extension for DistantLand {
             }
             return;
         }
+        if id == LIGHT_SETTINGS_ID {
+            match lamp_values::LightSettings::read(bytes) {
+                // A capture file and the stream start with the kept record again: the same
+                // values are in the log once.
+                Some(settings) => {
+                    if self.light_settings != Some(settings) {
+                        println!("{}", settings.describe());
+                        self.light_settings = Some(settings);
+                    }
+                }
+                None => println!(
+                    "extension record {id} (light settings): {} bytes, not the 48 bytes of version 1: not read",
+                    bytes.len()
+                ),
+            }
+            return;
+        }
+        if id == LIGHT_RECORDS_ID {
+            let start = std::time::Instant::now();
+            match lamp_values::LightRecords::read(bytes) {
+                // A capture file and the stream start with the kept record again: the same
+                // records are in the log once.
+                Some(records) => {
+                    if self.light_records.as_deref() != Some(&records) {
+                        println!(
+                            "{}",
+                            records.describe(self.light_records.as_deref(), bytes.len(), start.elapsed())
+                        );
+                        self.light_records = Some(Arc::new(records));
+                        self.light_records_line_due = true;
+                        // The lamps take the new values.
+                        self.lamp_rebuilds.inputs_changed(self.frames_seen);
+                    }
+                }
+                None => println!(
+                    "extension record {id} (light records): {} bytes, not a whole record of version 1: not read",
+                    bytes.len()
+                ),
+            }
+            return;
+        }
         if id == TUNE_ID {
             if core::str::from_utf8(bytes).is_ok_and(|text| text.trim() == "gpu lose device") {
                 self.lose_device = true;
@@ -4051,22 +4306,27 @@ impl Extension for DistantLand {
             range,
         };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
-        // The baked light of the distant lights: at night, in the exterior. The night is the
-        // game's, from the hour against the weather's sunrise and sunset (the environment
-        // record); before the first record, the sun's colour serves.
+        // The night is the game's, from the hour against the weather's sunrise and sunset (the
+        // environment record); before the first record, the sun's colour serves.
         let night = self.night(scene);
-        let Some(binding) = self.light_binding.as_mut() else {
+        let lamp_strength = self.lamp_strength(&main_view);
+        if (lamp_strength - self.lamp_strength_logged).abs() > 0.01 {
+            self.lamp_strength_logged = lamp_strength;
+            let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
+            let [r, g, b, _] = main_view.sun_color;
+            let [ar, ag, ab, _] = main_view.ambient;
+            println!(
+                "distant lamps: the strength {lamp_strength:.3} (lit {}): the brightness {:.3} of the sun [{r:.3}, {g:.3}, {b:.3}] \
+                 x {sun_vis:.3} and the ambient [{ar:.3}, {ag:.3}, {ab:.3}]",
+                self.lamps_lit,
+                lamp_grid::light_luminance([r, g, b], sun_vis, [ar, ag, ab])
+            );
+        }
+        let Some(lamps) = self.light_binding.as_mut() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
         };
-        binding.set_strength(
-            scene.queue,
-            if scene.interior {
-                0.0
-            } else {
-                self.tunables.get(tunables::BAKED_STRENGTH) * night
-            },
-        );
+        lamps.set_frame(scene.queue, lamp_strength, [scene.view[2], scene.view[6], scene.view[10]]);
         let Some(views) = self.view_binding.as_ref() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
@@ -4135,7 +4395,9 @@ impl Extension for DistantLand {
         }
         // The glows of the distant lights at night, past the handoff to the game.
         let is_night = night > 0.0;
-        let glows_skip = if !is_night {
+        let glows_skip = if skipped("glows") {
+            Some("left out by MGE_XE_SKIP")
+        } else if !is_night {
             Some("not night")
         } else if scene.interior {
             Some("an interior")
@@ -5092,7 +5354,9 @@ impl DistantLand {
         let terrain = of(Additions::LAND).or_else(|| Self::terrain_skip(scene));
         let statics = of(Additions::STATICS).or_else(|| skipped("statics").then_some("left out by MGE_XE_SKIP"));
         let glows = of(Additions::GLOWS).or_else(|| {
-            if self.night(scene) > 0.0 {
+            if skipped("glows") {
+                Some("left out by MGE_XE_SKIP")
+            } else if self.night(scene) > 0.0 {
                 scene.interior.then_some("an interior")
             } else {
                 Some("not night")
@@ -6250,6 +6514,35 @@ impl DistantLand {
         Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [light, 0.0, 0.0, 0.0]))
     }
 
+    /// The fade of a near light in the cell, which a distant lamp takes too: the number of
+    /// radii where a light ends, 0 when the light for each pixel is not on in the cell or the
+    /// fade is off (the page, section 2.2).
+    fn lamp_fade(&self, interior: bool) -> f32 {
+        let (on, interiors_only, fade, _) = self.per_pixel;
+        if on && (interior || !interiors_only) { fade } else { 0.0 }
+    }
+
+    /// A distant lamp is packed as MGE XE on Direct3D 9 packs a near light when the near lights
+    /// of the cell are (`distant_land.per_pixel_original_lights`).
+    fn lamp_original(&self, interior: bool) -> bool {
+        let (on, interiors_only, _, original) = self.per_pixel;
+        on && (interior || !interiors_only) && original
+    }
+
+    /// The strength of the distant lamps' light in the frame of `main_view`: by the darkness of
+    /// its sun and ambient light ([`lamp_grid::darkness_gate`]) while the grid in use is of the
+    /// cell's block of the lights file ([`lamp_grid::lamp_block_key`]); else 0: in an interior
+    /// without distant lamps, and from a change of the block until the grid of the new block.
+    fn lamp_strength(&self, main_view: &view::View) -> f32 {
+        if !self.lamps_lit || skipped("lamps") {
+            return 0.0;
+        }
+        let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
+        let [r, g, b, _] = main_view.sun_color;
+        let [ar, ag, ab, _] = main_view.ambient;
+        lamp_grid::darkness_gate([r, g, b], sun_vis, [ar, ag, ab]) * self.tunables.get(tunables::LAMP_STRENGTH)
+    }
+
     fn per_pixel(&self) -> Option<PerPixel> {
         let (on, interiors_only, fade, original) = self.per_pixel;
         if !on || (interiors_only && !self.interior) {
@@ -6326,7 +6619,8 @@ mod shader_tests {
     /// view and the mirror, and the caster of the shadow map.
     #[test]
     fn the_land_shaders_are_valid() {
-        shader_check::check("distant land", &format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl())).unwrap();
+        let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
+        shader_check::check("distant land", &land).unwrap();
         shader_check::check("distant land shadow", &format!("{}{LAND_SHADOW_SHADER}", view::wgsl())).unwrap();
     }
 
@@ -7127,7 +7421,7 @@ mod extension_record_tests {
     use super::*;
 
     /// Every id with a layout.
-    const IDS: [u32; 9] = [
+    const IDS: [u32; 11] = [
         ENVIRONMENT_ID,
         SHADER_STATE_ID,
         PICTURE_ID,
@@ -7137,6 +7431,8 @@ mod extension_record_tests {
         VIS_GROUPS_ID,
         STATUS_ID,
         PREFETCH_ID,
+        LIGHT_SETTINGS_ID,
+        LIGHT_RECORDS_ID,
     ];
 
     fn words(values: &[u32]) -> Vec<u8> {
@@ -7201,6 +7497,19 @@ mod extension_record_tests {
                 record.extend_from_slice(b"cell\0\0");
                 record
             }
+            LIGHT_SETTINGS_ID => {
+                let mut record = words(&[1]);
+                record.resize(lamp_values::LightSettings::BYTES, 0);
+                record
+            }
+            LIGHT_RECORDS_ID => {
+                // Two records: an id of 5 bytes, padded to 8, and an id of 4 bytes.
+                let mut record = words(&[1, 2, 450, 0x0032_87F0, 0x13, 5]);
+                record.extend_from_slice(b"lampa\0\0\0");
+                record.extend_from_slice(&words(&[256, 0x00FF_FFFF, 0, 4]));
+                record.extend_from_slice(b"lamp");
+                record
+            }
             _ => Vec::new(),
         }
     }
@@ -7246,6 +7555,8 @@ mod extension_record_tests {
             VIS_GROUPS_ID,
             STATUS_ID,
             PREFETCH_ID,
+            LIGHT_SETTINGS_ID,
+            LIGHT_RECORDS_ID,
         ] {
             assert_eq!(
                 extension_needed(id, &words(&[2])),
@@ -7268,6 +7579,10 @@ mod extension_record_tests {
     fn a_count_that_does_not_fit_is_refused_without_an_overflow() {
         assert!(extension_needed(WATER_MASKS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
         assert!(extension_needed(VIS_GROUPS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
+        assert!(extension_needed(LIGHT_RECORDS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
+        let mut long_id = words(&[1, 1, 0, 0, 0, u32::MAX]);
+        long_id.extend_from_slice(&[0u8; 8]);
+        assert!(extension_needed(LIGHT_RECORDS_ID, &long_id).unwrap() > long_id.len());
         let mut looks = words(&[1, 1, 5, u32::MAX]);
         looks.extend_from_slice(&[0u8; 8]);
         assert!(extension_needed(WATER_LOOKS_ID, &looks).unwrap() > looks.len());
@@ -7301,6 +7616,8 @@ mod extension_record_tests {
         assert_eq!(land.shader_states.len(), 1);
         assert!(land.status.is_some());
         assert_eq!(land.arrival_serial, 7);
+        assert_eq!(land.light_settings.map(|settings| settings.light_limit), Some(0));
+        assert_eq!(land.light_records.as_deref().map(lamp_values::LightRecords::count), Some(2));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
@@ -7544,7 +7861,7 @@ mod set_free_tests {
 
         let (mut land, root) = land_with_no_data("gpu");
         land.lights = Some(distant_lights::DistantLights::with_glows(&scene, &views.layout, 4));
-        let light = distant_lights::LightBinding::new(&device, &queue);
+        let light = lamp_grid::LampBinding::new(&device);
         views.refresh(&device, &light);
         let before = land.views_live_bytes();
         assert_eq!(before, 0, "no spare: the main view's own sets are not counted");
