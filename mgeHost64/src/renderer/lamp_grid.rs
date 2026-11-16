@@ -528,7 +528,8 @@ pub struct LampValues {
     /// fog on it (1 / [`HAZE_REACH`]), z and w the widths of its ramps ([`HAZE_NEAR_WIDTH`],
     /// [`HAZE_FAR_WIDTH`]).
     pub haze: [f32; 4],
-    /// x: the draw distance in units, where the haze ends. y, z, w: not used.
+    /// x: the draw distance in units, where the haze ends. y: the height of the water plane of
+    /// the cell; the air takes only the lights at or above it (D526). z, w: not used.
     pub haze_end: [f32; 4],
 }
 
@@ -865,7 +866,8 @@ struct LampValues {
     // The haze in the fog: x the strength k, y the power of the fog on it, z and w the widths
     // of its ramps after the view range and before the draw distance.
     haze: vec4f,
-    // x: the draw distance, where the haze ends.
+    // x: the draw distance, where the haze ends. y: the height of the water plane; the air
+    // takes only the lights at or above it.
     haze_end: vec4f,
 }
 @group(0) @binding(B0) var<uniform> lamp_values: LampValues;
@@ -877,7 +879,7 @@ struct LampValues {
 /// [`super::LIGHT_FUNCTIONS`]: the walk of the grid to the pixel's small cell, and each lamp of
 /// its list by the light function of a near light of the game, with the facing and the fade over
 /// the last quarter of the lamp's end. The same walk gives the light in the air for the haze
-/// (D498), without the facing.
+/// (D498), without the facing and only from the lights at or above the water plane (D526).
 pub const LAMP_LIGHT_WGSL: &str = "
 // The light of the distant lamps at p: on the surface with the normal, and in the air (no facing).
 struct LampSums {
@@ -925,7 +927,8 @@ fn lamp_sums(p: vec3f, normal: vec3f) -> LampSums {
         }
         let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
         let fade = light_end_fade(distance, 1.0 / lamp.end);
-        let with_air = haze_on;
+        // The air takes a light only at or above the water plane; the surface takes every light.
+        let with_air = haze_on && lamp.position.z >= lamp_values.haze_end.y;
         if original {
             let falloff = light_original_falloff(lamp.terms.x, lamp.terms.z, distance2) * fade;
             sum += (lambert + lamp.wrap) * falloff * lamp.color;
@@ -967,6 +970,18 @@ pub const HAZE_NEAR_WIDTH: f32 = 4096.0;
 /// The width in units of the ramp that takes the haze out before the draw distance.
 /// Section 12.2 of the design page of the distant lights.
 pub const HAZE_FAR_WIDTH: f32 = 8192.0;
+
+/// The values of the lamps' haze in a frame (D498).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HazeFrame {
+    /// The strength k of the haze, the tunable `lights.lamps.haze`; 0 has none.
+    pub k: f32,
+    /// The draw distance in units, where the haze ends.
+    pub draw_distance: f32,
+    /// The height of the water plane (`sea_plane`); the air takes only the lights at or above
+    /// it (D526). The lowest float when there is no plane, so that every light counts.
+    pub water_plane: f32,
+}
 
 /// `MGE_XE_LAMP_HAZE=<k>`: the start of the tunable `lights.lamps.haze`, the strength of the
 /// lamps' haze in the fog, for a replay (0 turns the haze off). None without the switch, or
@@ -1117,13 +1132,14 @@ impl LampBinding {
     }
 
     /// The values of the frame: the strength of the lamps' light (0 for none), the z axis of
-    /// the camera, the strength `haze` of their haze in the fog (0 for none) and the draw
-    /// distance, where the haze ends. The buffer is written only when they change.
-    pub fn set_frame(&mut self, queue: &wgpu::Queue, strength: f32, camera_z: [f32; 3], haze: f32, draw_distance: f32) {
+    /// the camera, and for their haze in the fog its strength (0 for none), the draw distance,
+    /// where it ends, and the height of the water plane, under which a light has no haze. The
+    /// buffer is written only when they change.
+    pub fn set_frame(&mut self, queue: &wgpu::Queue, strength: f32, camera_z: [f32; 3], haze: HazeFrame) {
         let camera_z = [camera_z[0], camera_z[1], camera_z[2], 0.0];
         let view = lamp_view() as f32;
-        let haze_values = [haze, 1.0 / HAZE_REACH, HAZE_NEAR_WIDTH, HAZE_FAR_WIDTH];
-        let haze_end = [draw_distance, 0.0, 0.0, 0.0];
+        let haze_values = [haze.k, 1.0 / HAZE_REACH, HAZE_NEAR_WIDTH, HAZE_FAR_WIDTH];
+        let haze_end = [haze.draw_distance, haze.water_plane, 0.0, 0.0];
         if self.current.values[1] == strength
             && self.current.values[3] == view
             && self.current.camera_z == camera_z

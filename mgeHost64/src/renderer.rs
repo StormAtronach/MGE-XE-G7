@@ -4472,8 +4472,11 @@ impl Extension for DistantLand {
             scene.queue,
             lamp_strength,
             [scene.view[2], scene.view[6], scene.view[10]],
-            self.tunables.get(tunables::LAMP_HAZE),
-            self.draw_distance,
+            lamp_grid::HazeFrame {
+                k: self.tunables.get(tunables::LAMP_HAZE),
+                draw_distance: self.draw_distance,
+                water_plane: self.environment.map_or(f32::MIN, |e| e.sea_plane()),
+            },
         );
         let Some(views) = self.view_binding.as_ref() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
