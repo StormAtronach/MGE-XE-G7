@@ -22,6 +22,10 @@
 //! `distant-lights-from-fork-2026-11-12.md`, sections 2.1, 2.2 and 2.8.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::thread;
+use std::time::Instant;
 
 use nirender_wgpu::objects::Create;
 use nirender_wgpu::wgpu;
@@ -72,57 +76,164 @@ pub struct FileLamps {
 }
 
 /// The counts of the rebuilds of the lamps' list and grid in a session, for the line of the log
-/// at its end: how long the frame thread worked in them, and how long a change of their inputs
-/// (a new record 13, a new lights file) waited for its grid.
+/// at its end: how long the frame thread and the worker worked in them, and how long a change of
+/// their inputs (a new record 13, a new lights file) waited for its grid.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RebuildCounts {
     pub rebuilds: u32,
     frame_ms: f64,
     frame_ms_longest: f64,
+    worker_ms: f64,
+    worker_ms_longest: f64,
+    /// The rebuilds that a change of the inputs waited for.
+    changes: u32,
     delay_ms: f64,
     delay_ms_longest: f64,
     delay_frames: u64,
     delay_frames_longest: u64,
-    /// The changes of the inputs that a newer change took over before their grid was made.
+    /// The changes of the inputs that a newer change followed before their grid was in use.
     pub taken_over: u32,
 }
 
 impl RebuildCounts {
-    /// One rebuild: the frame thread's time in it, and the time and the frames since the change
-    /// of the inputs that it was made for (0 for a rebuild without such a change: a new block, a
-    /// new setting).
-    pub fn note(&mut self, frame_ms: f64, delay_ms: f64, delay_frames: u64) {
+    /// One rebuild: the frame thread's time in it, the worker's, and the time and the frames
+    /// since the change of the inputs that it was made for (none for a rebuild without such a
+    /// change: a new block, a new setting, or a grid that a newer change waits after).
+    pub fn note(&mut self, frame_ms: f64, worker_ms: f64, delay: Option<(f64, u64)>) {
         self.rebuilds += 1;
         self.frame_ms += frame_ms;
         self.frame_ms_longest = self.frame_ms_longest.max(frame_ms);
-        self.delay_ms += delay_ms;
-        self.delay_ms_longest = self.delay_ms_longest.max(delay_ms);
-        self.delay_frames += delay_frames;
-        self.delay_frames_longest = self.delay_frames_longest.max(delay_frames);
+        self.worker_ms += worker_ms;
+        self.worker_ms_longest = self.worker_ms_longest.max(worker_ms);
+        if let Some((delay_ms, delay_frames)) = delay {
+            self.changes += 1;
+            self.delay_ms += delay_ms;
+            self.delay_ms_longest = self.delay_ms_longest.max(delay_ms);
+            self.delay_frames += delay_frames;
+            self.delay_frames_longest = self.delay_frames_longest.max(delay_frames);
+        }
     }
 
     /// The line of the log.
     pub fn line(&self) -> String {
-        let mean = |sum: f64| {
-            if self.rebuilds == 0 {
-                0.0
-            } else {
-                sum / f64::from(self.rebuilds)
-            }
-        };
+        let mean = |sum: f64, count: u32| if count == 0 { 0.0 } else { sum / f64::from(count) };
         format!(
             "distant lamps: {} rebuilds of the list and the grid; the frame thread's time in them: mean {:.3} ms, longest {:.3} ms; \
-             from a change of their inputs to the grid in use: mean {:.3} ms and {:.1} frames, longest {:.3} ms and {} frames; \
-             {} changes taken over by a newer one",
+             the worker's: mean {:.3} ms, longest {:.3} ms; from a change of their inputs to the grid in use ({} changes): \
+             mean {:.3} ms and {:.1} frames, longest {:.3} ms and {} frames; {} changes followed by a newer one before their grid",
             self.rebuilds,
-            mean(self.frame_ms),
+            mean(self.frame_ms, self.rebuilds),
             self.frame_ms_longest,
-            mean(self.delay_ms),
-            mean(self.delay_frames as f64),
+            mean(self.worker_ms, self.rebuilds),
+            self.worker_ms_longest,
+            self.changes,
+            mean(self.delay_ms, self.changes),
+            mean(self.delay_frames as f64, self.changes),
             self.delay_ms_longest,
             self.delay_frames_longest,
             self.taken_over
         )
+    }
+}
+
+/// What a list and a grid of lamps are made for: the light settings, the near lights of the
+/// cell, the block of the lights file, and the number of the change of their inputs (a new
+/// record 13, a new lights file).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LampKey {
+    pub settings: LightSettings,
+    pub near: NearLights,
+    pub block: Key,
+    pub inputs: u64,
+}
+
+/// A list and a grid of lamps, with the game's values that they took and the time of each part
+/// on the worker.
+pub struct MadeLamps {
+    pub grid: LampGrid,
+    pub values: GameValues,
+    pub values_ms: f64,
+    pub lamps_ms: f64,
+    pub grid_ms: f64,
+}
+
+impl MadeLamps {
+    /// The list and the grid of the file's lamps `lamps` of a block, with the game's values of
+    /// `records`, as the near lights `near` of the cell and the settings of record 12.
+    pub fn make(lamps: &FileLamps, records: Option<&LightRecords>, settings: &LightSettings, near: NearLights) -> MadeLamps {
+        let mut clock = Instant::now();
+        let mut lap = || {
+            let now = Instant::now();
+            let ms = (now - clock).as_secs_f64() * 1000.0;
+            clock = now;
+            ms
+        };
+        let (lamps, values) = lamps.with_game_values(records);
+        let values_ms = lap();
+        let gpu = gpu_lamps(&lamps, settings, near);
+        let lamps_ms = lap();
+        let grid = build_original(gpu, settings.light_limit as usize, near.original);
+        let grid_ms = lap();
+        MadeLamps {
+            grid,
+            values,
+            values_ms,
+            lamps_ms,
+            grid_ms,
+        }
+    }
+
+    /// The time of the worker.
+    pub fn worker_ms(&self) -> f64 {
+        self.values_ms + self.lamps_ms + self.grid_ms
+    }
+}
+
+/// What a rebuild on the worker gives: the list and the grid of its key, or the key alone when
+/// the worker ended without them (a panic).
+pub type Rebuild = Result<(LampKey, MadeLamps), LampKey>;
+
+/// The worker that makes the lamps' lists and grids, one at a time, as the lights file is read
+/// (`distant_lights.rs`): the frame thread only takes the buffers of a finished one in. A change
+/// that comes while one is made does not wait in a queue: when it is done, the caller starts
+/// the newest.
+#[derive(Default)]
+pub struct LampBuilder {
+    running: Option<(LampKey, Receiver<MadeLamps>)>,
+}
+
+impl LampBuilder {
+    /// The key of the rebuild that runs.
+    pub fn running(&self) -> Option<&LampKey> {
+        self.running.as_ref().map(|(key, _)| key)
+    }
+
+    /// Starts the rebuild of `key` on a worker thread. The inputs are shared, not copied.
+    pub fn start(&mut self, key: LampKey, lamps: Arc<FileLamps>, records: Option<Arc<LightRecords>>) {
+        let (sender, receiver) = channel();
+        let (settings, near) = (key.settings, key.near);
+        thread::spawn(move || {
+            let made = MadeLamps::make(&lamps, records.as_deref(), &settings, near);
+            // The receiver is gone only when the helper ends.
+            let _ = sender.send(made);
+        });
+        self.running = Some((key, receiver));
+    }
+
+    /// The rebuild that the worker finished; with `wait` (a replay, whose loads are
+    /// synchronous), it waits for the one that runs.
+    pub fn finished(&mut self, wait: bool) -> Option<Rebuild> {
+        let (_, receiver) = self.running.as_ref()?;
+        let answer = if wait {
+            receiver.recv().map_err(|_| TryRecvError::Disconnected)
+        } else {
+            receiver.try_recv()
+        };
+        match answer {
+            Err(TryRecvError::Empty) => None,
+            Ok(made) => self.running.take().map(|(key, _)| Ok((key, made))),
+            Err(TryRecvError::Disconnected) => self.running.take().map(|(key, _)| Err(key)),
+        }
     }
 }
 
@@ -723,7 +834,7 @@ impl LampBinding {
     /// The binding with no lamps.
     pub fn new(device: &wgpu::Device) -> LampBinding {
         let empty = build(Vec::new(), 0);
-        let (values, lamps, grid) = Self::buffers(device, &empty);
+        let (values, lamps, grid) = Self::buffers(device, &empty.values, &empty.lamps, &empty.words);
         LampBinding {
             values,
             lamps,
@@ -733,7 +844,12 @@ impl LampBinding {
         }
     }
 
-    fn buffers(device: &wgpu::Device, grid: &LampGrid) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
+    fn buffers(
+        device: &wgpu::Device,
+        values: &LampValues,
+        lamps: &[GpuLamp],
+        words: &[u32],
+    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
         let make = |label: &str, contents: &[u8], usage: wgpu::BufferUsages| {
             device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
@@ -744,30 +860,38 @@ impl LampBinding {
         (
             make(
                 "distant lamps, values",
-                bytemuck::bytes_of(&grid.values),
+                bytemuck::bytes_of(values),
                 wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             ),
             make(
                 "distant lamps, the list",
-                bytemuck::cast_slice(&grid.lamps),
-                wgpu::BufferUsages::STORAGE,
+                bytemuck::cast_slice(lamps),
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             ),
             make(
                 "distant lamps, the grid",
-                bytemuck::cast_slice(&grid.words),
-                wgpu::BufferUsages::STORAGE,
+                bytemuck::cast_slice(words),
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             ),
         )
     }
 
-    /// The lamps and the grid of `grid` in new buffers.
-    pub fn set(&mut self, device: &wgpu::Device, grid: &LampGrid) {
+    /// The lamps and the grid of `grid`: written into the buffers when they fit there, else in
+    /// new buffers, which the view groups then take (`generation`). True for new buffers.
+    pub fn set(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, grid: &LampGrid) -> bool {
         let mut values = grid.values;
         (values.values[1], values.camera_z) = (self.current.values[1], self.current.camera_z);
-        let grid = LampGrid { values, ..grid.clone() };
-        (self.values, self.lamps, self.grid) = Self::buffers(device, &grid);
         self.current = values;
+        let (lamps, words): (&[u8], &[u8]) = (bytemuck::cast_slice(&grid.lamps), bytemuck::cast_slice(&grid.words));
+        if lamps.len() as u64 <= self.lamps.size() && words.len() as u64 <= self.grid.size() {
+            queue.write_buffer(&self.values, 0, bytemuck::bytes_of(&values));
+            queue.write_buffer(&self.lamps, 0, lamps);
+            queue.write_buffer(&self.grid, 0, words);
+            return false;
+        }
+        (self.values, self.lamps, self.grid) = Self::buffers(device, &values, &grid.lamps, &grid.words);
         self.generation += 1;
+        true
     }
 
     /// The values of the frame: the strength of the lamps' light (0 for none), and the z axis
@@ -906,17 +1030,59 @@ mod tests {
     fn the_counts_of_the_rebuilds_give_the_mean_and_the_longest() {
         let mut counts = RebuildCounts::default();
         assert!(counts.line().starts_with("distant lamps: 0 rebuilds"), "{}", counts.line());
-        counts.note(8.0, 20.0, 1);
-        counts.note(2.0, 0.0, 0);
+        counts.note(0.5, 8.0, Some((20.0, 1)));
+        counts.note(0.25, 6.0, None);
         counts.taken_over = 3;
         let line = counts.line();
         assert!(line.contains("2 rebuilds"), "{line}");
-        assert!(line.contains("mean 5.000 ms, longest 8.000 ms"), "{line}");
         assert!(
-            line.contains("mean 10.000 ms and 0.5 frames, longest 20.000 ms and 1 frames"),
+            line.contains("frame thread's time in them: mean 0.375 ms, longest 0.500 ms"),
             "{line}"
         );
-        assert!(line.contains("3 changes taken over"), "{line}");
+        assert!(line.contains("the worker's: mean 7.000 ms, longest 8.000 ms"), "{line}");
+        // The delay is of the rebuilds that a change waited for only.
+        assert!(
+            line.contains("(1 changes): mean 20.000 ms and 1.0 frames, longest 20.000 ms and 1 frames"),
+            "{line}"
+        );
+        assert!(line.contains("3 changes followed by a newer one"), "{line}");
+    }
+
+    fn lamp_key(inputs: u64) -> LampKey {
+        LampKey {
+            settings: outlander_test(),
+            near: FADED,
+            block: EXTERIOR_KEY,
+            inputs,
+        }
+    }
+
+    /// The worker makes the list and the grid that the frame thread made before, and gives them
+    /// with their key; one rebuild at a time.
+    #[test]
+    fn the_worker_makes_the_grid_of_its_key() {
+        let file = Arc::new(file_lamps());
+        let records = Arc::new(record_13(&[("light_com_lantern", 256, [180, 120, 60, 0], 0)]));
+        let mut builder = LampBuilder::default();
+        assert!(builder.finished(true).is_none());
+        builder.start(lamp_key(7), Arc::clone(&file), Some(Arc::clone(&records)));
+        assert_eq!(builder.running(), Some(&lamp_key(7)));
+        let Some(Ok((made_for, made))) = builder.finished(true) else {
+            panic!("no rebuild")
+        };
+        assert_eq!(made_for, lamp_key(7));
+        assert!(builder.running().is_none());
+        let (lamps, values) = file.with_game_values(Some(&records));
+        let inline = build_original(gpu_lamps(&lamps, &outlander_test(), FADED), 48, false);
+        // The lists of a grid sit in the order of a hash map; their lamps do not.
+        assert_eq!(made.grid.lamps, inline.lamps);
+        assert_eq!(made.grid.words.len(), inline.words.len());
+        for lamp in &inline.lamps {
+            let [x, y, _] = lamp.position;
+            assert_eq!(lamps_at(&made.grid, x, y), lamps_at(&inline, x, y));
+        }
+        assert_eq!(made.values, values);
+        assert!(made.worker_ms() >= 0.0);
     }
 
     /// The block of a cell: the exterior's; an interior like an exterior by its name, with A to

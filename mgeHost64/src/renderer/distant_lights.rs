@@ -13,6 +13,7 @@
 use nirender_wgpu::objects::Create;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nirender_wgpu::pass_report::Skip;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -32,7 +33,7 @@ struct LightsFile {
     sources: Vec<u8>,
     source_count: u32,
     /// The lamps of each block, for their light on the distant land and statics.
-    lamps: BTreeMap<Key, FileLamps>,
+    lamps: BTreeMap<Key, Arc<FileLamps>>,
     /// The light records of the exterior's lamps, with the values that the file has for them.
     records: Vec<FileLampRecord>,
 }
@@ -104,7 +105,7 @@ fn read(path: &Path) -> Result<LightsFile, String> {
                     lamps: block.lamps.iter().map(source_lamp).collect(),
                     record_ids: block.records.iter().map(|record| record.id.clone()).collect(),
                 };
-                (block.key.clone(), lamps)
+                (block.key.clone(), Arc::new(lamps))
             })
             .collect(),
         records: exterior.map_or_else(Vec::new, file_records),
@@ -386,7 +387,7 @@ pub struct DistantLights {
     /// The light records of the file's exterior lamps, once the file is read.
     file_records: Option<Vec<FileLampRecord>>,
     /// The lamps of the file's blocks, once the file is read.
-    file_lamps: Option<BTreeMap<Key, FileLamps>>,
+    file_lamps: Option<BTreeMap<Key, Arc<FileLamps>>>,
 }
 
 impl DistantLights {
@@ -471,7 +472,7 @@ impl DistantLights {
     }
 
     /// The lamps of the file's blocks, by the key of the block; [`None`] until the file is read.
-    pub fn file_lamps(&self) -> Option<&BTreeMap<Key, FileLamps>> {
+    pub fn file_lamps(&self) -> Option<&BTreeMap<Key, Arc<FileLamps>>> {
         self.file_lamps.as_ref()
     }
 

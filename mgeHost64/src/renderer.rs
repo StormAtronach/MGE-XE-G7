@@ -31,6 +31,7 @@
 
 use nirender_wgpu::objects::{Create, CreateView};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1234,7 +1235,7 @@ pub struct DistantLand {
     /// The engine's light settings from record 12 ([`LIGHT_SETTINGS_ID`]), once it came.
     light_settings: Option<lamp_values::LightSettings>,
     /// The game's light records from record 13 ([`LIGHT_RECORDS_ID`]), once they came.
-    light_records: Option<lamp_values::LightRecords>,
+    light_records: Option<Arc<lamp_values::LightRecords>>,
     /// The line that compares the game's light records with the lights file is still to
     /// write: it waits for the file.
     light_records_line_due: bool,
@@ -1263,14 +1264,12 @@ pub struct DistantLand {
     /// the statics read; [`None`] before the first frame.
     lights: Option<distant_lights::DistantLights>,
     light_binding: Option<lamp_grid::LampBinding>,
-    /// The light settings, the fade, the original lights and the block of the lights file that
-    /// the lamps' grid was made for; [`None`] before it was made, and again when a new lights
-    /// file or other light records come.
-    lamps_made_for: Option<(
-        lamp_values::LightSettings,
-        lamp_grid::NearLights,
-        distantland::mge_xe::lights::Key,
-    )>,
+    /// What the lamps' grid in use was made for; [`None`] before the first.
+    lamps_made_for: Option<lamp_grid::LampKey>,
+    /// The worker that makes the lamps' lists and grids.
+    lamp_builder: lamp_grid::LampBuilder,
+    /// The number of the changes of the lamps' inputs: a new lights file, other light records.
+    lamp_inputs: u64,
     /// The line that the lamps wait for the light settings (record 12) is in the log.
     lamps_wait_told: bool,
     /// The rebuilds of the lamps' list and grid, for the log at the end.
@@ -1896,6 +1895,8 @@ impl DistantLand {
             lights: None,
             light_binding: None,
             lamps_made_for: None,
+            lamp_builder: lamp_grid::LampBuilder::default(),
+            lamp_inputs: 0,
             lamp_rebuilds: lamp_grid::RebuildCounts::default(),
             frames_seen: 0,
             lamp_inputs_changed: None,
@@ -2089,7 +2090,7 @@ impl DistantLand {
         if let Some(lights) = self.lights.as_mut()
             && lights.poll(scene, &views.layout, self.synchronous)
         {
-            self.lamps_made_for = None;
+            self.lamp_inputs += 1;
             self.lamp_inputs_changed.get_or_insert((Instant::now(), self.frames_seen));
         }
         let blocks = self.lights.as_ref().and_then(distant_lights::DistantLights::file_lamps);
@@ -2102,57 +2103,78 @@ impl DistantLand {
                     println!("distant lamps: {count} lamps wait for the light settings (record 12)");
                     self.lamps_wait_told = true;
                 }
-                Some(settings)
-                    if self
-                        .lamps_made_for
-                        .as_ref()
-                        .is_none_or(|made| *made != (settings, near, block.clone())) =>
-                {
-                    let no_lamps = lamp_grid::FileLamps::default();
-                    let lamps = blocks.get(&block).unwrap_or_else(|| {
-                        println!(
-                            "distant lamps: no lamps here: the lights file has no block for {}",
-                            lamp_grid::block_name(&block)
-                        );
-                        &no_lamps
-                    });
-                    // The radius, the colour and the flags of the game's light records (record
-                    // 13), else of the file.
-                    // The time of the frame thread for each part: the game's values, the lamps,
-                    // the list and the grid, the buffers.
-                    let mut clock = std::time::Instant::now();
-                    let mut lap = || {
-                        let now = std::time::Instant::now();
-                        let ms = (now - clock).as_secs_f64() * 1000.0;
-                        clock = now;
-                        ms
+                // One rebuild at a time: a change that comes while one runs starts after it,
+                // with the newest inputs.
+                Some(settings) if self.lamp_builder.running().is_none() => {
+                    let key = lamp_grid::LampKey {
+                        settings,
+                        near,
+                        block,
+                        inputs: self.lamp_inputs,
                     };
-                    let (lamps, game_values) = lamps.with_game_values(self.light_records.as_ref());
-                    let values_ms = lap();
-                    let gpu_lamps = lamp_grid::gpu_lamps(&lamps, &settings, near);
-                    let lamps_ms = lap();
-                    let grid = lamp_grid::build_original(gpu_lamps, settings.light_limit as usize, near.original);
-                    let grid_ms = lap();
-                    binding.set(scene.device, &grid);
-                    let buffers_ms = lap();
-                    let made_in = values_ms + lamps_ms + grid_ms + buffers_ms;
-                    println!("{}", game_values.describe());
-                    println!(
-                        "{}; made in {made_in:.3} ms: the game's values {values_ms:.3}, the lamps {lamps_ms:.3}, the list and the grid {grid_ms:.3}, the buffers {buffers_ms:.3}",
-                        grid.report.describe()
-                    );
-                    self.lamps_made_for = Some((settings, near, block));
-                    let (delay_ms, delay_frames) = self.lamp_inputs_changed.take().map_or((0.0, 0), |(at, frame)| {
-                        (at.elapsed().as_secs_f64() * 1000.0, self.frames_seen - frame)
-                    });
-                    self.lamp_rebuilds.note(made_in, delay_ms, delay_frames);
+                    if self.lamps_made_for.as_ref() != Some(&key) {
+                        let lamps = blocks.get(&key.block).cloned().unwrap_or_else(|| {
+                            println!(
+                                "distant lamps: no lamps here: the lights file has no block for {}",
+                                lamp_grid::block_name(&key.block)
+                            );
+                            Arc::default()
+                        });
+                        self.lamp_builder.start(key, lamps, self.light_records.clone());
+                    }
                 }
                 _ => {}
             }
         }
+        // A finished rebuild: its list and grid go into the buffers, the frame thread's only part.
+        // The old ones draw until then. A replay waits for it, as for its loads.
+        match self.lamp_builder.finished(self.synchronous) {
+            None => {}
+            Some(Err(key)) => {
+                println!(
+                    "distant lamps: the worker ended without the list and the grid (block {})",
+                    lamp_grid::block_name(&key.block)
+                );
+                self.lamps_made_for = Some(key);
+            }
+            Some(Ok((key, made))) => {
+                let start = Instant::now();
+                let new_buffers = binding.set(scene.device, scene.queue, &made.grid);
+                let frame_ms = start.elapsed().as_secs_f64() * 1000.0;
+                // The change of the inputs that this grid was made for waited until now; a grid of
+                // older inputs leaves the newest change waiting.
+                let delay = if key.inputs == self.lamp_inputs {
+                    self.lamp_inputs_changed
+                        .take()
+                        .map(|(at, frame)| (at.elapsed().as_secs_f64() * 1000.0, self.frames_seen - frame))
+                } else {
+                    None
+                };
+                let waited = match delay {
+                    Some((ms, frames)) => format!("; {ms:.3} ms and {frames} frames after the change of its inputs"),
+                    None => String::new(),
+                };
+                println!("{}", made.values.describe());
+                println!(
+                    "{}; made on a worker in {:.3} ms: the game's values {:.3}, the lamps {:.3}, the list and the grid {:.3}; the frame thread {frame_ms:.3} ms for the buffers ({}){waited}",
+                    made.grid.report.describe(),
+                    made.worker_ms(),
+                    made.values_ms,
+                    made.lamps_ms,
+                    made.grid_ms,
+                    if new_buffers {
+                        "new buffers"
+                    } else {
+                        "written into the buffers"
+                    }
+                );
+                self.lamp_rebuilds.note(frame_ms, made.worker_ms(), delay);
+                self.lamps_made_for = Some(key);
+            }
+        }
         if self.light_records_line_due {
             let file = self.lights.as_ref().and_then(distant_lights::DistantLights::file_records);
-            if let (Some(records), Some(file)) = (self.light_records.as_ref(), file) {
+            if let (Some(records), Some(file)) = (self.light_records.as_deref(), file) {
                 println!("{}", records.describe_against_file(file));
                 self.light_records_line_due = false;
             }
@@ -4012,16 +4034,16 @@ impl Extension for DistantLand {
                 // A capture file and the stream start with the kept record again: the same
                 // records are in the log once.
                 Some(records) => {
-                    if self.light_records.as_ref() != Some(&records) {
+                    if self.light_records.as_deref() != Some(&records) {
                         println!(
                             "{}",
-                            records.describe(self.light_records.as_ref(), bytes.len(), start.elapsed())
+                            records.describe(self.light_records.as_deref(), bytes.len(), start.elapsed())
                         );
-                        self.light_records = Some(records);
+                        self.light_records = Some(Arc::new(records));
                         self.light_records_line_due = true;
-                        // The lamps take the new values. A change whose grid is not made yet is
-                        // taken over by this one.
-                        self.lamps_made_for = None;
+                        // The lamps take the new values. A change whose grid is not in use yet is
+                        // followed by this one.
+                        self.lamp_inputs += 1;
                         if self.lamp_inputs_changed.is_some() {
                             self.lamp_rebuilds.taken_over += 1;
                         }
@@ -7515,7 +7537,7 @@ mod extension_record_tests {
         assert!(land.status.is_some());
         assert_eq!(land.arrival_serial, 7);
         assert_eq!(land.light_settings.map(|settings| settings.light_limit), Some(0));
-        assert_eq!(land.light_records.as_ref().map(lamp_values::LightRecords::count), Some(2));
+        assert_eq!(land.light_records.as_deref().map(lamp_values::LightRecords::count), Some(2));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
