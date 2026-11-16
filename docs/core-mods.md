@@ -83,7 +83,8 @@ At its start the renderer writes one line for each event:
 - `core mods: the world shader's pipeline failed with the built-in text too (<error>); no core
   mod is dropped`: a pipeline of the world shader failed, and the same pipeline also fails with
   the world shader's text without any core mod. The fault is not a core mod's: no file is
-  dropped, and the failed pipeline is kept as it is.
+  dropped, and the failed pipeline is kept as it is. For the rest of that session, a later fault
+  of the world shader is kept too and drops no file.
 
 A fault that ends the helper in a home's first build leaves a marker file in
 `%LOCALAPPDATA%\MGE XE` (`core-mod-build-<home>.txt`): it names the files of that build, and
