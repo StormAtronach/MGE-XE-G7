@@ -3696,6 +3696,8 @@ impl Extension for DistantLand {
         if attempt == 1 {
             if self.core_mods.plant_keeps(core_mods::WORLD_HOME) {
                 println!("core mods: the world shader failed ({error}); MGE_XE_CORE_MOD_FAULT keeps it");
+                // The helper goes on with the failed text: the marker of the world goes.
+                self.core_mods.world_held(&[], error);
                 return None;
             }
             self.world_error = error.to_string();
