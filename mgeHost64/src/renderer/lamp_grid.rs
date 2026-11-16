@@ -663,12 +663,14 @@ fn strength_at(lamp: &GpuLamp, distance: f32) -> f32 {
     brightness / (constant + linear * distance + quadratic * distance * distance).max(0.0001)
 }
 
-/// The small cells of `size` that the circle of a lamp's end touches, with their lamps.
+/// The small cells of `size` that the circle of a lamp's end touches, with their lamps. The
+/// circle is wider by the lamp's bias: with the original lights the shader moves the lamp by it
+/// along the camera's z axis, which can lie across the ground.
 fn lists_of(lamps: &[GpuLamp], size: f32) -> HashMap<(i32, i32), Vec<u32>> {
     let mut lists: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
     for (index, lamp) in lamps.iter().enumerate() {
         let [x, y, _] = lamp.position;
-        let end = lamp.end;
+        let end = lamp.end + lamp.bias.abs();
         let first = (((x - end) / size).floor() as i32, ((y - end) / size).floor() as i32);
         let last = (((x + end) / size).floor() as i32, ((y + end) / size).floor() as i32);
         for cy in first.1..=last.1 {
@@ -1462,6 +1464,30 @@ mod tests {
         // have a second level.
         assert_eq!(grid.report.lit_cells, 8, "{:?}", grid.report);
         assert!(grid.report.describe().contains("4 lamps, cells of 1024 units"));
+    }
+
+    /// With the original lights and a falloff of the linear form, a lamp has a bias of 25 and the
+    /// shader moves it by that along the camera's z axis. A point that the moved lamp reaches
+    /// finds the lamp in its list, also past a border of the small cells that the circle of the
+    /// end alone does not cross.
+    #[test]
+    fn a_point_finds_an_original_lamp_moved_by_its_bias() {
+        let settings = morrowind75testing();
+        let end = gpu_lamps(&[lamp(0.0, 0.0, 200.0)], &settings, ORIGINAL)[0].end;
+        // The end ends 10 units before the border of the small cells at x = 1024.
+        let lamps = gpu_lamps(&[lamp(1024.0 - end - 10.0, 500.0, 200.0)], &settings, ORIGINAL);
+        let moved = lamps[0];
+        assert_eq!(moved.bias, 25.0);
+        let grid = build(lamps.clone(), 48);
+        assert_eq!(grid.report.size, 1024.0);
+        for step in 0..360 {
+            let (sin, cos) = (step as f32).to_radians().sin_cos();
+            // The camera's z axis across the ground in this direction, and a point just inside
+            // the end of the lamp moved by it.
+            let reach = moved.bias + moved.end * 0.999;
+            let (x, y) = (moved.position[0] + reach * cos, moved.position[1] + reach * sin);
+            assert!(lamps_at(&grid, x, y).contains(&0), "{x}, {y}");
+        }
     }
 
     #[test]
