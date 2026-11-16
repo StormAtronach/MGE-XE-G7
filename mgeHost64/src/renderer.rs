@@ -1273,6 +1273,8 @@ pub struct DistantLand {
     frames_seen: u64,
     /// The grid of the lamps in use is of the block of the cell: they may light it.
     lamps_lit: bool,
+    /// The strength of the lamps' light in the last log line about it.
+    lamp_strength_logged: f32,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
@@ -1526,6 +1528,9 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     let normal = normalize(in.normal);
     let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + lamp_light(in.world, normal);
     let lit = albedo * in.color * light;
+    if lamp_values.values.w > 0.5 {
+        return vec4f(lamp_light(in.world, normal), 1.0);
+    }
 
     // In a reflection, only one side of the water plane: flags.y is the side, flags.z the plane.
     if u.flags.y != 0.0 && (in.world.z - u.flags.z) * u.flags.y < 0.0 {
@@ -1891,6 +1896,7 @@ impl DistantLand {
             lamp_rebuilds: lamp_grid::LampRebuilds::default(),
             frames_seen: 0,
             lamps_lit: false,
+            lamp_strength_logged: -1.0,
             lamps_wait_told: false,
             view_binding: None,
             shadow: None,
@@ -4281,6 +4287,18 @@ impl Extension for DistantLand {
         // environment record); before the first record, the sun's colour serves.
         let night = self.night(scene);
         let lamp_strength = self.lamp_strength(&main_view);
+        if (lamp_strength - self.lamp_strength_logged).abs() > 0.01 {
+            self.lamp_strength_logged = lamp_strength;
+            let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
+            let [r, g, b, _] = main_view.sun_color;
+            let [ar, ag, ab, _] = main_view.ambient;
+            println!(
+                "distant lamps: the strength {lamp_strength:.3} (lit {}): the brightness {:.3} of the sun [{r:.3}, {g:.3}, {b:.3}] \
+                 x {sun_vis:.3} and the ambient [{ar:.3}, {ag:.3}, {ab:.3}]",
+                self.lamps_lit,
+                lamp_grid::light_luminance([r, g, b], sun_vis, [ar, ag, ab])
+            );
+        }
         let Some(lamps) = self.light_binding.as_mut() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;

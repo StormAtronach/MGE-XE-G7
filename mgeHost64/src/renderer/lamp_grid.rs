@@ -641,9 +641,7 @@ pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, near: NearLigh
 /// times its visibility) and the ambient light is under 0.70, 0 from 0.75 on. The brightness is
 /// that of `dlNight` of the Worldspaces fork. The colours are those of the land.
 pub fn darkness_gate(sun_color: [f32; 3], sun_vis: f32, ambient: [f32; 3]) -> f32 {
-    let light: [f32; 3] = core::array::from_fn(|i| sun_color[i] * sun_vis + ambient[i]);
-    let brightness = 0.299 * light[0] + 0.587 * light[1] + 0.114 * light[2];
-    ((GATE_END - brightness) / GATE_BAND).clamp(0.0, 1.0)
+    ((GATE_END - light_luminance(sun_color, sun_vis, ambient)) / GATE_BAND).clamp(0.0, 1.0)
 }
 
 /// The light of a lamp at a distance, for the choice of the lamps that a full list keeps.
@@ -822,7 +820,7 @@ struct LampValues {
     // lists, and the number of lamps.
     counts: vec4u,
     // x: the size of a small cell. y: the strength of the lamps' light in the frame. z: 1 for
-    // the original lights.
+    // the original lights. w: 1 for the view of the lamps' light alone (MGE_XE_LAMP_VIEW).
     values: vec4f,
     // The z axis of the camera, for the bias of the original lights.
     camera_z: vec4f,
@@ -879,6 +877,21 @@ fn lamp_light(p: vec3f, normal: vec3f) -> vec3f {
     return sum * strength;
 }
 ";
+
+/// `MGE_XE_LAMP_VIEW=1`: the land and the distant statics show the light of the distant lamps
+/// alone, without their colour, their texture, the sun and the fog: for the test of the lamps'
+/// light. Read once.
+pub fn lamp_view() -> bool {
+    static VIEW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VIEW.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_LAMP_VIEW").unwrap_or(false))
+}
+
+/// The brightness of the sun (its colour times its visibility) and the ambient light that
+/// [`darkness_gate`] takes.
+pub fn light_luminance(sun_color: [f32; 3], sun_vis: f32, ambient: [f32; 3]) -> f32 {
+    let light: [f32; 3] = core::array::from_fn(|i| sun_color[i] * sun_vis + ambient[i]);
+    0.299 * light[0] + 0.587 * light[1] + 0.114 * light[2]
+}
 
 /// The code of the lamps' light for a shader of the view group: [`super::LIGHT_FUNCTIONS`] and
 /// [`LAMP_LIGHT_WGSL`].
@@ -1012,10 +1025,12 @@ impl LampBinding {
     /// of the camera. The buffer is written only when they change.
     pub fn set_frame(&mut self, queue: &wgpu::Queue, strength: f32, camera_z: [f32; 3]) {
         let camera_z = [camera_z[0], camera_z[1], camera_z[2], 0.0];
-        if self.current.values[1] == strength && self.current.camera_z == camera_z {
+        let view = if lamp_view() { 1.0 } else { 0.0 };
+        if self.current.values[1] == strength && self.current.values[3] == view && self.current.camera_z == camera_z {
             return;
         }
         self.current.values[1] = strength;
+        self.current.values[3] = view;
         self.current.camera_z = camera_z;
         queue.write_buffer(&self.values, 0, bytemuck::bytes_of(&self.current));
     }
