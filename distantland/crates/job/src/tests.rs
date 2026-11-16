@@ -992,3 +992,17 @@ fn a_bare_ini_name_resolves_against_the_working_folder_not_an_empty_root() {
     assert_eq!(job.morrowind_ini, Some(working.join("Morrowind.ini")));
     assert_eq!(job.output_root, Some(working.join("Data Files")));
 }
+
+#[test]
+fn an_ini_in_a_relative_folder_is_pinned_to_its_absolute_path() {
+    let working = std::env::current_dir().unwrap();
+    let mut job = GenerationJob {
+        morrowind_ini: Some(PathBuf::from("sub/Morrowind.ini")),
+        output_root: Some(PathBuf::from("Data Files")),
+        ..GenerationJob::default()
+    };
+
+    job.resolve_paths_against_install().unwrap();
+    assert_eq!(job.morrowind_ini, Some(working.join("sub").join("Morrowind.ini")));
+    assert_eq!(job.output_root, Some(working.join("sub").join("Data Files")));
+}
