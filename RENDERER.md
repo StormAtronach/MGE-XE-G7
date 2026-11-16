@@ -289,7 +289,7 @@ change. That start can take some minutes. With an older file, set it below
   hidden, for example the Ghostfence after the end of the main quest.
 - Distant lights at night: each placed light of the exterior has a glow far away, in the
   colour of its light, and the land and the distant statics get the light of the lamps near
-  them. They come from the file `distantland\lights.data`, which the generator of this build
+  them when the sky is dark, as a near light of the same record lights an object. They come from the file `distantland\lights.data`, which the generator of this build
   writes; distant land made by an earlier build is refused (see below), so generate it again.
   Without the file, `nirender-host.log` has the line `distant lights: none`. The MGE XE GUI
   has no option for them yet; to turn them off, set `distant_lights = false` (or `bake_lights = false` for the

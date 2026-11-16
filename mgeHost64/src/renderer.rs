@@ -1260,9 +1260,9 @@ pub struct DistantLand {
     /// the statics read; [`None`] before the first frame.
     lights: Option<distant_lights::DistantLights>,
     light_binding: Option<lamp_grid::LampBinding>,
-    /// The light settings and the fade that the lamps' grid was made for; [`None`] before it
-    /// was made, and again when a new lights file comes.
-    lamps_made_for: Option<(lamp_values::LightSettings, f32)>,
+    /// The light settings, the fade and the original lights that the lamps' grid was made
+    /// for; [`None`] before it was made, and again when a new lights file comes.
+    lamps_made_for: Option<(lamp_values::LightSettings, f32, bool)>,
     /// The line that the lamps wait for the light settings (record 12) is in the log.
     lamps_wait_told: bool,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
@@ -1515,7 +1515,8 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 
     let footprint = max(length(ddx_patch), length(ddy_patch));
     let albedo = mix(near_albedo, far_albedo, smoothstep(0.5, 1.5, footprint));
-    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0);
+    let normal = normalize(in.normal);
+    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + lamp_light(in.world, normal);
     let lit = albedo * in.color * light;
 
     // In a reflection, only one side of the water plane: flags.y is the side, flags.z the plane.
@@ -1572,8 +1573,33 @@ fn shown(path: &Path) -> String {
 
 /// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`).
 fn draw_shader_text(shadow_hooks: &str) -> String {
-    format!("{DRAW_SHADER}{shadow_hooks}")
+    format!("{LIGHT_FUNCTIONS}{DRAW_SHADER}{shadow_hooks}")
 }
+
+/// The light of a point light at a pixel, which the draws of the game ([`DRAW_SHADER`]) and the
+/// distant lamps (`lamp_grid::LAMP_LIGHT_WGSL`) share: one light near and far (the page
+/// `distant-lights-from-fork-2026-11-12.md`, section 2.1).
+pub(crate) const LIGHT_FUNCTIONS: &str = "
+// The falloff of a light of the game at a distance: 1 over its constant, linear and quadratic
+// terms, as the fixed function of Direct3D 8 lights a vertex.
+fn light_falloff(terms: vec3f, distance: f32, distance2: f32) -> f32 {
+    return 1.0 / max(terms.x + terms.y * distance + terms.z * distance2, 0.0001);
+}
+
+// The falloff of a light as MGE XE on Direct3D 9 decodes it: its quadratic term and the
+// constant that the lights of a draw share.
+fn light_original_falloff(constant: f32, quadratic: f32, distance2: f32) -> f32 {
+    return 1.0 / max(quadratic * distance2 + constant, 0.0001);
+}
+
+// The fade of MGE XE: the light goes to zero over the last quarter of its end. end_inverse is 1
+// over the end; 0 is no end.
+fn light_end_fade(distance: f32, end_inverse: f32) -> f32 {
+    var fade = clamp(4.0 * distance * end_inverse - 3.0, 0.0, 1.0);
+    fade = 1.0 - fade * fade;
+    return fade * fade;
+}
+";
 
 /// The world shader with the text of this extension and the shadow hooks, as the host joins
 /// them (`extension_shaders` of `nirender_wgpu`).
@@ -2016,7 +2042,7 @@ impl DistantLand {
     /// light settings or the fade change, and the view groups with those buffers, for the
     /// statics too.
     fn poll_lights(&mut self, scene: &SceneView) {
-        let lamp_fade = self.lamp_fade();
+        let made_for = (self.lamp_fade(), self.lamp_original());
         let binding = self
             .light_binding
             .get_or_insert_with(|| lamp_grid::LampBinding::new(scene.device));
@@ -2034,14 +2060,16 @@ impl DistantLand {
                     println!("distant lamps: {} lamps wait for the light settings (record 12)", lamps.len());
                     self.lamps_wait_told = true;
                 }
-                Some(settings) if self.lamps_made_for != Some((settings, lamp_fade)) => {
-                    let grid = lamp_grid::build(
-                        lamp_grid::gpu_lamps(lamps, &settings, lamp_fade),
+                Some(settings) if self.lamps_made_for != Some((settings, made_for.0, made_for.1)) => {
+                    let (fade, original) = made_for;
+                    let grid = lamp_grid::build_original(
+                        lamp_grid::gpu_lamps(lamps, &settings, fade, original),
                         settings.light_limit as usize,
+                        original,
                     );
                     println!("{}", grid.report.describe());
                     binding.set(scene.device, &grid);
-                    self.lamps_made_for = Some((settings, lamp_fade));
+                    self.lamps_made_for = Some((settings, fade, original));
                 }
                 _ => {}
             }
@@ -2531,7 +2559,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         layout: &layout,
         entries: &entries,
     });
-    let source = format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl());
+    let source = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
     let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -2844,11 +2872,55 @@ struct PerPixel {
     original: bool,
 }
 
+/// The constant of the falloff that the lights of a draw share when none of them has one.
+pub(crate) const ORIGINAL_SHARED_CONSTANT: f32 = 0.33;
+
+/// A point light as MGE XE on Direct3D 9 decodes it (`distant_land.per_pixel_original_lights`):
+/// its colour, the part of its light that does not depend on the facing, its quadratic term,
+/// and the distance that it moves along the camera's z axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OriginalLight {
+    pub color: [f32; 3],
+    pub wrap: f32,
+    pub quadratic: f32,
+    pub bias: f32,
+}
+
+/// The packing of one point light with the `falloff` (constant, linear, quadratic) and the
+/// `color` of the game, for [`PerPixel::shade_lights`] and the distant lamps. A light with a
+/// constant term sets `shared_constant`, which the lights of the draw share; the lights after it
+/// read it.
+pub(crate) fn original_light(falloff: [f32; 3], color: [f32; 3], shared_constant: &mut f32) -> OriginalLight {
+    let mut color = color;
+    let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
+    if falloff[0] > 0.0 {
+        *shared_constant = falloff[0];
+        quadratic = falloff[2];
+    } else if falloff[2] > 0.0 {
+        color = color.map(|c| c * *shared_constant);
+        wrap = 1.0 + 1e-4 / falloff[2].sqrt();
+        quadratic = *shared_constant * falloff[2];
+    } else if falloff[1] == 0.100_000_01 {
+        quadratic = 5e-5;
+    } else if falloff[1] > 0.0 {
+        color = [0.25 + 1e-4 / falloff[1]; 3];
+        wrap = 1.0;
+        quadratic = 0.5555 * falloff[1] * falloff[1];
+        bias = 25.0;
+    }
+    OriginalLight {
+        color,
+        wrap,
+        quadratic,
+        bias,
+    }
+}
+
 impl PerPixel {
     /// The lights of a draw as the per-pixel light changes them; `camera_z` is the z axis of
     /// the camera in the space of the lights.
     fn shade_lights(&self, lights: &mut [LightData], camera_z: [f32; 3], sky: bool) {
-        let mut shared_constant = 0.33f32;
+        let mut shared_constant = ORIGINAL_SHARED_CONSTANT;
         for light in lights.iter_mut() {
             if light.position[3] == 3.0 {
                 let direction = light.direction;
@@ -2876,23 +2948,16 @@ impl PerPixel {
                 light.cone[3] = if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 };
             } else {
                 let falloff = light.attenuation;
-                let mut color = [light.diffuse[0], light.diffuse[1], light.diffuse[2]];
-                let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
-                if falloff[0] > 0.0 {
-                    shared_constant = falloff[0];
-                    quadratic = falloff[2];
-                } else if falloff[2] > 0.0 {
-                    color = color.map(|c| c * shared_constant);
-                    wrap = 1.0 + 1e-4 / falloff[2].sqrt();
-                    quadratic = shared_constant * falloff[2];
-                } else if falloff[1] == 0.100_000_01 {
-                    quadratic = 5e-5;
-                } else if falloff[1] > 0.0 {
-                    color = [0.25 + 1e-4 / falloff[1]; 3];
-                    wrap = 1.0;
-                    quadratic = 0.5555 * falloff[1] * falloff[1];
-                    bias = 25.0;
-                }
+                let OriginalLight {
+                    color,
+                    wrap,
+                    quadratic,
+                    bias,
+                } = original_light(
+                    [falloff[0], falloff[1], falloff[2]],
+                    [light.diffuse[0], light.diffuse[1], light.diffuse[2]],
+                    &mut shared_constant,
+                );
                 let radius = light.cone[2];
                 let cutoff = if self.fade > 0.0 && radius > 0.0 {
                     (self.fade * radius.max(16.0)).min(8192.0)
@@ -3004,12 +3069,9 @@ fn light_terms(light: Light, normal: vec3f, p: vec3f) -> LightTerms {
         let distance = sqrt(distance2);
         if distance <= light.direction.w {
             let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
-            let f = light.attenuation;
-            var strength = 1.0 / max(f.x + f.y * distance + f.z * distance2, 0.0001);
+            var strength = light_falloff(light.attenuation.xyz, distance, distance2);
             strength *= spot_cone(light, to_light / max(distance, 0.0001));
-            var fade = clamp(4.0 * distance * light.cone.w - 3.0, 0.0, 1.0);
-            fade = 1.0 - fade * fade;
-            strength *= fade * fade;
+            strength *= light_end_fade(distance, light.cone.w);
             terms.d = lambert * strength * light.diffuse.rgb;
             terms.a = strength * light.ambient.rgb;
         }
@@ -3018,12 +3080,9 @@ fn light_terms(light: Light, normal: vec3f, p: vec3f) -> LightTerms {
         let distance2 = dot(to_light, to_light);
         let distance = sqrt(distance2);
         let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
-        var strength = 1.0 / max(light.attenuation.z * distance2 + light.attenuation.x, 0.0001);
+        var strength = light_original_falloff(light.attenuation.x, light.attenuation.z, distance2);
         strength *= spot_cone(light, to_light / max(distance, 0.0001));
-        // The light goes to zero over the last quarter of its distance.
-        var fade = clamp(4.0 * distance * light.cone.w - 3.0, 0.0, 1.0);
-        fade = 1.0 - fade * fade;
-        strength *= fade * fade;
+        strength *= light_end_fade(distance, light.cone.w);
         terms.d = (lambert + light.ambient.x) * strength * light.diffuse.rgb;
     }
     return terms;
@@ -4090,10 +4149,12 @@ impl Extension for DistantLand {
         // The night is the game's, from the hour against the weather's sunrise and sunset (the
         // environment record); before the first record, the sun's colour serves.
         let night = self.night(scene);
-        if self.light_binding.is_none() {
+        let lamp_strength = self.lamp_strength(&main_view);
+        let Some(lamps) = self.light_binding.as_mut() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
-        }
+        };
+        lamps.set_frame(scene.queue, lamp_strength, [scene.view[2], scene.view[6], scene.view[10]]);
         let Some(views) = self.view_binding.as_ref() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
@@ -6285,6 +6346,26 @@ impl DistantLand {
         if on && !interiors_only { fade } else { 0.0 }
     }
 
+    /// A distant lamp is packed as MGE XE on Direct3D 9 packs a near light when the near lights
+    /// of an exterior are (`distant_land.per_pixel_original_lights`).
+    fn lamp_original(&self) -> bool {
+        let (on, interiors_only, _, original) = self.per_pixel;
+        on && !interiors_only && original
+    }
+
+    /// The strength of the distant lamps' light in the frame of `main_view`: by the darkness of
+    /// its sun and ambient light ([`lamp_grid::darkness_gate`]) in an exterior, 0 in an
+    /// interior. The lamps are those of the exterior block of the lights file.
+    fn lamp_strength(&self, main_view: &view::View) -> f32 {
+        if self.interior {
+            return 0.0;
+        }
+        let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
+        let [r, g, b, _] = main_view.sun_color;
+        let [ar, ag, ab, _] = main_view.ambient;
+        lamp_grid::darkness_gate([r, g, b], sun_vis, [ar, ag, ab])
+    }
+
     fn per_pixel(&self) -> Option<PerPixel> {
         let (on, interiors_only, fade, original) = self.per_pixel;
         if !on || (interiors_only && !self.interior) {
@@ -6361,7 +6442,8 @@ mod shader_tests {
     /// view and the mirror, and the caster of the shadow map.
     #[test]
     fn the_land_shaders_are_valid() {
-        shader_check::check("distant land", &format!("{}{SHADER}{FOG_FUNCTION}", view::wgsl())).unwrap();
+        let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
+        shader_check::check("distant land", &land).unwrap();
         shader_check::check("distant land shadow", &format!("{}{LAND_SHADOW_SHADER}", view::wgsl())).unwrap();
     }
 

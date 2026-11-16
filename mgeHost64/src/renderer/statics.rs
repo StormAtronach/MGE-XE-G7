@@ -1822,6 +1822,17 @@ struct SetUniforms {
 }
 
 /// The statics in a view: after the view group and [`SET_WGSL`].
+/// The source of the shader of the distant statics: the view group, the light of the distant
+/// lamps, the values of the set, the statics and the fog.
+fn shader_source() -> String {
+    format!(
+        "{}{}{SET_WGSL}{SHADER}{}",
+        super::view::wgsl(),
+        super::lamp_grid::light_wgsl(),
+        super::FOG_FUNCTION
+    )
+}
+
 const SHADER: &str = "
 // The order of the pixels of a block of 4 x 4 for the band of the handoff (Bayer).
 const HANDOFF_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
@@ -1851,6 +1862,10 @@ struct Out {
     @location(3) @interpolate(flat) bounds: vec4f,
     @location(4) @interpolate(flat) alpha_test: f32,
     @location(5) @interpolate(flat) fade: f32,
+    // The colour of the vertex and the normal in the world, for the light of the distant
+    // lamps in the pixel shader.
+    @location(6) vertex_color: vec3f,
+    @location(7) normal: vec3f,
 }
 
 @vertex fn vs(in: In) -> Out {
@@ -1869,6 +1884,8 @@ struct Out {
     let light = u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + u.ambient.rgb + in.normal.w;
     // The colour of a vertex has the bytes blue, green, red.
     out.color = in.color.bgr * light;
+    out.vertex_color = in.color.bgr;
+    out.normal = normal;
     out.coordinate = in.coordinate;
     if in.subset.z > 0.5 {
         out.coordinate.y += fract(0.08 * set_values.handoff.x);
@@ -1921,7 +1938,8 @@ override ALPHA_TO_COVERAGE: bool = false;
     }
     // In the mirror under water (flags.y is -1) the statics have no scattering: the interior
     // pass of `renderWaterReflection` fogs them with the linear fog of the game.
-    return vec4f(fog_with(texel.rgb * in.color, in.world, u.flags.y >= 0.0), alpha);
+    let lit = in.color + in.vertex_color * lamp_light(in.world, normalize(in.normal));
+    return vec4f(fog_with(texel.rgb * lit, in.world, u.flags.y >= 0.0), alpha);
 }
 ";
 
@@ -4682,7 +4700,7 @@ fn make_gpu(
         );
     }
 
-    let source = format!("{}{SET_WGSL}{SHADER}{}", super::view::wgsl(), super::FOG_FUNCTION);
+    let source = shader_source();
     let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant statics"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -5125,7 +5143,7 @@ fn make_grass_group(
 
 #[cfg(test)]
 mod shader_tests {
-    use super::{SET_WGSL, SHADER, SHADOW_SHADER};
+    use super::{SET_WGSL, SHADOW_SHADER};
 
     /// The shaders of the distant statics compile as the device checks them: the statics of
     /// a set, their caster of the shadow map, and the grass.
@@ -5133,11 +5151,7 @@ mod shader_tests {
     fn the_shaders_of_the_statics_are_valid() {
         let check = crate::renderer::shader_check::check;
         let view = crate::renderer::view::wgsl();
-        check(
-            "distant statics",
-            &format!("{view}{SET_WGSL}{SHADER}{}", crate::renderer::FOG_FUNCTION),
-        )
-        .unwrap();
+        check("distant statics", &super::shader_source()).unwrap();
         check("distant statics shadow", &format!("{view}{SET_WGSL}{SHADOW_SHADER}")).unwrap();
         check(
             "grass",

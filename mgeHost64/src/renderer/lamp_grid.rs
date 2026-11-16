@@ -12,9 +12,14 @@
 //! report counts the cells and the lamps that were left out.
 //!
 //! The list and the grid are made on the CPU one time for each lights file, record 12 and
-//! setting of the light fade, and go to the GPU as two storage buffers of the view group
-//! ([`LampBinding`]). The design: the Architect's page `distant-lights-from-fork-2026-11-12.md`,
-//! sections 2.1 and 2.2.
+//! setting of the light fade or of the original lights, and go to the GPU as two storage buffers
+//! of the view group ([`LampBinding`]).
+//!
+//! The pixel shaders of the land and the statics add the light of the lamps of their small cell
+//! (`lamp_light` of [`LAMP_LIGHT_WGSL`]) with the light functions of the near lights of the game
+//! ([`super::LIGHT_FUNCTIONS`]): one light near and far. The lamps light when the frame is dark
+//! enough ([`darkness_gate`]), and only in an exterior. The design: the Architect's page
+//! `distant-lights-from-fork-2026-11-12.md`, sections 2.1, 2.2 and 2.8.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -22,6 +27,7 @@ use nirender_wgpu::objects::Create;
 use nirender_wgpu::wgpu;
 
 use super::lamp_values::LightSettings;
+use super::{ORIGINAL_SHARED_CONSTANT, original_light};
 
 /// The side of an exterior cell of the game.
 const CELL: f32 = 8192.0;
@@ -37,6 +43,11 @@ const MOST_RADII: f32 = 4.0;
 const MOST_END: f32 = 8192.0;
 /// The radius of a light that the end takes at least: as `PerPixel::shade_lights`.
 const LEAST_RADIUS: f32 = 16.0;
+/// The brightness of the sun and the ambient light of a frame at which the lamps no longer
+/// light, and the band below it where their light comes in: the darkness rule of the
+/// Worldspaces fork (`dlNight`, 0.75), as a gate (the page, section 2.8).
+const GATE_END: f32 = 0.75;
+const GATE_BAND: f32 = 0.05;
 
 /// A lamp of the lights file, with the values that its light takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,10 +75,12 @@ pub struct GpuLamp {
     /// The part of the light that does not depend on the facing (only with the original
     /// lights).
     pub wrap: f32,
-    /// The ambient colour of the light.
-    pub ambient: [f32; 3],
-    /// The distance that the light moves toward the camera (only with the original lights).
+    /// The distance that the light moves along the camera's z axis (only with the original
+    /// lights).
     pub bias: f32,
+    /// Not used: the lamp takes 64 bytes. The engine gives a placed lamp no ambient colour
+    /// (`EntityLight::createLightOnReference` 0x4D29BC).
+    pub pad: [f32; 3],
 }
 
 /// The values of the grid: `LampValues` of [`LAMPS_WGSL`].
@@ -80,8 +93,10 @@ pub struct LampValues {
     /// the lists in the grid's words, and the number of lamps.
     pub counts: [u32; 4],
     /// x: the size of a small cell. y: the strength of the lamps' light in the frame (0: no
-    /// light; written each frame). z, w: not used.
+    /// light; written each frame). z: 1 for the original lights. w: not used.
     pub values: [f32; 4],
+    /// The z axis of the camera of the frame, for the bias of the original lights.
+    pub camera_z: [f32; 4],
 }
 
 /// What a made grid has, for the log.
@@ -161,8 +176,10 @@ pub fn end_of(radius: f32, terms: [f32; 3], fade: f32) -> f32 {
     (distance as f32).min(most)
 }
 
-/// The lamps of a list, with their terms and ends. A lamp whose light ends at 0 has none.
-pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, fade: f32) -> Vec<GpuLamp> {
+/// The lamps of a list, with their terms and ends. A lamp whose light ends at 0 has none. With
+/// `original`, a lamp is packed as a near light of the same record with the original lights
+/// ([`original_light`]), with the constant that a draw's lights share; its end stays.
+pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, fade: f32, original: bool) -> Vec<GpuLamp> {
     source
         .iter()
         .filter_map(|lamp| {
@@ -170,16 +187,35 @@ pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, fade: f32) -> 
             // The record's radius is a whole number (0x4D2A4D).
             let terms = settings.terms(radius as u32, false);
             let end = end_of(radius, terms, fade);
-            (end > 0.0).then(|| GpuLamp {
+            let color = lamp.color.map(|c| f32::from(c) / 255.0);
+            let mut gpu = GpuLamp {
                 position: lamp.position,
                 end,
-                color: lamp.color.map(|c| f32::from(c) / 255.0),
+                color,
                 flags: lamp.flags,
                 terms,
                 ..GpuLamp::default()
-            })
+            };
+            if original {
+                let mut shared_constant = ORIGINAL_SHARED_CONSTANT;
+                let packed = original_light(terms, color, &mut shared_constant);
+                gpu.color = packed.color;
+                gpu.terms = [shared_constant, 0.0, packed.quadratic];
+                gpu.wrap = packed.wrap;
+                gpu.bias = packed.bias;
+            }
+            (end > 0.0).then_some(gpu)
         })
         .collect()
+}
+
+/// The strength of the lamps' light in a frame: 1 while the brightness of the sun (its colour
+/// times its visibility) and the ambient light is under 0.70, 0 from 0.75 on. The brightness is
+/// that of `dlNight` of the Worldspaces fork. The colours are those of the land.
+pub fn darkness_gate(sun_color: [f32; 3], sun_vis: f32, ambient: [f32; 3]) -> f32 {
+    let light: [f32; 3] = core::array::from_fn(|i| sun_color[i] * sun_vis + ambient[i]);
+    let brightness = 0.299 * light[0] + 0.587 * light[1] + 0.114 * light[2];
+    ((GATE_END - brightness) / GATE_BAND).clamp(0.0, 1.0)
 }
 
 /// The light of a lamp at a distance, for the choice of the lamps that a full list keeps.
@@ -214,6 +250,18 @@ fn lists_of(lamps: &[GpuLamp], size: f32) -> HashMap<(i32, i32), Vec<u32>> {
 
 /// The list and the grid of `lamps`, each small cell with at most `bound` lamps.
 pub fn build(lamps: Vec<GpuLamp>, bound: usize) -> LampGrid {
+    build_lists(lamps, bound)
+}
+
+/// [`build`] for lamps packed for the original lights ([`gpu_lamps`] with `original`): the
+/// shaders take the original light function.
+pub fn build_original(lamps: Vec<GpuLamp>, bound: usize, original: bool) -> LampGrid {
+    let mut grid = build_lists(lamps, bound);
+    grid.values.values[2] = if original { 1.0 } else { 0.0 };
+    grid
+}
+
+fn build_lists(lamps: Vec<GpuLamp>, bound: usize) -> LampGrid {
     let mut report = GridReport {
         lamps: lamps.len(),
         bound,
@@ -316,6 +364,7 @@ fn finish(
             grid: [first.0, first.1, width, height].map(|v| if cells.is_empty() { 0 } else { v }),
             counts: [side, level2 as u32, lists_at as u32, lamp_count as u32],
             values: [size, 0.0, 0.0, 0.0],
+            camera_z: [0.0; 4],
         },
         lamps,
         words,
@@ -333,8 +382,10 @@ struct Lamp {
     flags: u32,
     terms: vec3f,
     wrap: f32,
-    ambient: vec3f,
     bias: f32,
+    pad0: f32,
+    pad1: f32,
+    pad2: f32,
 }
 struct LampValues {
     // The first exterior cell of the grid, and its cells in x and y.
@@ -342,13 +393,70 @@ struct LampValues {
     // The small cells on a side of a cell, the first word of the second level and of the
     // lists, and the number of lamps.
     counts: vec4u,
-    // x: the size of a small cell. y: the strength of the lamps' light in the frame.
+    // x: the size of a small cell. y: the strength of the lamps' light in the frame. z: 1 for
+    // the original lights.
     values: vec4f,
+    // The z axis of the camera, for the bias of the original lights.
+    camera_z: vec4f,
 }
 @group(0) @binding(B0) var<uniform> lamp_values: LampValues;
 @group(0) @binding(B1) var<storage, read> lamps: array<Lamp>;
 @group(0) @binding(B2) var<storage, read> lamp_grid: array<u32>;
 ";
+
+/// The light of the lamps at a pixel, for a shader that starts with the view group and has
+/// [`super::LIGHT_FUNCTIONS`]: the walk of the grid to the pixel's small cell, and each lamp of
+/// its list by the light function of a near light of the game, with the facing and the fade over
+/// the last quarter of the lamp's end.
+pub const LAMP_LIGHT_WGSL: &str = "
+// The light that the distant lamps give a pixel at p with the normal (of length 1).
+fn lamp_light(p: vec3f, normal: vec3f) -> vec3f {
+    let strength = lamp_values.values.y;
+    if strength <= 0.0 {
+        return vec3f(0.0);
+    }
+    let cell = vec2i(floor(p.xy / 8192.0)) - lamp_values.grid.xy;
+    if any(cell < vec2i(0)) || any(cell >= lamp_values.grid.zw) {
+        return vec3f(0.0);
+    }
+    let lit = lamp_grid[u32(cell.y * lamp_values.grid.z + cell.x)];
+    if lit == 0xffffffffu {
+        return vec3f(0.0);
+    }
+    let side = lamp_values.counts.x;
+    let corner = vec2f(cell + lamp_values.grid.xy) * 8192.0;
+    let local = min(vec2u(max((p.xy - corner) / lamp_values.values.x, vec2f(0.0))), vec2u(side - 1u));
+    let pair = lamp_values.counts.y + 2u * (lit * side * side + local.y * side + local.x);
+    let first = lamp_values.counts.z + lamp_grid[pair];
+    let count = lamp_grid[pair + 1u];
+    let original = lamp_values.values.z > 0.5;
+    var sum = vec3f(0.0);
+    for (var i = 0u; i < count; i++) {
+        let lamp = lamps[lamp_grid[first + i]];
+        let to_light = lamp.position + lamp.bias * lamp_values.camera_z.xyz - p;
+        let distance2 = dot(to_light, to_light);
+        let distance = sqrt(distance2);
+        if distance >= lamp.end {
+            continue;
+        }
+        let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
+        let fade = light_end_fade(distance, 1.0 / lamp.end);
+        if original {
+            let falloff = light_original_falloff(lamp.terms.x, lamp.terms.z, distance2) * fade;
+            sum += (lambert + lamp.wrap) * falloff * lamp.color;
+        } else {
+            sum += lambert * light_falloff(lamp.terms, distance, distance2) * fade * lamp.color;
+        }
+    }
+    return sum * strength;
+}
+";
+
+/// The code of the lamps' light for a shader of the view group: [`super::LIGHT_FUNCTIONS`] and
+/// [`LAMP_LIGHT_WGSL`].
+pub fn light_wgsl() -> String {
+    format!("{}{LAMP_LIGHT_WGSL}", super::LIGHT_FUNCTIONS)
+}
 
 /// [`LAMPS_WGSL`] with the bindings from `first`.
 pub fn wgsl_at(first: u32) -> String {
@@ -365,6 +473,8 @@ pub struct LampBinding {
     /// One more each time the buffers are made again, so that a group with these bindings
     /// (`entries`) is made again.
     pub generation: u64,
+    /// The values in the buffer.
+    current: LampValues,
 }
 
 impl LampBinding {
@@ -416,6 +526,7 @@ impl LampBinding {
             lamps,
             grid,
             generation: 0,
+            current: empty.values,
         }
     }
 
@@ -448,8 +559,24 @@ impl LampBinding {
 
     /// The lamps and the grid of `grid` in new buffers.
     pub fn set(&mut self, device: &wgpu::Device, grid: &LampGrid) {
-        (self.values, self.lamps, self.grid) = Self::buffers(device, grid);
+        let mut values = grid.values;
+        (values.values[1], values.camera_z) = (self.current.values[1], self.current.camera_z);
+        let grid = LampGrid { values, ..grid.clone() };
+        (self.values, self.lamps, self.grid) = Self::buffers(device, &grid);
+        self.current = values;
         self.generation += 1;
+    }
+
+    /// The values of the frame: the strength of the lamps' light (0 for none), and the z axis
+    /// of the camera. The buffer is written only when they change.
+    pub fn set_frame(&mut self, queue: &wgpu::Queue, strength: f32, camera_z: [f32; 3]) {
+        let camera_z = [camera_z[0], camera_z[1], camera_z[2], 0.0];
+        if self.current.values[1] == strength && self.current.camera_z == camera_z {
+            return;
+        }
+        self.current.values[1] = strength;
+        self.current.camera_z = camera_z;
+        queue.write_buffer(&self.values, 0, bytemuck::bytes_of(&self.current));
     }
 }
 
@@ -520,14 +647,14 @@ mod tests {
     #[test]
     fn a_lamp_takes_the_terms_of_a_near_lamp_of_its_radius() {
         let settings = outlander_test();
-        let lamps = gpu_lamps(&[lamp(100.0, 200.0, 450.0)], &settings, 1.75);
+        let lamps = gpu_lamps(&[lamp(100.0, 200.0, 450.0)], &settings, 1.75, false);
         assert_eq!(lamps.len(), 1);
         assert_eq!(lamps[0].terms, settings.terms(450, false));
         assert_eq!(lamps[0].end, 787.5);
         assert_eq!(lamps[0].color, [1.0, 200.0 / 255.0, 100.0 / 255.0]);
         // A radius of 0 ends at once without the fade, and at 16 radii x 1.75 with it.
-        assert!(gpu_lamps(&[lamp(0.0, 0.0, 0.0)], &settings, 0.0).is_empty());
-        assert_eq!(gpu_lamps(&[lamp(0.0, 0.0, 0.0)], &settings, 1.75)[0].end, 28.0);
+        assert!(gpu_lamps(&[lamp(0.0, 0.0, 0.0)], &settings, 0.0, false).is_empty());
+        assert_eq!(gpu_lamps(&[lamp(0.0, 0.0, 0.0)], &settings, 1.75, false)[0].end, 28.0);
     }
 
     /// The lamps that a world position finds through the grid, as the shader walks it.
@@ -562,7 +689,7 @@ mod tests {
             lamp(8192.0, 50.0, 256.0),
             lamp(-40000.0, 90000.0, 128.0),
         ];
-        let lamps = gpu_lamps(&source, &settings, 1.75);
+        let lamps = gpu_lamps(&source, &settings, 1.75, false);
         let grid = build(lamps.clone(), 48);
         assert_eq!(grid.report.size, 1024.0);
         assert_eq!(grid.report.cells_over, 0);
@@ -590,7 +717,7 @@ mod tests {
         let settings = outlander_test();
         // 60 lamps over 1000 units: no list of 1024 units is within 48.
         let spread: Vec<SourceLamp> = (0..60).map(|i| lamp((i * 16) as f32, 300.0, 64.0)).collect();
-        let grid = build(gpu_lamps(&spread, &settings, 1.75), 48);
+        let grid = build(gpu_lamps(&spread, &settings, 1.75, false), 48);
         assert!(grid.report.size < 1024.0, "{:?}", grid.report);
         assert_eq!(grid.report.cells_over, 0);
         assert!(grid.report.fullest <= 48);
@@ -601,7 +728,7 @@ mod tests {
                 ..lamp(300.0, 300.0, 64.0)
             })
             .collect();
-        let grid = build(gpu_lamps(&piled, &settings, 1.75), 48);
+        let grid = build(gpu_lamps(&piled, &settings, 1.75, false), 48);
         assert_eq!(grid.report.size, 256.0);
         assert!(grid.report.cells_over > 0);
         assert_eq!(grid.report.left_out, 12 * grid.report.cells_over);
@@ -616,7 +743,7 @@ mod tests {
     fn the_bound_is_the_light_limit_in_force() {
         let settings = outlander_test();
         let ten: Vec<SourceLamp> = (0..10).map(|i| lamp(300.0 + i as f32, 300.0, 64.0)).collect();
-        let grid = build(gpu_lamps(&ten, &settings, 1.75), 7);
+        let grid = build(gpu_lamps(&ten, &settings, 1.75, false), 7);
         assert_eq!(grid.report.bound, 7);
         assert_eq!(lamps_at(&grid, 300.0, 300.0).len(), 7);
     }
@@ -634,10 +761,84 @@ mod tests {
     #[test]
     fn the_lamp_is_64_bytes_and_the_wgsl_names_its_bindings() {
         assert_eq!(size_of::<GpuLamp>(), 64);
-        assert_eq!(size_of::<LampValues>(), 48);
+        assert_eq!(size_of::<LampValues>(), 64);
         let code = wgsl_at(1);
         assert!(code.contains("@group(0) @binding(1) var<uniform> lamp_values"));
         assert!(code.contains("@group(0) @binding(3) var<storage, read> lamp_grid"));
         assert!(!code.contains("@binding(B"));
+    }
+
+    /// The light settings of a record of 12 that `PerPixel::shade_lights` gets as a near
+    /// light of the game: the terms of the engine, the colour of the record.
+    fn near_light(settings: &LightSettings, radius: u32, color: [f32; 3]) -> super::super::LightData {
+        let [c, l, q] = settings.terms(radius, false);
+        super::super::LightData {
+            diffuse: [color[0], color[1], color[2], 0.0],
+            ambient: [0.0; 4],
+            position: [0.0, 0.0, 0.0, 1.0],
+            direction: [0.0, 0.0, 0.0, 1.0e9],
+            attenuation: [c, l, q, 0.0],
+            cone: [0.0, 0.0, radius as f32, 0.0],
+        }
+    }
+
+    /// With the original lights, a lamp is packed as a near light of the same record and the
+    /// same settings: its colour, its wrap, its quadratic term, its bias and the shared
+    /// constant, for the forms of the two test installs.
+    #[test]
+    fn an_original_lamp_is_packed_as_a_near_light_of_its_record() {
+        for settings in [outlander_test(), morrowind75testing()] {
+            let lamps = gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &settings, 1.75, true);
+            let color = [1.0, 200.0 / 255.0, 100.0 / 255.0];
+            let mut near = [near_light(&settings, 450, color)];
+            let per_pixel = super::super::PerPixel {
+                sun: 1.0,
+                ambient: 1.0,
+                fade: 1.75,
+                original: true,
+            };
+            per_pixel.shade_lights(&mut near, [0.0, 0.0, 1.0], false);
+            let [near] = near;
+            let lamp = lamps[0];
+            assert_eq!(lamp.color, [near.diffuse[0], near.diffuse[1], near.diffuse[2]]);
+            assert_eq!(lamp.wrap, near.ambient[0]);
+            assert_eq!(lamp.terms, [near.attenuation[0], 0.0, near.attenuation[2]]);
+            assert!((lamp.end * near.cone[3] - 1.0).abs() < 1e-6, "{} {}", lamp.end, near.cone[3]);
+            // The bias moves the near light along the camera's z axis (here 0, 0, 1).
+            assert_eq!(lamp.bias, near.position[2]);
+        }
+        // Outlander-test's form keeps the constant 0.36; the linear form shares 0.33.
+        assert_eq!(
+            gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &outlander_test(), 1.75, true)[0].terms[0],
+            0.36
+        );
+        let linear = gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &morrowind75testing(), 1.75, true)[0];
+        assert_eq!(linear.terms[0], ORIGINAL_SHARED_CONSTANT);
+        assert_eq!(linear.bias, 25.0);
+    }
+
+    #[test]
+    fn the_lamps_light_at_night_and_come_in_below_three_quarters() {
+        // A clear night at 23:00: the moonlight as the sun.
+        assert_eq!(darkness_gate([0.23, 0.38, 0.69], 1.0, [0.1, 0.1, 0.12]), 1.0);
+        // Noon: none.
+        assert_eq!(darkness_gate([1.0, 0.99, 0.93], 1.0, [0.3, 0.3, 0.3]), 0.0);
+        // A storm by day: the sun hidden, a dark ambient light.
+        assert_eq!(darkness_gate([1.0, 1.0, 1.0], 0.0, [0.4, 0.4, 0.4]), 1.0);
+        // In the band: a part.
+        let band = darkness_gate([0.0; 3], 0.0, [0.725; 3]);
+        assert!(band > 0.0 && band < 1.0, "{band}");
+    }
+
+    /// The shaders of the land and the statics compile with the lamps' light, as the device
+    /// checks them, in the view group.
+    #[test]
+    fn the_lamps_light_is_valid_wgsl() {
+        let code = format!(
+            "{}{}\n@fragment fn fs(@location(0) p: vec3f) -> @location(0) vec4f {{ return vec4f(lamp_light(p, vec3f(0.0, 0.0, 1.0)), 1.0); }}",
+            super::super::view::wgsl(),
+            light_wgsl()
+        );
+        crate::renderer::shader_check::check("the lamps' light", &code).unwrap();
     }
 }
