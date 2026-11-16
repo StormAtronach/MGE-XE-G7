@@ -71,6 +71,61 @@ pub struct FileLamps {
     pub record_ids: Vec<Key>,
 }
 
+/// The counts of the rebuilds of the lamps' list and grid in a session, for the line of the log
+/// at its end: how long the frame thread worked in them, and how long a change of their inputs
+/// (a new record 13, a new lights file) waited for its grid.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RebuildCounts {
+    pub rebuilds: u32,
+    frame_ms: f64,
+    frame_ms_longest: f64,
+    delay_ms: f64,
+    delay_ms_longest: f64,
+    delay_frames: u64,
+    delay_frames_longest: u64,
+    /// The changes of the inputs that a newer change took over before their grid was made.
+    pub taken_over: u32,
+}
+
+impl RebuildCounts {
+    /// One rebuild: the frame thread's time in it, and the time and the frames since the change
+    /// of the inputs that it was made for (0 for a rebuild without such a change: a new block, a
+    /// new setting).
+    pub fn note(&mut self, frame_ms: f64, delay_ms: f64, delay_frames: u64) {
+        self.rebuilds += 1;
+        self.frame_ms += frame_ms;
+        self.frame_ms_longest = self.frame_ms_longest.max(frame_ms);
+        self.delay_ms += delay_ms;
+        self.delay_ms_longest = self.delay_ms_longest.max(delay_ms);
+        self.delay_frames += delay_frames;
+        self.delay_frames_longest = self.delay_frames_longest.max(delay_frames);
+    }
+
+    /// The line of the log.
+    pub fn line(&self) -> String {
+        let mean = |sum: f64| {
+            if self.rebuilds == 0 {
+                0.0
+            } else {
+                sum / f64::from(self.rebuilds)
+            }
+        };
+        format!(
+            "distant lamps: {} rebuilds of the list and the grid; the frame thread's time in them: mean {:.3} ms, longest {:.3} ms; \
+             from a change of their inputs to the grid in use: mean {:.3} ms and {:.1} frames, longest {:.3} ms and {} frames; \
+             {} changes taken over by a newer one",
+            self.rebuilds,
+            mean(self.frame_ms),
+            self.frame_ms_longest,
+            mean(self.delay_ms),
+            mean(self.delay_frames as f64),
+            self.delay_ms_longest,
+            self.delay_frames_longest,
+            self.taken_over
+        )
+    }
+}
+
 /// The key of the block of the lights file whose lamps light the cell of a frame: the
 /// exterior's, or in an interior that is like an exterior the key of its name
 /// (`interior_name` of the environment record, padded with zeros). [`None`] in another
@@ -845,6 +900,23 @@ mod tests {
         assert_eq!(lamps, file_lamps().lamps[..1]);
         assert_eq!((values.changed, values.dropped, values.not_found), (0, 4, 0));
         assert!(!values.describe().contains("warning:"));
+    }
+
+    #[test]
+    fn the_counts_of_the_rebuilds_give_the_mean_and_the_longest() {
+        let mut counts = RebuildCounts::default();
+        assert!(counts.line().starts_with("distant lamps: 0 rebuilds"), "{}", counts.line());
+        counts.note(8.0, 20.0, 1);
+        counts.note(2.0, 0.0, 0);
+        counts.taken_over = 3;
+        let line = counts.line();
+        assert!(line.contains("2 rebuilds"), "{line}");
+        assert!(line.contains("mean 5.000 ms, longest 8.000 ms"), "{line}");
+        assert!(
+            line.contains("mean 10.000 ms and 0.5 frames, longest 20.000 ms and 1 frames"),
+            "{line}"
+        );
+        assert!(line.contains("3 changes taken over"), "{line}");
     }
 
     /// The block of a cell: the exterior's; an interior like an exterior by its name, with A to

@@ -1273,6 +1273,13 @@ pub struct DistantLand {
     )>,
     /// The line that the lamps wait for the light settings (record 12) is in the log.
     lamps_wait_told: bool,
+    /// The rebuilds of the lamps' list and grid, for the log at the end.
+    lamp_rebuilds: lamp_grid::RebuildCounts,
+    /// The frames of the session.
+    frames_seen: u64,
+    /// When the inputs of the lamps changed (a new record 13, a new lights file) and the frame
+    /// of it, until their grid is made.
+    lamp_inputs_changed: Option<(Instant, u64)>,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
@@ -1889,6 +1896,9 @@ impl DistantLand {
             lights: None,
             light_binding: None,
             lamps_made_for: None,
+            lamp_rebuilds: lamp_grid::RebuildCounts::default(),
+            frames_seen: 0,
+            lamp_inputs_changed: None,
             lamps_wait_told: false,
             view_binding: None,
             shadow: None,
@@ -2080,6 +2090,7 @@ impl DistantLand {
             && lights.poll(scene, &views.layout, self.synchronous)
         {
             self.lamps_made_for = None;
+            self.lamp_inputs_changed.get_or_insert((Instant::now(), self.frames_seen));
         }
         let blocks = self.lights.as_ref().and_then(distant_lights::DistantLights::file_lamps);
         if let (Some(blocks), Some(block)) = (blocks, block) {
@@ -2107,20 +2118,34 @@ impl DistantLand {
                     });
                     // The radius, the colour and the flags of the game's light records (record
                     // 13), else of the file.
-                    let start = std::time::Instant::now();
+                    // The time of the frame thread for each part: the game's values, the lamps,
+                    // the list and the grid, the buffers.
+                    let mut clock = std::time::Instant::now();
+                    let mut lap = || {
+                        let now = std::time::Instant::now();
+                        let ms = (now - clock).as_secs_f64() * 1000.0;
+                        clock = now;
+                        ms
+                    };
                     let (lamps, game_values) = lamps.with_game_values(self.light_records.as_ref());
-                    let grid = lamp_grid::build_original(
-                        lamp_grid::gpu_lamps(&lamps, &settings, near),
-                        settings.light_limit as usize,
-                        near.original,
-                    );
+                    let values_ms = lap();
+                    let gpu_lamps = lamp_grid::gpu_lamps(&lamps, &settings, near);
+                    let lamps_ms = lap();
+                    let grid = lamp_grid::build_original(gpu_lamps, settings.light_limit as usize, near.original);
+                    let grid_ms = lap();
                     binding.set(scene.device, &grid);
-                    // The time of the frame thread for the lamps' values, the list, the grid
-                    // and the buffers.
-                    let made_in = start.elapsed().as_secs_f64() * 1000.0;
+                    let buffers_ms = lap();
+                    let made_in = values_ms + lamps_ms + grid_ms + buffers_ms;
                     println!("{}", game_values.describe());
-                    println!("{}; made in {made_in:.3} ms", grid.report.describe());
+                    println!(
+                        "{}; made in {made_in:.3} ms: the game's values {values_ms:.3}, the lamps {lamps_ms:.3}, the list and the grid {grid_ms:.3}, the buffers {buffers_ms:.3}",
+                        grid.report.describe()
+                    );
                     self.lamps_made_for = Some((settings, near, block));
+                    let (delay_ms, delay_frames) = self.lamp_inputs_changed.take().map_or((0.0, 0), |(at, frame)| {
+                        (at.elapsed().as_secs_f64() * 1000.0, self.frames_seen - frame)
+                    });
+                    self.lamp_rebuilds.note(made_in, delay_ms, delay_frames);
                 }
                 _ => {}
             }
@@ -2194,6 +2219,7 @@ impl DistantLand {
 
 impl Drop for DistantLand {
     fn drop(&mut self) {
+        println!("{}", self.lamp_rebuilds.line());
         println!(
             "distant land: {} terrain mesh draws, fog distances {}",
             self.meshes_drawn,
@@ -3501,6 +3527,7 @@ impl Extension for DistantLand {
     /// The answers for the frame: the fog distances and the blend when the terrain is in
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
+        self.frames_seen += 1;
         self.stop_without_hello();
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
@@ -3992,8 +4019,13 @@ impl Extension for DistantLand {
                         );
                         self.light_records = Some(records);
                         self.light_records_line_due = true;
-                        // The lamps take the new values.
+                        // The lamps take the new values. A change whose grid is not made yet is
+                        // taken over by this one.
                         self.lamps_made_for = None;
+                        if self.lamp_inputs_changed.is_some() {
+                            self.lamp_rebuilds.taken_over += 1;
+                        }
+                        self.lamp_inputs_changed = Some((Instant::now(), self.frames_seen));
                     }
                 }
                 None => println!(
