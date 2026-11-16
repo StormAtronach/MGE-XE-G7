@@ -497,7 +497,7 @@ These constants gate interop and must move together:
 | Subset flag mask (`0x1F`) | `dlformat.h` `KnownFlagsMask`, `distantland` `static_mesh_writer.rs` | `KNOWN_SUBSET_FLAGS` in `mgeHost64/src/renderer/statics.rs`; a new bit needs an `MGE_DL_VERSION` bump |
 | `terrain_occlusion.bin` (`XEOCCL02` v2) | `distantland` `terrain_occlusion.rs` | `mgeHost64/src/abi/occlusion.rs`, [`horizon-occlusion-asset.md`](docs/architecture/horizon-occlusion-asset.md) |
 | `lights.data` (`XELIGHT1` v2) | `distantland/src/generation/lights.rs` (`LIGHTS_VERSION`) | `read` in `mgeHost64/src/renderer/distant_lights.rs` (its own copy of the version and the tile side; no shared test), [`distantland-data.md`](docs/architecture/distantland-data.md) section 4a |
-| Stream extension record ids (1-12) | `Deviceless` in `d3d8/cpp/mge/mged3d8device.cpp` | the `*_ID` constants of `mgeHost64/src/renderer.rs`, [`wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) |
+| Stream extension record ids (1-13) | `Deviceless` in `d3d8/cpp/mge/mged3d8device.cpp` | the `*_ID` constants of `mgeHost64/src/renderer.rs`, [`wgpu-renderer.md`](docs/architecture/wgpu-renderer.md) |
 | Host exit codes | `mgeHost64/src/error.rs` | C++ launcher interpretation |
 | Core shader passes/variables | `d3d8/cpp/mge/distantshader.h`, `distantland.h` handles | `assets/Data Files/shaders/core/*.fx` |
 

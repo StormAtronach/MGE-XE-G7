@@ -1,11 +1,15 @@
 //! The game's values of its lamps, from MGE XE's d3d8.dll: the engine's `[LightAttenuation]`
-//! settings with the light limit (record 12, [`LightSettings`]).
+//! settings with the light limit (record 12, [`LightSettings`]), and the game's light records
+//! (record 13, [`LightRecords`]).
 //!
 //! A distant lamp takes the three terms that the engine gives a near lamp of the same radius,
 //! by the engine's rule ([`LightSettings::terms`]). The design: the Architect's page
 //! `distant-lights-from-fork-2026-11-12.md`, section 2.2.
 
+use super::distant_lights::FileLampRecord;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::time::Duration;
 
 /// A little-endian word of `bytes` at `at`, if the bytes have it.
 fn word(bytes: &[u8], at: usize) -> Option<u32> {
@@ -147,7 +151,7 @@ impl LightSettings {
         } else if self.light_limit != self.light_limit_asked {
             let _ = write!(
                 line,
-                "warning: light limit {} asked, {} in force (a node's own lights)",
+                "warning: light limit {} asked and not taken: the engine's limit stays ({} unless another module changed it)",
                 self.light_limit_asked, self.light_limit
             );
         } else {
@@ -157,9 +161,251 @@ impl LightSettings {
     }
 }
 
+/// What the game holds for one light record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LightRecord {
+    pub radius: i32,
+    /// Red, green and blue, then the fourth byte as the game holds it.
+    pub color: [u8; 4],
+    /// The flags of the record, as the game holds them.
+    pub flags: u32,
+}
+
+/// The game's light records, by the id in ASCII lower case: the values that the running game
+/// uses. A mod can change them after the game read its plugins, so they can differ from the
+/// values of the lights file, which the generator takes from the plugins.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LightRecords {
+    records: BTreeMap<String, LightRecord>,
+}
+
+/// The difference between the game's light records and the records of the lights file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileDifference {
+    /// The records of the file's lamps.
+    pub records: usize,
+    /// Those that the game holds with another radius or another colour.
+    pub changed: usize,
+    /// The lamps of the changed records.
+    pub changed_lamps: u64,
+    /// The records of the file's lamps that the game does not have.
+    pub missing: usize,
+}
+
+impl LightRecords {
+    /// Reads record 13: the version (1), the number of records, then for each record its
+    /// radius, its colour (4 bytes), its flags, the length of its id, and the id padded to 4
+    /// bytes. [`None`] for another version, a count or a length that passes the end, bytes
+    /// after the last record, or an id that is not ASCII.
+    pub fn read(bytes: &[u8]) -> Option<LightRecords> {
+        if word(bytes, 0)? != 1 {
+            return None;
+        }
+        let count = word(bytes, 4)?;
+        let mut records = BTreeMap::new();
+        let mut at = 8usize;
+        for _ in 0..count {
+            let radius = word(bytes, at)? as i32;
+            let color: [u8; 4] = bytes.get(at + 4..at + 8)?.try_into().unwrap();
+            let flags = word(bytes, at + 8)?;
+            let id_length = word(bytes, at + 12)? as usize;
+            let id = bytes.get(at + 16..(at + 16).checked_add(id_length)?)?;
+            if !id.is_ascii() {
+                return None;
+            }
+            let id = String::from_utf8_lossy(id).to_ascii_lowercase();
+            records.insert(id, LightRecord { radius, color, flags });
+            at = (at + 16).checked_add(id_length.checked_add(3)? & !3)?;
+        }
+        (at == bytes.len()).then_some(LightRecords { records })
+    }
+
+    /// The number of records.
+    pub fn count(&self) -> usize {
+        self.records.len()
+    }
+
+    /// The record of `id`, which is in ASCII lower case.
+    pub fn get(&self, id: &str) -> Option<&LightRecord> {
+        self.records.get(id)
+    }
+
+    /// The number of records that `previous` does not have with the same values, and of the
+    /// records of `previous` that are gone.
+    pub fn changed_since(&self, previous: &LightRecords) -> usize {
+        let changed = self
+            .records
+            .iter()
+            .filter(|(id, record)| previous.records.get(*id) != Some(record))
+            .count();
+        let gone = previous.records.keys().filter(|id| !self.records.contains_key(*id)).count();
+        changed + gone
+    }
+
+    /// The records of the file's lamps against the game's: how many the game holds with
+    /// another radius or colour, and how many it does not have.
+    pub fn difference_from_file(&self, file: &[FileLampRecord]) -> FileDifference {
+        let mut difference = FileDifference {
+            records: file.len(),
+            ..FileDifference::default()
+        };
+        for record in file {
+            match self.get(&record.id) {
+                None => difference.missing += 1,
+                Some(game) => {
+                    if game.radius as f32 != record.radius || game.color[..3] != record.color {
+                        difference.changed += 1;
+                        difference.changed_lamps += u64::from(record.lamps);
+                    }
+                }
+            }
+        }
+        difference
+    }
+
+    /// The line of the log for a new record 13: the count, what changed since `previous`, the
+    /// length of the record and the time that its read took.
+    pub fn describe(&self, previous: Option<&LightRecords>, bytes: usize, read: Duration) -> String {
+        let mut line = format!("light records: {} records of the game", self.count());
+        if let Some(previous) = previous {
+            let _ = write!(line, ", {} changed since the last record", self.changed_since(previous));
+        }
+        let _ = write!(line, "; {bytes} bytes, read in {:.3} ms", read.as_secs_f64() * 1000.0);
+        line
+    }
+
+    /// The line of the log that compares the game's records with the lights file.
+    pub fn describe_against_file(&self, file: &[FileLampRecord]) -> String {
+        let difference = self.difference_from_file(file);
+        let mut line = format!(
+            "light records: of the {} records of the file's exterior lamps, the game holds {} with another radius or              colour ({} lamps)",
+            difference.records, difference.changed, difference.changed_lamps
+        );
+        if difference.missing != 0 {
+            let _ = write!(line, "; warning: {} are not in the game's records", difference.missing);
+        }
+        line
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Record 13 with the records `(id, radius, colour, flags)`.
+    fn light_records(records: &[(&str, i32, [u8; 4], u32)]) -> Vec<u8> {
+        let mut bytes = words(&[1, records.len() as u32]);
+        for (id, radius, color, flags) in records {
+            bytes.extend_from_slice(&radius.to_le_bytes());
+            bytes.extend_from_slice(color);
+            bytes.extend_from_slice(&flags.to_le_bytes());
+            bytes.extend_from_slice(&(id.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(id.as_bytes());
+            bytes.resize(bytes.len().next_multiple_of(4), 0);
+        }
+        bytes
+    }
+
+    #[test]
+    fn the_light_records_read_whole_with_their_ids_in_lower_case() {
+        let bytes = light_records(&[
+            ("Light_Com_Lantern_02_128", 256, [240, 135, 50, 0], 0x13),
+            ("lamp", 450, [255, 255, 255, 0], 0),
+        ]);
+        let records = LightRecords::read(&bytes).unwrap();
+        assert_eq!(records.count(), 2);
+        assert_eq!(
+            records.get("light_com_lantern_02_128"),
+            Some(&LightRecord {
+                radius: 256,
+                color: [240, 135, 50, 0],
+                flags: 0x13
+            })
+        );
+        assert_eq!(records.get("Light_Com_Lantern_02_128"), None);
+        assert_eq!(LightRecords::read(&words(&[1, 0])).map(|records| records.count()), Some(0));
+    }
+
+    #[test]
+    fn a_cut_record_a_longer_one_and_a_bad_count_are_refused() {
+        let bytes = light_records(&[("lampa", 450, [1, 2, 3, 0], 0), ("lamp", 256, [4, 5, 6, 0], 1)]);
+        for cut in 0..bytes.len() {
+            assert_eq!(LightRecords::read(&bytes[..cut]), None, "a cut at {cut}");
+        }
+        let mut longer = bytes.clone();
+        longer.extend_from_slice(&[0; 4]);
+        assert_eq!(LightRecords::read(&longer), None);
+        let mut more = bytes.clone();
+        more[4..8].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(LightRecords::read(&more), None);
+        let mut other_version = bytes.clone();
+        other_version[..4].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(LightRecords::read(&other_version), None);
+        let mut id_past_the_end = words(&[1, 1, 0, 0, 0, u32::MAX]);
+        id_past_the_end.extend_from_slice(&[0; 8]);
+        assert_eq!(LightRecords::read(&id_past_the_end), None);
+        assert_eq!(LightRecords::read(&light_records(&[("l\u{e4}mp", 1, [0; 4], 0)])), None);
+    }
+
+    #[test]
+    fn the_changes_since_the_last_record_count_new_changed_and_gone_records() {
+        let before = LightRecords::read(&light_records(&[
+            ("a", 100, [1, 1, 1, 0], 0),
+            ("b", 200, [2, 2, 2, 0], 0),
+            ("c", 300, [3, 3, 3, 0], 0),
+        ]))
+        .unwrap();
+        let after = LightRecords::read(&light_records(&[
+            ("a", 100, [1, 1, 1, 0], 0),
+            ("b", 250, [2, 2, 2, 0], 0),
+            ("d", 400, [4, 4, 4, 0], 0),
+        ]))
+        .unwrap();
+        // b changed, d is new, c is gone.
+        assert_eq!(after.changed_since(&before), 3);
+        assert_eq!(after.changed_since(&after), 0);
+        let line = after.describe(Some(&before), 96, Duration::from_micros(250));
+        assert!(line.starts_with("light records: 3 records of the game, 3 changed since the last record; 96 bytes"));
+        assert!(!after.describe(None, 96, Duration::ZERO).contains("changed"));
+    }
+
+    #[test]
+    fn the_difference_from_the_file_counts_radius_and_colour_not_flags() {
+        let game = LightRecords::read(&light_records(&[
+            ("same", 350, [240, 135, 50, 0], 0x13),
+            ("radius", 256, [240, 135, 50, 0], 0x13),
+            ("colour", 350, [10, 20, 30, 0], 0x13),
+            ("flags", 350, [240, 135, 50, 9], 0x51),
+        ]))
+        .unwrap();
+        let file = |id: &str, lamps| FileLampRecord {
+            id: id.to_string(),
+            radius: 350.0,
+            color: [240, 135, 50],
+            lamps,
+        };
+        let records = [
+            file("same", 4),
+            file("radius", 126),
+            file("colour", 3),
+            file("flags", 5),
+            file("gone", 2),
+        ];
+        assert_eq!(
+            game.difference_from_file(&records),
+            FileDifference {
+                records: 5,
+                changed: 2,
+                changed_lamps: 129,
+                missing: 1
+            }
+        );
+        let line = game.describe_against_file(&records);
+        assert!(line.contains("of the 5 records of the file's exterior lamps, the game holds 2 with another radius or"));
+        assert!(line.contains("(129 lamps)"));
+        assert!(line.ends_with("warning: 1 are not in the game's records"));
+        assert!(!game.describe_against_file(&records[..4]).contains("warning"));
+    }
 
     fn words(values: &[u32]) -> Vec<u8> {
         values.iter().flat_map(|value| value.to_le_bytes()).collect()
@@ -326,7 +572,11 @@ mod tests {
             light_limit: 7,
             ..outlander_test()
         };
-        assert!(refused.describe().contains("warning: light limit 32 asked, 7 in force"));
+        assert!(
+            refused
+                .describe()
+                .contains("warning: light limit 32 asked and not taken: the engine's limit stays (7 unless")
+        );
         let off = LightSettings {
             light_limit_asked: 0,
             light_limit: 7,

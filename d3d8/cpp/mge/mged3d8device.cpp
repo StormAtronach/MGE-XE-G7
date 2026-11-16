@@ -1768,6 +1768,87 @@ namespace Deviceless {
         sendToRenderer(LightSettingsId, &s, sizeof(s));
     }
 
+    // The game's light records: record 13 (LIGHT_RECORDS_ID in mgeHost64/src/renderer.rs), kept.
+    // The version (1), the number of records, then for each record its radius, its colour (4
+    // bytes), its flags, the length of its id, and the id padded with zeros to 4 bytes.
+    static const UINT LightRecordsId = 13 | 0x80000000u;
+    // The plugin drops a record of this length or more (nirender_stream_extension).
+    static const size_t StreamRecordLimit = 1u << 20;
+    // The records are checked again at the next frame: set by the load of a game.
+    static bool lightRecordsCheckDue = true;
+
+    // Asks MWSE for the game's light records and sends them when they differ from the last
+    // ones sent. `when` names the caller in the log.
+    static void checkLightRecords(const char* when) {
+        static std::vector<MwseNative::LightRecord> records;
+        static unsigned long long hashSent = 0;
+        static bool sent = false;
+
+        LARGE_INTEGER frequency, start, queried, hashed;
+        QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&start);
+        if (!MwseNative::queryLightRecords(records)) {
+            return;
+        }
+        QueryPerformanceCounter(&queried);
+
+        // FNV-1a over each record's id, radius, colour and flags.
+        unsigned long long hash = 14695981039346656037ull;
+        const auto mix = [&hash](const void* data, size_t length) {
+            const auto bytes = static_cast<const unsigned char*>(data);
+            for (size_t i = 0; i != length; ++i) {
+                hash = (hash ^ bytes[i]) * 1099511628211ull;
+            }
+        };
+        size_t length = 8;
+        for (const auto& record : records) {
+            const UINT idLength = record.id ? static_cast<UINT>(strlen(record.id)) : 0;
+            mix(&idLength, sizeof(idLength));
+            mix(record.id, idLength);
+            mix(&record.radius, sizeof(record.radius));
+            mix(record.color, sizeof(record.color));
+            mix(&record.flags, sizeof(record.flags));
+            length += 16 + ((idLength + 3) & ~size_t(3));
+        }
+        QueryPerformanceCounter(&hashed);
+        if (sent && hash == hashSent) {
+            return;
+        }
+        sent = true;
+        hashSent = hash;
+
+        const UINT count = static_cast<UINT>(records.size());
+        if (length >= StreamRecordLimit) {
+            LOG::logline("!! wgpu renderer: %u light records make a record of %u bytes, too long for the stream: the distant lamps keep the values of the distant land file",
+                count, static_cast<UINT>(length));
+            return;
+        }
+
+        std::vector<BYTE> data(length);
+        const UINT version = 1;
+        memcpy(data.data(), &version, 4);
+        memcpy(data.data() + 4, &count, 4);
+        size_t at = 8;
+        for (const auto& record : records) {
+            const UINT idLength = record.id ? static_cast<UINT>(strlen(record.id)) : 0;
+            memcpy(data.data() + at, &record.radius, 4);
+            memcpy(data.data() + at + 4, record.color, 4);
+            memcpy(data.data() + at + 8, &record.flags, 4);
+            memcpy(data.data() + at + 12, &idLength, 4);
+            if (idLength != 0) {
+                memcpy(data.data() + at + 16, record.id, idLength);
+            }
+            at += 16 + ((idLength + 3) & ~size_t(3));
+        }
+        sendToRenderer(LightRecordsId, data.data(), static_cast<UINT>(data.size()));
+
+        const double milliseconds = 1000.0 / double(frequency.QuadPart);
+        LOG::logline("-- wgpu renderer: light records sent (%s): %u records, %u bytes; the query %.3f ms, the hash %.3f ms",
+            when, count, static_cast<UINT>(data.size()),
+            double(queried.QuadPart - start.QuadPart) * milliseconds,
+            double(hashed.QuadPart - queried.QuadPart) * milliseconds);
+    }
+
     // The place of the player goes to the helper (record 10): it streams the distant land
     // there, and says when the distant statics around the player are there (its arrival, the
     // event distantLandReady "arrived"). With `wait`, from distant_land.wait_on_load, the game
@@ -1880,6 +1961,11 @@ namespace Deviceless {
         auto mwBridge = MWBridge::get();
         if (!Session::wgpu() || !mwBridge->IsLoaded()) {
             return;
+        }
+        // A mod can change the light records after the plugins are read, and at a load.
+        checkLightRecords(gameLoad ? "the load of a game" : "a cell change");
+        if (gameLoad) {
+            lightRecordsCheckDue = true;
         }
         if (!gameLoad && !isFarMove(static_cast<const TES3::Cell*>(previousCell), static_cast<const TES3::Cell*>(cell))) {
             return;
@@ -2001,6 +2087,10 @@ namespace Deviceless {
             // go to the helper as the game's films do.
             VideoPatch::monitorStreamed(width, height);
             scanVisGroups(mwBridge);
+            if (lightRecordsCheckDue) {
+                lightRecordsCheckDue = false;
+                checkLightRecords("the first frame after a load");
+            }
             if (Configuration.ScreenFOV > 0) {
                 mwBridge->SetFOV(Configuration.ScreenFOV);
             }

@@ -223,6 +223,40 @@ namespace MwseNative {
         return request(MWSE_NATIVE_REQUEST_LIGHT_LIMIT, &packet, "the light limit");
     }
 
+    bool queryLightRecords(std::vector<LightRecord>& records) {
+        static_assert(sizeof(LightRecord) == sizeof(MwseNativeLightRecordV1), "LightRecord has the layout of MWSE's record");
+        static bool refused = false;
+        // The room of an ask. A longer list gets a second ask with room for its count.
+        static uint32_t room = 4096;
+
+        records.clear();
+        if (!table || refused) {
+            return false;
+        }
+
+        MwseNativeLightRecordsV1 packet = {};
+        packet.structSize = sizeof(packet);
+        packet.recordSize = sizeof(LightRecord);
+        for (;;) {
+            records.resize(room);
+            packet.capacity = room;
+            packet.records = reinterpret_cast<MwseNativeLightRecordV1*>(records.data());
+            const auto status = table->query(MWSE_NATIVE_QUERY_LIGHT_RECORDS, &packet);
+            if (status != MWSE_NATIVE_OK) {
+                refused = true;
+                records.clear();
+                LOG::logline("-- MWSE native ABI: the query of the light records gave status %d: the distant lamps keep the values of the distant land file", int(status));
+                return false;
+            }
+            if (packet.count <= room) {
+                break;
+            }
+            room = packet.count + 256;
+        }
+        records.resize(packet.count);
+        return true;
+    }
+
     bool requestRipples(bool enabled) {
         MwseNativeRipplesRequestV1 packet = {};
         packet.structSize = sizeof(packet);

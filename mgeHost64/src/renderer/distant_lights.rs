@@ -306,6 +306,43 @@ struct LightsFile {
     tiles: Vec<(i32, i32)>,
     /// The values of the tiles, one tile after the other.
     texels: Vec<u8>,
+    /// The light records of the exterior's lamps, with the values that the file has for them.
+    records: Vec<FileLampRecord>,
+}
+
+/// What the lights file has for one light record of its exterior lamps: the values of the
+/// plugins at the time of the generation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileLampRecord {
+    /// The id, in ASCII lower case.
+    pub id: String,
+    pub radius: f32,
+    pub color: [u8; 3],
+    /// The number of the exterior's lamps of this record.
+    pub lamps: u32,
+}
+
+/// The records of a block's lamps with the radius and the colour of the first lamp of each,
+/// and the count of its lamps. A record without a lamp is left out.
+fn file_records(block: &distantland::mge_xe::lights::LightBlock) -> Vec<FileLampRecord> {
+    let mut records: Vec<Option<FileLampRecord>> = vec![None; block.records.len()];
+    for lamp in &block.lamps {
+        let Some(slot) = records.get_mut(lamp.record as usize) else {
+            continue;
+        };
+        match slot {
+            Some(record) => record.lamps += 1,
+            None => {
+                *slot = Some(FileLampRecord {
+                    id: block.records[lamp.record as usize].id.clone(),
+                    radius: lamp.radius,
+                    color: lamp.color,
+                    lamps: 1,
+                });
+            }
+        }
+    }
+    records.into_iter().flatten().collect()
 }
 
 /// Reads `lights.data` through the formats crate, which checks each count and length against
@@ -314,14 +351,14 @@ struct LightsFile {
 fn read(path: &Path) -> Result<LightsFile, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let lights = parse_lights(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-    let (sources, source_count) = lights
-        .block(EXTERIOR_KEY)
-        .map_or((Vec::new(), 0), |block| (block.lamp_bytes(), block.lamps.len() as u32));
+    let exterior = lights.block(EXTERIOR_KEY);
+    let (sources, source_count) = exterior.map_or((Vec::new(), 0), |block| (block.lamp_bytes(), block.lamps.len() as u32));
     Ok(LightsFile {
         sources,
         source_count,
         tiles: Vec::new(),
         texels: Vec::new(),
+        records: exterior.map_or_else(Vec::new, file_records),
     })
 }
 
@@ -597,6 +634,8 @@ impl Glows {
 pub struct DistantLights {
     loading: Option<Receiver<Result<LightsFile, String>>>,
     glows: Option<Glows>,
+    /// The light records of the file's exterior lamps, once the file is read.
+    file_records: Option<Vec<FileLampRecord>>,
 }
 
 impl DistantLights {
@@ -609,10 +648,12 @@ impl DistantLights {
             source_count: sources,
             tiles: Vec::new(),
             texels: Vec::new(),
+            records: Vec::new(),
         };
         DistantLights {
             loading: None,
             glows: Some(make_glows(scene, &file, view_layout)),
+            file_records: None,
         }
     }
 
@@ -626,6 +667,7 @@ impl DistantLights {
         DistantLights {
             loading: Some(receiver),
             glows: None,
+            file_records: None,
         }
     }
 
@@ -679,6 +721,12 @@ impl DistantLights {
                 make_glows(scene, &file, view_layout)
             }));
         }
+        self.file_records = Some(file.records);
+    }
+
+    /// The light records of the file's exterior lamps; [`None`] until the file is read.
+    pub fn file_records(&self) -> Option<&[FileLampRecord]> {
+        self.file_records.as_deref()
     }
 
     /// Makes the buffers of the set `set` (0 is the main view's, made with the glows): a view of
@@ -952,6 +1000,7 @@ mod tests {
         let mut lights = DistantLights {
             loading: Some(receiver),
             glows: None,
+            file_records: None,
         };
         assert!(lights.take_file(false).is_none());
         assert!(lights.loading.is_some());

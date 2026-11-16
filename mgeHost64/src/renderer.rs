@@ -257,6 +257,9 @@ const HELLO_ID: u32 = 11;
 /// The light settings of MGE XE (`Deviceless::sendLightSettings`), kept: the engine's
 /// `[LightAttenuation]` values and the light limit, see [`lamp_values::LightSettings`].
 const LIGHT_SETTINGS_ID: u32 = 12;
+/// The game's light records (`Deviceless::checkLightRecords`), kept: the values that the game
+/// holds for each light record, see [`lamp_values::LightRecords`].
+const LIGHT_RECORDS_ID: u32 = 13;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
@@ -279,6 +282,7 @@ fn changing_record_name(id: u32) -> Option<&'static str> {
         PREFETCH_ID => Some("extension record prefetch"),
         HELLO_ID => Some("extension record hello"),
         LIGHT_SETTINGS_ID => Some("extension record light settings"),
+        LIGHT_RECORDS_ID => Some("extension record light records"),
         _ => Some("extension record of an unknown id"),
     }
 }
@@ -449,6 +453,7 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
             | STATUS_ID
             | PREFETCH_ID
             | LIGHT_SETTINGS_ID
+            | LIGHT_RECORDS_ID
     );
     if version_1_only && word(0) != 1 {
         return Some(4);
@@ -509,6 +514,18 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
         PREFETCH_ID => 20,
         // Twelve words.
         LIGHT_SETTINGS_ID => lamp_values::LightSettings::BYTES,
+        // The version, the number of records, then for each its radius, colour, flags and the
+        // length of its id (16 bytes), and the id padded to 4 bytes.
+        LIGHT_RECORDS_ID => {
+            let mut at = 8usize;
+            for _ in 0..word(4) {
+                if bytes.len() < at.saturating_add(16) {
+                    return Some(at.saturating_add(16));
+                }
+                at = sum(&[at, 16, word(at + 12).saturating_add(3) & !3]);
+            }
+            at
+        }
         _ => return None,
     })
 }
@@ -528,6 +545,7 @@ fn extension_name(id: u32) -> &'static str {
         PREFETCH_ID => "prefetch",
         HELLO_ID => "hello",
         LIGHT_SETTINGS_ID => "light settings",
+        LIGHT_RECORDS_ID => "light records",
         _ => "unknown",
     }
 }
@@ -1211,6 +1229,11 @@ pub struct DistantLand {
     hello: Option<String>,
     /// The engine's light settings from record 12 ([`LIGHT_SETTINGS_ID`]), once it came.
     light_settings: Option<lamp_values::LightSettings>,
+    /// The game's light records from record 13 ([`LIGHT_RECORDS_ID`]), once they came.
+    light_records: Option<lamp_values::LightRecords>,
+    /// The line that compares the game's light records with the lights file is still to
+    /// write: it waits for the file.
+    light_records_line_due: bool,
     /// The extension ids without a reader in this build that came: each is in the log once.
     unknown_ids: Vec<u32>,
     /// The ids whose first refused record is in the log, and the refused records counted.
@@ -1793,6 +1816,8 @@ impl DistantLand {
             arrival_serial: 0,
             hello: None,
             light_settings: None,
+            light_records: None,
+            light_records_line_due: false,
             unknown_ids: Vec::new(),
             refused_ids: Vec::new(),
             extension_refused: 0,
@@ -1988,6 +2013,13 @@ impl DistantLand {
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
         if let Some(lights) = self.lights.as_mut() {
             lights.poll(scene, binding, &views.layout, self.synchronous);
+        }
+        if self.light_records_line_due {
+            let file = self.lights.as_ref().and_then(distant_lights::DistantLights::file_records);
+            if let (Some(records), Some(file)) = (self.light_records.as_ref(), file) {
+                println!("{}", records.describe_against_file(file));
+                self.light_records_line_due = false;
+            }
         }
         views.refresh(scene.device, binding);
         if let Some(statics) = self.statics.as_mut() {
@@ -3751,6 +3783,28 @@ impl Extension for DistantLand {
                 }
                 None => println!(
                     "extension record {id} (light settings): {} bytes, not the 48 bytes of version 1: not read",
+                    bytes.len()
+                ),
+            }
+            return;
+        }
+        if id == LIGHT_RECORDS_ID {
+            let start = std::time::Instant::now();
+            match lamp_values::LightRecords::read(bytes) {
+                // A capture file and the stream start with the kept record again: the same
+                // records are in the log once.
+                Some(records) => {
+                    if self.light_records.as_ref() != Some(&records) {
+                        println!(
+                            "{}",
+                            records.describe(self.light_records.as_ref(), bytes.len(), start.elapsed())
+                        );
+                        self.light_records = Some(records);
+                        self.light_records_line_due = true;
+                    }
+                }
+                None => println!(
+                    "extension record {id} (light records): {} bytes, not a whole record of version 1: not read",
                     bytes.len()
                 ),
             }
@@ -6878,7 +6932,7 @@ mod extension_record_tests {
     use super::*;
 
     /// Every id with a layout.
-    const IDS: [u32; 10] = [
+    const IDS: [u32; 11] = [
         ENVIRONMENT_ID,
         SHADER_STATE_ID,
         PICTURE_ID,
@@ -6889,6 +6943,7 @@ mod extension_record_tests {
         STATUS_ID,
         PREFETCH_ID,
         LIGHT_SETTINGS_ID,
+        LIGHT_RECORDS_ID,
     ];
 
     fn words(values: &[u32]) -> Vec<u8> {
@@ -6958,6 +7013,14 @@ mod extension_record_tests {
                 record.resize(lamp_values::LightSettings::BYTES, 0);
                 record
             }
+            LIGHT_RECORDS_ID => {
+                // Two records: an id of 5 bytes, padded to 8, and an id of 4 bytes.
+                let mut record = words(&[1, 2, 450, 0x0032_87F0, 0x13, 5]);
+                record.extend_from_slice(b"lampa\0\0\0");
+                record.extend_from_slice(&words(&[256, 0x00FF_FFFF, 0, 4]));
+                record.extend_from_slice(b"lamp");
+                record
+            }
             _ => Vec::new(),
         }
     }
@@ -7004,6 +7067,7 @@ mod extension_record_tests {
             STATUS_ID,
             PREFETCH_ID,
             LIGHT_SETTINGS_ID,
+            LIGHT_RECORDS_ID,
         ] {
             assert_eq!(
                 extension_needed(id, &words(&[2])),
@@ -7026,6 +7090,10 @@ mod extension_record_tests {
     fn a_count_that_does_not_fit_is_refused_without_an_overflow() {
         assert!(extension_needed(WATER_MASKS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
         assert!(extension_needed(VIS_GROUPS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
+        assert!(extension_needed(LIGHT_RECORDS_ID, &words(&[1, u32::MAX])).unwrap() > 8);
+        let mut long_id = words(&[1, 1, 0, 0, 0, u32::MAX]);
+        long_id.extend_from_slice(&[0u8; 8]);
+        assert!(extension_needed(LIGHT_RECORDS_ID, &long_id).unwrap() > long_id.len());
         let mut looks = words(&[1, 1, 5, u32::MAX]);
         looks.extend_from_slice(&[0u8; 8]);
         assert!(extension_needed(WATER_LOOKS_ID, &looks).unwrap() > looks.len());
@@ -7060,6 +7128,7 @@ mod extension_record_tests {
         assert!(land.status.is_some());
         assert_eq!(land.arrival_serial, 7);
         assert_eq!(land.light_settings.map(|settings| settings.light_limit), Some(0));
+        assert_eq!(land.light_records.as_ref().map(lamp_values::LightRecords::count), Some(2));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
