@@ -532,8 +532,10 @@ Never for a game. Each is an environment variable of the game process or of a re
 by MGE XE's part of `numidium.exe`. The helper's other switches are in the README of the
 `nirender` plugin.
 
-- `MGE_XE_SKIP=water,terrain,statics,grass,blend`: the parts named are not drawn, for a
-  replay that tests one suspect at a time.
+- `MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps`: the parts named are not
+  drawn, for a replay that tests one suspect at a time. `glows` leaves out the glows of the
+  distant lights; `lamps` leaves out the light of the distant lamps on the land and the
+  distant statics.
 - `MGE_XE_FULL_TIER_MAX=<n>` (0 to 32, the view slots of the plugin; the setting of the file takes 0 to 8): how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`, in place of `views.full_tier_max` of `mgeXE.toml` (default 1; 0 refuses every request).
 - `MGE_XE_CORE_MODS=0`: no core mod (`Data Files/shaders/core-mods/XE Mod <name>.wgsl`, the
   WGSL hook files of `mgeHost64/src/renderer/core_mods.rs`) joins the shaders: the built-in

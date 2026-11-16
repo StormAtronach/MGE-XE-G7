@@ -126,7 +126,7 @@ const NEAR: f32 = 64.0;
 /// land as a part of the game's. A smaller near plane puts the land behind a draw of the game
 /// at the same distance, by 0.25 % of the distance, as Direct3D 9's 4 - 0.01 against 4.
 const LAND_NEAR_SCALE: f32 = 0.9975;
-/// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend`): the parts named are not drawn, for a
+/// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps`): the parts named are not drawn, for a
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
     static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -4354,7 +4354,9 @@ impl Extension for DistantLand {
         }
         // The glows of the distant lights at night, past the handoff to the game.
         let is_night = night > 0.0;
-        let glows_skip = if !is_night {
+        let glows_skip = if skipped("glows") {
+            Some("left out by MGE_XE_SKIP")
+        } else if !is_night {
             Some("not night")
         } else if scene.interior {
             Some("an interior")
@@ -5311,7 +5313,9 @@ impl DistantLand {
         let terrain = of(Additions::LAND).or_else(|| Self::terrain_skip(scene));
         let statics = of(Additions::STATICS).or_else(|| skipped("statics").then_some("left out by MGE_XE_SKIP"));
         let glows = of(Additions::GLOWS).or_else(|| {
-            if self.night(scene) > 0.0 {
+            if skipped("glows") {
+                Some("left out by MGE_XE_SKIP")
+            } else if self.night(scene) > 0.0 {
                 scene.interior.then_some("an interior")
             } else {
                 Some("not night")
@@ -6489,7 +6493,7 @@ impl DistantLand {
     /// cell's block of the lights file ([`lamp_grid::lamp_block_key`]); else 0: in an interior
     /// without distant lamps, and from a change of the block until the grid of the new block.
     fn lamp_strength(&self, main_view: &view::View) -> f32 {
-        if !self.lamps_lit {
+        if !self.lamps_lit || skipped("lamps") {
             return 0.0;
         }
         let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
