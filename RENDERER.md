@@ -538,6 +538,16 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   WGSL hook files of `mgeHost64/src/renderer/core_mods.rs`) joins the shaders: the built-in
   hooks only. The baseline gate of the plugin sets it for its replays. The log names the files
   in use, or each file that is dropped and why, in its `core mods:` and `core mod:` lines.
+- `MGE_XE_CORE_MOD_FAULT=<file>[@<home>][:keep|:exit]` (W317's test): `<file>` is `Shadow`,
+  `Water` or `Sky`, `<home>` one of `world shader`, `grass`, `water plane`, `water volume`
+  (without it, every home of the file). Each pipeline of that home with the file's hooks names
+  a fragment entry point that the module lacks, so the device refuses it after naga, as it
+  refuses a core mod that fails in the back end or the driver. Without an end, the fallback
+  runs as for a real fault; `:keep` keeps the failed build (the null test); `:exit` ends the
+  helper in the build after its build marker is written (the test of the markers).
+- `MGE_XE_CORE_MOD_MARKERS=<folder>`: the folder of the build markers of the core mods, in
+  place of `%LOCALAPPDATA%\MGE XE`. A marker is up around the first build of each home with a
+  mod's hooks; a start that finds one does not use the files it names until they change.
 - `MGE_XE_BOX_SECONDS=<n>`: a message box of d3d8.dll, of the helper or of the plugin
   closes itself after n seconds, and its text is in that part's log as `box:` lines
   (always); unset or 0, the box waits for the click. The test runner sets 5.

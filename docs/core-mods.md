@@ -66,7 +66,22 @@ At its start the renderer writes one line for each event:
   nothing;
 - `core mod: XE Mod <name>.fx is for Direct3D 9; the wgpu renderer reads XE Mod <name>.wgsl,
   and there is none`: a Direct3D 9 core mod with no `.wgsl` file beside it;
-- `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set.
+- `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set;
+- `core mod: <file>: the <home> failed with it on the device (<error>); the built-in hooks are
+  used`: the file passed the check at the start, but a shader of the home failed in the back end
+  or the driver. The file is dropped for the rest of the session: the homes built after it take
+  the built-in hooks, and the world shader takes a new text at the next frame. `<home>` is the
+  world shader, the grass, the water plane or the water volume;
+- `core mod: <file>: a start before ended in the build of the <home> with it; it is not used
+  until it changes`: the helper ended while it built that home with the file (a lost device or
+  a crash in the driver). The file is not used until its text changes. The debug overlay shows
+  this line and the one above.
+
+A fault that ends the helper in a home's first build leaves a marker file in
+`%LOCALAPPDATA%\MGE XE` (`core-mod-build-<home>.txt`): it names the files of that build, and
+the next start reads it. In the world shader, a fault can come at a later pipeline than the
+first one: in that frame, the draws whose pipelines held keep the file's hooks, and the draw of
+the failed pipeline is skipped. The world shader takes the built-in hooks before the next frame.
 
 ## Turn the core mods off
 
