@@ -336,7 +336,7 @@ the frame, each with its own uniform buffer:
 | Binding | Holds | Stage |
 | --- | --- | --- |
 | 0 | uniform `View` (`u`): view projection, eye, fog colour, fog (exponential start and divisor, linear start and end), flags, sun direction, sun colour, ambient, the scattering (sun position, sky, outscatter, inscatter, sun altitude) | VF |
-| 1-3 | the distant lamps (`LampBinding`, `renderer/lamp_grid.rs`): uniform `LampValues` (the grid's place and layout, the strength of the frame, 1 for the original lights, the camera's z axis), storage `lamps` (64 bytes a lamp), storage `lamp_grid` (the two levels of the grid and the lists) | F |
+| 1-3 | the distant lamps (`LampBinding`, `renderer/lamp_grid.rs`): uniform `LampValues` (the grid's place and layout, the strength of the frame, 1 for the original lights, the camera's z axis, the haze: its strength k, the power of the fog on it and the widths of its two ramps, and its end: the draw distance and the water plane), storage `lamps` (64 bytes a lamp), storage `lamp_grid` (the two levels of the grid and the lists) | F |
 
 The number of a view is the number of a statics set. The groups are made again when the
 lamps change (`LampBinding::generation`). `before_world` writes the main, mirror and
@@ -348,6 +348,9 @@ The pixel shaders of the land and the distant statics add the light of the lamps
 (`lamp_grid::LAMP_LIGHT_WGSL`) with the light functions of the near lights
 (`LIGHT_FUNCTIONS` of `renderer.rs`). `LampBinding::set_frame` writes the strength and the
 camera's z axis in each frame with a world; the strength is 0 in an interior and by day.
+The same walk gives the light of the lamps in the air, without the facing and only from
+the lights at or above the water plane; the fog (`FOG_FUNCTION`) adds it as the lamps' haze
+(D498), with k from the tunable `lights.lamps.haze`.
 
 **"distant land"** (fill, lines, mirror fill, mirror lines; `make_gpu` in `renderer.rs`).
 Vertices: 20 bytes (`Float32x3`, `Unorm8x4`, `Unorm8x4`), indices `Uint32`.

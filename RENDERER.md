@@ -539,6 +539,8 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_LAMP_VIEW=1`: the land and the distant statics show the light of the distant lamps
   alone, without their colour, their texture, the sun and the fog; `2`: the light times the
   colour and the texture, without the sun and the fog. For the test of the lamps' light.
+- `MGE_XE_LAMP_HAZE=<k>`: the start of the tunable `lights.lamps.haze`, the strength of the
+  lamps' haze in the fog (0 turns it off), for a replay.
 - `MGE_XE_FULL_TIER_MAX=<n>` (0 to 32, the view slots of the plugin; the setting of the file takes 0 to 8): how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`, in place of `views.full_tier_max` of `mgeXE.toml` (default 1; 0 refuses every request).
 - `MGE_XE_CORE_MODS=0`: no core mod (`Data Files/shaders/core-mods/XE Mod <name>.wgsl`, the
   WGSL hook files of `mgeHost64/src/renderer/core_mods.rs`) joins the shaders: the built-in

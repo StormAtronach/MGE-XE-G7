@@ -34,6 +34,9 @@ pub const GLOW_PIXELS: &str = "lights.glow.pixels";
 /// The light of the distant lamps on the land and the distant statics: a factor on the strength
 /// of the darkness gate; 0 has none.
 pub const LAMP_STRENGTH: &str = "lights.lamps.strength";
+/// The haze of the distant lamps in the fog (D498): its strength k; 0 has none. The switch
+/// `MGE_XE_LAMP_HAZE` sets its start for a replay ([`super::lamp_grid::haze_switch`]).
+pub const LAMP_HAZE: &str = "lights.lamps.haze";
 /// The distant statics: the seconds that a subset takes to come in after its arrival.
 pub const STATICS_FADE: &str = "statics.fade";
 /// The shadow on the grass: 2 ends it as the shadow of the ground (the fade at the edge of
@@ -190,6 +193,7 @@ mod tests {
             STATICS_FADE,
             GRASS_SHADOW,
             PARTICLES,
+            LAMP_HAZE,
         ] {
             let tunable = tunables
                 .list
@@ -218,6 +222,15 @@ mod tests {
             );
         }
         assert_eq!(tunables.blur(), [0.004, 0.18, 2.0]);
+    }
+
+    /// The lamps' haze starts at the owner's k 0.5 (D533), inside 0 to 2.
+    #[test]
+    fn the_lamp_haze_starts_at_half() {
+        let tunables = Tunables::new();
+        let haze = tunables.list.iter().find(|tunable| tunable.name == LAMP_HAZE).unwrap();
+        assert_eq!((haze.start, haze.least, haze.most), (0.5, 0.0, 2.0));
+        assert_eq!(tunables.get(LAMP_HAZE), 0.5);
     }
 
     #[test]

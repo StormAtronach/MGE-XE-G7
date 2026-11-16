@@ -524,6 +524,13 @@ pub struct LampValues {
     pub values: [f32; 4],
     /// The z axis of the camera of the frame, for the bias of the original lights.
     pub camera_z: [f32; 4],
+    /// The haze of the lights in the fog (D498): x the strength k (0: none), y the power of the
+    /// fog on it (1 / [`HAZE_REACH`]), z and w the widths of its ramps ([`HAZE_NEAR_WIDTH`],
+    /// [`HAZE_FAR_WIDTH`]).
+    pub haze: [f32; 4],
+    /// x: the draw distance in units, where the haze ends. y: the height of the water plane of
+    /// the cell; the air takes only the lights at or above it (D526). z, w: not used.
+    pub haze_end: [f32; 4],
 }
 
 /// What a made grid has, for the log.
@@ -820,6 +827,8 @@ fn finish(
             counts: [side, level2 as u32, lists_at as u32, lamp_count as u32],
             values: [size, 0.0, 0.0, 0.0],
             camera_z: [0.0; 4],
+            haze: [0.0; 4],
+            haze_end: [0.0; 4],
         },
         lamps,
         words,
@@ -854,6 +863,12 @@ struct LampValues {
     values: vec4f,
     // The z axis of the camera, for the bias of the original lights.
     camera_z: vec4f,
+    // The haze in the fog: x the strength k, y the power of the fog on it, z and w the widths
+    // of its ramps after the view range and before the draw distance.
+    haze: vec4f,
+    // x: the draw distance, where the haze ends. y: the height of the water plane; the air
+    // takes only the lights at or above it.
+    haze_end: vec4f,
 }
 @group(0) @binding(B0) var<uniform> lamp_values: LampValues;
 @group(0) @binding(B1) var<storage, read> lamps: array<Lamp>;
@@ -863,21 +878,34 @@ struct LampValues {
 /// The light of the lamps at a pixel, for a shader that starts with the view group and has
 /// [`super::LIGHT_FUNCTIONS`]: the walk of the grid to the pixel's small cell, and each lamp of
 /// its list by the light function of a near light of the game, with the facing and the fade over
-/// the last quarter of the lamp's end.
+/// the last quarter of the lamp's end. The same walk gives the light in the air for the haze
+/// (D498), without the facing and only from the lights at or above the water plane (D526).
 pub const LAMP_LIGHT_WGSL: &str = "
+// The light of the distant lamps at p: on the surface with the normal, and in the air (no facing).
+struct LampSums {
+    surface: vec3f,
+    air: vec3f,
+}
+
 // The light that the distant lamps give a pixel at p with the normal (of length 1).
 fn lamp_light(p: vec3f, normal: vec3f) -> vec3f {
+    return lamp_sums(p, normal).surface;
+}
+
+// The light of the distant lamps at p: one walk gives both sums.
+fn lamp_sums(p: vec3f, normal: vec3f) -> LampSums {
+    var sums = LampSums(vec3f(0.0), vec3f(0.0));
     let strength = lamp_values.values.y;
     if strength <= 0.0 {
-        return vec3f(0.0);
+        return sums;
     }
     let cell = vec2i(floor(p.xy / 8192.0)) - lamp_values.grid.xy;
     if any(cell < vec2i(0)) || any(cell >= lamp_values.grid.zw) {
-        return vec3f(0.0);
+        return sums;
     }
     let lit = lamp_grid[u32(cell.y * lamp_values.grid.z + cell.x)];
     if lit == 0xffffffffu {
-        return vec3f(0.0);
+        return sums;
     }
     let side = lamp_values.counts.x;
     let corner = vec2f(cell + lamp_values.grid.xy) * 8192.0;
@@ -886,7 +914,9 @@ fn lamp_light(p: vec3f, normal: vec3f) -> vec3f {
     let first = lamp_values.counts.z + lamp_grid[pair];
     let count = lamp_grid[pair + 1u];
     let original = lamp_values.values.z > 0.5;
+    let haze_on = lamp_values.haze.x > 0.0;
     var sum = vec3f(0.0);
+    var air = vec3f(0.0);
     for (var i = 0u; i < count; i++) {
         let lamp = lamps[lamp_grid[first + i]];
         let to_light = lamp.position + lamp.bias * lamp_values.camera_z.xyz - p;
@@ -897,14 +927,26 @@ fn lamp_light(p: vec3f, normal: vec3f) -> vec3f {
         }
         let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
         let fade = light_end_fade(distance, 1.0 / lamp.end);
+        // The air takes a light only at or above the water plane; the surface takes every light.
+        let with_air = haze_on && lamp.position.z >= lamp_values.haze_end.y;
         if original {
             let falloff = light_original_falloff(lamp.terms.x, lamp.terms.z, distance2) * fade;
             sum += (lambert + lamp.wrap) * falloff * lamp.color;
+            if with_air {
+                air += falloff * lamp.color;
+            }
         } else {
-            sum += lambert * light_falloff(lamp.terms, distance, distance2) * fade * lamp.color;
+            // The order of the products of the surface's sum is the one without the haze.
+            let falloff = light_falloff(lamp.terms, distance, distance2);
+            sum += lambert * falloff * fade * lamp.color;
+            if with_air {
+                air += falloff * fade * lamp.color;
+            }
         }
     }
-    return sum * strength;
+    sums.surface = sum * strength;
+    sums.air = air * strength;
+    return sums;
 }
 ";
 
@@ -915,6 +957,71 @@ fn lamp_light(p: vec3f, normal: vec3f) -> vec3f {
 pub fn lamp_view() -> u32 {
     static VIEW: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *VIEW.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_LAMP_VIEW", 0u32).min(2))
+}
+
+/// The reach of the lamps' haze (D534): the haze fades with the fog to the power 1 / reach.
+/// Section 12.2 of the design page of the distant lights.
+pub const HAZE_REACH: f32 = 4.0;
+
+/// The width in units of the ramp that brings the haze in after the game's view range.
+/// Section 12.2 of the design page of the distant lights.
+pub const HAZE_NEAR_WIDTH: f32 = 4096.0;
+
+/// The width in units of the ramp that takes the haze out before the draw distance.
+/// Section 12.2 of the design page of the distant lights.
+pub const HAZE_FAR_WIDTH: f32 = 8192.0;
+
+/// The values of the lamps' haze in a frame (D498).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HazeFrame {
+    /// The strength k of the haze, the tunable `lights.lamps.haze`; 0 has none.
+    pub k: f32,
+    /// The draw distance in units, where the haze ends.
+    pub draw_distance: f32,
+    /// The height of the water plane (`sea_plane`); the air takes only the lights at or above
+    /// it (D526). The lowest float when there is no plane, so that every light counts.
+    pub water_plane: f32,
+}
+
+/// The log line of the lamps' haze: at the first frame, and again when k or the water plane
+/// changes. Empty at the start, so that the first frame prints for every value.
+#[derive(Debug, Default)]
+pub struct HazeRoute {
+    /// k and the water plane of the last line, as bits, so that each value compares as itself.
+    last: Option<(u32, u32)>,
+}
+
+impl HazeRoute {
+    /// The line for the haze of this frame, when it is the first or a value changed. `source`
+    /// names where k comes from.
+    pub fn line(&mut self, haze: &HazeFrame, source: &str) -> Option<String> {
+        let key = (haze.k.to_bits(), haze.water_plane.to_bits());
+        if self.last == Some(key) {
+            return None;
+        }
+        self.last = Some(key);
+        let plane = if haze.water_plane == f32::MIN {
+            "no water plane: the air takes every light".to_string()
+        } else {
+            format!("the air takes the lights at or above the water plane {}", haze.water_plane)
+        };
+        Some(format!(
+            "lamps' haze: k {} ({source}), reach {HAZE_REACH}, near {HAZE_NEAR_WIDTH}, far {HAZE_FAR_WIDTH}; {plane}",
+            haze.k
+        ))
+    }
+}
+
+/// `MGE_XE_LAMP_HAZE=<k>`: the start of the tunable `lights.lamps.haze`, the strength of the
+/// lamps' haze in the fog, for a replay (0 turns the haze off). None without the switch, or
+/// with a value that is not a number of 0 or more, which the log names. Read once.
+pub fn haze_switch() -> Option<f32> {
+    static HAZE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *HAZE.get_or_init(|| {
+        nirender_wgpu::switches::parsed("MGE_XE_LAMP_HAZE", "a number of 0 or more", |text| {
+            text.trim().parse::<f32>().ok().filter(|k| *k >= 0.0)
+        })
+    })
 }
 
 /// The brightness of the sun (its colour times its visibility) and the ambient light that
@@ -1039,6 +1146,7 @@ impl LampBinding {
     pub fn set(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, grid: &LampGrid) -> bool {
         let mut values = grid.values;
         (values.values[1], values.camera_z) = (self.current.values[1], self.current.camera_z);
+        (values.haze, values.haze_end) = (self.current.haze, self.current.haze_end);
         self.current = values;
         let (lamps, words): (&[u8], &[u8]) = (bytemuck::cast_slice(&grid.lamps), bytemuck::cast_slice(&grid.words));
         if lamps.len() as u64 <= self.lamps.size() && words.len() as u64 <= self.grid.size() {
@@ -1052,17 +1160,28 @@ impl LampBinding {
         true
     }
 
-    /// The values of the frame: the strength of the lamps' light (0 for none), and the z axis
-    /// of the camera. The buffer is written only when they change.
-    pub fn set_frame(&mut self, queue: &wgpu::Queue, strength: f32, camera_z: [f32; 3]) {
+    /// The values of the frame: the strength of the lamps' light (0 for none), the z axis of
+    /// the camera, and for their haze in the fog its strength (0 for none), the draw distance,
+    /// where it ends, and the height of the water plane, under which a light has no haze. The
+    /// buffer is written only when they change.
+    pub fn set_frame(&mut self, queue: &wgpu::Queue, strength: f32, camera_z: [f32; 3], haze: HazeFrame) {
         let camera_z = [camera_z[0], camera_z[1], camera_z[2], 0.0];
         let view = lamp_view() as f32;
-        if self.current.values[1] == strength && self.current.values[3] == view && self.current.camera_z == camera_z {
+        let haze_values = [haze.k, 1.0 / HAZE_REACH, HAZE_NEAR_WIDTH, HAZE_FAR_WIDTH];
+        let haze_end = [haze.draw_distance, haze.water_plane, 0.0, 0.0];
+        if self.current.values[1] == strength
+            && self.current.values[3] == view
+            && self.current.camera_z == camera_z
+            && self.current.haze == haze_values
+            && self.current.haze_end == haze_end
+        {
             return;
         }
         self.current.values[1] = strength;
         self.current.values[3] = view;
         self.current.camera_z = camera_z;
+        self.current.haze = haze_values;
+        self.current.haze_end = haze_end;
         queue.write_buffer(&self.values, 0, bytemuck::bytes_of(&self.current));
     }
 }
@@ -1564,7 +1683,7 @@ mod tests {
     #[test]
     fn the_lamp_is_64_bytes_and_the_wgsl_names_its_bindings() {
         assert_eq!(size_of::<GpuLamp>(), 64);
-        assert_eq!(size_of::<LampValues>(), 64);
+        assert_eq!(size_of::<LampValues>(), 96);
         let code = wgsl_at(1);
         assert!(code.contains("@group(0) @binding(1) var<uniform> lamp_values"));
         assert!(code.contains("@group(0) @binding(3) var<storage, read> lamp_grid"));
@@ -1662,5 +1781,49 @@ mod tests {
             light_wgsl()
         );
         crate::renderer::shader_check::check("the lamps' light", &code).unwrap();
+    }
+
+    /// The line of the lamps' haze comes at the first frame for every water plane, 0 and the
+    /// lowest float included, and again only when k or the plane changes.
+    #[test]
+    fn the_haze_line_comes_first_and_on_each_change() {
+        let frame = |k: f32, water_plane: f32| HazeFrame {
+            k,
+            draw_distance: 8192.0 * 10.0,
+            water_plane,
+        };
+        for plane in [0.0, -1.0, f32::MIN] {
+            let mut route = HazeRoute::default();
+            assert!(route.line(&frame(0.5, plane), "the tunable").is_some(), "plane {plane}");
+            assert_eq!(route.line(&frame(0.5, plane), "the tunable"), None, "plane {plane}");
+        }
+
+        let mut route = HazeRoute::default();
+        assert_eq!(
+            route.line(&frame(0.5, -1.0), "the tunable").as_deref(),
+            Some(
+                "lamps' haze: k 0.5 (the tunable), reach 4, near 4096, far 8192; the air takes the lights at or above \
+                 the water plane -1"
+            )
+        );
+        assert_eq!(
+            route.line(&frame(0.5, f32::MIN), "the tunable").as_deref(),
+            Some(
+                "lamps' haze: k 0.5 (the tunable), reach 4, near 4096, far 8192; no water plane: the air takes every light"
+            )
+        );
+        assert!(route.line(&frame(0.0, f32::MIN), "the tunable").is_some());
+        assert_eq!(route.line(&frame(0.0, f32::MIN), "the tunable"), None);
+        // The draw distance alone does not change the line.
+        assert_eq!(
+            route.line(
+                &HazeFrame {
+                    draw_distance: 1.0,
+                    ..frame(0.0, f32::MIN)
+                },
+                "the tunable"
+            ),
+            None
+        );
     }
 }

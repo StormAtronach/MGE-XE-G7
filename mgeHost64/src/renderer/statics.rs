@@ -1938,14 +1938,15 @@ override ALPHA_TO_COVERAGE: bool = false;
     }
     // In the mirror under water (flags.y is -1) the statics have no scattering: the interior
     // pass of `renderWaterReflection` fogs them with the linear fog of the game.
-    let lit = in.color + in.vertex_color * lamp_light(in.world, normalize(in.normal));
+    let lamps = lamp_sums(in.world, normalize(in.normal));
+    let lit = in.color + in.vertex_color * lamps.surface;
     if lamp_values.values.w > 1.5 {
         return vec4f(texel.rgb * in.vertex_color * lamp_light(in.world, normalize(in.normal)), alpha);
     }
     if lamp_values.values.w > 0.5 {
         return vec4f(lamp_light(in.world, normalize(in.normal)), alpha);
     }
-    return vec4f(fog_with(texel.rgb * lit, in.world, u.flags.y >= 0.0), alpha);
+    return vec4f(fog_with(texel.rgb * lit, in.world, u.flags.y >= 0.0, lamps.air), alpha);
 }
 ";
 
@@ -5197,6 +5198,12 @@ mod shader_tests {
         let view = crate::renderer::view::wgsl();
         check("distant statics", &super::shader_source()).unwrap();
         check("distant statics shadow", &format!("{view}{SET_WGSL}{SHADOW_SHADER}")).unwrap();
+        // The statics take no core mod (D498, test 7): no hook name, so the lamps' haze in
+        // their fog stays as built.
+        let statics = super::shader_source();
+        for hook in crate::renderer::core_mods::hook_names() {
+            assert!(!statics.contains(hook), "the statics' shader names the hook {hook}");
+        }
         check(
             "grass",
             &super::grass_source(crate::renderer::core_mods::CoreMods::built_in().shadow_hooks()),

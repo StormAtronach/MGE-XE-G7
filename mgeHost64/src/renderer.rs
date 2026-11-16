@@ -1281,6 +1281,8 @@ pub struct DistantLand {
     lamps_lit: bool,
     /// The strength of the lamps' light in the last log line about it.
     lamp_strength_logged: f32,
+    /// The log line of the lamps' haze (D498).
+    haze_route: lamp_grid::HazeRoute,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
@@ -1532,7 +1534,8 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     let footprint = max(length(ddx_patch), length(ddy_patch));
     let albedo = mix(near_albedo, far_albedo, smoothstep(0.5, 1.5, footprint));
     let normal = normalize(in.normal);
-    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + lamp_light(in.world, normal);
+    let lamps = lamp_sums(in.world, normal);
+    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + lamps.surface;
     let lit = albedo * in.color * light;
     if lamp_values.values.w > 1.5 {
         return vec4f(albedo * in.color * lamp_light(in.world, normal), 1.0);
@@ -1545,7 +1548,7 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     if u.flags.y != 0.0 && (in.world.z - u.flags.z) * u.flags.y < 0.0 {
         discard;
     }
-    return vec4f(fog_of(lit, in.world), 1.0);
+    return vec4f(fog_of(lit, in.world, lamps.air), 1.0);
 }
 ";
 
@@ -1717,14 +1720,16 @@ struct Out {
 /// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
 /// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
 /// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
-/// `sun_altitude`, and the shader a function `fog_range()`, the view range of the game.
+/// `sun_altitude`, and the shader a function `fog_range()`, the view range of the game. The
+/// fog takes the haze of the distant lamps too (D498), from `lamp_values` of the view group.
 const FOG_FUNCTION: &str = "
-fn fog_of(lit: vec3f, world: vec3f) -> vec3f {
-    return fog_with(lit, world, true);
+fn fog_of(lit: vec3f, world: vec3f, lamp_air: vec3f) -> vec3f {
+    return fog_with(lit, world, true, lamp_air);
 }
 
 // `fog_of` with a switch for the scattering: without it, the light that the air adds is left out.
-fn fog_with(lit: vec3f, world: vec3f, scatter: bool) -> vec3f {
+// `lamp_air` is the lamps' light in the air (`lamp_sums`), for their haze in the fog.
+fn fog_with(lit: vec3f, world: vec3f, scatter: bool, lamp_air: vec3f) -> vec3f {
     // fogColour: the exponential curve past the view range of the game, and the linear fog
     // of the near cells before it.
     let to_pixel = world - u.eye.xyz;
@@ -1748,7 +1753,23 @@ fn fog_with(lit: vec3f, world: vec3f, scatter: bool) -> vec3f {
         let scattered = (0.125 * mie + u.sky.rgb * rayleigh) * lost * (1.17 * air + 0.89) * u.sun_altitude.y;
         added = mix(added, scattered, u.sun_pos.w);
     }
-    return fog * lit + added;
+    return fog * lit + added + (1.0 - fog) * lamp_haze(lamp_air, fog, distance);
+}
+
+// The haze of the lamps in the fog (D498) at the distance d, where `fog` is the part of the
+// pixel's own colour (1 near, 0 in full fog). The light `lamp_air` in the air is held below 1
+// with its colour kept, fades with the fog to the power 1 / reach, and ramps in after the
+// game's view range and out before the draw distance.
+fn lamp_haze(lamp_air: vec3f, fog: f32, d: f32) -> vec3f {
+    let k = lamp_values.haze.x;
+    if k <= 0.0 {
+        return vec3f(0.0);
+    }
+    let v = k * lamp_air;
+    let held = v / (1.0 + max(v.r, max(v.g, v.b)));
+    let near = clamp((d - fog_range()) / max(lamp_values.haze.z, 1.0), 0.0, 1.0);
+    let far = clamp((lamp_values.haze_end.x - d) / max(lamp_values.haze.w, 1.0), 0.0, 1.0);
+    return held * pow(fog, lamp_values.haze.y) * near * far;
 }
 ";
 
@@ -1917,6 +1938,9 @@ impl DistantLand {
                 // The light of a particle starts from the user's setting; the tune changes it in play.
                 let mut tunables = tunables::Tunables::new();
                 tunables.start_at(tunables::PARTICLES, if settings.per_pixel_particles { 1.0 } else { 0.0 });
+                if let Some(k) = lamp_grid::haze_switch() {
+                    tunables.start_at(tunables::LAMP_HAZE, k);
+                }
                 tunables
             },
             settings: None,
@@ -1929,6 +1953,7 @@ impl DistantLand {
             frames_seen: 0,
             lamps_lit: false,
             lamp_strength_logged: -1.0,
+            haze_route: lamp_grid::HazeRoute::default(),
             lamps_wait_told: false,
             view_binding: None,
             shadow: None,
@@ -4442,11 +4467,29 @@ impl Extension for DistantLand {
                 lamp_grid::light_luminance([r, g, b], sun_vis, [ar, ag, ab])
             );
         }
+        let haze = lamp_grid::HazeFrame {
+            k: self.tunables.get(tunables::LAMP_HAZE),
+            draw_distance: self.draw_distance,
+            water_plane: self.environment.map_or(f32::MIN, |e| e.sea_plane()),
+        };
         let Some(lamps) = self.light_binding.as_mut() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
         };
-        lamps.set_frame(scene.queue, lamp_strength, [scene.view[2], scene.view[6], scene.view[10]]);
+        lamps.set_frame(
+            scene.queue,
+            lamp_strength,
+            [scene.view[2], scene.view[6], scene.view[10]],
+            haze,
+        );
+        let source = if lamp_grid::haze_switch().is_some() {
+            "MGE_XE_LAMP_HAZE at the start"
+        } else {
+            "the tunable"
+        };
+        if let Some(line) = self.haze_route.line(&haze, source) {
+            println!("{line}");
+        }
         let Some(views) = self.view_binding.as_ref() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
@@ -6742,6 +6785,18 @@ mod shader_tests {
         let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
         shader_check::check("distant land", &land).unwrap();
         shader_check::check("distant land shadow", &format!("{}{LAND_SHADOW_SHADER}", view::wgsl())).unwrap();
+    }
+
+    /// The land's shader takes no core mod (D498, test 7): its source names none of the hooks,
+    /// so a core mod cannot replace a part of the lamps' haze in it.
+    #[test]
+    fn the_land_shader_names_no_hook() {
+        let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
+        let hooks = core_mods::hook_names();
+        assert_eq!(hooks.len(), 6);
+        for hook in hooks {
+            assert!(!land.contains(hook), "the land's shader names the hook {hook}");
+        }
     }
 
     /// The world shader of the host with the text of this extension compiles as the device
