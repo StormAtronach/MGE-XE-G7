@@ -346,6 +346,35 @@ typedef struct MwseNativeUIScaleV1 {
 	uint32_t pickRayInViewSize;
 } MwseNativeUIScaleV1;
 
+// The light records of the loaded game files: the data handler's list of lights. Main thread.
+#define MWSE_NATIVE_QUERY_LIGHT_RECORDS 2u
+typedef struct MwseNativeLightRecordV1 {
+	// The record's id. It is the record's own string: copy it at once, as it can go when the
+	// records change.
+	const char* id;
+	// The radius of the record, in game units.
+	int32_t radius;
+	// Red, green and blue, then the fourth byte as the record holds it.
+	uint8_t color[4];
+	// The flags of the record: 0x1 dynamic, 0x2 can carry, 0x4 negative, 0x8 flicker, 0x10 fire,
+	// 0x20 off by default, 0x40 flicker slow, 0x80 pulse, 0x100 pulse slow.
+	uint32_t flags;
+} MwseNativeLightRecordV1;
+
+typedef struct MwseNativeLightRecordsV1 {
+	uint32_t structSize;
+	// The size of one record in `records`, at least sizeof(MwseNativeLightRecordV1). MWSE writes
+	// the fields that it knows and that fit, and steps by this size, so a record can grow at its
+	// end.
+	uint32_t recordSize;
+	// The number of records that `records` has room for. It can be 0, to ask for the count.
+	uint32_t capacity;
+	// Written by MWSE: the number of light records. When it is more than `capacity`, MWSE wrote
+	// `capacity` of them, and the module asks again with more room.
+	uint32_t count;
+	MwseNativeLightRecordV1* records;
+} MwseNativeLightRecordsV1;
+
 //
 // The table.
 //
