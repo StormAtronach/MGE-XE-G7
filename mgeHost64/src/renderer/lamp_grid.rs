@@ -983,6 +983,35 @@ pub struct HazeFrame {
     pub water_plane: f32,
 }
 
+/// The log line of the lamps' haze: at the first frame, and again when k or the water plane
+/// changes. Empty at the start, so that the first frame prints for every value.
+#[derive(Debug, Default)]
+pub struct HazeRoute {
+    /// k and the water plane of the last line, as bits, so that each value compares as itself.
+    last: Option<(u32, u32)>,
+}
+
+impl HazeRoute {
+    /// The line for the haze of this frame, when it is the first or a value changed. `source`
+    /// names where k comes from.
+    pub fn line(&mut self, haze: &HazeFrame, source: &str) -> Option<String> {
+        let key = (haze.k.to_bits(), haze.water_plane.to_bits());
+        if self.last == Some(key) {
+            return None;
+        }
+        self.last = Some(key);
+        let plane = if haze.water_plane == f32::MIN {
+            "no water plane: the air takes every light".to_string()
+        } else {
+            format!("the air takes the lights at or above the water plane {}", haze.water_plane)
+        };
+        Some(format!(
+            "lamps' haze: k {} ({source}), reach {HAZE_REACH}, near {HAZE_NEAR_WIDTH}, far {HAZE_FAR_WIDTH}; {plane}",
+            haze.k
+        ))
+    }
+}
+
 /// `MGE_XE_LAMP_HAZE=<k>`: the start of the tunable `lights.lamps.haze`, the strength of the
 /// lamps' haze in the fog, for a replay (0 turns the haze off). None without the switch, or
 /// with a value that is not a number of 0 or more, which the log names. Read once.

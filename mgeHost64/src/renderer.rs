@@ -1281,6 +1281,8 @@ pub struct DistantLand {
     lamps_lit: bool,
     /// The strength of the lamps' light in the last log line about it.
     lamp_strength_logged: f32,
+    /// The log line of the lamps' haze (D498).
+    haze_route: lamp_grid::HazeRoute,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
@@ -1951,6 +1953,7 @@ impl DistantLand {
             frames_seen: 0,
             lamps_lit: false,
             lamp_strength_logged: -1.0,
+            haze_route: lamp_grid::HazeRoute::default(),
             lamps_wait_told: false,
             view_binding: None,
             shadow: None,
@@ -4464,6 +4467,11 @@ impl Extension for DistantLand {
                 lamp_grid::light_luminance([r, g, b], sun_vis, [ar, ag, ab])
             );
         }
+        let haze = lamp_grid::HazeFrame {
+            k: self.tunables.get(tunables::LAMP_HAZE),
+            draw_distance: self.draw_distance,
+            water_plane: self.environment.map_or(f32::MIN, |e| e.sea_plane()),
+        };
         let Some(lamps) = self.light_binding.as_mut() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
@@ -4472,12 +4480,16 @@ impl Extension for DistantLand {
             scene.queue,
             lamp_strength,
             [scene.view[2], scene.view[6], scene.view[10]],
-            lamp_grid::HazeFrame {
-                k: self.tunables.get(tunables::LAMP_HAZE),
-                draw_distance: self.draw_distance,
-                water_plane: self.environment.map_or(f32::MIN, |e| e.sea_plane()),
-            },
+            haze,
         );
+        let source = if lamp_grid::haze_switch().is_some() {
+            "MGE_XE_LAMP_HAZE at the start"
+        } else {
+            "the tunable"
+        };
+        if let Some(line) = self.haze_route.line(&haze, source) {
+            println!("{line}");
+        }
         let Some(views) = self.view_binding.as_ref() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
