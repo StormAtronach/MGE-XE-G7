@@ -6689,6 +6689,50 @@ mod shader_tests {
         assert_eq!(members(core_mods::SKY_INTERFACE), members(&source));
     }
 
+    /// The crate's rewrite for the stage shaders gives a text for each kind of stage key on the
+    /// world shader of this helper: the crate's text joined with the sky part, the draw part and
+    /// the built-in shadow hooks, alone and with the clouds hook of a Sky file, in both texture
+    /// tiers and in each world variant of a debug view. The crate tests the rewrite on its own
+    /// text; a part of this extension's text that the rewrite cannot take shows only here, with
+    /// the kind of key, the part that refused and the count of its matches. A failed rewrite
+    /// draws the same picture on the uber-shader, so no picture shows it.
+    #[test]
+    fn the_stage_rewrite_takes_the_world_shader_of_the_helper() {
+        use nirender_wgpu::debug_lines::view_id;
+        let shadow_hooks = core_mods::CoreMods::built_in();
+        let file = "//! interface: mge-xe-core 1\nfn clouds_color(p: CloudPixel) -> vec4f { return p.color * cloud_texture(p.texcoords) * sky_fog_color(p.direction); }\n";
+        let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", file)], &[], &[], &sky_homes());
+        let clouds_hook = mods.sky_hooks().expect("the hook of the file");
+        for (name, sky_hooks) in [("no Sky file", None), ("a clouds hook", Some(clouds_hook))] {
+            let tier_a = world_source(shadow_hooks.shadow_hooks(), sky_hooks);
+            let tier_c = nirender_wgpu::tier_c_shader_source(&tier_a);
+            for (tier, source) in [("tier a", tier_a), ("tier c", tier_c)] {
+                let no_refusal = Vec::<String>::new();
+                assert_eq!(nirender_wgpu::stage_rewrite_refusals(&source), no_refusal, "{name}, {tier}");
+                for id in [view_id::LIGHTS, view_id::SHADOW_LAYERS] {
+                    let variant = nirender_wgpu::world_variant_source(&source, id).expect("the DEBUG_VIEW line");
+                    assert_eq!(
+                        nirender_wgpu::stage_rewrite_refusals(&variant),
+                        no_refusal,
+                        "{name}, {tier}, world variant {id}"
+                    );
+                }
+            }
+        }
+        // The null: the same text without the end mark of the crate's stage loop gives a refusal.
+        // When the crate changes the mark, change this text with it.
+        let mark = "// STAGE LOOP END";
+        let whole = world_source(shadow_hooks.shadow_hooks(), None);
+        assert_eq!(whole.matches(mark).count(), 1, "the mark of the crate");
+        let refusals = nirender_wgpu::stage_rewrite_refusals(&whole.replace(mark, "// no mark"));
+        assert!(
+            refusals
+                .iter()
+                .any(|refusal| refusal.contains("the end mark of the stage loop")),
+            "{refusals:?}"
+        );
+    }
+
     /// The draws of the sky take no sun shadow: their values hold slots 5 and 7, also for a sky
     /// draw that writes depth.
     #[test]
