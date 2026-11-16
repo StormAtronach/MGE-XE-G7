@@ -536,6 +536,9 @@ pub struct GridReport {
     pub lit_cells: usize,
     /// The longest list of a small cell.
     pub fullest: usize,
+    /// The small cell of the longest list, in small cells from the world's origin (the first in
+    /// the order of the cells among lists of the same length).
+    pub fullest_at: (i32, i32),
     /// The bound of a list.
     pub bound: usize,
     /// The small cells whose lamps were over the bound at 256 units, and the lamps that their
@@ -553,10 +556,19 @@ impl GridReport {
         if self.lamps == 0 {
             return "distant lamps: none".to_string();
         }
+        let (x, y) = (self.fullest_at.0 as f32 * self.size, self.fullest_at.1 as f32 * self.size);
         let mut line = format!(
-            "distant lamps: {} lamps, cells of {} units in {} exterior cells, the fullest cell {} lamps (the bound {}); \
-             the lamps {} bytes, the grid {} bytes",
-            self.lamps, self.size, self.lit_cells, self.fullest, self.bound, self.lamp_bytes, self.grid_bytes
+            "distant lamps: {} lamps, cells of {} units in {} exterior cells, the fullest cell {} lamps at ({x}, {y}) \
+             in exterior cell ({}, {}) (the bound {}); the lamps {} bytes, the grid {} bytes",
+            self.lamps,
+            self.size,
+            self.lit_cells,
+            self.fullest,
+            (x / CELL).floor(),
+            (y / CELL).floor(),
+            self.bound,
+            self.lamp_bytes,
+            self.grid_bytes
         );
         if self.cells_over != 0 {
             line += &format!(
@@ -718,7 +730,10 @@ fn build_lists(lamps: Vec<GpuLamp>, bound: usize) -> LampGrid {
         .find(|(size, lists)| *size == SIZES[SIZES.len() - 1] || lists.values().all(|list| list.len() <= bound))
         .expect("the last size is always taken");
     report.size = size;
-    report.fullest = lists.values().map(Vec::len).max().unwrap_or(0);
+    if let Some((at, list)) = lists.iter().max_by(|a, b| a.1.len().cmp(&b.1.len()).then(b.0.cmp(a.0))) {
+        report.fullest = list.len();
+        report.fullest_at = *at;
+    }
 
     // A list over the bound keeps the lamps with the most light at the cell's centre.
     for ((cx, cy), list) in lists.iter_mut() {
@@ -1464,6 +1479,16 @@ mod tests {
         // have a second level.
         assert_eq!(grid.report.lit_cells, 8, "{:?}", grid.report);
         assert!(grid.report.describe().contains("4 lamps, cells of 1024 units"));
+        // Three small cells have both lamps near the origin; the first of them in the order of
+        // the cells is named.
+        assert_eq!((grid.report.fullest, grid.report.fullest_at), (2, (-1, 0)));
+        assert!(
+            grid.report
+                .describe()
+                .contains("the fullest cell 2 lamps at (-1024, 0) in exterior cell (-1, 0)"),
+            "{}",
+            grid.report.describe()
+        );
     }
 
     /// With the original lights and a falloff of the linear form, a lamp has a bias of 25 and the
