@@ -1866,7 +1866,7 @@ struct Out {
     // again, as in the shader of MGE XE.
     let n = normalize(in.normal.xyz * 2.0 - 1.0);
     let normal = n.x * in.world0.xyz + n.y * in.world1.xyz + n.z * in.world2.xyz;
-    let light = u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + u.ambient.rgb + in.normal.w + baked_light(world);
+    let light = u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + u.ambient.rgb + in.normal.w;
     // The colour of a vertex has the bytes blue, green, red.
     out.color = in.color.bgr * light;
     out.coordinate = in.coordinate;

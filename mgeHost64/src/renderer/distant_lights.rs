@@ -7,305 +7,31 @@
 //!   added to the picture, with the colour of the light. A glow has a least size on the screen,
 //!   so that a far light stays a point; it is dimmer then. It goes away in the day, and the fog
 //!   takes it as it takes the land. A light that flickers or pulses in the game does so here.
-//! - The baked light: the generator gives the light of the sources on the land of each lit
-//!   cell, a tile of 65 x 65 values (the vertices of the land). The tiles are in one texture,
-//!   with a texture of the tile of each cell. The shaders of the land and of the statics add it
-//!   to their light at night (`baked_light`, in the view group, from [`LightBinding`]).
+//! - The lamps of the file's exterior block go to [`super::lamp_grid`], which makes the list and
+//!   the grid of the light that the lamps give the distant land and statics.
 
-use nirender_wgpu::objects::{Create, CreateView};
+use nirender_wgpu::objects::Create;
 use std::path::{Path, PathBuf};
 
 use nirender_wgpu::pass_report::Skip;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
+use super::lamp_grid::SourceLamp;
 use distantland::mge_xe::lights::{EXTERIOR_KEY, parse_lights};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
 
-/// The values on a side of a tile. The file has no tiles since its version 3, so the baked
-/// light has none to show.
-const TILE: u32 = 65;
-/// The tiles in a row of the texture of the tiles.
-const TILES_IN_ROW: u32 = 64;
-/// The bytes of a value of a tile: red, green, blue, 255, each half of the light.
-const TEXEL: u32 = 4;
 /// The values of a source in the list of the glows: two rows of four numbers.
 const GLOW_WORDS: u64 = 8;
-
-/// The baked light for a shader of the land or of the statics: `GROUP` is the number of the
-/// bind group with the bindings of [`LightBinding`] in that shader, and `B0` to `B3` their
-/// numbers. `baked_light(world)` is the light at a place.
-const BAKED_WGSL: &str = "
-struct LightMap {
-    // The first cell of the texture of the tiles of the cells, and its size in cells.
-    origin: vec4f,
-    // x: the strength (0 for none). y: the tiles in a row of the texture of the tiles.
-    values: vec4f,
-}
-@group(GROUP) @binding(B0) var<uniform> light_map: LightMap;
-@group(GROUP) @binding(B1) var light_tiles: texture_2d<f32>;
-@group(GROUP) @binding(B2) var light_index: texture_2d<i32>;
-@group(GROUP) @binding(B3) var light_sampler: sampler;
-
-fn baked_light(world: vec3f) -> vec3f {
-    if light_map.values.x <= 0.0 {
-        return vec3f(0.0);
-    }
-    let cell = vec2i(floor(world.xy / 8192.0));
-    let at = cell - vec2i(light_map.origin.xy);
-    if any(at < vec2i(0)) || any(at >= vec2i(light_map.origin.zw)) {
-        return vec3f(0.0);
-    }
-    let tile = textureLoad(light_index, at, 0).r;
-    if tile < 0 {
-        return vec3f(0.0);
-    }
-    let in_row = i32(light_map.values.y);
-    let corner = vec2f(f32(tile % in_row), f32(tile / in_row)) * 65.0;
-    // The values are at the vertices of the land, 128 units apart, from the corner of the cell.
-    let local = clamp((world.xy - vec2f(cell) * 8192.0) / 128.0, vec2f(0.0), vec2f(64.0));
-    let uv = (corner + local + 0.5) / vec2f(textureDimensions(light_tiles));
-    // A byte holds half of the light.
-    return 2.0 * textureSampleLevel(light_tiles, light_sampler, uv, 0.0).rgb * light_map.values.x;
-}
-";
-
-/// [`BAKED_WGSL`] for the bind group `group`, with the bindings from `first` ([`LightBinding::layout_entries`]).
-pub fn baked_wgsl_at(group: u32, first: u32) -> String {
-    (0..4).fold(BAKED_WGSL.replace("GROUP", &group.to_string()), |code, i| {
-        code.replace(&format!("B{i}"), &(first + i).to_string())
-    })
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct MapUniforms {
-    origin: [f32; 4],
-    values: [f32; 4],
-}
-
-/// The resources of the baked light that the land and the statics read, as four bindings of
-/// the view group (`view::ViewBinding`). It has no light until a file comes
-/// ([`DistantLights::poll`]).
-pub struct LightBinding {
-    uniforms: wgpu::Buffer,
-    sampler: wgpu::Sampler,
-    tiles: wgpu::TextureView,
-    index: wgpu::TextureView,
-    /// One more each time the tiles change, so that a group with these bindings
-    /// (`entries`) is made again.
-    pub generation: u64,
-    map: MapUniforms,
-}
-
-impl LightBinding {
-    /// The layout of the four bindings of the baked light, from the binding `first`.
-    pub fn layout_entries(first: u32) -> [wgpu::BindGroupLayoutEntry; 4] {
-        let texture_entry = |binding: u32, sample_type: wgpu::TextureSampleType| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        [
-            wgpu::BindGroupLayoutEntry {
-                binding: first,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            texture_entry(first + 1, wgpu::TextureSampleType::Float { filterable: true }),
-            texture_entry(first + 2, wgpu::TextureSampleType::Sint),
-            wgpu::BindGroupLayoutEntry {
-                binding: first + 3,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-        ]
-    }
-
-    /// The four bindings of the baked light, from the binding `first`, for a group of another
-    /// layout.
-    pub fn entries(&self, first: u32) -> [wgpu::BindGroupEntry<'_>; 4] {
-        [
-            wgpu::BindGroupEntry {
-                binding: first,
-                resource: self.uniforms.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: first + 1,
-                resource: wgpu::BindingResource::TextureView(&self.tiles),
-            },
-            wgpu::BindGroupEntry {
-                binding: first + 2,
-                resource: wgpu::BindingResource::TextureView(&self.index),
-            },
-            wgpu::BindGroupEntry {
-                binding: first + 3,
-                resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-        ]
-    }
-
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> LightBinding {
-        let map = MapUniforms {
-            origin: [0.0, 0.0, 1.0, 1.0],
-            values: [0.0, TILES_IN_ROW as f32, 0.0, 0.0],
-        };
-        let uniforms = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("distant lights, baked"),
-            contents: bytemuck::bytes_of(&map),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
-            label: Some("distant lights, baked"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let tiles = texture(
-            device,
-            queue,
-            "distant lights, the tiles",
-            1,
-            1,
-            wgpu::TextureFormat::Rgba8Unorm,
-            &[0; 4],
-        );
-        let index = texture(
-            device,
-            queue,
-            "distant lights, the tile of each cell",
-            1,
-            1,
-            wgpu::TextureFormat::R32Sint,
-            &(-1i32).to_le_bytes(),
-        );
-        LightBinding {
-            uniforms,
-            sampler,
-            tiles,
-            index,
-            generation: 0,
-            map,
-        }
-    }
-
-    /// The tiles of a file: one texture with the tiles in rows, and one with the tile of each
-    /// cell (-1 for none).
-    fn set_tiles(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, file: &LightsFile) {
-        if file.tiles.is_empty() {
-            return;
-        }
-        let (min_x, min_y) = file
-            .tiles
-            .iter()
-            .fold((i32::MAX, i32::MAX), |(x, y), cell| (x.min(cell.0), y.min(cell.1)));
-        let (max_x, max_y) = file
-            .tiles
-            .iter()
-            .fold((i32::MIN, i32::MIN), |(x, y), cell| (x.max(cell.0), y.max(cell.1)));
-        let (width, height) = ((max_x - min_x + 1) as u32, (max_y - min_y + 1) as u32);
-        let mut index = vec![-1i32; (width * height) as usize];
-        for (tile, cell) in file.tiles.iter().enumerate() {
-            index[((cell.1 - min_y) as u32 * width + (cell.0 - min_x) as u32) as usize] = tile as i32;
-        }
-        let count = file.tiles.len() as u32;
-        let rows = count.div_ceil(TILES_IN_ROW);
-        let (atlas_width, atlas_height) = (TILES_IN_ROW.min(count) * TILE, rows * TILE);
-        // From the tiles one after the other to rows of tiles.
-        let mut atlas = vec![0u8; (atlas_width * atlas_height * TEXEL) as usize];
-        let tile_bytes = (TILE * TILE * TEXEL) as usize;
-        for tile in 0..count {
-            let (column, row) = (tile % TILES_IN_ROW, tile / TILES_IN_ROW);
-            let source = &file.texels[tile as usize * tile_bytes..(tile as usize + 1) * tile_bytes];
-            for y in 0..TILE {
-                let from = (y * TILE * TEXEL) as usize;
-                let to = (((row * TILE + y) * atlas_width + column * TILE) * TEXEL) as usize;
-                atlas[to..to + (TILE * TEXEL) as usize].copy_from_slice(&source[from..from + (TILE * TEXEL) as usize]);
-            }
-        }
-        let tiles = texture(
-            device,
-            queue,
-            "distant lights, the tiles",
-            atlas_width,
-            atlas_height,
-            wgpu::TextureFormat::Rgba8Unorm,
-            &atlas,
-        );
-        let index_bytes: Vec<u8> = index.iter().flat_map(|value| value.to_le_bytes()).collect();
-        let index = texture(
-            device,
-            queue,
-            "distant lights, the tile of each cell",
-            width,
-            height,
-            wgpu::TextureFormat::R32Sint,
-            &index_bytes,
-        );
-        (self.tiles, self.index) = (tiles, index);
-        self.generation += 1;
-        self.map.origin = [min_x as f32, min_y as f32, width as f32, height as f32];
-    }
-
-    /// The strength of the baked light for the frame: 0 for none.
-    pub fn set_strength(&mut self, queue: &wgpu::Queue, strength: f32) {
-        self.map.values[0] = strength;
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&self.map));
-    }
-}
-
-fn texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    label: &str,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-    data: &[u8],
-) -> wgpu::TextureView {
-    device
-        .counted_texture_with_data(
-            queue,
-            &wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            data,
-        )
-        .counted_view(&Default::default())
-}
 
 /// What the file has.
 struct LightsFile {
     /// The sources as the file has them, 32 bytes each: the layout of `Source` of the shader.
     sources: Vec<u8>,
     source_count: u32,
-    tiles: Vec<(i32, i32)>,
-    /// The values of the tiles, one tile after the other.
-    texels: Vec<u8>,
+    /// The lamps, for their light on the distant land and statics.
+    lamps: Vec<SourceLamp>,
     /// The light records of the exterior's lamps, with the values that the file has for them.
     records: Vec<FileLampRecord>,
 }
@@ -345,6 +71,16 @@ fn file_records(block: &distantland::mge_xe::lights::LightBlock) -> Vec<FileLamp
     records.into_iter().flatten().collect()
 }
 
+/// A lamp of the file with the values that its light takes.
+fn source_lamp(lamp: &distantland::mge_xe::lights::Lamp) -> SourceLamp {
+    SourceLamp {
+        position: lamp.position,
+        radius: lamp.radius,
+        color: lamp.color,
+        flags: lamp.flags,
+    }
+}
+
 /// Reads `lights.data` through the formats crate, which checks each count and length against
 /// the file's end and gives the reason of a refusal. Only the exterior's block: the lamps of an
 /// interior's block have that interior's coordinates.
@@ -356,8 +92,7 @@ fn read(path: &Path) -> Result<LightsFile, String> {
     Ok(LightsFile {
         sources,
         source_count,
-        tiles: Vec::new(),
-        texels: Vec::new(),
+        lamps: exterior.map_or_else(Vec::new, |block| block.lamps.iter().map(source_lamp).collect()),
         records: exterior.map_or_else(Vec::new, file_records),
     })
 }
@@ -636,6 +371,8 @@ pub struct DistantLights {
     glows: Option<Glows>,
     /// The light records of the file's exterior lamps, once the file is read.
     file_records: Option<Vec<FileLampRecord>>,
+    /// The lamps of the file's exterior block, once the file is read.
+    file_lamps: Option<Vec<SourceLamp>>,
 }
 
 impl DistantLights {
@@ -646,14 +383,14 @@ impl DistantLights {
         let file = LightsFile {
             sources: vec![0; sources as usize * 32],
             source_count: sources,
-            tiles: Vec::new(),
-            texels: Vec::new(),
+            lamps: Vec::new(),
             records: Vec::new(),
         };
         DistantLights {
             loading: None,
             glows: Some(make_glows(scene, &file, view_layout)),
             file_records: None,
+            file_lamps: None,
         }
     }
 
@@ -668,6 +405,7 @@ impl DistantLights {
             loading: Some(receiver),
             glows: None,
             file_records: None,
+            file_lamps: None,
         }
     }
 
@@ -693,35 +431,34 @@ impl DistantLights {
         }
     }
 
-    /// Takes the file when it has been read: the baked light into `binding`, and the glows,
-    /// whose pipeline takes the view group of `view_layout`.
-    pub fn poll(
-        &mut self,
-        scene: &SceneView,
-        binding: &mut LightBinding,
-        view_layout: &wgpu::BindGroupLayout,
-        synchronous: bool,
-    ) {
-        let Some(result) = self.take_file(synchronous) else { return };
+    /// Takes the file when it has been read: the glows, whose pipeline takes the view group of
+    /// `view_layout`, and the lamps ([`DistantLights::file_lamps`]). True when this call took a
+    /// file.
+    pub fn poll(&mut self, scene: &SceneView, view_layout: &wgpu::BindGroupLayout, synchronous: bool) -> bool {
+        let Some(result) = self.take_file(synchronous) else {
+            return false;
+        };
         let file = match result {
             Ok(file) => file,
             Err(problem) => {
                 println!("distant lights: none ({problem})");
-                return;
+                return false;
             }
         };
-        println!(
-            "distant lights: {} light sources, {} lit cells baked",
-            file.source_count,
-            file.tiles.len()
-        );
-        binding.set_tiles(scene.device, scene.queue, &file);
+        println!("distant lights: {} light sources", file.source_count);
         if file.source_count > 0 {
             self.glows = Some(super::timed("the distant lights' pipeline", || {
                 make_glows(scene, &file, view_layout)
             }));
         }
         self.file_records = Some(file.records);
+        self.file_lamps = Some(file.lamps);
+        true
+    }
+
+    /// The lamps of the file's exterior block; [`None`] until the file is read.
+    pub fn file_lamps(&self) -> Option<&[SourceLamp]> {
+        self.file_lamps.as_deref()
     }
 
     /// The light records of the file's exterior lamps; [`None`] until the file is read.
@@ -1001,6 +738,7 @@ mod tests {
             loading: Some(receiver),
             glows: None,
             file_records: None,
+            file_lamps: None,
         };
         assert!(lights.take_file(false).is_none());
         assert!(lights.loading.is_some());
@@ -1029,13 +767,5 @@ mod tests {
         assert_eq!(night_of([1.0, 0.98823535, 0.9333334]), 0.0);
         let dusk = night_of([0.6, 0.6, 0.6]);
         assert!(dusk > 0.0 && dusk < 1.0);
-    }
-
-    #[test]
-    fn the_baked_code_names_its_group() {
-        let code = baked_wgsl_at(2, 5);
-        assert!(code.contains("@group(2) @binding(6)"));
-        assert!(!code.contains("GROUP"));
-        assert!(!code.contains("@binding(B"));
     }
 }

@@ -42,6 +42,7 @@ mod debug_view;
 use debug_view::DebugView;
 mod distant_lights;
 mod gpu_time;
+mod lamp_grid;
 mod lamp_values;
 mod menu_keep;
 mod post;
@@ -1255,10 +1256,15 @@ pub struct DistantLand {
     /// a quarter of a cell or more.
     settings_told_distance: (f32, f32),
     statics: Option<statics::Statics>,
-    /// The distant lights (`lights.data`), and the bind group of their baked light that the
-    /// land and the statics read; [`None`] before the first frame.
+    /// The distant lights (`lights.data`), and the buffers of their lamps that the land and
+    /// the statics read; [`None`] before the first frame.
     lights: Option<distant_lights::DistantLights>,
-    light_binding: Option<distant_lights::LightBinding>,
+    light_binding: Option<lamp_grid::LampBinding>,
+    /// The light settings and the fade that the lamps' grid was made for; [`None`] before it
+    /// was made, and again when a new lights file comes.
+    lamps_made_for: Option<(lamp_values::LightSettings, f32)>,
+    /// The line that the lamps wait for the light settings (record 12) is in the log.
+    lamps_wait_told: bool,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
@@ -1509,7 +1515,7 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
 
     let footprint = max(length(ddx_patch), length(ddy_patch));
     let albedo = mix(near_albedo, far_albedo, smoothstep(0.5, 1.5, footprint));
-    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0) + baked_light(in.world);
+    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normalize(in.normal), -u.sun_direction.xyz), 0.0, 1.0);
     let lit = albedo * in.color * light;
 
     // In a reflection, only one side of the water plane: flags.y is the side, flags.z the plane.
@@ -1835,6 +1841,8 @@ impl DistantLand {
             statics: None,
             lights: None,
             light_binding: None,
+            lamps_made_for: None,
+            lamps_wait_told: false,
             view_binding: None,
             shadow: None,
             shadow_in_frame: false,
@@ -1998,21 +2006,45 @@ impl DistantLand {
         let game_view = self.frame_view(scene, &scene.projection);
         let binding = self
             .light_binding
-            .get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+            .get_or_insert_with(|| lamp_grid::LampBinding::new(scene.device));
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
         views.refresh(scene.device, binding);
         views.write(scene.queue, view::GAME, &game_view);
     }
 
-    /// The distant lights: the bind group of their baked light, the file when it comes, and
-    /// the view groups with that light, for the statics too.
+    /// The distant lights: the file when it comes, the buffers of the lamps when the file, the
+    /// light settings or the fade change, and the view groups with those buffers, for the
+    /// statics too.
     fn poll_lights(&mut self, scene: &SceneView) {
+        let lamp_fade = self.lamp_fade();
         let binding = self
             .light_binding
-            .get_or_insert_with(|| distant_lights::LightBinding::new(scene.device, scene.queue));
+            .get_or_insert_with(|| lamp_grid::LampBinding::new(scene.device));
         let views = self.view_binding.get_or_insert_with(|| view::ViewBinding::new(scene.device));
-        if let Some(lights) = self.lights.as_mut() {
-            lights.poll(scene, binding, &views.layout, self.synchronous);
+        if let Some(lights) = self.lights.as_mut()
+            && lights.poll(scene, &views.layout, self.synchronous)
+        {
+            self.lamps_made_for = None;
+        }
+        if let Some(lamps) = self.lights.as_ref().and_then(distant_lights::DistantLights::file_lamps) {
+            match self.light_settings {
+                // The terms of a lamp come from the engine's settings only (the page, section
+                // 2.1): without them the lamps wait.
+                None if !self.lamps_wait_told => {
+                    println!("distant lamps: {} lamps wait for the light settings (record 12)", lamps.len());
+                    self.lamps_wait_told = true;
+                }
+                Some(settings) if self.lamps_made_for != Some((settings, lamp_fade)) => {
+                    let grid = lamp_grid::build(
+                        lamp_grid::gpu_lamps(lamps, &settings, lamp_fade),
+                        settings.light_limit as usize,
+                    );
+                    println!("{}", grid.report.describe());
+                    binding.set(scene.device, &grid);
+                    self.lamps_made_for = Some((settings, lamp_fade));
+                }
+                _ => {}
+            }
         }
         if self.light_records_line_due {
             let file = self.lights.as_ref().and_then(distant_lights::DistantLights::file_records);
@@ -2504,7 +2536,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         label: Some("distant land"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
-    // Group 0: the view group (the view of the pass and the baked light); group 1: the values
+    // Group 0: the view group (the view of the pass and the lamps); group 1: the values
     // and the textures of the land. The shadow map has the view group only.
     let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("distant land"),
@@ -4055,22 +4087,13 @@ impl Extension for DistantLand {
             range,
         };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
-        // The baked light of the distant lights: at night, in the exterior. The night is the
-        // game's, from the hour against the weather's sunrise and sunset (the environment
-        // record); before the first record, the sun's colour serves.
+        // The night is the game's, from the hour against the weather's sunrise and sunset (the
+        // environment record); before the first record, the sun's colour serves.
         let night = self.night(scene);
-        let Some(binding) = self.light_binding.as_mut() else {
+        if self.light_binding.is_none() {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
-        };
-        binding.set_strength(
-            scene.queue,
-            if scene.interior {
-                0.0
-            } else {
-                self.tunables.get(tunables::BAKED_STRENGTH) * night
-            },
-        );
+        }
         let Some(views) = self.view_binding.as_ref() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
@@ -6254,6 +6277,14 @@ impl DistantLand {
         Some(([d[0] / length, d[1] / length, d[2] / length, 0.0], [light, 0.0, 0.0, 0.0]))
     }
 
+    /// The fade of a near light in an exterior, which a distant lamp takes too: the number of
+    /// radii where a light ends, 0 when the light for each pixel is not on in an exterior or
+    /// the fade is off (the page, section 2.2).
+    fn lamp_fade(&self) -> f32 {
+        let (on, interiors_only, fade, _) = self.per_pixel;
+        if on && !interiors_only { fade } else { 0.0 }
+    }
+
     fn per_pixel(&self) -> Option<PerPixel> {
         let (on, interiors_only, fade, original) = self.per_pixel;
         if !on || (interiors_only && !self.interior) {
@@ -7372,7 +7403,7 @@ mod set_free_tests {
 
         let (mut land, root) = land_with_no_data("gpu");
         land.lights = Some(distant_lights::DistantLights::with_glows(&scene, &views.layout, 4));
-        let light = distant_lights::LightBinding::new(&device, &queue);
+        let light = lamp_grid::LampBinding::new(&device);
         views.refresh(&device, &light);
         let before = land.views_live_bytes();
         assert_eq!(before, 0, "no spare: the main view's own sets are not counted");

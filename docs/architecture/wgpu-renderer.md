@@ -336,10 +336,10 @@ the frame, each with its own uniform buffer:
 | Binding | Holds | Stage |
 | --- | --- | --- |
 | 0 | uniform `View` (`u`): view projection, eye, fog colour, fog (exponential start and divisor, linear start and end), flags, sun direction, sun colour, ambient, the scattering (sun position, sky, outscatter, inscatter, sun altitude) | VF |
-| 1-4 | the baked light of the distant lights (`LightBinding`): uniform, texture of the tiles, texture `Sint` index, sampler | VF |
+| 1-3 | the distant lamps (`LampBinding`, `renderer/lamp_grid.rs`): uniform `LampValues` (the grid's place and layout, the strength of the frame), storage `lamps` (64 bytes a lamp), storage `lamp_grid` (the two levels of the grid and the lists) | F |
 
 The number of a view is the number of a statics set. The groups are made again when the
-baked light changes (`LightBinding::generation`). `before_world` writes the main, mirror and
+lamps change (`LampBinding::generation`). `before_world` writes the main, mirror and
 shadow views, and the game view at its start, in each frame with a world. The values of one
 pipeline only are in its group 1: `eye.w` of the view is 0 (the view range of a handoff, the
 time and the water level are values of a pipeline).
@@ -479,7 +479,7 @@ Alpha blending, colour only.
   pipeline into its group 1. A uniform struct in Rust gets a test of its size against its
   WGSL struct.
 - **WGSL** lives in Rust string constants, composed with `format!` (for example
-  `view::wgsl()` starts each shader of the view group with `View` and the baked light).
+  `view::wgsl()` starts each shader of the view group with `View` and the lamps).
   Mod shaders are `.wgsl` files: post shaders (see
   [`mgeHost64/POST_SHADERS.md`](../../mgeHost64/POST_SHADERS.md)) and water shaders (see
   [`water-shaders.md`](../water-shaders.md)).
