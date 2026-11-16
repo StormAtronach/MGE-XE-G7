@@ -79,13 +79,35 @@ At its start the renderer writes one line for each event:
 - `core mod: <file>: a start before ended in the build of the <home> with it; it is not used
   until it changes`: the helper ended while it built that home with the file (a lost device or
   a crash in the driver). The file is not used until its text changes. The debug overlay shows
-  this line and the one above.
+  this line and the one above;
+- `core mods: the world shader's pipeline failed with the built-in text too (<error>); no core
+  mod is dropped`: a pipeline of the world shader failed, and the same pipeline also fails with
+  the world shader's text without any core mod. The fault is not a core mod's: no file is
+  dropped, and the failed pipeline is kept as it is.
 
 A fault that ends the helper in a home's first build leaves a marker file in
 `%LOCALAPPDATA%\MGE XE` (`core-mod-build-<home>.txt`): it names the files of that build, and
-the next start reads it. In the world shader, a fault can come at a later pipeline than the
-first one: in that frame, the draws whose pipelines held keep the file's hooks, and the draw of
-the failed pipeline is skipped. The world shader takes the built-in hooks before the next frame.
+the next start reads it. The marker is up only during that first build. A game that closes
+while it loads leaves no marker.
+
+How long a file stays dropped:
+
+- A file that ended the helper in a home's first build is not used until its text changes,
+  over any number of starts.
+- A file dropped for an error of the device (the lines "the <home> failed with it on the
+  device") is dropped for that session only. The next start uses it again.
+
+In the world shader, a fault can come at a later pipeline than the first one: in that frame,
+the draws whose pipelines held keep the file's hooks, and the draws of the failed pipeline are
+skipped. Before the next frame, the renderer builds the failed pipeline one time with the text
+without any core mod. When that build fails too, nothing is dropped. Else the world shader
+tries the text without each file in turn, then without all of them. A text holds only when the
+first world pipeline and the failed one build with it.
+
+A limit: the device can give an internal error that is no fault of a file and that does not
+come again (for example, the driver runs out of a resource one time). When the build without
+any core mod then passes, a file is dropped that is not at fault. That costs the file for one
+session; the next start uses it again.
 
 ## Turn the core mods off
 

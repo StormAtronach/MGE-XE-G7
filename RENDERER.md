@@ -556,6 +556,9 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   refuses a core mod that fails in the back end or the driver. Without an end, the fallback
   runs as for a real fault; `:keep` keeps the failed build (the null test); `:exit` ends the
   helper in the build after its build marker is written (the test of the markers).
+  `MGE_XE_CORE_MOD_FAULT=world key` fails the pipeline of the first world key whatever the text:
+  a fault that is no core mod's, so the build with the built-in text fails too and no file is
+  dropped (the null of that probe).
 - `MGE_XE_CORE_MOD_MARKERS=<folder>`: the folder of the build markers of the core mods, in
   place of `%LOCALAPPDATA%\MGE XE`. A marker is up around the first build of each home with a
   mod's hooks; a start that finds one does not use the files it names until they change.
