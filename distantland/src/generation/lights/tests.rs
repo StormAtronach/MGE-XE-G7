@@ -77,7 +77,13 @@ fn usage() -> UsageInfo<'static> {
 }
 
 fn exterior(lights: &Lights) -> &LightBlock {
-    lights.block(EXTERIOR_KEY).expect("the exterior's block")
+    lights.block(&EXTERIOR_KEY).expect("the exterior's block")
+}
+
+/// The text that the plugin reader makes of a name's bytes: a decode as WINDOWS-1252, by the
+/// reader's own function.
+fn plugin_text(bytes: &[u8]) -> String {
+    bytes_io::Reader::new(bytes).load_string(bytes.len()).unwrap()
 }
 
 #[test]
@@ -124,7 +130,7 @@ fn a_lamp_is_a_placed_light_that_lights_and_that_no_script_disables() {
 
     let lights = light_blocks(&usage, true, true);
     let block = exterior(&lights);
-    let ids: Vec<&str> = block.records.iter().map(|record| record.id.as_str()).collect();
+    let ids: Vec<String> = block.records.iter().map(|record| record.id.to_string()).collect();
     assert_eq!(ids, ["lamp", "target"]);
     let places: Vec<f32> = block.lamps.iter().map(|lamp| lamp.position[0]).collect();
     // A target that is not persistent is not reached by its script's call.
@@ -146,12 +152,85 @@ fn an_interior_that_behaves_like_an_exterior_is_a_block_by_its_lower_case_name()
     place(&mut usage, "Arrille's Tradehouse", 3, reference("lamp", 3.0));
 
     let lights = light_blocks(&usage, true, true);
-    let keys: Vec<&str> = lights.blocks.iter().map(|block| block.key.as_str()).collect();
+    let keys: Vec<String> = lights.blocks.iter().map(|block| block.key.to_string()).collect();
     assert_eq!(keys, ["", "mournhold, plaza brindisi dorom"]);
 
     let lights = light_blocks(&usage, false, true);
-    let keys: Vec<&str> = lights.blocks.iter().map(|block| block.key.as_str()).collect();
+    let keys: Vec<String> = lights.blocks.iter().map(|block| block.key.to_string()).collect();
     assert_eq!(keys, [""]);
+}
+
+/// A cell name and a record id with bytes over 127 (here an install in WINDOWS-1251, and an id
+/// with a letter of WINDOWS-1252): the file holds the plugin's own bytes, the reader reads the
+/// file, and the keys are those that the renderer makes from the game's bytes.
+#[test]
+fn a_name_with_bytes_over_127_keeps_the_plugins_bytes() {
+    let cell_bytes = b"\xc1\xe0\xeb\xec\xee\xf0\xe0, \x80\x9f Hall";
+    let id_bytes = b"Lampe_\xe9t\xe9";
+    let cell = plugin_text(cell_bytes);
+    let id = plugin_text(id_bytes);
+
+    let mut usage = usage();
+    add_light(&mut usage, &id, light(300.0, [255, 200, 100], 0), "l\\lamp.nif");
+    interior(&mut usage, &cell, true);
+    let placed = DistantReference {
+        id: Cow::Owned(id),
+        ..reference("", 2.0)
+    };
+    place(&mut usage, &cell, 1, placed);
+
+    let lights = light_blocks(&usage, true, true);
+    let block = lights
+        .block(&key(cell_bytes))
+        .expect("the block of the cell, by the game's bytes");
+    assert_eq!(block.key.as_bytes(), b"\xc1\xe0\xeb\xec\xee\xf0\xe0, \x80\x9f hall");
+    assert_eq!(block.records[0].id, key(id_bytes));
+    assert_eq!(block.lamps.len(), 1);
+
+    let on = GenerationSettings {
+        distant_lights: true,
+        ..Default::default()
+    };
+    let output = build(&lights, &on).unwrap();
+    assert_eq!(parse_lights(&output.bytes).unwrap(), lights);
+}
+
+/// One cell in two spellings that differ in the case of A to Z is one block, and so is one record
+/// id in two spellings.
+#[test]
+fn a_name_in_two_cases_of_a_to_z_is_one_key() {
+    let mut usage = usage();
+    add_light(&mut usage, "lamp", light(300.0, [255, 200, 100], 0), "l\\lamp.nif");
+    add_light(&mut usage, "LAMP", light(300.0, [255, 200, 100], 0), "l\\lamp.nif");
+    interior(&mut usage, "Sotha Sil", true);
+    place(&mut usage, "Sotha Sil", 1, reference("lamp", 1.0));
+    place(&mut usage, "SOTHA SIL", 2, reference("LAMP", 2.0));
+
+    let lights = light_blocks(&usage, true, true);
+    assert_eq!(lights.blocks.len(), 1);
+    let block = lights.block(&key(b"sotha sil")).unwrap();
+    assert_eq!(block.records.len(), 1);
+    assert_eq!(block.lamps.len(), 2);
+}
+
+/// A name that the game cannot have (a letter that no single byte gives) costs its own lamp or
+/// its own cell, and nothing else.
+#[test]
+fn a_name_that_the_game_cannot_have_costs_only_itself() {
+    let mut usage = usage();
+    add_light(&mut usage, "lamp", light(300.0, [255, 200, 100], 0), "l\\lamp.nif");
+    add_light(&mut usage, "lamp_\u{4e2d}", light(300.0, [255, 200, 100], 0), "l\\lamp.nif");
+    place(&mut usage, EXTERIOR_CELL, 1, reference("lamp", 1.0));
+    place(&mut usage, EXTERIOR_CELL, 2, reference("lamp_\u{4e2d}", 2.0));
+    interior(&mut usage, "Hall \u{4e2d}", true);
+    place(&mut usage, "Hall \u{4e2d}", 3, reference("lamp", 3.0));
+
+    let lights = light_blocks(&usage, true, true);
+    assert_eq!(lights.blocks.len(), 1);
+    let block = exterior(&lights);
+    assert_eq!(block.records.len(), 1);
+    assert_eq!(block.lamps.len(), 1);
+    assert_eq!(parse_lights(&lights.to_bytes()).unwrap(), lights);
 }
 
 #[test]

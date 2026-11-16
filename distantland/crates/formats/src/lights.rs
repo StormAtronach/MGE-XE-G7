@@ -3,8 +3,16 @@
 //! src/generation/lights.rs); the renderer reads it with [`parse_lights`].
 //!
 //! A block is a part of the world that has distant land: the exterior, with the empty key, or an
-//! interior that behaves like an exterior, keyed by its cell name in ASCII lower case. The blocks
-//! are sorted by their keys, with no key two times.
+//! interior that behaves like an exterior, keyed by its cell name. The blocks are sorted by their
+//! keys, with no key two times.
+//!
+//! A block's key and a record's id are a [`Key`]: the engine's own bytes of the name, with A to Z
+//! lowered and nothing else changed. Two keys are equal when their bytes are equal. [`key`] is the
+//! one function that makes a key, and each side uses it: the generator for the names of the
+//! plugins, the renderer for the names that the running game gives. So the two sides agree
+//! whatever the engine's own compare of names does. \[I\]: the engine's compare of names is not
+//! read; it matters only where two cells or two records differ in the case of a letter over 127.
+//! The names are in the code page of the install, so a key is never compared as text.
 //!
 //! The layout, little endian, every part a whole number of 4-byte words:
 //! - The header, 16 bytes: `XELIGHT1`; the version (3); the number of blocks.
@@ -12,8 +20,8 @@
 //!   - its key: the length in bytes (u32), then the bytes, with zeros to the next word;
 //!   - the numbers of its records, lamps and smoke sources (u32 each);
 //!   - the records, the light records that its lamps are: the length of the id (u32), the id
-//!     in ASCII lower case with zeros to the next word, and the radius of the glowing parts of
-//!     the record's model (f32, 0 when not known or when the glow is a billboard);
+//!     with zeros to the next word, and the radius of the glowing parts of the record's model
+//!     (f32, 0 when not known or when the glow is a billboard);
 //!   - the lamps, [`LIGHT_LAMP_SIZE`] bytes each, the layout that the renderer's shaders read:
 //!     x, y, z and the radius as f32; the colour as four bytes (red, green, blue, then 255 when
 //!     the record has a model, else 0); the flags of the record (u32); the index of the record
@@ -21,7 +29,7 @@
 //!     which stand in until the game gives its own;
 //!   - the smoke sources, [`LIGHT_SMOKE_SIZE`] bytes each: x, y, z and the strength as f32.
 
-use std::io;
+use std::{fmt, io};
 
 /// The magic of the file.
 pub const LIGHTS_MAGIC: &[u8; 8] = b"XELIGHT1";
@@ -34,11 +42,53 @@ pub const LIGHT_LAMP_SIZE: usize = 32;
 /// The bytes of one smoke source.
 pub const LIGHT_SMOKE_SIZE: usize = 16;
 /// The key of the exterior's block.
-pub const EXTERIOR_KEY: &str = "";
+pub const EXTERIOR_KEY: Key = Key(Vec::new());
 /// The fewest bytes of a block: the length of its key and its three counts.
 const BLOCK_MIN_SIZE: usize = 16;
 /// The fewest bytes of a record: the length of its id and its glow radius.
 const RECORD_MIN_SIZE: usize = 8;
+
+/// The name of a cell or of a light record as the file holds it: the engine's own bytes, with
+/// A to Z lowered and nothing else changed. Only [`key`] makes one. The order of two keys is
+/// the order of their bytes.
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Key(Vec<u8>);
+
+/// The key of a name in the engine's own bytes, which are in the code page of the install. It
+/// takes every name: no byte makes it fail.
+pub fn key(name: &[u8]) -> Key {
+    Key(name.to_ascii_lowercase())
+}
+
+impl Key {
+    /// The bytes of the key.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// For a log line only, never for a compare: printable ASCII as it is, a backslash two times,
+/// and any other byte as hex (`\xc1`), because its letter depends on the code page.
+impl fmt::Display for Key {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use fmt::Write as _;
+
+        for &byte in &self.0 {
+            match byte {
+                b'\\' => formatter.write_str("\\\\")?,
+                b' '..=b'~' => formatter.write_char(char::from(byte))?,
+                _ => write!(formatter, "\\x{byte:02x}")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Key {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "Key(\"{self}\")")
+    }
+}
 
 /// A `lights.data` file, checked.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -50,8 +100,8 @@ pub struct Lights {
 /// The lights of one part of the world.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LightBlock {
-    /// [`EXTERIOR_KEY`], or the cell name of an interior in ASCII lower case.
-    pub key: String,
+    /// [`EXTERIOR_KEY`], or the key of an interior's cell name.
+    pub key: Key,
     /// The light records that the lamps are.
     pub records: Vec<LampRecord>,
     pub lamps: Vec<Lamp>,
@@ -61,8 +111,8 @@ pub struct LightBlock {
 /// A light record of a block's lamps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LampRecord {
-    /// The id, in ASCII lower case.
-    pub id: String,
+    /// The key of the record's id.
+    pub id: Key,
     /// The radius of the glowing parts of the record's model; 0 when not known.
     pub glow_radius: f32,
 }
@@ -91,9 +141,9 @@ pub struct SmokeSource {
 
 impl Lights {
     /// The block of `key`.
-    pub fn block(&self, key: &str) -> Option<&LightBlock> {
+    pub fn block(&self, key: &Key) -> Option<&LightBlock> {
         self.blocks
-            .binary_search_by(|block| block.key.as_str().cmp(key))
+            .binary_search_by(|block| block.key.cmp(key))
             .ok()
             .map(|index| &self.blocks[index])
     }
@@ -104,12 +154,12 @@ impl Lights {
         put_word(&mut bytes, LIGHTS_VERSION);
         put_word(&mut bytes, self.blocks.len() as u32);
         for block in &self.blocks {
-            put_text(&mut bytes, &block.key);
+            put_key(&mut bytes, &block.key);
             for count in [block.records.len(), block.lamps.len(), block.smoke.len()] {
                 put_word(&mut bytes, count as u32);
             }
             for record in &block.records {
-                put_text(&mut bytes, &record.id);
+                put_key(&mut bytes, &record.id);
                 bytes.extend_from_slice(&record.glow_radius.to_le_bytes());
             }
             bytes.extend_from_slice(&block.lamp_bytes());
@@ -148,8 +198,10 @@ impl LightBlock {
 /// # Errors
 ///
 /// Returns [`io::ErrorKind::InvalidData`] with the reason when the file is truncated, has another
-/// magic or version, has a key or an id that is not lower case text, has keys out of order, has a
-/// lamp whose record is not in its block, or has bytes after its last block.
+/// magic or version, has a key or an id with a capital A to Z, has keys out of order, has a lamp
+/// whose record is not in its block, or has bytes after its last block. Each of these is a broken
+/// structure: the writer makes none of them. No name of a cell or of a record makes a file refused,
+/// whatever its bytes are.
 pub fn parse_lights(bytes: &[u8]) -> io::Result<Lights> {
     let mut reader = Reader { bytes, at: 0 };
     if reader.take(8)? != LIGHTS_MAGIC {
@@ -164,10 +216,10 @@ pub fn parse_lights(bytes: &[u8]) -> io::Result<Lights> {
     let block_count = reader.count(BLOCK_MIN_SIZE, "blocks")?;
     let mut blocks: Vec<LightBlock> = Vec::with_capacity(block_count);
     for _ in 0..block_count {
-        let key = reader.text("key")?;
+        let key = reader.key("key")?;
         if blocks.last().is_some_and(|last| last.key >= key) {
             return Err(invalid_data(format!(
-                "lights.data block keys are not sorted or not unique at {key:?}"
+                "lights.data block keys are not sorted or not unique at \"{key}\""
             )));
         }
         let record_count = reader.word()? as usize;
@@ -183,7 +235,7 @@ pub fn parse_lights(bytes: &[u8]) -> io::Result<Lights> {
 
         let mut records = Vec::with_capacity(record_count);
         for _ in 0..record_count {
-            let id = reader.text("record id")?;
+            let id = reader.key("record id")?;
             records.push(LampRecord {
                 id,
                 glow_radius: reader.float()?,
@@ -272,16 +324,19 @@ impl<'a> Reader<'a> {
         Ok(count as usize)
     }
 
-    /// A text: its length, its bytes and the zeros to the next word. It must be ASCII lower case.
-    fn text(&mut self, what: &str) -> io::Result<String> {
+    /// A key: its length, its bytes and the zeros to the next word. A capital A to Z is a broken
+    /// structure, because [`key`] makes none; every other byte is a part of a name.
+    fn key(&mut self, what: &str) -> io::Result<Key> {
         let length = self.word()? as usize;
         let padded = length.checked_next_multiple_of(4).unwrap_or(usize::MAX);
         let part = self.take(padded)?;
-        let text = &part[..length];
-        if !text.is_ascii() || text.iter().any(u8::is_ascii_uppercase) {
-            return Err(invalid_data(format!("lights.data {what} is not ASCII lower case text")));
+        let name = &part[..length];
+        if name.iter().any(u8::is_ascii_uppercase) {
+            return Err(invalid_data(format!(
+                "lights.data {what} is not in lower case: it has a capital A to Z"
+            )));
         }
-        Ok(String::from_utf8_lossy(text).into_owned())
+        Ok(Key(name.to_vec()))
     }
 }
 
@@ -289,10 +344,10 @@ fn put_word(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-/// A text as [`Reader::text`] reads it.
-fn put_text(bytes: &mut Vec<u8>, text: &str) {
-    put_word(bytes, text.len() as u32);
-    bytes.extend_from_slice(text.as_bytes());
+/// A key as [`Reader::key`] reads it.
+fn put_key(bytes: &mut Vec<u8>, key: &Key) {
+    put_word(bytes, key.0.len() as u32);
+    bytes.extend_from_slice(&key.0);
     bytes.resize(bytes.len().next_multiple_of(4), 0);
 }
 
@@ -333,14 +388,14 @@ mod tests {
         Lights {
             blocks: vec![
                 LightBlock {
-                    key: EXTERIOR_KEY.to_string(),
+                    key: EXTERIOR_KEY,
                     records: vec![
                         LampRecord {
-                            id: "light_de_streetlight_01_223".to_string(),
+                            id: key(b"light_de_streetlight_01_223"),
                             glow_radius: 12.5,
                         },
                         LampRecord {
-                            id: "torch".to_string(),
+                            id: key(b"torch"),
                             glow_radius: 0.0,
                         },
                     ],
@@ -351,7 +406,7 @@ mod tests {
                     }],
                 },
                 LightBlock {
-                    key: "mournhold".to_string(),
+                    key: key(b"mournhold"),
                     ..LightBlock::default()
                 },
             ],
@@ -370,9 +425,66 @@ mod tests {
     #[test]
     fn a_block_is_found_by_its_key() {
         let lights = sample();
-        assert_eq!(lights.block(EXTERIOR_KEY).unwrap().lamps.len(), 3);
-        assert!(lights.block("mournhold").unwrap().lamps.is_empty());
-        assert!(lights.block("balmora").is_none());
+        assert_eq!(lights.block(&EXTERIOR_KEY).unwrap().lamps.len(), 3);
+        assert!(lights.block(&key(b"mournhold")).unwrap().lamps.is_empty());
+        assert!(lights.block(&key(b"Mournhold")).unwrap().lamps.is_empty());
+        assert!(lights.block(&key(b"balmora")).is_none());
+    }
+
+    /// A to Z are lowered, and no other byte changes: a letter over 127 keeps its case, because
+    /// its case depends on the code page of the install.
+    #[test]
+    fn a_key_lowers_a_to_z_and_changes_nothing_else() {
+        assert_eq!(key(b"Balmora, Guild of MAGES"), key(b"balmora, guild of mages"));
+        assert_eq!(key(b"AZ[`az{").as_bytes(), b"az[`az{");
+        // 0xC1 and 0xE1 are one letter in two cases in WINDOWS-1251 and in WINDOWS-1252.
+        assert_ne!(key(b"\xc1"), key(b"\xe1"));
+        let every_byte: Vec<u8> = (0..=255).collect();
+        let lowered = key(&every_byte);
+        for (byte, kept) in every_byte.iter().zip(lowered.as_bytes()) {
+            let expected = if byte.is_ascii_uppercase() { byte + 32 } else { *byte };
+            assert_eq!(*kept, expected);
+        }
+        assert_eq!(key(b"").as_bytes(), EXTERIOR_KEY.as_bytes());
+        // For a log line: printable ASCII as it is, a backslash two times, any other byte as hex.
+        assert_eq!(key(b"Caf\xe9's \\ \x00").to_string(), "caf\\xe9's \\\\ \\x00");
+    }
+
+    /// A cell name and a record id with bytes over 127 are in the file as the engine's own bytes,
+    /// and the reader gives the same keys back. `\xc1\xe0\xeb\xec\xee\xf0\xe0` is "Balmora" in
+    /// WINDOWS-1251.
+    #[test]
+    fn a_name_with_bytes_over_127_is_in_the_file_as_the_engines_bytes() {
+        let cell = b"\xc1\xe0\xeb\xec\xee\xf0\xe0, Guild";
+        let id = b"Lampe_\xe9t\xe9";
+        let lights = Lights {
+            blocks: vec![
+                LightBlock {
+                    key: EXTERIOR_KEY,
+                    records: vec![LampRecord {
+                        id: key(id),
+                        glow_radius: 0.0,
+                    }],
+                    lamps: vec![lamp(1.0, 0)],
+                    smoke: Vec::new(),
+                },
+                LightBlock {
+                    key: key(cell),
+                    ..LightBlock::default()
+                },
+            ],
+        };
+        let bytes = lights.to_bytes();
+        let holds = |name: &[u8]| bytes.windows(name.len()).any(|part| part == name);
+        assert!(holds(b"\xc1\xe0\xeb\xec\xee\xf0\xe0, guild"));
+        assert!(holds(b"lampe_\xe9t\xe9"));
+
+        let read = parse_lights(&bytes).unwrap();
+        assert_eq!(read, lights);
+        assert_eq!(
+            read.block(&key(cell)).unwrap().key.as_bytes(),
+            b"\xc1\xe0\xeb\xec\xee\xf0\xe0, guild"
+        );
     }
 
     /// The lamps' bytes are the layout of the renderer's `Source`: the place and the radius, the
@@ -419,7 +531,7 @@ mod tests {
         unsorted.blocks.swap(0, 1);
         refused(&unsorted.to_bytes(), "not sorted");
         let mut upper = sample();
-        upper.blocks[1].key = "Mournhold".to_string();
+        upper.blocks[1].key = Key(b"Mournhold".to_vec());
         refused(&upper.to_bytes(), "lower case");
         let mut unknown = sample();
         unknown.blocks[0].lamps[0].record = 2;
