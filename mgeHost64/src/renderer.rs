@@ -3843,10 +3843,9 @@ impl Extension for DistantLand {
         }
     }
 
-    /// The shadow hooks of the session now. The marker of the world shader goes up here, around
-    /// the first build of the text ([`Extension::world_shader_held`] takes it down).
+    /// The shadow hooks of the session now. The marker of the world shader goes up only around the
+    /// first build of a text ([`Extension::world_shader_building`]).
     fn draw_shader(&self) -> Option<String> {
-        self.core_mods.mark_world(&self.core_mods.world_files());
         Some(draw_shader_text(&self.core_mods.world_hooks().0))
     }
 
@@ -3936,13 +3935,6 @@ impl Extension for DistantLand {
             }
         }
         let dropped = self.world_trials.get(attempt as usize - 1)?;
-        let kept: Vec<_> = self
-            .core_mods
-            .world_files()
-            .into_iter()
-            .filter(|unit| !dropped.contains(unit))
-            .collect();
-        self.core_mods.mark_world(&kept);
         let (shadow, sky) = self.core_mods.world_hooks_without(dropped);
         let label = dropped.iter().map(|unit| unit.label()).collect::<Vec<_>>().join(" and ");
         Some(ShaderText {
@@ -3950,6 +3942,43 @@ impl Extension for DistantLand {
             draw: Some(draw_shader_text(&shadow)),
             label: format!("without {label}"),
         })
+    }
+
+    /// The marker of the world shader goes up around the first build of the text of `attempt`,
+    /// for the units in it: the build that a fault of the driver can end. The plant's `:exit`
+    /// ends the helper here.
+    fn world_shader_building(&mut self, attempt: u32) {
+        let dropped = match attempt {
+            0 => &[][..],
+            n => self.world_trials.get(n as usize - 1).map_or(&[][..], Vec::as_slice),
+        };
+        let units: Vec<_> = self
+            .core_mods
+            .world_files()
+            .into_iter()
+            .filter(|unit| !dropped.contains(unit))
+            .collect();
+        self.core_mods.mark_world(&units);
+    }
+
+    /// The world shader's text without every unit of the world: the probe of a fault (W317).
+    /// None when no unit is in the world shader.
+    fn built_in_text(&mut self) -> Option<ShaderText> {
+        let units = self.core_mods.world_files();
+        if units.is_empty() {
+            return None;
+        }
+        let (shadow, sky) = self.core_mods.world_hooks_without(&units);
+        Some(ShaderText {
+            sky: Some(sky_shader_text(sky.as_deref())),
+            draw: Some(draw_shader_text(&shadow)),
+            label: "built in".to_string(),
+        })
+    }
+
+    /// The fault is no core mod's: no unit is dropped, and the marker of the world goes.
+    fn world_shader_kept(&mut self, error: &str) {
+        self.core_mods.world_held(&[], error);
     }
 
     /// The text of `attempt` holds: the units its entry of the list dropped leave the session
@@ -3963,12 +3992,11 @@ impl Extension for DistantLand {
     }
 
     /// A home dropped a unit of the world shader since the last frame: the world takes the
-    /// hooks of the session now, around a new marker.
+    /// hooks of the session now ([`Extension::world_shader_building`] puts up its marker).
     fn world_shader_changed(&mut self) -> Option<ShaderText> {
         if !self.core_mods.take_world_changed() {
             return None;
         }
-        self.core_mods.mark_world(&self.core_mods.world_files());
         let (shadow, sky) = self.core_mods.world_hooks();
         Some(ShaderText {
             sky: Some(sky_shader_text(sky.as_deref())),

@@ -824,6 +824,10 @@ const MARKER_PREFIX: &str = "core-mod-build-";
 #[derive(Clone, Default)]
 pub(crate) struct BuildMarkers {
     folder: Option<PathBuf>,
+    /// The lines of the files that a marker held off at this start ([`BuildMarkers::left`]), each
+    /// with the home of its marker. A new marker of that home keeps them, and its removal writes
+    /// them back, so that a file stays held off until it changes.
+    held_off: std::cell::RefCell<Vec<(String, String)>>,
 }
 
 impl BuildMarkers {
@@ -832,7 +836,10 @@ impl BuildMarkers {
         let folder = std::env::var_os("MGE_XE_CORE_MOD_MARKERS")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE")));
-        BuildMarkers { folder }
+        BuildMarkers {
+            folder,
+            ..BuildMarkers::default()
+        }
     }
 
     /// No marker is written into `mods_folder`, the folder of `MGE_XE_CORE_MODS_DIR`: its files
@@ -858,6 +865,7 @@ impl BuildMarkers {
     pub fn in_folder(folder: &std::path::Path) -> BuildMarkers {
         BuildMarkers {
             folder: Some(folder.to_path_buf()),
+            ..BuildMarkers::default()
         }
     }
 
@@ -867,16 +875,41 @@ impl BuildMarkers {
     }
 
     /// Writes the marker of `home` with the files of its build: a line for each, with the unit,
-    /// the length and the hash of its text.
+    /// the length and the hash of its text. The lines that the home's marker held off at this
+    /// start stay in it.
     fn write(&self, home: &str, files: &[(ModFile, String)]) {
-        let Some(path) = self.path(home) else { return };
-        let lines: String = files
+        let built: String = files
             .iter()
             .map(|(file, text)| {
                 let (length, hash) = identity(text);
                 format!("{}\t{length}\t{hash:016x}\n", file.key())
             })
             .collect();
+        self.write_lines(home, self.held_off_lines(home) + &built);
+    }
+
+    /// Takes down the marker of `home` after its build. The lines that it held off at this start
+    /// stay: their files are held off until they change.
+    fn remove(&self, home: &str) {
+        let held_off = self.held_off_lines(home);
+        if !held_off.is_empty() {
+            self.write_lines(home, held_off);
+        } else if let Some(path) = self.path(home) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    fn held_off_lines(&self, home: &str) -> String {
+        self.held_off
+            .borrow()
+            .iter()
+            .filter(|(of, _)| of == home)
+            .map(|(_, line)| format!("{line}\n"))
+            .collect()
+    }
+
+    fn write_lines(&self, home: &str, lines: String) {
+        let Some(path) = self.path(home) else { return };
         let written = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
@@ -886,15 +919,11 @@ impl BuildMarkers {
         }
     }
 
-    fn remove(&self, home: &str) {
-        if let Some(path) = self.path(home) {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
     /// The files of `texts` that a marker names with the same text, each with the home of its
-    /// marker. A marker whose files all changed is removed.
+    /// marker. A marker whose files all changed is removed. The lines of the files held off are
+    /// kept for the markers of this start ([`BuildMarkers::write`], [`BuildMarkers::remove`]).
     fn left(&self, texts: &Texts) -> Vec<(ModFile, String)> {
+        self.held_off.borrow_mut().clear();
         let Some(entries) = self.folder.as_ref().and_then(|folder| std::fs::read_dir(folder).ok()) else {
             return Vec::new();
         };
@@ -904,23 +933,25 @@ impl BuildMarkers {
             let Some(home) = name.strip_prefix(MARKER_PREFIX).and_then(|rest| rest.strip_suffix(".txt")) else {
                 continue;
             };
+            let home = home.replace('-', " ");
             let marker = std::fs::read_to_string(entry.path()).unwrap_or_default();
-            let unchanged: Vec<ModFile> = marker
+            let unchanged: Vec<(ModFile, &str)> = marker
                 .lines()
                 .filter_map(|line| {
                     let mut parts = line.split('\t');
                     let file = ModFile::of_key(parts.next()?)?;
                     let length: usize = parts.next()?.parse().ok()?;
                     let hash = u64::from_str_radix(parts.next()?, 16).ok()?;
-                    (texts.hook_text(file).map(identity) == Some((length, hash))).then_some(file)
+                    (texts.hook_text(file).map(identity) == Some((length, hash))).then_some((file, line))
                 })
                 .collect();
             if unchanged.is_empty() {
                 let _ = std::fs::remove_file(entry.path());
             }
-            for file in unchanged {
+            for (file, line) in unchanged {
+                self.held_off.borrow_mut().push((home.clone(), line.to_string()));
                 if !left.iter().any(|(known, _)| *known == file) {
-                    left.push((file, home.replace('-', " ")));
+                    left.push((file, home.clone()));
                 }
             }
         }
@@ -968,6 +999,12 @@ impl Plant {
     /// The plant of `MGE_XE_CORE_MOD_FAULT`, or [`None`].
     pub fn of_env() -> Option<Plant> {
         let text = std::env::var("MGE_XE_CORE_MOD_FAULT").ok()?;
+        if text.trim() == "world key" {
+            println!(
+                "core mods: MGE_XE_CORE_MOD_FAULT plants a fault in the first world key, whatever the text (no core mod's)"
+            );
+            return None;
+        }
         let plant = Plant::parse(&text);
         match &plant {
             Some(plant) => println!("core mods: MGE_XE_CORE_MOD_FAULT plants a fault: {plant:?}"),
@@ -2202,8 +2239,54 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         };
         assert_eq!(markers.left(&changed), [(ModFile::Shadow, WORLD_HOME.to_string())]);
         assert!(!folder.join("core-mod-build-water-plane.txt").exists());
+
+        // The removal of the world marker after a build keeps the line of the file it held off.
         markers.remove(WORLD_HOME);
-        assert!(markers.left(&changed).is_empty());
+        assert_eq!(markers.left(&changed), [(ModFile::Shadow, WORLD_HOME.to_string())]);
+
+        // A changed shadow file is used again, and the last marker goes.
+        let all_changed = Texts {
+            shadow: Some(format!("{shadow}// changed\n")),
+            ..changed
+        };
+        assert!(markers.left(&all_changed).is_empty());
+        assert!(!folder.join("core-mod-build-world-shader.txt").exists());
+        std::fs::remove_dir(&folder).unwrap();
+    }
+
+    /// A file that ended the helper in the world shader's build stays held off over the start that
+    /// obeys the marker: that start writes the world's marker for its own units and takes it down
+    /// after the build ([`Shared::mark_world`], [`Shared::world_held`]), and the next start still
+    /// does not use the file. The null: a start with the marker's lines not kept uses it again.
+    #[test]
+    fn the_world_marker_holds_its_file_over_the_start_that_obeys_it() {
+        let folder = std::env::temp_dir().join(format!("core-mod-world-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
+        BuildMarkers::in_folder(&folder).write(WORLD_HOME, &[(ModFile::Shadow, shadow.clone())]);
+
+        // Start 1 obeys the marker, and its world shader builds and holds.
+        let markers = BuildMarkers::in_folder(&folder);
+        let mods = mods_with_markers(files.clone(), &HOMES, &markers);
+        assert!(!mods.uses(ModFile::Shadow));
+        let shared = Shared::new(mods, markers, None);
+        shared.mark_world(&shared.world_files());
+        shared.world_held(&[], "");
+
+        // Start 2 still holds the file off.
+        let markers = BuildMarkers::in_folder(&folder);
+        assert!(!mods_with_markers(files.clone(), &HOMES, &markers).uses(ModFile::Shadow));
+
+        // The null: the same start 1 without the kept lines takes the marker down.
+        let markers = BuildMarkers::in_folder(&folder);
+        let mods = mods_with_markers(files.clone(), &HOMES, &markers);
+        markers.held_off.borrow_mut().clear();
+        let shared = Shared::new(mods, markers, None);
+        shared.mark_world(&shared.world_files());
+        shared.world_held(&[], "");
+        assert!(mods_with_markers(files, &HOMES, &BuildMarkers::in_folder(&folder)).uses(ModFile::Shadow));
+        assert!(!folder.join("core-mod-build-world-shader.txt").exists());
         std::fs::remove_dir(&folder).unwrap();
     }
 
