@@ -1266,7 +1266,11 @@ pub struct DistantLand {
     /// The light settings, the fade, the original lights and the block of the lights file that
     /// the lamps' grid was made for; [`None`] before it was made, and again when a new lights
     /// file or other light records come.
-    lamps_made_for: Option<(lamp_values::LightSettings, f32, bool, distantland::mge_xe::lights::Key)>,
+    lamps_made_for: Option<(
+        lamp_values::LightSettings,
+        lamp_grid::NearLights,
+        distantland::mge_xe::lights::Key,
+    )>,
     /// The line that the lamps wait for the light settings (record 12) is in the log.
     lamps_wait_told: bool,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
@@ -2059,7 +2063,11 @@ impl DistantLand {
     /// light settings or the fade change, and the view groups with those buffers, for the
     /// statics too.
     fn poll_lights(&mut self, scene: &SceneView) {
-        let (fade, original) = (self.lamp_fade(scene.interior), self.lamp_original(scene.interior));
+        let near = lamp_grid::NearLights {
+            fade: self.lamp_fade(scene.interior),
+            original: self.lamp_original(scene.interior),
+            interior: scene.interior,
+        };
         let interior_name = self.environment.map_or([0; 64], |e| e.interior_name);
         // In an interior that is not like an exterior the lamps do not light, and the grid
         // stays for the next cell.
@@ -2087,7 +2095,7 @@ impl DistantLand {
                     if self
                         .lamps_made_for
                         .as_ref()
-                        .is_none_or(|made| *made != (settings, fade, original, block.clone())) =>
+                        .is_none_or(|made| *made != (settings, near, block.clone())) =>
                 {
                     let no_lamps = lamp_grid::FileLamps::default();
                     let lamps = blocks.get(&block).unwrap_or_else(|| {
@@ -2102,9 +2110,9 @@ impl DistantLand {
                     let start = std::time::Instant::now();
                     let (lamps, game_values) = lamps.with_game_values(self.light_records.as_ref());
                     let grid = lamp_grid::build_original(
-                        lamp_grid::gpu_lamps(&lamps, &settings, fade, original),
+                        lamp_grid::gpu_lamps(&lamps, &settings, near),
                         settings.light_limit as usize,
-                        original,
+                        near.original,
                     );
                     binding.set(scene.device, &grid);
                     // The time of the frame thread for the lamps' values, the list, the grid
@@ -2112,7 +2120,7 @@ impl DistantLand {
                     let made_in = start.elapsed().as_secs_f64() * 1000.0;
                     println!("{}", game_values.describe());
                     println!("{}; made in {made_in:.3} ms", grid.report.describe());
-                    self.lamps_made_for = Some((settings, fade, original, block));
+                    self.lamps_made_for = Some((settings, near, block));
                 }
                 _ => {}
             }

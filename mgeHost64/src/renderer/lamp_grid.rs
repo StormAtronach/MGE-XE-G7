@@ -311,17 +311,30 @@ pub fn end_of(radius: f32, terms: [f32; 3], fade: f32) -> f32 {
     (distance as f32).min(most)
 }
 
-/// The lamps of a list, with their terms and ends. A lamp whose light ends at 0 has none. With
-/// `original`, a lamp is packed as a near light of the same record with the original lights
-/// ([`original_light`]), with the constant that a draw's lights share; its end stays.
-pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, fade: f32, original: bool) -> Vec<GpuLamp> {
+/// How the near lights of a cell are made and drawn, which its distant lamps take too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NearLights {
+    /// The number of radii where a light ends; 0 for no fade (the page, section 2.2).
+    pub fade: f32,
+    /// The lights as MGE XE on Direct3D 9 decodes them (`distant_land.per_pixel_original_lights`).
+    pub original: bool,
+    /// The engine makes the lights of the cell inside: an interior, one like an exterior too
+    /// (the page, section 2.2). It changes the terms only with OutQuadInLin.
+    pub interior: bool,
+}
+
+/// The lamps of a list, with their terms and ends, as the near lights `near` of the same
+/// records. A lamp whose light ends at 0 has none. With the original lights, a lamp is packed as
+/// a near light of the same record ([`original_light`]), with the constant that a draw's lights
+/// share; its end stays.
+pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, near: NearLights) -> Vec<GpuLamp> {
     source
         .iter()
         .filter_map(|lamp| {
             let radius = lamp.radius.max(0.0);
             // The record's radius is a whole number (0x4D2A4D).
-            let terms = settings.terms(radius as u32, false);
-            let end = end_of(radius, terms, fade);
+            let terms = settings.terms(radius as u32, near.interior);
+            let end = end_of(radius, terms, near.fade);
             let color = lamp.color.map(|c| f32::from(c) / 255.0);
             let mut gpu = GpuLamp {
                 position: lamp.position,
@@ -331,7 +344,7 @@ pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, fade: f32, ori
                 terms,
                 ..GpuLamp::default()
             };
-            if original {
+            if near.original {
                 let mut shared_constant = ORIGINAL_SHARED_CONSTANT;
                 let packed = original_light(terms, color, &mut shared_constant);
                 gpu.color = packed.color;
@@ -719,6 +732,14 @@ impl LampBinding {
 mod tests {
     use super::*;
 
+    /// The near lights of an exterior with the fade of 1.75 radii, and with the original lights.
+    const FADED: NearLights = NearLights {
+        fade: 1.75,
+        original: false,
+        interior: false,
+    };
+    const ORIGINAL: NearLights = NearLights { original: true, ..FADED };
+
     /// Outlander-test's settings: a constant of 0.36 and a quadratic term of 3.25 by method 2.
     fn outlander_test() -> LightSettings {
         LightSettings {
@@ -883,14 +904,14 @@ mod tests {
     #[test]
     fn a_lamp_takes_the_terms_of_a_near_lamp_of_its_radius() {
         let settings = outlander_test();
-        let lamps = gpu_lamps(&[lamp(100.0, 200.0, 450.0)], &settings, 1.75, false);
+        let lamps = gpu_lamps(&[lamp(100.0, 200.0, 450.0)], &settings, FADED);
         assert_eq!(lamps.len(), 1);
         assert_eq!(lamps[0].terms, settings.terms(450, false));
         assert_eq!(lamps[0].end, 787.5);
         assert_eq!(lamps[0].color, [1.0, 200.0 / 255.0, 100.0 / 255.0]);
         // A radius of 0 ends at once without the fade, and at 16 radii x 1.75 with it.
-        assert!(gpu_lamps(&[lamp(0.0, 0.0, 0.0)], &settings, 0.0, false).is_empty());
-        assert_eq!(gpu_lamps(&[lamp(0.0, 0.0, 0.0)], &settings, 1.75, false)[0].end, 28.0);
+        assert!(gpu_lamps(&[lamp(0.0, 0.0, 0.0)], &settings, NearLights { fade: 0.0, ..FADED }).is_empty());
+        assert_eq!(gpu_lamps(&[lamp(0.0, 0.0, 0.0)], &settings, FADED)[0].end, 28.0);
     }
 
     /// The lamps that a world position finds through the grid, as the shader walks it.
@@ -925,7 +946,7 @@ mod tests {
             lamp(8192.0, 50.0, 256.0),
             lamp(-40000.0, 90000.0, 128.0),
         ];
-        let lamps = gpu_lamps(&source, &settings, 1.75, false);
+        let lamps = gpu_lamps(&source, &settings, FADED);
         let grid = build(lamps.clone(), 48);
         assert_eq!(grid.report.size, 1024.0);
         assert_eq!(grid.report.cells_over, 0);
@@ -953,7 +974,7 @@ mod tests {
         let settings = outlander_test();
         // 60 lamps over 1000 units: no list of 1024 units is within 48.
         let spread: Vec<SourceLamp> = (0..60).map(|i| lamp((i * 16) as f32, 300.0, 64.0)).collect();
-        let grid = build(gpu_lamps(&spread, &settings, 1.75, false), 48);
+        let grid = build(gpu_lamps(&spread, &settings, FADED), 48);
         assert!(grid.report.size < 1024.0, "{:?}", grid.report);
         assert_eq!(grid.report.cells_over, 0);
         assert!(grid.report.fullest <= 48);
@@ -964,7 +985,7 @@ mod tests {
                 ..lamp(300.0, 300.0, 64.0)
             })
             .collect();
-        let grid = build(gpu_lamps(&piled, &settings, 1.75, false), 48);
+        let grid = build(gpu_lamps(&piled, &settings, FADED), 48);
         assert_eq!(grid.report.size, 256.0);
         assert!(grid.report.cells_over > 0);
         assert_eq!(grid.report.left_out, 12 * grid.report.cells_over);
@@ -979,7 +1000,7 @@ mod tests {
     fn the_bound_is_the_light_limit_in_force() {
         let settings = outlander_test();
         let ten: Vec<SourceLamp> = (0..10).map(|i| lamp(300.0 + i as f32, 300.0, 64.0)).collect();
-        let grid = build(gpu_lamps(&ten, &settings, 1.75, false), 7);
+        let grid = build(gpu_lamps(&ten, &settings, FADED), 7);
         assert_eq!(grid.report.bound, 7);
         assert_eq!(lamps_at(&grid, 300.0, 300.0).len(), 7);
     }
@@ -1018,13 +1039,32 @@ mod tests {
         }
     }
 
+    /// With OutQuadInLin, a lamp of the exterior takes the quadratic term and a lamp of an
+    /// interior's block the linear term, as the near lamps of the same radius there.
+    #[test]
+    fn a_lamp_takes_the_terms_of_the_inside_or_the_outside_of_its_block() {
+        // The constant only, and OutQuadInLin with a linear and a quadratic value.
+        let settings = LightSettings {
+            flags: 1,
+            out_quad_in_lin: true,
+            linear: 3.0,
+            ..outlander_test()
+        };
+        let outside = gpu_lamps(&[lamp(0.0, 0.0, 300.0)], &settings, FADED)[0].terms;
+        let inside = gpu_lamps(&[lamp(0.0, 0.0, 300.0)], &settings, NearLights { interior: true, ..FADED })[0].terms;
+        assert_eq!(outside, settings.terms(300, false));
+        assert_eq!(inside, settings.terms(300, true));
+        assert!(outside[2] > 0.0 && outside[1] == 0.0, "{outside:?}");
+        assert!(inside[1] > 0.0 && inside[2] == 0.0, "{inside:?}");
+    }
+
     /// With the original lights, a lamp is packed as a near light of the same record and the
     /// same settings: its colour, its wrap, its quadratic term, its bias and the shared
     /// constant, for the forms of the two test installs.
     #[test]
     fn an_original_lamp_is_packed_as_a_near_light_of_its_record() {
         for settings in [outlander_test(), morrowind75testing()] {
-            let lamps = gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &settings, 1.75, true);
+            let lamps = gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &settings, ORIGINAL);
             let color = [1.0, 200.0 / 255.0, 100.0 / 255.0];
             let mut near = [near_light(&settings, 450, color)];
             let per_pixel = super::super::PerPixel {
@@ -1045,10 +1085,10 @@ mod tests {
         }
         // Outlander-test's form keeps the constant 0.36; the linear form shares 0.33.
         assert_eq!(
-            gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &outlander_test(), 1.75, true)[0].terms[0],
+            gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &outlander_test(), ORIGINAL)[0].terms[0],
             0.36
         );
-        let linear = gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &morrowind75testing(), 1.75, true)[0];
+        let linear = gpu_lamps(&[lamp(0.0, 0.0, 450.0)], &morrowind75testing(), ORIGINAL)[0];
         assert_eq!(linear.terms[0], ORIGINAL_SHARED_CONSTANT);
         assert_eq!(linear.bias, 25.0);
     }
