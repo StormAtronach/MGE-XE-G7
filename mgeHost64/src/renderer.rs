@@ -1759,10 +1759,12 @@ fn fog_with(lit: vec3f, world: vec3f, scatter: bool, lamp_air: vec3f) -> vec3f {
 // The haze of the lamps in the fog (D498) at the distance d, where `fog` is the part of the
 // pixel's own colour (1 near, 0 in full fog). The light `lamp_air` in the air is held below 1
 // with its colour kept, fades with the fog to the power 1 / reach, and ramps in after the
-// game's view range and out before the draw distance.
+// game's view range and out before the draw distance. No haze with the eye at or under the
+// water plane: the test of the light that the air adds from the sun in `fog_with`, so the
+// main view and the mirror under the water have none.
 fn lamp_haze(lamp_air: vec3f, fog: f32, d: f32) -> vec3f {
     let k = lamp_values.haze.x;
-    if k <= 0.0 {
+    if k <= 0.0 || u.eye.z <= u.flags.w {
         return vec3f(0.0);
     }
     let v = k * lamp_air;

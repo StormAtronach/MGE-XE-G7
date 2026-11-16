@@ -350,7 +350,9 @@ The pixel shaders of the land and the distant statics add the light of the lamps
 camera's z axis in each frame with a world; the strength is 0 in an interior and by day.
 The same walk gives the light of the lamps in the air, without the facing and only from
 the lights at or above the water plane; the fog (`FOG_FUNCTION`) adds it as the lamps' haze
-(D498), with k from the tunable `lights.lamps.haze`.
+(D498), with k from the tunable `lights.lamps.haze`. With the camera at or under the water
+plane (`u.eye.z <= u.flags.w`, the test of the sun's light in the air) there is no haze, in the
+main view and in the mirror.
 
 **"distant land"** (fill, lines, mirror fill, mirror lines; `make_gpu` in `renderer.rs`).
 Vertices: 20 bytes (`Float32x3`, `Unorm8x4`, `Unorm8x4`), indices `Uint32`.
