@@ -912,6 +912,9 @@ pub(super) struct Volumes {
     core_mods: crate::renderer::core_mods::Shared,
     /// The standard shader has had its first pipeline, the first build of its home.
     standard_built: bool,
+    /// The shadow hooks of the standard module made at the start: the first build reuses that
+    /// module when its hooks are the same.
+    standard_hooks: String,
     /// The group of the textures of the mesh, its sampler, and a group of white textures for
     /// the standard look.
     mesh_layout: wgpu::BindGroupLayout,
@@ -961,7 +964,8 @@ impl Volumes {
         core_mods: &crate::renderer::core_mods::Shared,
     ) -> Volumes {
         let device = scene.device;
-        let source = standard_source(&core_mods.shadow_hooks());
+        let standard_hooks = core_mods.shadow_hooks();
+        let source = standard_source(&standard_hooks);
         let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water volume"),
             source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
@@ -1115,6 +1119,7 @@ impl Volumes {
             shaders: HashMap::new(),
             core_mods: core_mods.clone(),
             standard_built: false,
+            standard_hooks,
             mesh_layout,
             mesh_sampler,
             white,
@@ -1390,22 +1395,29 @@ impl Volumes {
         let make = |module: &wgpu::ShaderModule, source: &str| {
             Self::make_pipeline(device, key, module, source, &layout, target_format, depth_format, multisample)
         };
-        // The first pipeline of the standard shader is the first build of its home (W317): its
-        // module is made again from the shadow hooks of the session now, under the guard of
-        // the core mods. The water shaders of mods stay outside it.
+        // The first pipeline of the standard shader is the first build of its home (W317), under
+        // the guard of the core mods, with the shadow hooks of the session now. The module of the
+        // start serves when those hooks did not change since; else a new module is made. The
+        // water shaders of mods stay outside it.
         if key.shader == 0 && !key.debug && !self.standard_built {
             self.standard_built = true;
             let core_mods = self.core_mods.clone();
+            let (start_hooks, start_module, start_source) = (&self.standard_hooks, &self.modules[0], &self.sources[0]);
             let (module, source, pipeline) = core_mods.first_build(
                 device,
                 crate::renderer::core_mods::WATER_VOLUME_HOME,
                 crate::renderer::core_mods::ModFile::Shadow,
                 |shadow_hooks| {
-                    let source = standard_source(shadow_hooks);
-                    let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some("water volume"),
-                        source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
-                    });
+                    let (module, source) = if shadow_hooks == start_hooks {
+                        (start_module.clone(), start_source.clone())
+                    } else {
+                        let source = standard_source(shadow_hooks);
+                        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+                            label: Some("water volume"),
+                            source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
+                        });
+                        (module, source)
+                    };
                     let pipeline = make(&module, &source);
                     (module, source, pipeline)
                 },
