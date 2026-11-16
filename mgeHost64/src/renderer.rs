@@ -3230,6 +3230,18 @@ fn extension_shade(in: VertexOut) -> vec4f {
         light_term_set = true;
         return in.color;
     }
+    // A draw with no lights of any source (the renderer's NO_LIGHTS_BIT, 32768u): no lookup
+    // of the clusters, no lights of the world, no loop. The bit is a fact of the stage key, so
+    // the stage shader of such a draw has none of that code.
+    let no_lights = (draw.counts.w & 32768u) != 0u;
+    // Such a draw that is not flat-shaded: the vertex stage made its colour from the scene's
+    // ambient light (`extension_no_lights_shade`). The sun's shadow above stays for each pixel.
+    // Flat shading (bit 16 of `light_range.w`) is a fact of the stage key too.
+    if no_lights && (draw.light_range.w & 16u) == 0u {
+        light_term = draw.scene_ambient.rgb;
+        light_term_set = true;
+        return in.color;
+    }
     // A lit draw without normals: a zero normal, as the fixed function and a shader of
     // Direct3D 9 have it. The lights give it their ambient light and no diffuse light.
     var normal = vec3f(0.0);
@@ -3238,10 +3250,6 @@ fn extension_shade(in: VertexOut) -> vec4f {
     }
     var d = vec3f(0.0);
     var a = draw.scene_ambient.rgb;
-    // A draw with no lights of any source (the renderer's NO_LIGHTS_BIT, 32768u): no lookup
-    // of the clusters, no lights of the world, no loop. The bit is a fact of the stage key, so
-    // the stage shader of such a draw has none of that code.
-    let no_lights = (draw.counts.w & 32768u) != 0u;
     // The lights of the world (`world_lights_here`): the point lights of the cluster of the
     // pixel, in place of the draw's own; the draw keeps its directional lights.
     let world = !no_lights && world_lights_here();
@@ -3325,6 +3333,18 @@ fn extension_corner_shade(world_position: vec3f, world_normal: vec3f, vertex_col
         a += terms.a;
     }
     return CornerShade(material_color(d, a, vertex_color), d + a);
+}
+
+// The colour of a draw lit for each pixel with no lights (the renderer's NO_LIGHTS_BIT), in the
+// vertex stage: no diffuse light and the scene's ambient light, as `extension_shade` makes it
+// at a pixel. The renderer calls it for such a draw that is not flat-shaded, and
+// `extension_shade` takes the colour. A draw that this shade does not light for each pixel
+// keeps the vertex stage's colour.
+fn extension_no_lights_shade(vertex_color: vec4f, color: vec4f) -> vec4f {
+    if (draw.counts.w & 1u) == 0u || (draw.counts.w & 16u) == 0u || draw.flags.x == 0u {
+        return color;
+    }
+    return material_color(vec3f(0.0), draw.scene_ambient.rgb, vertex_color);
 }
 
 // What the water leaves of a light under water, for each colour: the light goes as the fog
@@ -6782,6 +6802,22 @@ fn clouds_color(p: CloudPixel) -> vec4f {
         let own = 1 | 2 | 16 | 32 | 64 | 128 | 256 | 512;
         assert_eq!(own & nirender_wgpu::CORNER_LIGHT_BIT, 0);
         assert_eq!(DRAW_SHADER.matches("fn extension_corner_shade(").count(), 1);
+    }
+
+    /// The draw part has the vertex stage's colour of a draw with no lights, so the crate does
+    /// not add the one that keeps the vertex colour; `extension_shade` takes that colour only for
+    /// a draw that is not flat-shaded, as the crate's vertex stage calls the function.
+    #[test]
+    fn the_draw_shader_makes_the_no_lights_colour_in_the_vertex_stage() {
+        assert_eq!(DRAW_SHADER.matches("fn extension_no_lights_shade(").count(), 1);
+        assert_eq!(
+            DRAW_SHADER
+                .matches("if no_lights && (draw.light_range.w & 16u) == 0u {")
+                .count(),
+            1
+        );
+        let crate_shader = include_str!("../../../nirender-plugin/host/src/shader.wgsl");
+        assert!(crate_shader.contains("(draw_counts_w() & 32768u) != 0u && (draws[record].light_range.w & 16u) == 0u"));
     }
 
     /// The draw part tests a debug view if and only if the crate makes a world variant of it
