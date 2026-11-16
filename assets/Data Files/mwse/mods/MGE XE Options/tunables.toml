@@ -68,6 +68,15 @@ most = 6.0
 step = 0.1
 
 [[parameter]]
+name = "lights.lamps.strength"
+label = "Distant lights: lamplight strength"
+about = "How bright the light of the distant lamps is on the land and the distant statics, times the darkness of the night. 0 has none."
+start = 1.0
+least = 0.0
+most = 4.0
+step = 0.1
+
+[[parameter]]
 name = "lights.glow.pixels"
 label = "Distant lights: least glow size"
 about = "The least size of a glow on the screen, in pixels: a far light stays a point."

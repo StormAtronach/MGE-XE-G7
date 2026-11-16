@@ -6517,7 +6517,7 @@ impl DistantLand {
         let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
         let [r, g, b, _] = main_view.sun_color;
         let [ar, ag, ab, _] = main_view.ambient;
-        lamp_grid::darkness_gate([r, g, b], sun_vis, [ar, ag, ab])
+        lamp_grid::darkness_gate([r, g, b], sun_vis, [ar, ag, ab]) * self.tunables.get(tunables::LAMP_STRENGTH)
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {
