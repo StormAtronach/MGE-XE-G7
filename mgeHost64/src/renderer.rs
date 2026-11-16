@@ -6850,7 +6850,9 @@ fn clouds_color(p: CloudPixel) -> vec4f {
 
     /// The draw part has the vertex stage's colour of a draw with no lights, so the crate does
     /// not add the one that keeps the vertex colour; `extension_shade` takes that colour only for
-    /// a draw that is not flat-shaded, as the crate's vertex stage calls the function.
+    /// a draw that is not flat-shaded, as the crate's vertex stage calls the function. The crate
+    /// tests the flat bit by one function (W530): the test holds its name and its return, not a
+    /// line of the crate's code. The crate's own test holds the line of its vertex stage.
     #[test]
     fn the_draw_shader_makes_the_no_lights_colour_in_the_vertex_stage() {
         assert_eq!(DRAW_SHADER.matches("fn extension_no_lights_shade(").count(), 1);
@@ -6861,7 +6863,34 @@ fn clouds_color(p: CloudPixel) -> vec4f {
             1
         );
         let crate_shader = include_str!("../../../nirender-plugin/host/src/shader.wgsl");
-        assert!(crate_shader.contains("(draw_counts_w() & 32768u) != 0u && (draws[record].light_range.w & 16u) == 0u"));
+        assert_eq!(crate_shader.matches("\nfn draw_flat() -> bool {").count(), 1);
+    }
+
+    /// Each read of a fact of a stage key in this extension's text (`draw.counts.w`,
+    /// `draw.flags.x`, `draw.flags.y`, `draw.light_range.w`) goes through the crate's function
+    /// in the world shader, where a stage pipeline gives the key's constant (W530). A read that
+    /// stays a read of the record draws the same picture, only slower, so no picture shows it.
+    #[test]
+    fn the_draw_shader_reads_the_facts_of_a_stage_key_through_the_crates_functions() {
+        let fields = ["counts.w", "flags.x", "flags.y", "light_range.w"];
+        // The test can show a miss: the draw part reads each of the four.
+        for field in fields {
+            assert!(DRAW_SHADER.contains(format!("draw.{field}").as_str()), "{field}");
+        }
+        let world = world_source(core_mods::CoreMods::built_in().shadow_hooks(), None);
+        let (_, after) = world
+            .split_once("// EXTENSION TEXT BEGIN")
+            .expect("the crate's line before the extension's text");
+        let (extension, _) = after
+            .split_once("// EXTENSION TEXT END")
+            .expect("the crate's line after the extension's text");
+        for field in fields {
+            assert_eq!(
+                extension.matches(format!("draws[record].{field}").as_str()).count(),
+                0,
+                "{field}"
+            );
+        }
     }
 
     /// The draw part tests a debug view if and only if the crate makes a world variant of it
