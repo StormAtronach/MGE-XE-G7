@@ -26,8 +26,9 @@ use std::collections::{BTreeMap, HashMap};
 use nirender_wgpu::objects::Create;
 use nirender_wgpu::wgpu;
 
-use super::lamp_values::LightSettings;
+use super::lamp_values::{LightRecord, LightRecords, LightSettings};
 use super::{ORIGINAL_SHARED_CONSTANT, original_light};
+use distantland::mge_xe::lights::Key;
 
 /// The side of an exterior cell of the game.
 const CELL: f32 = 8192.0;
@@ -57,6 +58,119 @@ pub struct SourceLamp {
     pub color: [u8; 3],
     /// The flags of the light record.
     pub flags: u32,
+    /// The index of its light record in [`FileLamps::record_ids`].
+    pub record: u32,
+}
+
+/// The lamps of the lights file's exterior block, and the ids of their light records.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileLamps {
+    pub lamps: Vec<SourceLamp>,
+    /// The ids of the light records, as the generator writes them
+    /// (`distantland::mge_xe::lights::key`).
+    pub record_ids: Vec<Key>,
+}
+
+/// The flags of a light record that give a placed light no light of its own: a negative
+/// light, and a light that is off by default (`EntityLight::createLightOnReference` 0x4D2833,
+/// 0x4D28D6). The bits of `tes3::esp::LightFlags`.
+const NEGATIVE: u32 = 0x4;
+const OFF_BY_DEFAULT: u32 = 0x20;
+
+/// What the game's light records changed in the file's lamps.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GameValues {
+    /// The lamps of the file.
+    pub lamps: usize,
+    /// False before the game's records come, or while they are none (a record 13 with a count
+    /// of 0, which d3d8.dll sends before the game has its records): the file's values stay.
+    pub applied: bool,
+    /// The lamps that take another radius or colour from the game.
+    pub changed: usize,
+    /// One of them: its id, and its radius and colour in the file and in the game.
+    pub example: Option<String>,
+    /// The lamps that the game's record gives no light: negative, off by default, black or
+    /// without a radius.
+    pub dropped: usize,
+    /// The lamps whose record the game does not have: they keep the file's values.
+    pub not_found: usize,
+}
+
+impl GameValues {
+    /// The line of the log.
+    pub fn describe(&self) -> String {
+        if !self.applied {
+            return format!(
+                "distant lamps: {} lamps with the values of the lights file (no light records of the game yet)",
+                self.lamps
+            );
+        }
+        let mut line = format!(
+            "distant lamps: {} lamps with the game's light records: {} changed",
+            self.lamps, self.changed
+        );
+        if let Some(example) = &self.example {
+            line += &format!(" (as {example})");
+        }
+        line += &format!(", {} dropped, {} not found", self.dropped, self.not_found);
+        if self.not_found != 0 {
+            line += " (warning: they keep the values of the file)";
+        }
+        line
+    }
+}
+
+impl FileLamps {
+    /// The lamps with the radius, the colour and the flags of the game's light records (the
+    /// page, section 2.3). A record that is negative, off by default, black or without a radius
+    /// drops its lamps. A record that the game does not have keeps the file's values. Without
+    /// records, or with none, every lamp keeps the file's values.
+    pub fn with_game_values(&self, records: Option<&LightRecords>) -> (Vec<SourceLamp>, GameValues) {
+        let mut values = GameValues {
+            lamps: self.lamps.len(),
+            ..GameValues::default()
+        };
+        let Some(records) = records.filter(|records| records.count() > 0) else {
+            return (self.lamps.clone(), values);
+        };
+        values.applied = true;
+        let mut lamps = Vec::with_capacity(self.lamps.len());
+        for lamp in &self.lamps {
+            let id = self.record_ids.get(lamp.record as usize);
+            let Some((id, game)) = id.and_then(|id| Some((id, records.get(id)?))) else {
+                values.not_found += 1;
+                lamps.push(*lamp);
+                continue;
+            };
+            let Some(placed) = game_lamp(lamp, game) else {
+                values.dropped += 1;
+                continue;
+            };
+            if placed.radius != lamp.radius || placed.color != lamp.color {
+                values.changed += 1;
+                values.example.get_or_insert_with(|| {
+                    format!(
+                        "{id}: radius {} to {}, colour {:?} to {:?}",
+                        lamp.radius, placed.radius, lamp.color, placed.color
+                    )
+                });
+            }
+            lamps.push(placed);
+        }
+        (lamps, values)
+    }
+}
+
+/// A lamp with the values of the game's record; [`None`] when the record gives it no light.
+fn game_lamp(lamp: &SourceLamp, game: &LightRecord) -> Option<SourceLamp> {
+    let color = [game.color[0], game.color[1], game.color[2]];
+    let no_light = game.flags & (NEGATIVE | OFF_BY_DEFAULT) != 0 || color == [0; 3] || game.radius <= 0;
+    (!no_light).then_some(SourceLamp {
+        radius: game.radius as f32,
+        color,
+        flags: game.flags,
+        ..*lamp
+    })
 }
 
 /// A lamp as the shaders read it: `Lamp` of [`LAMPS_WGSL`].
@@ -612,12 +726,98 @@ mod tests {
         }
     }
 
+    use distantland::mge_xe::lights::key;
+
     fn lamp(x: f32, y: f32, radius: f32) -> SourceLamp {
         SourceLamp {
             position: [x, y, 0.0],
             radius,
             color: [255, 200, 100],
             flags: 0,
+            record: 0,
+        }
+    }
+
+    /// Record 13 with the records `(id, radius, colour, flags)`, as d3d8.dll sends it.
+    fn record_13(records: &[(&str, i32, [u8; 4], u32)]) -> LightRecords {
+        let mut bytes = Vec::new();
+        for word in [1, records.len() as u32] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        for (id, radius, color, flags) in records {
+            bytes.extend_from_slice(&radius.to_le_bytes());
+            bytes.extend_from_slice(color);
+            bytes.extend_from_slice(&flags.to_le_bytes());
+            bytes.extend_from_slice(&(id.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(id.as_bytes());
+            bytes.resize(bytes.len().next_multiple_of(4), 0);
+        }
+        LightRecords::read(&bytes).unwrap()
+    }
+
+    /// Five lamps of the records 0 to 4 of the file.
+    fn file_lamps() -> FileLamps {
+        FileLamps {
+            lamps: (0..5)
+                .map(|i| SourceLamp {
+                    record: i,
+                    ..lamp(i as f32 * 1000.0, 0.0, 128.0)
+                })
+                .collect(),
+            record_ids: ["light_com_lantern", "light_negative", "light_off", "light_black", "light_mod"]
+                .map(|id| key(id.as_bytes()))
+                .to_vec(),
+        }
+    }
+
+    /// The game's record replaces the radius, the colour and the flags of a lamp of the file
+    /// (Let There Be Darkness changes the records when the game starts).
+    #[test]
+    fn the_game_record_replaces_a_lamps_radius_and_colour() {
+        let file = file_lamps();
+        let records = record_13(&[("Light_Com_Lantern", 256, [180, 120, 60, 0], 8)]);
+        let (lamps, values) = file.with_game_values(Some(&records));
+        assert_eq!(lamps.len(), 5);
+        assert_eq!(lamps[0].radius, 256.0);
+        assert_eq!(lamps[0].color, [180, 120, 60]);
+        assert_eq!(lamps[0].flags, 8);
+        assert_eq!(lamps[0].position, file.lamps[0].position);
+        // The records that the game does not have keep the file's values.
+        assert_eq!(lamps[1..], file.lamps[1..]);
+        assert!(values.applied);
+        assert_eq!((values.changed, values.dropped, values.not_found), (1, 0, 4));
+        let line = values.describe();
+        assert!(line.contains("light_com_lantern: radius 128 to 256"), "{line}");
+        assert!(line.contains("warning:"), "{line}");
+    }
+
+    /// A record that is negative, off by default, black or without a radius drops its lamps.
+    #[test]
+    fn a_record_without_a_light_drops_its_lamps() {
+        let records = record_13(&[
+            ("light_com_lantern", 128, [255, 200, 100, 0], 0),
+            ("light_negative", 128, [255, 200, 100, 0], NEGATIVE),
+            ("light_off", 128, [255, 200, 100, 0], OFF_BY_DEFAULT),
+            ("light_black", 128, [0, 0, 0, 255], 0),
+            ("light_mod", 0, [255, 200, 100, 0], 0),
+        ]);
+        let (lamps, values) = file_lamps().with_game_values(Some(&records));
+        assert_eq!(lamps, file_lamps().lamps[..1]);
+        assert_eq!((values.changed, values.dropped, values.not_found), (0, 4, 0));
+        assert!(!values.describe().contains("warning:"));
+    }
+
+    /// Before the game has its records, d3d8.dll sends record 13 with a count of 0 (8 bytes):
+    /// every lamp keeps the file's values, and none is changed or dropped.
+    #[test]
+    fn a_record_13_with_no_records_keeps_the_files_values() {
+        let file = file_lamps();
+        for records in [None, Some(record_13(&[]))] {
+            let (lamps, values) = file.with_game_values(records.as_ref());
+            assert_eq!(lamps, file.lamps);
+            assert!(!values.applied);
+            assert_eq!((values.changed, values.dropped, values.not_found), (0, 0, 0));
+            assert!(values.describe().contains("no light records of the game yet"));
         }
     }
 

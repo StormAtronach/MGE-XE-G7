@@ -17,7 +17,7 @@ use nirender_wgpu::pass_report::Skip;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
-use super::lamp_grid::SourceLamp;
+use super::lamp_grid::{FileLamps, SourceLamp};
 use distantland::mge_xe::lights::{EXTERIOR_KEY, Key, parse_lights};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
@@ -31,7 +31,7 @@ struct LightsFile {
     sources: Vec<u8>,
     source_count: u32,
     /// The lamps, for their light on the distant land and statics.
-    lamps: Vec<SourceLamp>,
+    lamps: FileLamps,
     /// The light records of the exterior's lamps, with the values that the file has for them.
     records: Vec<FileLampRecord>,
 }
@@ -78,6 +78,7 @@ fn source_lamp(lamp: &distantland::mge_xe::lights::Lamp) -> SourceLamp {
         radius: lamp.radius,
         color: lamp.color,
         flags: lamp.flags,
+        record: lamp.record,
     }
 }
 
@@ -92,7 +93,10 @@ fn read(path: &Path) -> Result<LightsFile, String> {
     Ok(LightsFile {
         sources,
         source_count,
-        lamps: exterior.map_or_else(Vec::new, |block| block.lamps.iter().map(source_lamp).collect()),
+        lamps: exterior.map_or_else(FileLamps::default, |block| FileLamps {
+            lamps: block.lamps.iter().map(source_lamp).collect(),
+            record_ids: block.records.iter().map(|record| record.id.clone()).collect(),
+        }),
         records: exterior.map_or_else(Vec::new, file_records),
     })
 }
@@ -372,7 +376,7 @@ pub struct DistantLights {
     /// The light records of the file's exterior lamps, once the file is read.
     file_records: Option<Vec<FileLampRecord>>,
     /// The lamps of the file's exterior block, once the file is read.
-    file_lamps: Option<Vec<SourceLamp>>,
+    file_lamps: Option<FileLamps>,
 }
 
 impl DistantLights {
@@ -383,7 +387,7 @@ impl DistantLights {
         let file = LightsFile {
             sources: vec![0; sources as usize * 32],
             source_count: sources,
-            lamps: Vec::new(),
+            lamps: FileLamps::default(),
             records: Vec::new(),
         };
         DistantLights {
@@ -457,8 +461,8 @@ impl DistantLights {
     }
 
     /// The lamps of the file's exterior block; [`None`] until the file is read.
-    pub fn file_lamps(&self) -> Option<&[SourceLamp]> {
-        self.file_lamps.as_deref()
+    pub fn file_lamps(&self) -> Option<&FileLamps> {
+        self.file_lamps.as_ref()
     }
 
     /// The light records of the file's exterior lamps; [`None`] until the file is read.

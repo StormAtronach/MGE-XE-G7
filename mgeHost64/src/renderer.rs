@@ -2073,18 +2073,29 @@ impl DistantLand {
                 // The terms of a lamp come from the engine's settings only (the page, section
                 // 2.1): without them the lamps wait.
                 None if !self.lamps_wait_told => {
-                    println!("distant lamps: {} lamps wait for the light settings (record 12)", lamps.len());
+                    println!(
+                        "distant lamps: {} lamps wait for the light settings (record 12)",
+                        lamps.lamps.len()
+                    );
                     self.lamps_wait_told = true;
                 }
                 Some(settings) if self.lamps_made_for != Some((settings, made_for.0, made_for.1)) => {
                     let (fade, original) = made_for;
+                    // The radius, the colour and the flags of the game's light records (record
+                    // 13), else of the file.
+                    let start = std::time::Instant::now();
+                    let (lamps, game_values) = lamps.with_game_values(self.light_records.as_ref());
                     let grid = lamp_grid::build_original(
-                        lamp_grid::gpu_lamps(lamps, &settings, fade, original),
+                        lamp_grid::gpu_lamps(&lamps, &settings, fade, original),
                         settings.light_limit as usize,
                         original,
                     );
-                    println!("{}", grid.report.describe());
                     binding.set(scene.device, &grid);
+                    // The time of the frame thread for the lamps' values, the list, the grid
+                    // and the buffers.
+                    let made_in = start.elapsed().as_secs_f64() * 1000.0;
+                    println!("{}", game_values.describe());
+                    println!("{}; made in {made_in:.3} ms", grid.report.describe());
                     self.lamps_made_for = Some((settings, fade, original));
                 }
                 _ => {}
@@ -3957,6 +3968,8 @@ impl Extension for DistantLand {
                         );
                         self.light_records = Some(records);
                         self.light_records_line_due = true;
+                        // The lamps take the new values.
+                        self.lamps_made_for = None;
                     }
                 }
                 None => println!(
