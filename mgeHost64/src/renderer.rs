@@ -1528,6 +1528,9 @@ fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
     let normal = normalize(in.normal);
     let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + lamp_light(in.world, normal);
     let lit = albedo * in.color * light;
+    if lamp_values.values.w > 1.5 {
+        return vec4f(albedo * in.color * lamp_light(in.world, normal), 1.0);
+    }
     if lamp_values.values.w > 0.5 {
         return vec4f(lamp_light(in.world, normal), 1.0);
     }

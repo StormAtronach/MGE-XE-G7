@@ -820,7 +820,8 @@ struct LampValues {
     // lists, and the number of lamps.
     counts: vec4u,
     // x: the size of a small cell. y: the strength of the lamps' light in the frame. z: 1 for
-    // the original lights. w: 1 for the view of the lamps' light alone (MGE_XE_LAMP_VIEW).
+    // the original lights. w: the view of MGE_XE_LAMP_VIEW: 1 the lamps' light alone, 2 times
+    // the colour of the surface.
     values: vec4f,
     // The z axis of the camera, for the bias of the original lights.
     camera_z: vec4f,
@@ -879,11 +880,12 @@ fn lamp_light(p: vec3f, normal: vec3f) -> vec3f {
 ";
 
 /// `MGE_XE_LAMP_VIEW=1`: the land and the distant statics show the light of the distant lamps
-/// alone, without their colour, their texture, the sun and the fog: for the test of the lamps'
-/// light. Read once.
-pub fn lamp_view() -> bool {
-    static VIEW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *VIEW.get_or_init(|| nirender_wgpu::switches::on("MGE_XE_LAMP_VIEW").unwrap_or(false))
+/// alone, without their colour, their texture, the sun and the fog; `2`: the light times the
+/// colour and the texture, without the sun and the fog. For the test of the lamps' light. 0
+/// without the switch. Read once.
+pub fn lamp_view() -> u32 {
+    static VIEW: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *VIEW.get_or_init(|| nirender_wgpu::switches::number("MGE_XE_LAMP_VIEW", 0u32).min(2))
 }
 
 /// The brightness of the sun (its colour times its visibility) and the ambient light that
@@ -1025,7 +1027,7 @@ impl LampBinding {
     /// of the camera. The buffer is written only when they change.
     pub fn set_frame(&mut self, queue: &wgpu::Queue, strength: f32, camera_z: [f32; 3]) {
         let camera_z = [camera_z[0], camera_z[1], camera_z[2], 0.0];
-        let view = if lamp_view() { 1.0 } else { 0.0 };
+        let view = lamp_view() as f32;
         if self.current.values[1] == strength && self.current.values[3] == view && self.current.camera_z == camera_z {
             return;
         }
