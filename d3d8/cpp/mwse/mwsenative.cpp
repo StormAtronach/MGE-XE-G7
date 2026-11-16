@@ -225,6 +225,9 @@ namespace MwseNative {
 
     bool queryLightRecords(std::vector<LightRecord>& records) {
         static_assert(sizeof(LightRecord) == sizeof(MwseNativeLightRecordV1), "LightRecord has the layout of MWSE's record");
+        // Any status but OK ends the asking for the session, the status of a wrong thread too:
+        // each caller is on the game's main thread, so that status is a fault of the code and
+        // not a state that passes.
         static bool refused = false;
         // The room of an ask. A longer list gets a second ask with room for its count.
         static uint32_t room = 4096;
