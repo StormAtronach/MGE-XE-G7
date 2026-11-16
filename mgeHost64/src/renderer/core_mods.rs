@@ -2070,6 +2070,31 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert_eq!(shared.world_hooks().0, built_in);
     }
 
+    /// Without `MGE_XE_CORE_MOD_FAULT` there is no plant, and no text of the world has the plant's
+    /// line, with the file in use or without it. The null is
+    /// [`the_world_without_the_planted_file_has_no_plant`]: the same file with the plant has it.
+    #[test]
+    fn without_the_switch_no_text_has_the_plant() {
+        assert!(
+            std::env::var_os("MGE_XE_CORE_MOD_FAULT").is_none(),
+            "the test runs without the switch"
+        );
+        assert_eq!(Plant::of_env(), None);
+
+        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
+        let shared = Shared::new(
+            mods_with_markers(files, &HOMES, &BuildMarkers::default()),
+            BuildMarkers::default(),
+            Plant::of_env(),
+        );
+        let texts = [shared.world_hooks().0, shared.world_hooks_without(&[ModFile::Shadow]).0];
+        assert_eq!(texts[0], shadow);
+        for text in texts {
+            assert!(!text.contains(nirender_wgpu::CORE_MOD_FAULT_PLANT));
+        }
+    }
+
     /// A marker drops the files it names with the same text; a changed file is used again, and
     /// a marker whose files all changed goes. The null: the start without markers uses the file.
     #[test]
