@@ -113,6 +113,56 @@ const HANDOFF_CULL: f32 = 1024.0;
 /// The bands of the near distance of the arrivals in the view, one cell each; the last band
 /// holds that distance and farther.
 const VIEW_BANDS: usize = 10;
+
+/// Merged subsets that arrived since the last report, by the distance of their place.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ArrivalCounts {
+    /// All of them.
+    all: u64,
+    /// Those with their place inside the draw distance: they came late.
+    inside: u64,
+    /// Those of them past the handoff: the view shows them late.
+    shown_late: u64,
+    /// The nearest near distance of one inside the draw distance.
+    nearest: f32,
+    /// Those with their place in the main view, by the near distance of the place in cells.
+    view: [u64; VIEW_BANDS],
+}
+
+impl Default for ArrivalCounts {
+    fn default() -> Self {
+        ArrivalCounts {
+            all: 0,
+            inside: 0,
+            shown_late: 0,
+            nearest: f32::MAX,
+            view: [0; VIEW_BANDS],
+        }
+    }
+}
+
+impl ArrivalCounts {
+    /// Counts one arrival. `near`: the near distance of its place from the camera.
+    fn add(&mut self, near: f32, in_view: bool, past_handoff: bool, draw_distance: f32) {
+        self.all += 1;
+        if in_view {
+            self.view[((near.max(0.0) / CELL) as usize).min(VIEW_BANDS - 1)] += 1;
+        }
+        if near >= draw_distance {
+            return;
+        }
+        self.inside += 1;
+        self.nearest = self.nearest.min(near.max(0.0));
+        if past_handoff {
+            self.shown_late += 1;
+        }
+    }
+
+    /// The nearest near distance for the report: 0 when none came inside the draw distance.
+    fn nearest_seen(&self) -> f32 {
+        if self.inside > 0 { self.nearest } else { 0.0 }
+    }
+}
 /// `MaxGrassElements` of the Direct3D 9 path: the grass records of a frame.
 const GRASS_RECORDS: usize = 16384;
 /// The bytes of a grass record: three rows of four numbers.
@@ -2047,17 +2097,11 @@ pub struct Statics {
     grass_kept: GrassKept,
     /// The view range of the game in the last main view ([`CullSet::eye`] w).
     game_range: f32,
-    /// The merged subsets that arrived in play (no wait open) since the last `report`: all
-    /// of them, those with their place inside the draw distance, those of them past the
-    /// handoff (a late arrival that the view shows), and the nearest distance of a late one.
-    play_arrivals: u64,
-    late_arrivals: u64,
-    late_shown: u64,
-    late_nearest: f32,
-    /// The merged subsets that arrived while a wait for the statics was open, and those in
-    /// play whose place was in the main view, by the near distance of the place in cells.
-    wait_arrivals: u64,
-    view_arrivals: [u64; VIEW_BANDS],
+    /// The merged subsets that arrived in world frames since the last `report`: in play (no
+    /// wait open), and while a wait for the statics was open. Without
+    /// `distant_land.wait_on_load` the frames of a wait show the world too.
+    play: ArrivalCounts,
+    waited: ArrivalCounts,
     /// A wait for the statics is open (`set_waiting`).
     waiting: bool,
     /// The planes of the last main view.
@@ -2191,12 +2235,8 @@ impl Statics {
             grass_parts: GrassParts::default(),
             grass_kept: GrassKept::default(),
             game_range: 0.0,
-            play_arrivals: 0,
-            late_arrivals: 0,
-            late_shown: 0,
-            late_nearest: f32::MAX,
-            wait_arrivals: 0,
-            view_arrivals: [0; VIEW_BANDS],
+            play: ArrivalCounts::default(),
+            waited: ArrivalCounts::default(),
             waiting: false,
             view_planes: None,
             play_again: 0,
@@ -2409,27 +2449,36 @@ impl Statics {
                 }
             }
         }
-        if self.play_arrivals > 0 || self.wait_arrivals > 0 {
+        let (play, waited) = (self.play, self.waited);
+        if play.all > 0 || waited.all > 0 {
             println!(
                 "statics report {label}: arrivals: {} merged subsets in play ({} of them on the GPU before), {} inside the draw distance of {:.0}, {} of them past the handoff (shown late), the nearest at {:.0}; {} more during a wait; in play and in the main view, by the near distance in cells (the last: {} and farther): {:?}",
-                self.play_arrivals,
+                play.all,
                 self.play_again,
-                self.late_arrivals,
+                play.inside,
                 self.settings.draw_distance,
-                self.late_shown,
-                if self.late_arrivals > 0 { self.late_nearest } else { 0.0 },
-                self.wait_arrivals,
+                play.shown_late,
+                play.nearest_seen(),
+                waited.all,
                 VIEW_BANDS - 1,
-                self.view_arrivals
+                play.view
             );
         }
-        self.wait_arrivals = 0;
-        self.view_arrivals = [0; VIEW_BANDS];
-        self.play_arrivals = 0;
+        if waited.all > 0 {
+            println!(
+                "statics report {label}: arrivals during a wait: {} merged subsets in world frames, {} inside the draw distance of {:.0}, {} of them past the handoff (shown late), the nearest at {:.0}; in the main view, by the near distance in cells (the last: {} and farther): {:?}",
+                waited.all,
+                waited.inside,
+                self.settings.draw_distance,
+                waited.shown_late,
+                waited.nearest_seen(),
+                VIEW_BANDS - 1,
+                waited.view
+            );
+        }
+        self.play = ArrivalCounts::default();
+        self.waited = ArrivalCounts::default();
         self.play_again = 0;
-        self.late_arrivals = 0;
-        self.late_shown = 0;
-        self.late_nearest = f32::MAX;
         self.set_stats.fill(SetStats::default());
         self.grass_stats = SetStats::default();
         self.grass_parts = GrassParts::default();
@@ -3086,35 +3135,23 @@ impl Statics {
         }
     }
 
-    /// Counts a merged subset that arrived in play by the distance of its place: inside the
-    /// draw distance it came late, and past the handoff the view shows it late.
+    /// Counts a merged subset that arrived in a world frame by the distance of its place, in
+    /// play or in an open wait: inside the draw distance it came late, and past the handoff
+    /// the view shows it late.
     fn count_arrival(&mut self, index: u32, eye: [f32; 3]) {
         let Some(catalog) = self.catalog.as_ref() else { return };
         let instance = &catalog.instances[index as usize];
-        if self.waiting {
-            self.wait_arrivals += 1;
-            return;
-        }
-        let near = flat_distance(instance, eye) - instance.radius;
-        self.play_arrivals += 1;
+        let flat = flat_distance(instance, eye);
         let c = instance.center;
         let in_view = self.view_planes.is_some_and(|planes| {
             planes
                 .iter()
                 .all(|p| p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3] >= -instance.radius)
         });
-        if in_view {
-            self.view_arrivals[((near.max(0.0) / CELL) as usize).min(VIEW_BANDS - 1)] += 1;
-        }
-        if near >= self.settings.draw_distance {
-            return;
-        }
-        self.late_arrivals += 1;
-        self.late_nearest = self.late_nearest.min(near.max(0.0));
         let gone_before = self.game_range - HANDOFF - HANDOFF_BAND - HANDOFF_CULL;
-        if flat_distance(instance, eye) + instance.radius >= gone_before {
-            self.late_shown += 1;
-        }
+        let past_handoff = flat + instance.radius >= gone_before;
+        let counts = if self.waiting { &mut self.waited } else { &mut self.play };
+        counts.add(flat - instance.radius, in_view, past_handoff, self.settings.draw_distance);
     }
 
     /// Draws the grass of the frame into the pass: the places within the view range of the
@@ -5730,6 +5767,53 @@ mod tests {
         let mut most = Tunables::new();
         most.start_at(STATICS_MARGIN, 99.0);
         assert_eq!(most.get(STATICS_MARGIN), super::RING_MARGIN_MOST);
+    }
+
+    /// An arrival counts in all, in its view band when in the view, and inside the draw
+    /// distance only when its near distance is below it; past the handoff only then.
+    #[test]
+    fn an_arrival_is_split_by_its_distance() {
+        let draw = 7.0 * CELL;
+        let mut counts = super::ArrivalCounts::default();
+        counts.add(9.5 * CELL, true, true, draw);
+        assert_eq!((counts.all, counts.inside, counts.shown_late), (1, 0, 0));
+        assert_eq!(counts.view[9], 1);
+        assert_eq!(counts.nearest_seen(), 0.0);
+        counts.add(2.5 * CELL, false, true, draw);
+        counts.add(1000.0, true, false, draw);
+        assert_eq!((counts.all, counts.inside, counts.shown_late), (3, 2, 1));
+        assert_eq!(counts.view[0], 1);
+        assert_eq!(counts.nearest_seen(), 1000.0);
+    }
+
+    /// The arrivals of an open wait get the same split as those in play, in their own
+    /// counts (W53, verdict 582 C8): without `distant_land.wait_on_load` the player sees the
+    /// frames of the wait. Null: the same arrival with no wait open counts in play only.
+    #[test]
+    fn the_arrivals_of_a_wait_are_split_as_in_play() {
+        let folder = std::env::temp_dir().join(format!("statics-wait-split-{}", std::process::id()));
+        let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
+        let (mut statics, late) = super::Statics::with_late_catalog(&document, b"cell");
+        statics.catalog = Some(late.loaded.catalog.clone());
+        statics.settings.draw_distance = 7.0 * CELL;
+        // The one place: center 0, radius 64. From this eye its near distance is 936, and the
+        // game's range puts it past the handoff.
+        statics.game_range = 3000.0;
+        let eye = [1000.0, 0.0, 0.0];
+
+        statics.set_waiting(true);
+        statics.count_arrival(0, eye);
+        assert_eq!(statics.play, super::ArrivalCounts::default());
+        assert_eq!(
+            (statics.waited.all, statics.waited.inside, statics.waited.shown_late),
+            (1, 1, 1)
+        );
+        assert_eq!(statics.waited.nearest_seen(), 936.0);
+
+        statics.set_waiting(false);
+        statics.count_arrival(0, eye);
+        assert_eq!((statics.play.all, statics.play.inside, statics.play.shown_late), (1, 1, 1));
+        assert_eq!(statics.waited.all, 1);
     }
 
     /// The draws of a grass call sort by texture, then by subset, then by the order of their
