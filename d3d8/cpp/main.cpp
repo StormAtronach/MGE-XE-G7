@@ -96,6 +96,7 @@ static void startWgpu() {
     if (!MwseNative::hasMgeApiRequest()) {
         const std::string version = std::to_string(askedVersion) + " with the request of MGE XE's API";
         Session::toPlainGame(Session::Why::NoNativeAbi, version.c_str());
+        MWInitPatch::patchPlainGame(dll);
         return;
     }
     if (const char* refused = Deviceless::listenNeededEvents()) {
