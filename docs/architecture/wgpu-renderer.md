@@ -336,7 +336,7 @@ the frame, each with its own uniform buffer:
 | Binding | Holds | Stage |
 | --- | --- | --- |
 | 0 | uniform `View` (`u`): view projection, eye, fog colour, fog (exponential start and divisor, linear start and end), flags, sun direction, sun colour, ambient, the scattering (sun position, sky, outscatter, inscatter, sun altitude) | VF |
-| 1-3 | the distant lamps (`LampBinding`, `renderer/lamp_grid.rs`): uniform `LampValues` (the grid's place and layout, the strength of the frame, 1 for the original lights, the camera's z axis, the haze: its strength k, the power of the fog on it and the widths of its two ramps, and its end: the draw distance and the water plane), storage `lamps` (64 bytes a lamp), storage `lamp_grid` (the two levels of the grid and the lists) | F |
+| 1-3 | the distant lamps (`LampBinding`, `renderer/lamp_grid.rs`): uniform `LampValues` (the grid's place and layout, the strength of the frame, 1 for the original lights, the camera's z axis, the haze: its strength k, the power of the fog on it and the widths of its two ramps, and its end: the draw distance and the water plane; the motion: the game's time and the flicker depth), storage `lamps` (64 bytes a lamp), storage `lamp_grid` (the two levels of the grid and the lists) | F |
 
 The number of a view is the number of a statics set. The groups are made again when the
 lamps change (`LampBinding::generation`). `before_world` writes the main, mirror and
@@ -348,6 +348,13 @@ The pixel shaders of the land and the distant statics add the light of the lamps
 (`lamp_grid::LAMP_LIGHT_WGSL`) with the light functions of the near lights
 (`LIGHT_FUNCTIONS` of `renderer.rs`). `LampBinding::set_frame` writes the strength and the
 camera's z axis in each frame with a world; the strength is 0 in an interior and by day.
+The light of a lamp flickers or pulses by its light flags, as the fork's `dlAnimation` does
+(`lamp_grid::LAMP_MOTION_WGSL`, W449 step 4). `lamp_motion` takes the first kind in the order
+slow pulse, pulse, slow flicker, flicker; a fire flag alone gives no motion. The phase of a
+lamp comes from its place (`lamp_phase`, stored in `GpuLamp.phase`). The time is the game's
+simulation time (`MotionFrame`), so the light is still while the game's time is stopped. The
+depth comes from the tunable `lights.lamps.flicker` (start 0.4, the fork's) or the switch
+`MGE_XE_LAMP_FLICKER`. The light on the surfaces and the haze take the same motion.
 The same walk gives the light of the lamps in the air, without the facing and only from
 the lights at or above the water plane; the fog (`FOG_FUNCTION`) adds it as the lamps' haze
 (D498), with k from the tunable `lights.lamps.haze`. With the camera at or under the water
@@ -401,7 +408,8 @@ texture in a fixed order.
 **"distant lights, cull"** (compute, `renderer/distant_lights.rs`): group 0: uniform,
 sources, glow list, indirect arguments (atomics). **"distant lights, glows"**: group 0 the
 main view; group 1: uniform `Glow` (range, glow, screen) (VF), glow list (V);
-`draw_indirect`, no vertex buffers, additive, no depth write.
+`draw_indirect`, no vertex buffers, additive, no depth write. The glows are steady: the
+flags of a source give its glow no flicker or pulse (W449 step 4; the lamps' light moves).
 
 ### 4.3 Helper: shadows
 

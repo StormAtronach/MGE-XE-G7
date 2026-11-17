@@ -18,8 +18,9 @@
 //! The pixel shaders of the land and the statics add the light of the lamps of their small cell
 //! (`lamp_light` of [`LAMP_LIGHT_WGSL`]) with the light functions of the near lights of the game
 //! ([`super::LIGHT_FUNCTIONS`]): one light near and far. The lamps light when the frame is dark
-//! enough ([`darkness_gate`]), and only in an exterior. The design: the Architect's page
-//! `distant-lights-from-fork-2026-11-12.md`, sections 2.1, 2.2 and 2.8.
+//! enough ([`darkness_gate`]), and only in an exterior. The light of a lamp whose record
+//! flickers or pulses moves with the game's time ([`LAMP_MOTION_WGSL`]). The design: the
+//! Architect's page `distant-lights-from-fork-2026-11-12.md`, sections 2.1, 2.2, 2.4 and 2.8.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -505,9 +506,12 @@ pub struct GpuLamp {
     /// The distance that the light moves along the camera's z axis (only with the original
     /// lights).
     pub bias: f32,
+    /// The lamp's number from its place, from 0 to under 1, that puts its flicker and pulse out
+    /// of step with the other lamps ([`lamp_phase`]).
+    pub phase: f32,
     /// Not used: the lamp takes 64 bytes. The engine gives a placed lamp no ambient colour
     /// (`EntityLight::createLightOnReference` 0x4D29BC).
-    pub pad: [f32; 3],
+    pub pad: [f32; 2],
 }
 
 /// The values of the grid: `LampValues` of [`LAMPS_WGSL`].
@@ -531,6 +535,9 @@ pub struct LampValues {
     /// x: the draw distance in units, where the haze ends. y: the height of the water plane of
     /// the cell; the air takes only the lights at or above it (D526). z, w: not used.
     pub haze_end: [f32; 4],
+    /// The flicker and pulse of the lamps' light: x the time of the game in seconds, y the depth
+    /// (0: none; [`MotionFrame`]). z, w: not used.
+    pub motion: [f32; 4],
 }
 
 /// What a made grid has, for the log.
@@ -653,6 +660,7 @@ pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, near: NearLigh
                 color,
                 flags: lamp.flags,
                 terms,
+                phase: lamp_phase(lamp.position),
                 ..GpuLamp::default()
             };
             if near.original {
@@ -673,6 +681,16 @@ pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, near: NearLigh
 /// that of `dlNight` of the Worldspaces fork. The colours are those of the land.
 pub fn darkness_gate(sun_color: [f32; 3], sun_vis: f32, ambient: [f32; 3]) -> f32 {
     ((GATE_END - light_luminance(sun_color, sun_vis, ambient)) / GATE_BAND).clamp(0.0, 1.0)
+}
+
+/// The number of a lamp from its place, from 0 to under 1: the place's hash of `dlAnimation` of
+/// the Worldspaces fork, made on the CPU one time for each lamp.
+pub fn lamp_phase(position: [f32; 3]) -> f32 {
+    let [x, y, z] = position.map(f64::from);
+    let wave = (x * 12.9898 + y * 78.233 + z * 37.719).sin() * 43758.5453;
+    let phase = (wave - wave.floor()) as f32;
+    // The rounding to f32 can give 1.
+    if phase < 1.0 { phase } else { 0.0 }
 }
 
 /// The light of a lamp at a distance, for the choice of the lamps that a full list keeps.
@@ -829,6 +847,7 @@ fn finish(
             camera_z: [0.0; 4],
             haze: [0.0; 4],
             haze_end: [0.0; 4],
+            motion: [0.0; 4],
         },
         lamps,
         words,
@@ -847,7 +866,7 @@ struct Lamp {
     terms: vec3f,
     wrap: f32,
     bias: f32,
-    pad0: f32,
+    phase: f32,
     pad1: f32,
     pad2: f32,
 }
@@ -869,10 +888,56 @@ struct LampValues {
     // x: the draw distance, where the haze ends. y: the height of the water plane; the air
     // takes only the lights at or above it.
     haze_end: vec4f,
+    // The flicker and pulse of the lamps: x the time of the game, y the depth (0: none).
+    motion: vec4f,
 }
 @group(0) @binding(B0) var<uniform> lamp_values: LampValues;
 @group(0) @binding(B1) var<storage, read> lamps: array<Lamp>;
 @group(0) @binding(B2) var<storage, read> lamp_grid: array<u32>;
+";
+
+/// The flicker and pulse of a distant lamp's light (the page, section 2.4): `dlAnimation` of the
+/// Worldspaces fork. The kind comes from the record's flags, the slow pulse first, then the pulse,
+/// the slow flicker and the flicker; a fire's flag alone gives none. A pulse goes there and back in
+/// 1 s (slow 2 s); a flicker goes from one random level to the next, 6 a second (slow 3). The
+/// light goes down to 1 - depth of itself. A lamp's phase puts it out of step with the others. The
+/// random levels come from a hash of whole numbers, not from the fork's `sin` of the step number,
+/// so that every GPU gives the same levels; between two steps the light goes in a line from one
+/// level to the next, as the fork's. The tests hold a CPU copy.
+pub const LAMP_MOTION_WGSL: &str = "
+// The flicker's hash of whole numbers (PCG).
+fn lamp_level_hash(value: u32) -> u32 {
+    let state = value * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// The random level of a step of a lamp's flicker, from 0 to under 1, in 24 bits.
+fn lamp_flicker_level(step: u32, seed: u32) -> f32 {
+    return f32(lamp_level_hash(step ^ seed) >> 8u) / 16777216.0;
+}
+
+// The part of a lamp's light at the game's time: 1 without flicker or pulse, down to 1 - depth.
+fn lamp_motion(flags: u32, phase: f32, time: f32, depth: f32) -> f32 {
+    var level = 1.0;
+    if (flags & 0x180u) != 0u {
+        let rate = select(1.0, 0.5, (flags & 0x100u) != 0u);
+        let x = time * rate + phase;
+        level = abs(fract(x) * 2.0 - 1.0);
+    } else if (flags & 0x48u) != 0u {
+        let steps = select(6.0, 3.0, (flags & 0x40u) != 0u);
+        let x = time * steps + phase * 17.0;
+        let k = floor(x);
+        let seed = bitcast<u32>(phase);
+        let a = lamp_flicker_level(u32(k), seed);
+        let b = lamp_flicker_level(u32(k) + 1u, seed);
+        let t = x - k;
+        level = a * (1.0 - t) + b * t;
+    } else {
+        return 1.0;
+    }
+    return 1.0 - depth * (1.0 - level);
+}
 ";
 
 /// The light of the lamps at a pixel, for a shader that starts with the view group and has
@@ -929,18 +994,20 @@ fn lamp_sums(p: vec3f, normal: vec3f) -> LampSums {
         let fade = light_end_fade(distance, 1.0 / lamp.end);
         // The air takes a light only at or above the water plane; the surface takes every light.
         let with_air = haze_on && lamp.position.z >= lamp_values.haze_end.y;
+        // The light of the lamp at the game's time: its flicker or pulse, for the surface and the air.
+        let shine = lamp.color * lamp_motion(lamp.flags, lamp.phase, lamp_values.motion.x, lamp_values.motion.y);
         if original {
             let falloff = light_original_falloff(lamp.terms.x, lamp.terms.z, distance2) * fade;
-            sum += (lambert + lamp.wrap) * falloff * lamp.color;
+            sum += (lambert + lamp.wrap) * falloff * shine;
             if with_air {
-                air += falloff * lamp.color;
+                air += falloff * shine;
             }
         } else {
             // The order of the products of the surface's sum is the one without the haze.
             let falloff = light_falloff(lamp.terms, distance, distance2);
-            sum += lambert * falloff * fade * lamp.color;
+            sum += lambert * falloff * fade * shine;
             if with_air {
-                air += falloff * fade * lamp.color;
+                air += falloff * fade * shine;
             }
         }
     }
@@ -1024,6 +1091,46 @@ pub fn haze_switch() -> Option<f32> {
     })
 }
 
+/// The values of the lamps' flicker and pulse in a frame (the page, section 2.4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotionFrame {
+    /// The time of the game in seconds: the simulation time, which stops in a menu.
+    pub time: f32,
+    /// The depth, the tunable `lights.lamps.flicker`; 0 has none.
+    pub depth: f32,
+}
+
+/// The log line of the lamps' flicker: at the first frame, and again when the depth changes.
+#[derive(Debug, Default)]
+pub struct FlickerRoute {
+    /// The depth of the last line, as bits.
+    last: Option<u32>,
+}
+
+impl FlickerRoute {
+    /// The line for the flicker of this frame, when it is the first or the depth changed.
+    /// `source` names where the depth comes from.
+    pub fn line(&mut self, depth: f32, source: &str) -> Option<String> {
+        if self.last == Some(depth.to_bits()) {
+            return None;
+        }
+        self.last = Some(depth.to_bits());
+        Some(format!("lamps' flicker: depth {depth} ({source})"))
+    }
+}
+
+/// `MGE_XE_LAMP_FLICKER=<depth>`: the start of the tunable `lights.lamps.flicker`, the depth of the
+/// flicker and pulse of the lamps' light, for a replay (0 turns them off). None without the switch,
+/// or with a value that is not a number from 0 to 1, which the log names. Read once.
+pub fn flicker_switch() -> Option<f32> {
+    static FLICKER: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *FLICKER.get_or_init(|| {
+        nirender_wgpu::switches::parsed("MGE_XE_LAMP_FLICKER", "a number from 0 to 1", |text| {
+            text.trim().parse::<f32>().ok().filter(|depth| (0.0..=1.0).contains(depth))
+        })
+    })
+}
+
 /// The brightness of the sun (its colour times its visibility) and the ambient light that
 /// [`darkness_gate`] takes.
 pub fn light_luminance(sun_color: [f32; 3], sun_vis: f32, ambient: [f32; 3]) -> f32 {
@@ -1031,10 +1138,10 @@ pub fn light_luminance(sun_color: [f32; 3], sun_vis: f32, ambient: [f32; 3]) -> 
     0.299 * light[0] + 0.587 * light[1] + 0.114 * light[2]
 }
 
-/// The code of the lamps' light for a shader of the view group: [`super::LIGHT_FUNCTIONS`] and
-/// [`LAMP_LIGHT_WGSL`].
+/// The code of the lamps' light for a shader of the view group: [`super::LIGHT_FUNCTIONS`],
+/// [`LAMP_MOTION_WGSL`] and [`LAMP_LIGHT_WGSL`].
 pub fn light_wgsl() -> String {
-    format!("{}{LAMP_LIGHT_WGSL}", super::LIGHT_FUNCTIONS)
+    format!("{}{LAMP_MOTION_WGSL}{LAMP_LIGHT_WGSL}", super::LIGHT_FUNCTIONS)
 }
 
 /// [`LAMPS_WGSL`] with the bindings from `first`.
@@ -1147,6 +1254,7 @@ impl LampBinding {
         let mut values = grid.values;
         (values.values[1], values.camera_z) = (self.current.values[1], self.current.camera_z);
         (values.haze, values.haze_end) = (self.current.haze, self.current.haze_end);
+        values.motion = self.current.motion;
         self.current = values;
         let (lamps, words): (&[u8], &[u8]) = (bytemuck::cast_slice(&grid.lamps), bytemuck::cast_slice(&grid.words));
         if lamps.len() as u64 <= self.lamps.size() && words.len() as u64 <= self.grid.size() {
@@ -1162,33 +1270,99 @@ impl LampBinding {
 
     /// The values of the frame: the strength of the lamps' light (0 for none), the z axis of
     /// the camera, and for their haze in the fog its strength (0 for none), the draw distance,
-    /// where it ends, and the height of the water plane, under which a light has no haze. The
-    /// buffer is written only when they change.
-    pub fn set_frame(&mut self, queue: &wgpu::Queue, strength: f32, camera_z: [f32; 3], haze: HazeFrame) {
+    /// where it ends, and the height of the water plane, under which a light has no haze; the
+    /// time and the depth of the flicker and pulse. The buffer is written only when they change:
+    /// while the game's time runs, at each frame.
+    pub fn set_frame(
+        &mut self,
+        queue: &wgpu::Queue,
+        strength: f32,
+        camera_z: [f32; 3],
+        haze: HazeFrame,
+        motion: MotionFrame,
+    ) {
+        if self.current.take_frame(strength, camera_z, haze, motion) {
+            queue.write_buffer(&self.values, 0, bytemuck::bytes_of(&self.current));
+        }
+    }
+}
+
+impl LampValues {
+    /// Takes the values of a frame ([`LampBinding::set_frame`]); true when one changed.
+    fn take_frame(&mut self, strength: f32, camera_z: [f32; 3], haze: HazeFrame, motion: MotionFrame) -> bool {
         let camera_z = [camera_z[0], camera_z[1], camera_z[2], 0.0];
         let view = lamp_view() as f32;
         let haze_values = [haze.k, 1.0 / HAZE_REACH, HAZE_NEAR_WIDTH, HAZE_FAR_WIDTH];
         let haze_end = [haze.draw_distance, haze.water_plane, 0.0, 0.0];
-        if self.current.values[1] == strength
-            && self.current.values[3] == view
-            && self.current.camera_z == camera_z
-            && self.current.haze == haze_values
-            && self.current.haze_end == haze_end
+        let motion = [motion.time, motion.depth, 0.0, 0.0];
+        if self.values[1] == strength
+            && self.values[3] == view
+            && self.camera_z == camera_z
+            && self.haze == haze_values
+            && self.haze_end == haze_end
+            && self.motion == motion
         {
-            return;
+            return false;
         }
-        self.current.values[1] = strength;
-        self.current.values[3] = view;
-        self.current.camera_z = camera_z;
-        self.current.haze = haze_values;
-        self.current.haze_end = haze_end;
-        queue.write_buffer(&self.values, 0, bytemuck::bytes_of(&self.current));
+        self.values[1] = strength;
+        self.values[3] = view;
+        self.camera_z = camera_z;
+        self.haze = haze_values;
+        self.haze_end = haze_end;
+        self.motion = motion;
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The record's flags that move a lamp's light: flicker, slow flicker, pulse, slow pulse.
+    const FLICKER: u32 = 0x8;
+    const FLICKER_SLOW: u32 = 0x40;
+    const PULSE: u32 = 0x80;
+    const PULSE_SLOW: u32 = 0x100;
+
+    /// The depth of the flicker and pulse of the lamps at the start of the tunable
+    /// `lights.lamps.flicker`: the light goes down to 0.6 of itself (the Worldspaces fork's
+    /// `dlAnimationDepth`; the game's own goes to a quarter).
+    const FLICKER_DEPTH: f32 = 0.4;
+
+    /// The hash of the flicker's random levels: PCG (O'Neill), on whole numbers, so that every GPU
+    /// and the CPU give the same level.
+    fn level_hash(value: u32) -> u32 {
+        let state = value.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+        let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277_803_737);
+        (word >> 22) ^ word
+    }
+
+    /// The random level of the step `step` of a lamp's flicker, from 0 to under 1, in 24 bits.
+    fn flicker_level(step: u32, seed: u32) -> f32 {
+        (level_hash(step ^ seed) >> 8) as f32 / 16_777_216.0
+    }
+
+    /// The part of a lamp's light at the time `time` of the game: the CPU copy of `lamp_motion` of
+    /// [`LAMP_MOTION_WGSL`], with the same operations in the same order.
+    fn lamp_motion(flags: u32, phase: f32, time: f32, depth: f32) -> f32 {
+        let level = if flags & (PULSE | PULSE_SLOW) != 0 {
+            let rate = if flags & PULSE_SLOW != 0 { 0.5 } else { 1.0 };
+            let x = time * rate + phase;
+            ((x - x.floor()) * 2.0 - 1.0).abs()
+        } else if flags & (FLICKER | FLICKER_SLOW) != 0 {
+            let steps = if flags & FLICKER_SLOW != 0 { 3.0 } else { 6.0 };
+            let x = time * steps + phase * 17.0;
+            let k = x.floor();
+            let seed = phase.to_bits();
+            let a = flicker_level(k as u32, seed);
+            let b = flicker_level((k as u32).wrapping_add(1), seed);
+            let t = x - k;
+            a * (1.0 - t) + b * t
+        } else {
+            return 1.0;
+        };
+        1.0 - depth * (1.0 - level)
+    }
 
     /// The near lights of an exterior with the fade of 1.75 radii, and with the original lights.
     const FADED: NearLights = NearLights {
@@ -1683,7 +1857,7 @@ mod tests {
     #[test]
     fn the_lamp_is_64_bytes_and_the_wgsl_names_its_bindings() {
         assert_eq!(size_of::<GpuLamp>(), 64);
-        assert_eq!(size_of::<LampValues>(), 96);
+        assert_eq!(size_of::<LampValues>(), 112);
         let code = wgsl_at(1);
         assert!(code.contains("@group(0) @binding(1) var<uniform> lamp_values"));
         assert!(code.contains("@group(0) @binding(3) var<storage, read> lamp_grid"));
@@ -1824,6 +1998,275 @@ mod tests {
                 "the tunable"
             ),
             None
+        );
+    }
+
+    /// The times of the flicker tests, to 10 hours of play.
+    const MOTION_TIMES: [f32; 6] = [0.0, 0.25, 1.0, 3600.0, 36_000.0, 36_000.5];
+
+    /// The kind of a lamp's motion comes from its flags in the order of the Worldspaces fork: the
+    /// slow pulse first, then the pulse, the slow flicker and the flicker. A fire's flag alone and
+    /// the other flags give none.
+    #[test]
+    fn the_motion_takes_the_first_kind_of_the_forks_order() {
+        let same = |flags: u32, kind: u32| {
+            (0..200).all(|i| {
+                let time = i as f32 * 0.037;
+                lamp_motion(flags, 0.3, time, 1.0) == lamp_motion(kind, 0.3, time, 1.0)
+            })
+        };
+        assert!(same(FLICKER | PULSE_SLOW, PULSE_SLOW));
+        assert!(same(PULSE | PULSE_SLOW, PULSE_SLOW));
+        assert!(same(FLICKER_SLOW | PULSE, PULSE));
+        assert!(same(FLICKER | FLICKER_SLOW, FLICKER_SLOW));
+        assert!(same(FLICKER | 0x10, FLICKER));
+        // The four kinds differ.
+        let kinds = [FLICKER, FLICKER_SLOW, PULSE, PULSE_SLOW];
+        for (i, a) in kinds.iter().enumerate() {
+            for b in &kinds[i + 1..] {
+                assert!(!same(*a, *b), "{a:#x} and {b:#x} move alike");
+            }
+        }
+        for flags in [0, 0x1, 0x2, 0x10, 0x10 | 0x1] {
+            assert!(
+                MOTION_TIMES.iter().all(|&time| lamp_motion(flags, 0.3, time, 1.0) == 1.0),
+                "{flags:#x}"
+            );
+        }
+    }
+
+    /// The pulse goes there and back in 1 s (slow 2 s) between 1 and 1 - depth; the flicker stays
+    /// between them and takes a new level 6 times a second (slow 3); depth 0 has no motion.
+    #[test]
+    fn the_motion_has_the_forks_timing_and_depth() {
+        let pulse = |time: f32| lamp_motion(PULSE, 0.0, time, FLICKER_DEPTH);
+        assert_eq!(pulse(0.0), 1.0);
+        assert!((pulse(0.25) - 0.8).abs() < 1e-6, "{}", pulse(0.25));
+        assert!((pulse(0.5) - 0.6).abs() < 1e-6, "{}", pulse(0.5));
+        assert!((pulse(1.0) - 1.0).abs() < 1e-6, "{}", pulse(1.0));
+        let slow = |time: f32| lamp_motion(PULSE_SLOW, 0.0, time, FLICKER_DEPTH);
+        assert!((slow(0.5) - 0.8).abs() < 1e-6, "{}", slow(0.5));
+        assert!((slow(1.0) - 0.6).abs() < 1e-6, "{}", slow(1.0));
+
+        for flags in [FLICKER, FLICKER_SLOW] {
+            for i in 0..10_000 {
+                let light = lamp_motion(flags, 0.71, i as f32 * 0.0137, FLICKER_DEPTH);
+                assert!((0.6 - 1e-6..=1.0).contains(&light), "{flags:#x} at {i}: {light}");
+            }
+        }
+
+        // Between two levels the light goes in a line; it bends only where a new level starts.
+        for (flags, steps) in [(FLICKER, 6), (FLICKER_SLOW, 3)] {
+            let light = |time: f32| lamp_motion(flags, 0.0, time, 1.0);
+            let half = 1.0 / 240.0;
+            let bends: Vec<u32> = (1..=120u32)
+                .filter(|&j| {
+                    let time = j as f32 / 120.0;
+                    (light(time - half) + light(time + half) - 2.0 * light(time)).abs() > 1e-4
+                })
+                .collect();
+            let starts: Vec<u32> = (1..=steps).map(|k| k * 120 / steps).collect();
+            assert_eq!(bends, starts, "{flags:#x}");
+        }
+
+        for flags in [FLICKER, FLICKER_SLOW, PULSE, PULSE_SLOW] {
+            for time in MOTION_TIMES {
+                assert_eq!(lamp_motion(flags, 0.42, time, 0.0), 1.0, "{flags:#x} at {time}");
+            }
+        }
+    }
+
+    /// The phase of a lamp is a number of its place: the same place gives the same phase, and the
+    /// places of a town give phases across 0 to 1.
+    #[test]
+    fn the_phase_of_a_lamp_comes_from_its_place() {
+        let place = |i: u32| [-20_000.0 + (i % 40) as f32 * 128.0, 50_000.0 + (i / 40) as f32 * 128.0, 300.0];
+        assert_eq!(lamp_phase(place(7)).to_bits(), lamp_phase(place(7)).to_bits());
+        let phases: Vec<f32> = (0..1000).map(|i| lamp_phase(place(i))).collect();
+        assert!(phases.iter().all(|phase| (0.0..1.0).contains(phase)));
+        let mut bits: Vec<u32> = phases.iter().map(|phase| phase.to_bits()).collect();
+        bits.sort_unstable();
+        bits.dedup();
+        assert_eq!(bits.len(), 1000, "two places have one phase");
+        let mean = phases.iter().sum::<f32>() / 1000.0;
+        assert!((0.4..0.6).contains(&mean), "{mean}");
+        // The list of the GPU takes it.
+        let source = SourceLamp {
+            position: place(7),
+            radius: 256.0,
+            color: [255, 200, 100],
+            flags: FLICKER_SLOW,
+            record: 0,
+        };
+        let gpu = gpu_lamps(&[source], &morrowind75testing(), FADED);
+        assert_eq!(gpu[0].phase.to_bits(), lamp_phase(place(7)).to_bits());
+    }
+
+    /// The values of a frame take the time and the depth, and a frame with only a new time
+    /// writes again.
+    #[test]
+    fn a_frame_with_a_new_time_writes_the_values() {
+        let haze = HazeFrame {
+            k: 0.5,
+            draw_distance: 81_920.0,
+            water_plane: -1.0,
+        };
+        let motion = MotionFrame {
+            time: 13.25,
+            depth: FLICKER_DEPTH,
+        };
+        let mut values = LampValues::default();
+        assert!(values.take_frame(1.0, [0.0, 0.0, 1.0], haze, motion));
+        assert_eq!(values.motion, [13.25, FLICKER_DEPTH, 0.0, 0.0]);
+        assert!(!values.take_frame(1.0, [0.0, 0.0, 1.0], haze, motion));
+        let later = MotionFrame { time: 13.27, ..motion };
+        assert!(values.take_frame(1.0, [0.0, 0.0, 1.0], haze, later));
+        assert_eq!(values.motion[0], 13.27);
+        let none = MotionFrame { depth: 0.0, ..later };
+        assert!(values.take_frame(1.0, [0.0, 0.0, 1.0], haze, none));
+        assert_eq!(values.motion[1], 0.0);
+    }
+
+    /// The line of the lamps' flicker comes at the first frame and again only when the depth
+    /// changes.
+    #[test]
+    fn the_flicker_line_comes_first_and_on_each_change() {
+        let mut route = FlickerRoute::default();
+        assert_eq!(
+            route.line(0.4, "the tunable").as_deref(),
+            Some("lamps' flicker: depth 0.4 (the tunable)")
+        );
+        assert_eq!(route.line(0.4, "the tunable"), None);
+        assert_eq!(
+            route.line(0.0, "MGE_XE_LAMP_FLICKER at the start").as_deref(),
+            Some("lamps' flicker: depth 0 (MGE_XE_LAMP_FLICKER at the start)")
+        );
+    }
+
+    /// The GPU's `lamp_motion` ([`LAMP_MOTION_WGSL`]) gives the light of the CPU's copy for each
+    /// kind, 4 phases and times to 10 hours. The bound is the rounding of f32 at the time: the GPU
+    /// may fuse a product and a sum, which rounds once in place of twice. A case whose flicker is
+    /// within that rounding of the start of a new level is left out and counted.
+    /// `cargo test -p mgeHost64 -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_gpu_and_the_cpu_give_one_motion() {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct Case {
+            flags: u32,
+            phase: f32,
+            time: f32,
+            depth: f32,
+        }
+        let mut cases = Vec::new();
+        for flags in [FLICKER, FLICKER_SLOW, PULSE, PULSE_SLOW, 0x10, 0] {
+            for phase in [0.0, 0.123, 0.5, 0.987] {
+                for time in MOTION_TIMES {
+                    cases.push(Case {
+                        flags,
+                        phase,
+                        time,
+                        depth: FLICKER_DEPTH,
+                    });
+                }
+            }
+        }
+        let code = format!(
+            "{LAMP_MOTION_WGSL}
+struct Case {{ flags: u32, phase: f32, time: f32, depth: f32 }}
+@group(0) @binding(0) var<storage, read> cases: array<Case>;
+@group(0) @binding(1) var<storage, read_write> lights: array<f32>;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3u) {{
+    if id.x >= arrayLength(&cases) {{ return; }}
+    let c = cases[id.x];
+    lights[id.x] = lamp_motion(c.flags, c.phase, c.time, c.depth);
+}}"
+        );
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("lamp motion test"),
+            source: wgpu::ShaderSource::Wgsl(code.into()),
+        });
+        let pipeline = device.counted_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("lamp motion test"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let bytes = (cases.len() * 4) as u64;
+        let buffer = |label: &str, size: u64, usage: wgpu::BufferUsages| {
+            device.counted_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let input = buffer(
+            "cases",
+            (cases.len() * size_of::<Case>()) as u64,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        let output = buffer("lights", bytes, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        let readback = buffer("readback", bytes, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+        queue.write_buffer(&input, 0, bytemuck::cast_slice(&cases));
+        let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("lamp motion test"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups((cases.len() as u32).div_ceil(64), 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+        queue.submit([encoder.finish()]);
+        readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("the readback");
+        let mapped = readback.slice(..).get_mapped_range().expect("the lights mapped");
+        let gpu: Vec<f32> = bytemuck::cast_slice(&mapped[..]).to_vec();
+
+        let mut largest = 0.0f32;
+        for (case, gpu) in cases.iter().zip(&gpu) {
+            let cpu = lamp_motion(case.flags, case.phase, case.time, case.depth);
+            // The rounding of the motion's position at this time: it is near time * 6 + 17. The
+            // light is continuous at the start of a level, so a shift of the position by the
+            // rounding moves it by at most the depth times the rounding.
+            let x = case.time * 6.0 + 17.0;
+            let rounding = 4.0 * (f32::from_bits(x.to_bits() + 1) - x);
+            let bound = case.depth * 2.0 * rounding + 1e-6;
+            largest = largest.max((gpu - cpu).abs());
+            assert!(
+                (gpu - cpu).abs() <= bound,
+                "flags {:#x}, phase {}, time {}: GPU {gpu}, CPU {cpu}, bound {bound}",
+                case.flags,
+                case.phase,
+                case.time
+            );
+        }
+        println!(
+            "the GPU and the CPU agree on {} cases; the largest difference {largest}",
+            cases.len()
         );
     }
 }

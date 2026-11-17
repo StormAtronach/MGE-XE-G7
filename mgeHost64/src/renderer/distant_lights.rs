@@ -6,7 +6,8 @@
 //!   and writes them into a list; one indirect draw puts a quad that faces the camera at each,
 //!   added to the picture, with the colour of the light. A glow has a least size on the screen,
 //!   so that a far light stays a point; it is dimmer then. It goes away in the day, and the fog
-//!   takes it as it takes the land. A light that flickers or pulses in the game does so here.
+//!   takes it as it takes the land. A glow is steady; the light of a lamp that flickers or
+//!   pulses moves on the ground ([`super::lamp_grid`]).
 //! - The lamps of the file's exterior block go to [`super::lamp_grid`], which makes the list and
 //!   the grid of the light that the lamps give the distant land and statics.
 
@@ -116,8 +117,8 @@ const CULL_SHADER: &str = "
 struct Cull {
     planes: array<vec4f, 6>,
     eye: vec4f,
-    // x: where a glow starts (the handoff), y: where it is whole, z: the draw distance,
-    // w: the time of the game.
+    // x: where a glow starts (the handoff), y: where it is whole, z: the draw distance, w: not
+    // used.
     range: vec4f,
     // x: the sources.
     counts: vec4u,
@@ -126,6 +127,7 @@ struct Source {
     position: vec3f,
     radius: f32,
     color: u32,
+    // The flags of the light record; the glow is steady and does not read them.
     flags: u32,
     pad0: u32,
     pad1: u32,
@@ -134,10 +136,6 @@ struct Source {
 @group(0) @binding(1) var<storage, read> sources: array<Source>;
 @group(0) @binding(2) var<storage, read_write> glows: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> args: array<atomic<u32>, 4>;
-
-fn hash(p: vec3f) -> f32 {
-    return fract(sin(dot(p, vec3f(12.9898, 78.233, 37.719))) * 43758.5453);
-}
 
 @compute @workgroup_size(256)
 fn cull(@builtin(global_invocation_id) id: vec3u) {
@@ -161,19 +159,8 @@ fn cull(@builtin(global_invocation_id) id: vec3u) {
             return;
         }
     }
-    var strength = smoothstep(c.range.x, c.range.y, distance);
-    // The flags of the light record: flicker 0x8, flicker slow 0x40, pulse 0x80, pulse slow 0x100.
-    let phase = hash(s.position) * 6.2831853;
-    let t = c.range.w;
-    if (s.flags & 0x8u) != 0u {
-        strength *= 0.8 + 0.2 * sin(t * 11.0 + phase) * sin(t * 6.3 + 2.0 * phase);
-    } else if (s.flags & 0x40u) != 0u {
-        strength *= 0.85 + 0.15 * sin(t * 4.0 + phase) * sin(t * 2.3 + 2.0 * phase);
-    } else if (s.flags & 0x80u) != 0u {
-        strength *= 0.65 + 0.35 * sin(t * 3.0 + phase);
-    } else if (s.flags & 0x100u) != 0u {
-        strength *= 0.65 + 0.35 * sin(t * 1.0 + phase);
-    }
+    // The glow is steady: the lamp's light on the ground moves (the page, section 2.4).
+    let strength = smoothstep(c.range.x, c.range.y, distance);
     let slot = atomicAdd(&args[1], 1u);
     glows[slot * 2u] = vec4f(s.position, s.radius);
     glows[slot * 2u + 1u] = vec4f(color.rgb, strength);
@@ -264,7 +251,6 @@ pub struct GlowFrame {
     /// Where a glow starts (the handoff to the game) and where it is whole.
     pub fade: [f32; 2],
     pub draw_distance: f32,
-    pub time: f32,
     /// The size of the picture, and the pixels of one unit at a distance of one unit.
     pub screen: [f32; 3],
     /// The size as a part of the radius, the strength (with the night in it), the least size
@@ -538,7 +524,7 @@ impl DistantLights {
         let cull = CullUniforms {
             planes: frame.planes,
             eye: frame.eye,
-            range: [frame.fade[0], frame.fade[1], frame.draw_distance, frame.time],
+            range: [frame.fade[0], frame.fade[1], frame.draw_distance, 0.0],
             counts: [glows.sources, 0, 0, 0],
         };
         scene.queue.write_buffer(&buffers.cull_uniforms, 0, bytemuck::bytes_of(&cull));
