@@ -184,7 +184,7 @@ still installed.
 | (new, no INI key) | `distant_land.expanded_light_limit` |
 | (new, no INI key) | `distant_land.per_pixel_light_fade` (default `false` since 2026-11-15; `true` from 2026-10-16) |
 | (new, no INI key) | `distant_land.per_pixel_light_fade_radius` (default `1.75`, the radius multiplier of OpenMW) |
-| (new, no INI key) | `distant_land.wait_on_load` |
+| (new, no INI key) | `distant_land.wait_on_load` (default `true` since 2026-11-17, the owner's D581; `false` before) |
 | (new, no INI key) | `views.full_tier_max` (default `1`, range 0 to 8: how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`; 0 refuses every request; only the wgpu renderer reads it) |
 
 `src/default.toml` describes each of these new keys, and `render.camera_relative` too.

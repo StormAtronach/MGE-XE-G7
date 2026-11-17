@@ -116,8 +116,9 @@ automatic_rebuild = true
 # The wgpu renderer: after a game load or a teleport (a door, a travel; it needs MWSE's
 # native event 5), keep the loading screen until the distant statics around the player are on
 # the GPU (at most 15 s), as MGE XE on Direct3D 9 does at the first load. Without it they
-# appear as they arrive after the load.
-wait_on_load = false
+# appear as they arrive after the load. On for a new file since 2026-11-17 (the owner's D581); a
+# file that has the key keeps its value.
+wait_on_load = true
 # Read the scene's real depth buffer instead of redrawing geometry to approximate
 # it. Removes about half the depth pass, and fixes objects vanishing from
 # distant-land scenes when they use multi-texturing effects such as darkmaps with

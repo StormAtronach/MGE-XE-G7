@@ -83,7 +83,10 @@ The wait of a game load (`Deviceless::waitForDistantLand`): the game sends recor
 draws its loading bar until `ARRIVED` with that serial comes back (or 15 s). The frames of
 the loading bar have no world: the crate calls `Extension::after_frame(scene)` at the end of
 each live frame, and there the helper finishes its loads and streams the statics near the
-place (`Statics::prefetch`).
+place (`Statics::prefetch`). The game holds its load only with `distant_land.wait_on_load`
+(on for a new file since 2026-11-17, the owner's D581). Without it the helper's wait is open
+in world frames: `statics report` counts the subsets that arrive in it apart ("arrivals
+during a wait").
 
 `d3d8.dll` queues the reasons (`distantlandready.h`, also filled by the Direct3D 9 path); the
 Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export
