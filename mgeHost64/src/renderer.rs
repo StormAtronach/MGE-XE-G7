@@ -3644,7 +3644,6 @@ impl Extension for DistantLand {
         };
         self.free_idle_spares(scene.frame);
         if let Some(statics) = self.statics.as_mut() {
-            statics.set_fade(self.tunables.get(tunables::STATICS_FADE));
             statics.set_margin(self.tunables.get(tunables::STATICS_MARGIN));
         }
         // A game load or a teleport (the prefetch record) waits for the statics; each world

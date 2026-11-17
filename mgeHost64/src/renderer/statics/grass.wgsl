@@ -2,8 +2,7 @@
 //
 // One draw for each grass subset, with one instance record for each place. A blade moves
 // with the wind and away from the player, the sun lights it from the two sides, and it
-// takes the shadow map of the frame. A subset that arrived on the GPU comes in over a time
-// with a 4 x 4 dither (the fade-in of the distant statics).
+// takes the shadow map of the frame.
 //
 // The side of a blade that the camera sees comes from its triangle, in the fragment shader.
 // `GrassInstVS` took it for each vertex, from the sign of the eye vector against the
@@ -71,9 +70,8 @@ struct In {
     @location(4) world0: vec4f,
     @location(5) world1: vec4f,
     @location(6) world2: vec4f,
-    // x: the share of the subset that is in (the fade-in after its arrival); y: 1 for a model
-    // with bent normals.
-    @location(7) fade: vec4f,
+    // x: 1 for a model with bent normals.
+    @location(7) model: vec4f,
 }
 
 struct Out {
@@ -82,7 +80,6 @@ struct Out {
     @location(0) normal: vec3f,
     @location(1) coordinate: vec2f,
     @location(2) fog: f32,
-    @location(3) @interpolate(flat) fade: f32,
     // The position less the eye: its derivatives give the plane of the triangle.
     @location(4) relative: vec3f,
     // The position in the two layers of the shadow map, z divided by w.
@@ -93,9 +90,6 @@ struct Out {
     // 1 for a model with bent normals.
     @location(8) @interpolate(flat) bent: f32,
 }
-
-// The order of the pixels of a block of 4 x 4 for the fade-in (Bayer), as the statics have it.
-const FADE_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 
 // Remiros' wrap light: how far the light wraps past the side, its power, and the light
 // through the back.
@@ -180,8 +174,7 @@ fn bnoise(x: f32) -> f32 {
     out.coordinate = in.coordinate;
     // fogMWScalar: the linear fog of the near cells.
     out.fog = clamp((u.fog.w - length(to_vertex)) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
-    out.fade = in.fade.x;
-    out.bent = in.fade.y;
+    out.bent = in.model.x;
     let s0 = clip_with(g.shadow_layer0, world);
     let s1 = clip_with(g.shadow_layer1, world);
     out.shadow0 = vec3f(s0.xy, s0.z / s0.w);
@@ -224,11 +217,10 @@ override ALPHA_TO_COVERAGE: bool = false;
     // shadowSunEstimate of the light of the blade.
     let x = lambert * g.shadow.y;
     let light = x / (g.shade.w + x);
-    let cell = vec2u(in.position.xy) % 4u;
     // GrassPS discards below 64; then the alpha test of the pass (AlphaRef 128) cuts, or,
     // with alpha to coverage, which turns the alpha test off, the coverage
     // calc_coverage(a, 128 / 255, 4) of `XE Common.fx` gives the samples of the pixel.
-    if texel.a < 64.0 / 255.0 || (!ALPHA_TO_COVERAGE && texel.a < 128.0 / 255.0) || in.fade < (FADE_ORDER[cell.y * 4u + cell.x] + 0.5) / 16.0 {
+    if texel.a < 64.0 / 255.0 || (!ALPHA_TO_COVERAGE && texel.a < 128.0 / 255.0) {
         discard;
     }
     let coverage = clamp(4.0 * (texel.a - 128.0 / 255.0) + 128.0 / 255.0, 0.0, 1.0);

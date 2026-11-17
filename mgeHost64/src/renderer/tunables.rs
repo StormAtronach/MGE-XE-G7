@@ -40,8 +40,6 @@ pub const LAMP_HAZE: &str = "lights.lamps.haze";
 /// The flicker and pulse of the distant lamps' light: its depth; 0 has none. The switch
 /// `MGE_XE_LAMP_FLICKER` sets its start for a replay ([`super::lamp_grid::flicker_switch`]).
 pub const LAMP_FLICKER: &str = "lights.lamps.flicker";
-/// The distant statics: the seconds that a subset takes to come in after its arrival.
-pub const STATICS_FADE: &str = "statics.fade";
 /// The distant statics: the margin of the requested ring, in whole cells beyond the draw
 /// distance.
 pub const STATICS_MARGIN: &str = "statics.margin";
@@ -196,7 +194,6 @@ mod tests {
             GLOW_SIZE,
             GLOW_STRENGTH,
             GLOW_PIXELS,
-            STATICS_FADE,
             STATICS_MARGIN,
             GRASS_SHADOW,
             PARTICLES,

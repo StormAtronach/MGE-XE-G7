@@ -520,23 +520,18 @@ impl GrassKeep<'_> {
     }
 }
 
-/// What a grass call sees: the eye, the view range of the game, the planes of the view, the
-/// time on the clock of the arrivals with the fade time (read once for the call), and the most
-/// draws that the call may make.
+/// What a grass call sees: the eye, the view range of the game, the planes of the view, and the
+/// most draws that the call may make.
 struct GrassSight {
     eye: [f32; 3],
     range: f32,
     planes: [[f32; 4]; 6],
-    now: f32,
-    fade_seconds: f32,
     limit: usize,
 }
 
 /// What a grass call needs of a subset that is on the GPU.
 struct GrassSubset {
     texture: u32,
-    /// The time of the arrival of the subset ([`Resident::arrived`]).
-    arrived: f32,
     bent: f32,
 }
 
@@ -546,7 +541,6 @@ struct GrassDraw {
     texture: u32,
     subset: u32,
     record: [f32; 12],
-    fade: f32,
     bent: f32,
 }
 
@@ -629,12 +623,10 @@ impl World {
                             return true;
                         }
                         let record = *record.get_or_insert_with(|| kept.record(at, place, &mut counts.records_made));
-                        let fade = Resident::fade_after(sight.now - on_gpu.arrived, sight.fade_seconds);
                         draws.push(GrassDraw {
                             texture: on_gpu.texture,
                             subset: id,
                             record,
-                            fade,
                             bent: on_gpu.bent,
                         });
                     }
@@ -1007,7 +999,7 @@ struct GrassParts {
     draws: u64,
     runs: u64,
     triangles: u64,
-    /// The seconds of the choice of the places (with the matrix and the fade of each), the
+    /// The seconds of the choice of the places (with the matrix of each), the
     /// sort, the records and their write, the uniforms and the pipeline, and the draw loop.
     choose_seconds: f64,
     sort_seconds: f64,
@@ -1374,26 +1366,11 @@ struct Resident {
     geometry: Geometry,
     faces: [u32; 3],
     bytes: u64,
-    /// The time of the arrival on the clock of [`Statics`], in seconds: the subset comes in
-    /// over the fade time after it.
-    arrived: f32,
-    /// The last time on that clock that the camera was within the draw distance and one cell
-    /// of a merged subset (`want_near`): the trim takes the least recent first.
+    /// The last time on the clock of [`Statics`], in seconds, that the camera was within the
+    /// requested ring of a merged subset (`want_near`): the trim takes the least recent first.
     wanted_at: f32,
     /// A grass subset with bent normals ([`Arrival::bent`]).
     bent: bool,
-}
-
-impl Resident {
-    /// The share of a subset that is in `since` seconds after its arrival, as the shaders have it,
-    /// with the fade time `seconds` (0 for no fade).
-    fn fade_after(since: f32, seconds: f32) -> f32 {
-        if seconds > 0.0 {
-            (since / seconds).clamp(0.0, 1.0)
-        } else {
-            1.0
-        }
-    }
 }
 
 /// The draws of a grass call in the order of the draw: by texture, then by subset, then by the
@@ -1513,8 +1490,7 @@ struct Gpu {
     /// views of their own, by the number of the set; `None` for a set not made yet or freed.
     sets: Vec<Option<BufferSet>>,
     /// What a set of the views of their own needs to make its uniforms and its group
-    /// ([`Gpu::make_buffer_set`]): the layout of group 1, the palettes, the sampler and the
-    /// arrivals.
+    /// ([`Gpu::make_buffer_set`]): the layout of group 1, the palettes and the sampler.
     set_layout: wgpu::BindGroupLayout,
     palettes: wgpu::Buffer,
     set_sampler: wgpu::Sampler,
@@ -1525,10 +1501,6 @@ struct Gpu {
     picture_pipeline: wgpu::RenderPipeline,
     /// The values of all places for the draws: the world matrix and the values of the subset.
     instances: wgpu::Buffer,
-    /// The time of the arrival of each subset, in seconds of the clock of [`Statics`], for the
-    /// fade-in of the shaders (`arrivals` of group 1). A subset that never arrived has a time
-    /// long ago.
-    arrivals: wgpu::Buffer,
     /// The geometry of the statics, by texture.
     pools: cull::Pools,
     /// The choice of the places on the GPU, when the device can do it.
@@ -1595,10 +1567,6 @@ impl Gpu {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.set_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.arrivals.as_entire_binding(),
                 },
             ],
         });
@@ -1708,24 +1676,11 @@ struct Set {
     // x: the time. y: the distance where a static is complete. z: the width of the band
     // before it. w: the distance before the band where a vertex goes away.
     handoff: vec4f,
-    // x: the time now on the clock of the arrivals. y: the time a subset takes to come in
-    // after its arrival (0: no fade-in).
-    fade: vec4f,
 }
 @group(1) @binding(0) var<uniform> set_values: Set;
 @group(1) @binding(1) var<storage, read> palettes: array<vec4f>;
 @group(1) @binding(2) var base_sampler: sampler;
-@group(1) @binding(3) var<storage, read> arrivals: array<f32>;
 @group(2) @binding(0) var base_texture: texture_2d<f32>;
-
-// The share of a subset that is in: it comes in over set_values.fade.y seconds after its
-// geometry arrived (`Statics::fade_values`).
-fn arrival_fade(subset: u32) -> f32 {
-    if set_values.fade.y <= 0.0 {
-        return 1.0;
-    }
-    return clamp((set_values.fade.x - arrivals[subset]) / set_values.fade.y, 0.0, 1.0);
-}
 
 // The view range of the game, for the fog (`fog_of`).
 fn fog_range() -> f32 {
@@ -1755,11 +1710,7 @@ struct Out {
     @location(1) depth: f32,
     @location(2) @interpolate(flat) bounds: vec4f,
     @location(3) @interpolate(flat) alpha_test: f32,
-    @location(4) @interpolate(flat) fade: f32,
 }
-
-// The order of the pixels of a block of 4 x 4 for the fade-in (Bayer), as the statics have it.
-const FADE_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 
 @vertex fn vs(in: In) -> Out {
     var out: Out;
@@ -1775,15 +1726,10 @@ const FADE_ORDER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0
     }
     out.bounds = palettes[u32(in.subset.x) + u32(in.position.w)];
     out.alpha_test = in.subset.y;
-    out.fade = arrival_fade(u32(in.subset.w));
     return out;
 }
 
 @fragment fn fs(in: Out) -> @location(0) vec4f {
-    let cell = vec2u(in.position.xy) % 4u;
-    if in.fade < (FADE_ORDER[cell.y * 4u + cell.x] + 0.5) / 16.0 {
-        discard;
-    }
     if in.alpha_test > 0.5 {
         let scale = in.bounds.yw - in.bounds.zx;
         let atlas = in.bounds.zx + fract(in.coordinate) * scale;
@@ -1824,7 +1770,6 @@ pub struct Frame {
 struct SetUniforms {
     range: [f32; 4],
     handoff: [f32; 4],
-    fade: [f32; 4],
 }
 
 /// The statics in a view: after the view group and [`SET_WGSL`].
@@ -1867,7 +1812,6 @@ struct Out {
     @location(2) world: vec3f,
     @location(3) @interpolate(flat) bounds: vec4f,
     @location(4) @interpolate(flat) alpha_test: f32,
-    @location(5) @interpolate(flat) fade: f32,
     // The colour of the vertex and the normal in the world, for the light of the distant
     // lamps in the pixel shader.
     @location(6) vertex_color: vec3f,
@@ -1899,7 +1843,6 @@ struct Out {
     out.world = world;
     out.bounds = palettes[u32(in.subset.x) + u32(in.position.w)];
     out.alpha_test = in.subset.y;
-    out.fade = arrival_fade(u32(in.subset.w));
     return out;
 }
 
@@ -1919,8 +1862,8 @@ override ALPHA_TO_COVERAGE: bool = false;
         discard;
     }
     let range = length(in.world - u.eye.xyz);
-    // The handoff to the game, and the fade-in after the arrival of the subset.
-    let dissolve = clamp((range - (set_values.handoff.y - set_values.handoff.z)) / set_values.handoff.z, 0.0, 1.0) * in.fade;
+    // The handoff to the game.
+    let dissolve = clamp((range - (set_values.handoff.y - set_values.handoff.z)) / set_values.handoff.z, 0.0, 1.0);
     // Across the band a static comes in by its share of covered pixels: Direct3D 9 gives the
     // dissolve to alpha to coverage, which needs the samples of multisampling; here an
     // ordered threshold of 4 x 4 pixels, the same with one sample and with more (the alpha
@@ -2055,21 +1998,20 @@ pub struct Statics {
     prepare_seconds: f64,
     /// The frames in which each set was culled since the last report, by the number of the set.
     culled_sets: Vec<u64>,
-    /// The grass of the frame: texture, subset, record, the fade-in, 1 for bent normals.
+    /// The grass of the frame: texture, subset, record, 1 for bent normals.
     grass_draws: Vec<GrassDraw>,
     /// The draws of the call in the order of the draw, and their records, kept from call to call.
     grass_order: GrassOrder,
     grass_records: Vec<f32>,
     /// Each grass call reports the hash of its records (`MGE_XE_GRASS_HASH=1`), read once.
     grass_hash: bool,
-    /// The clock of the arrivals, and the time a subset takes to come in (0: no fade-in).
+    /// The clock of the residency: the time a merged subset was last wanted.
     clock: Instant,
-    fade_seconds: f32,
     /// The margin of the requested ring, in whole cells beyond the draw distance
     /// ([`Statics::ring`]).
     margin_cells: f32,
-    /// The arrivals are those of a wait on the loading screen: they show complete when the
-    /// wait ends, with no fade-in.
+    /// The arrivals are those of a wait on the loading screen: they do not count as arrivals
+    /// in play.
     prefetching: bool,
     /// The first change of the distant statics since the last [`Statics::take_change`]: one of
     /// [`ARRIVAL`] and [`POOLS_RESERVED`].
@@ -2226,7 +2168,6 @@ impl Statics {
             grass_records: Vec::new(),
             grass_hash: nirender_wgpu::switches::on("MGE_XE_GRASS_HASH") == Some(true),
             clock: Instant::now(),
-            fade_seconds: 1.0,
             margin_cells: RING_MARGIN_CELLS,
             prefetching: false,
             change: None,
@@ -3099,14 +3040,6 @@ impl Statics {
                 });
                 Geometry::Own { vertices, indexes }
             };
-            let arrived = if self.prefetching {
-                -1.0e9
-            } else {
-                self.clock.elapsed().as_secs_f32()
-            };
-            if let Some(gpu) = self.gpu.as_ref() {
-                queue.write_buffer(&gpu.arrivals, arrival.subset as u64 * 4, bytemuck::bytes_of(&arrived));
-            }
             if s.grass {
                 self.grass_arrived += 1;
                 self.grass_bent += arrival.bent as u64;
@@ -3118,7 +3051,6 @@ impl Statics {
                     geometry,
                     faces: arrival.faces,
                     bytes: size,
-                    arrived,
                     wanted_at,
                     bent: arrival.bent,
                 },
@@ -3315,15 +3247,12 @@ impl Statics {
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
         let view_range = frame.eye[3];
         self.grass_draws.clear();
-        let [now, fade_seconds, _, _] = self.fade_values();
         let mut counts = GrassParts::default();
         let choose_started = Instant::now();
         let sight = GrassSight {
             eye,
             range: view_range,
             planes: frame.planes,
-            now,
-            fade_seconds,
             limit: GRASS_RECORDS,
         };
         let keep = self.grass_kept.begin(&self.world);
@@ -3336,7 +3265,6 @@ impl Statics {
                 let r = resident.get(&subset)?;
                 Some(GrassSubset {
                     texture: catalog.subsets[subset as usize].texture,
-                    arrived: r.arrived,
                     bent: r.bent as u32 as f32,
                 })
             },
@@ -3365,7 +3293,7 @@ impl Statics {
         self.grass_records
             .extend(self.grass_order.keys.iter().flat_map(|&(_, _, index)| {
                 let draw = &draws[index as usize];
-                draw.record.into_iter().chain([draw.fade, draw.bent, 0.0, 0.0])
+                draw.record.into_iter().chain([draw.bent, 0.0, 0.0, 0.0])
             }));
         if self.grass_hash {
             println!(
@@ -3455,12 +3383,6 @@ impl Statics {
         self.waiting = waiting;
     }
 
-    /// The time that a subset takes to come in after its arrival, in seconds (the tunable
-    /// `statics.fade`); 0 for none.
-    pub fn set_fade(&mut self, seconds: f32) {
-        self.fade_seconds = seconds.max(0.0);
-    }
-
     /// The margin of the requested ring, in whole cells beyond the draw distance (the tunable
     /// `statics.margin`), from 0 to [`RING_MARGIN_MOST`].
     pub fn set_margin(&mut self, cells: f32) {
@@ -3472,17 +3394,6 @@ impl Statics {
     /// (`trim_resident`). "near" drops a subset one cell beyond it.
     fn ring(&self) -> f32 {
         self.settings.draw_distance + self.margin_cells * CELL
-    }
-
-    /// The fade of the shaders: the time now on the clock of the arrivals, and the fade
-    /// time. A replay has no fade: its pictures must not depend on the time of the machine.
-    fn fade_values(&self) -> [f32; 4] {
-        [
-            self.clock.elapsed().as_secs_f32(),
-            if self.synchronous { 0.0 } else { self.fade_seconds },
-            0.0,
-            0.0,
-        ]
     }
 
     /// Adds the counts of a grass call of the main view to the report; the calls of the views
@@ -4178,7 +4089,6 @@ impl Statics {
         pass: &mut wgpu::RenderPass<'static>,
         frame: &Frame,
         set: usize,
-        fade: [f32; 4],
     ) -> bool {
         let Some(buffers) = gpu.sets.get(set).and_then(Option::as_ref) else {
             return false;
@@ -4188,7 +4098,7 @@ impl Statics {
         }
         scene
             .queue
-            .write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms_of(frame, fade)));
+            .write_buffer(&buffers.uniforms, 0, bytemuck::bytes_of(&uniforms_of(frame)));
         // Lines when the game draws in wireframe (see `SceneView::wireframe`), as MGE XE on
         // Direct3D 9 draws with the fill mode the engine left; the shadow map stays filled.
         // A pass with another count of samples than the main view's (a rendered texture) has the
@@ -4220,10 +4130,9 @@ impl Statics {
         pass: &mut wgpu::RenderPass<'static>,
         frame: &Frame,
         set: usize,
-        fade: [f32; 4],
     ) -> u32 {
         let Some(culling) = gpu.culling.as_ref() else { return 0 };
-        if !Self::bind_set(gpu, view_group, scene, pass, frame, set, fade) {
+        if !Self::bind_set(gpu, view_group, scene, pass, frame, set) {
             return 0;
         }
         let (pools, textures) = (&gpu.pools, &gpu.textures);
@@ -4251,7 +4160,6 @@ impl Statics {
         if !self.settings.statics {
             return Err(OFF);
         }
-        let fade = self.fade_values();
         // Chosen in `prepare`: only the draws.
         if self.prepared.get(set).copied().unwrap_or(false) {
             self.prepared[set] = false;
@@ -4263,7 +4171,6 @@ impl Statics {
                 pass,
                 frame,
                 set,
-                fade,
             ));
         }
         let eye = [frame.eye[0], frame.eye[1], frame.eye[2]];
@@ -4289,7 +4196,6 @@ impl Statics {
                     pass,
                     frame,
                     set,
-                    fade,
                 ));
             }
         }
@@ -4377,7 +4283,7 @@ impl Statics {
             return Ok(0);
         }
         let gpu = self.gpu.as_ref().ok_or(NO_GPU)?;
-        if !Self::bind_set(gpu, group_of(&self.view_groups, set), scene, pass, frame, set, fade) {
+        if !Self::bind_set(gpu, group_of(&self.view_groups, set), scene, pass, frame, set) {
             return Err("no uniforms of the set (a set of a view that is not made)");
         }
         let mut texture = u32::MAX;
@@ -4438,11 +4344,10 @@ fn cull_values(settings: &Settings, planes: [[f32; 4]; 6], eye: [f32; 4], fog_en
 }
 
 /// The values of the draws of a set (group 1).
-fn uniforms_of(frame: &Frame, fade: [f32; 4]) -> SetUniforms {
+fn uniforms_of(frame: &Frame) -> SetUniforms {
     SetUniforms {
         range: [frame.eye[3], 0.0, 0.0, 0.0],
         handoff: [frame.time, frame.eye[3] - HANDOFF, HANDOFF_BAND, HANDOFF_CULL],
-        fade,
     }
 }
 
@@ -4582,12 +4487,6 @@ fn make_gpu(
         contents: bytemuck::cast_slice(&catalog.palettes),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    // Long ago: a subset that is there from the start of a replay is in.
-    let arrivals = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("distant statics, the arrivals"),
-        contents: bytemuck::cast_slice(&vec![-1.0e9f32; catalog.subsets.len().max(1)]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
     let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
         address_mode_u: wgpu::AddressMode::Repeat,
         address_mode_v: wgpu::AddressMode::Repeat,
@@ -4626,16 +4525,6 @@ fn make_gpu(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
         ],
     });
     let texture_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -4667,10 +4556,6 @@ fn make_gpu(
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: arrivals.as_entire_binding(),
                 },
             ],
         })
@@ -5090,7 +4975,6 @@ fn make_gpu(
         textures,
         texture_views,
         instances,
-        arrivals,
         pools,
         culling,
         grass_pipeline,
@@ -5239,7 +5123,7 @@ mod shader_tests {
 mod tests {
     use super::{
         CELL, GRASS_KEEP_CALLS, GRASS_RECORDS, GrassDraw, GrassHash, GrassKept, GrassMiss, GrassOrder, GrassParts,
-        GrassPlace, GrassSight, GrassSubset, GrassTile, Resident, World, grass_record, world_matrix,
+        GrassPlace, GrassSight, GrassSubset, GrassTile, World, grass_record, world_matrix,
     };
     use super::{FIXED_SETS, SET_NAMES, count_culled, culled_text};
 
@@ -5432,8 +5316,6 @@ mod tests {
             ],
             range: 500.0 + lcg(state) * 7000.0,
             planes,
-            now: 10.0,
-            fade_seconds: 2.0,
             limit: GRASS_RECORDS,
         }
     }
@@ -5442,7 +5324,6 @@ mod tests {
     fn on_gpu(subset: u32) -> Option<GrassSubset> {
         (subset % 4 != 0).then(|| GrassSubset {
             texture: subset % 3,
-            arrived: 8.0 + subset as f32 * 0.3,
             bent: (subset % 2) as f32,
         })
     }
@@ -5490,12 +5371,10 @@ mod tests {
                             return (draws, true);
                         }
                         let record = grass_record(&world_matrix(place.position, place.rotation, place.scale));
-                        let fade = Resident::fade_after(sight.now - on_gpu.arrived, sight.fade_seconds);
                         draws.push(GrassDraw {
                             texture: on_gpu.texture,
                             subset: id,
                             record,
-                            fade,
                             bent: on_gpu.bent,
                         });
                     }
@@ -5538,60 +5417,12 @@ mod tests {
         );
     }
 
-    /// The clock is read once for a call, and the fade is still one value for each subset: every
-    /// draw of a subset has the fade of its arrival at that time, and subsets that arrived at
-    /// different times have different fades.
-    #[test]
-    fn each_subset_has_its_own_fade_in_a_call() {
-        let mut state = 5;
-        let (world, grass) = random_world(&mut state, 2000);
-        let sight = GrassSight {
-            range: 9000.0,
-            eye: [4000.0, 4000.0, 500.0],
-            planes: [[0.0, 0.0, 0.0, 1.0]; 6],
-            ..random_sight(&mut state)
-        };
-        let mut draws = Vec::new();
-        world.choose_grass(
-            &grass,
-            &sight,
-            hidden_group,
-            on_gpu,
-            &mut draws,
-            &mut GrassParts::default(),
-            GrassKept::default().begin(b""),
-        );
-        let mut fades = std::collections::HashMap::new();
-        for draw in &draws {
-            let arrived = on_gpu(draw.subset).expect("a draw has a subset on the GPU").arrived;
-            assert_eq!(
-                draw.fade,
-                Resident::fade_after(sight.now - arrived, sight.fade_seconds),
-                "subset {}",
-                draw.subset
-            );
-            assert_eq!(
-                *fades.entry(draw.subset).or_insert(draw.fade),
-                draw.fade,
-                "subset {}",
-                draw.subset
-            );
-        }
-        let distinct: std::collections::HashSet<u32> = fades.values().map(|fade| fade.to_bits()).collect();
-        assert!(
-            distinct.len() > 1 && draws.len() > 100,
-            "{} fades in {} draws",
-            distinct.len(),
-            draws.len()
-        );
-    }
-
     /// The draws of a call as a sorted list of their bits: the order of the records is left out.
     fn sorted_bits(draws: &[GrassDraw]) -> Vec<Vec<u32>> {
         let mut bits: Vec<Vec<u32>> = draws
             .iter()
             .map(|draw| {
-                let mut one = vec![draw.texture, draw.subset, draw.fade.to_bits(), draw.bent.to_bits()];
+                let mut one = vec![draw.texture, draw.subset, draw.bent.to_bits()];
                 one.extend(draw.record.iter().map(|value| value.to_bits()));
                 one
             })
@@ -5887,17 +5718,6 @@ mod tests {
             made_late += if call >= 2 { made } else { 0 };
         }
         assert_eq!(made_late, 0);
-    }
-
-    /// The fade of a subset runs from 0 at its arrival to 1 after the fade time, and a fade time
-    /// of 0 means no fade (a replay).
-    #[test]
-    fn a_subset_fades_in_over_the_fade_time() {
-        assert_eq!(Resident::fade_after(5.0, 0.0), 1.0);
-        assert_eq!(Resident::fade_after(0.0, 2.0), 0.0);
-        assert_eq!(Resident::fade_after(1.0, 2.0), 0.5);
-        assert_eq!(Resident::fade_after(9.0, 2.0), 1.0);
-        assert_eq!(Resident::fade_after(-1.0, 2.0), 0.0);
     }
 
     /// The margin of the requested ring starts at the start value of the tunable

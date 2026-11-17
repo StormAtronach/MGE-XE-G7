@@ -83,7 +83,7 @@ The wait of a game load (`Deviceless::waitForDistantLand`): the game sends recor
 draws its loading bar until `ARRIVED` with that serial comes back (or 15 s). The frames of
 the loading bar have no world: the crate calls `Extension::after_frame(scene)` at the end of
 each live frame, and there the helper finishes its loads and streams the statics near the
-place (`Statics::prefetch`; those arrivals show with no fade-in).
+place (`Statics::prefetch`).
 
 `d3d8.dll` queues the reasons (`distantlandready.h`, also filled by the Direct3D 9 path); the
 Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export
@@ -379,16 +379,14 @@ colour, `Float16x2` uv); instance 80 bytes (locations 4-8); indices `Uint16`. Dr
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
 | 0 | view | as above | set (the view of the same number) |
-| 1 | distant statics | 0 uniform `Set` (range, handoff, fade) (VF), 1 storage palettes (V), 2 sampler (F), 3 storage arrivals (V) | set (main, mirror, shadow 0, shadow 1) |
+| 1 | distant statics | 0 uniform `Set` (range, handoff) (VF), 1 storage palettes (V), 2 sampler (F) | set (main, mirror, shadow 0, shadow 1) |
 | 2 | distant statics, textures | 0 texture (F) | texture |
 
-The fade-in (2026-10-15): binding 3 has the arrival time of each subset (real time of the
-helper; written in `take_arrivals`), the instance data has the subset number in `subset.w`,
-and the uniforms have `fade` (now, fade time from the tunable `statics.fade`; 0 in a
-replay). The statics shader multiplies the handoff dissolve by the share that is in.
+A subset shows as soon as it is on the GPU: the fade-in of 2026-10-15 is gone (W53, the
+owner's D398). The instance data still has the subset number in `subset.w`.
 
 **"distant statics shadow"**: the same pipeline layout, with the view of its shadow layer.
-R16Float target. Its casters fade in with the same threshold.
+R16Float target.
 
 **"grass"** (fill, lines): group 0 the game view; group 1 "grass" (uniform `Grass`, sampler,
 the shadow atlas and its clamp sampler; frame); group 2 the statics texture layout (texture

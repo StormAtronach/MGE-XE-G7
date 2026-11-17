@@ -329,10 +329,10 @@ change. That start can take some minutes. With an older file, set it below
 - The screenshot key (PrintScreen, or the macro) writes the picture as on Direct3D 9: the
   folder, the name and the format of the screenshot settings. The status text of MGE XE and
   its frame rate counter show in the upper left corner, as on Direct3D 9.
-- The distant statics and the grass fade in over 1 s when they arrive (after a load, a
-  teleport, or as you travel), where Direct3D 9 shows them at once. The time is the
-  parameter "Distant statics: fade-in time" of the renderer's parameters window (row
-  "water (renderer)"); 0 turns the fade off until the game ends.
+- The distant statics and the grass come from the disk while you play: a merged static is
+  asked for when the camera comes within the draw distance and two more cells (the parameter
+  "Distant statics: request margin" of the renderer's parameters window), and it shows as
+  soon as it is on the GPU, as on Direct3D 9.
 - To have the distant land complete when a loaded game starts or after a teleport (a door,
   a travel, Recall), as MGE XE on Direct3D 9 does at the first load: "Wait on the loading
   screen for the distant land" in the Distant Land page of the MGE XE GUI
