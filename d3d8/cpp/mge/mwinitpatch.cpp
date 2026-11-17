@@ -85,3 +85,15 @@ void MWInitPatch::patchWgpu() {
 
     patchEarlyEngineChanges();
 }
+
+void MWInitPatch::patchPlainGame(HMODULE mwse) {
+    if (!(Configuration.MGEFlags & SKIP_INTRO) || !mwse) {
+        return;
+    }
+    // The plain game holds nothing of the native ABI: toPlainGame gave the table back.
+    if (!MwseNative::init(mwse, nullptr)) {
+        return;
+    }
+    MwseNative::requestIntroMoviesSkipped();
+    MwseNative::giveBack();
+}

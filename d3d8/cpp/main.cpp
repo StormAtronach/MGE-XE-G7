@@ -71,7 +71,7 @@ static void startWgpu() {
     for (const char* part : parts) {
         if (GetFileAttributesA(part) == INVALID_FILE_ATTRIBUTES) {
             Session::toPlainGame(Session::Why::PartMissing, part);
-            loadMwse(false);
+            MWInitPatch::patchPlainGame(loadMwse(false));
             return;
         }
     }
@@ -100,6 +100,7 @@ static void startWgpu() {
     }
     if (const char* refused = Deviceless::listenNeededEvents()) {
         Session::toPlainGame(Session::Why::EventRefused, refused);
+        MWInitPatch::patchPlainGame(dll);
         return;
     }
 
@@ -148,9 +149,9 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
 
         if (Configuration.MGEFlags & MGE_DISABLED) {
             // The player's choice: the plain game, with MWSE, and nothing of MGE XE in the
-            // game's code.
+            // game's code. MWSE skips the intro movies when skip_intro is set.
             Session::toPlainGame(Session::Why::Disabled, nullptr);
-            loadMwse(false);
+            MWInitPatch::patchPlainGame(loadMwse(false));
         } else if (Configuration.RendererWgpu) {
             startWgpu();
         } else {
