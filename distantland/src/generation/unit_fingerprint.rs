@@ -661,7 +661,7 @@ pub(crate) fn terrain_domain_digest(state: &GenerationState) -> [u8; 32] {
     writer.finish()
 }
 
-fn fingerprint_settings(settings: &GenerationSettings) -> [u8; 32] {
+pub(crate) fn fingerprint_settings(settings: &GenerationSettings) -> [u8; 32] {
     let mut writer = CanonicalWriter::new();
     writer.write_str("generation_settings_identity_v1");
     writer.write_u32(1);

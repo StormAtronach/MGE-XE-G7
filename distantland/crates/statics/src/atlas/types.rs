@@ -28,6 +28,11 @@ pub fn usable_texture_dim(atlas_max_size: u32) -> u32 {
 /// Version of the atlas evidence recipe embedded in `generation_state.bin`.
 pub(crate) const ATLAS_CACHE_VERSION: u32 = 5;
 
+/// [`ATLAS_CACHE_VERSION`], for the distant land's format text (`distantland::output_format`).
+pub const fn atlas_cache_version() -> u32 {
+    ATLAS_CACHE_VERSION
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AtlasTextureSet<T> {
     pub opaque: T,
