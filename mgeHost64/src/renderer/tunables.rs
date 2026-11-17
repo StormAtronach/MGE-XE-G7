@@ -42,6 +42,9 @@ pub const LAMP_HAZE: &str = "lights.lamps.haze";
 pub const LAMP_FLICKER: &str = "lights.lamps.flicker";
 /// The distant statics: the seconds that a subset takes to come in after its arrival.
 pub const STATICS_FADE: &str = "statics.fade";
+/// The distant statics: the margin of the requested ring, in whole cells beyond the draw
+/// distance.
+pub const STATICS_MARGIN: &str = "statics.margin";
 /// The shadow on the grass: 2 ends it as the shadow of the ground (the fade at the edge of
 /// the shadow map and in the fog), 1 as the Direct3D 9 path (no fade), 0 none.
 pub const GRASS_SHADOW: &str = "grass.shadow";
@@ -194,6 +197,7 @@ mod tests {
             GLOW_STRENGTH,
             GLOW_PIXELS,
             STATICS_FADE,
+            STATICS_MARGIN,
             GRASS_SHADOW,
             PARTICLES,
             LAMP_HAZE,

@@ -11,10 +11,11 @@
 //!   start; they are a small part of the data.
 //! - A merged static has the statics of one exterior cell in one mesh, with one place. It is
 //!   most of the data. A reader thread gets the bytes of a merged subset when the camera
-//!   comes within the draw distance and one more cell (`want_near`). Then
+//!   comes within the requested ring: the draw distance and a margin of whole cells, two at
+//!   the start (the tunable `statics.margin`, `want_near`). Then
 //!   `distant_land.statics_residency` decides: "auto" keeps it until the merged subsets pass
 //!   a high mark and then takes off the ones wanted least recently (`trim_resident`); "near"
-//!   drops it when the camera is farther than the draw distance and two more cells
+//!   drops it when the camera is farther than the ring and one more cell
 //!   (`frame_work`, every 30 frames); "all" asks for all of a world space when they fit under
 //!   the high mark. A subset of another world space (an interior cell with statics has its
 //!   own coordinates) counts as the farthest (`distance_here`). The merged
@@ -136,6 +137,11 @@ const CAP_BAND_LEAST: u64 = 64 << 20;
 /// next trim is not at the next arrival.
 const KEEP_SECONDS: f32 = 60.0;
 const LOW_MARK_TWENTIETHS: u64 = 17;
+/// The margin of the requested ring at the start, in cells beyond the draw distance: the start
+/// value of the tunable `statics.margin` (a test checks that the two agree).
+const RING_MARGIN_CELLS: f32 = 2.0;
+/// The largest margin that the tunable gives, in cells.
+const RING_MARGIN_MOST: f32 = 4.0;
 
 /// An IEEE half float (the positions of a statics vertex) as f32.
 fn half(bytes: &[u8], at: usize) -> f32 {
@@ -2059,6 +2065,9 @@ pub struct Statics {
     /// The clock of the arrivals, and the time a subset takes to come in (0: no fade-in).
     clock: Instant,
     fade_seconds: f32,
+    /// The margin of the requested ring, in whole cells beyond the draw distance
+    /// ([`Statics::ring`]).
+    margin_cells: f32,
     /// The arrivals are those of a wait on the loading screen: they show complete when the
     /// wait ends, with no fade-in.
     prefetching: bool,
@@ -2218,6 +2227,7 @@ impl Statics {
             grass_hash: nirender_wgpu::switches::on("MGE_XE_GRASS_HASH") == Some(true),
             clock: Instant::now(),
             fade_seconds: 1.0,
+            margin_cells: RING_MARGIN_CELLS,
             prefetching: false,
             change: None,
             grass_frames: 0,
@@ -3451,6 +3461,19 @@ impl Statics {
         self.fade_seconds = seconds.max(0.0);
     }
 
+    /// The margin of the requested ring, in whole cells beyond the draw distance (the tunable
+    /// `statics.margin`), from 0 to [`RING_MARGIN_MOST`].
+    pub fn set_margin(&mut self, cells: f32) {
+        self.margin_cells = cells.round().clamp(0.0, RING_MARGIN_MOST);
+    }
+
+    /// The requested ring: a merged subset within this distance of the camera is asked for
+    /// (`want_near`, `far_water`), and the trim of "auto" and "all" keeps it
+    /// (`trim_resident`). "near" drops a subset one cell beyond it.
+    fn ring(&self) -> f32 {
+        self.settings.draw_distance + self.margin_cells * CELL
+    }
+
     /// The fade of the shaders: the time now on the clock of the arrivals, and the fade
     /// time. A replay has no fade: its pictures must not depend on the time of the machine.
     fn fade_values(&self) -> [f32; 4] {
@@ -3531,9 +3554,9 @@ impl Statics {
             return found;
         };
         let reach = self.settings.draw_distance;
-        let admit = reach + CELL;
+        let admit = self.ring();
         let (cell_x, cell_y) = ((eye[0] / CELL).floor() as i32, (eye[1] / CELL).floor() as i32);
-        let cells = ((reach + CELL) / CELL).ceil() as i32;
+        let cells = (admit / CELL).ceil() as i32;
         for y in cell_y - cells..=cell_y + cells {
             for x in cell_x - cells..=cell_x + cells {
                 let Some(list) = world.water_cells.get(&(x, y)) else {
@@ -3889,7 +3912,7 @@ impl Statics {
         let Some(world) = catalog.worlds.get(&self.world) else {
             return;
         };
-        let admit = self.settings.draw_distance + CELL;
+        let admit = self.ring();
         let now = self.clock.elapsed().as_secs_f32();
         let all = self.residency == StaticsResidency::All && self.all_world.as_deref() != Some(self.world.as_slice());
         if all {
@@ -3989,7 +4012,7 @@ impl Statics {
         }
         let low = high / 20 * LOW_MARK_TWENTIETHS;
         let now = self.clock.elapsed().as_secs_f32();
-        let admit = self.settings.draw_distance + CELL;
+        let admit = self.ring();
         let candidates: Vec<(f32, f32, u32, u64)> = self
             .resident
             .iter()
@@ -4104,7 +4127,7 @@ impl Statics {
             return Err(NO_WORLD);
         }
         self.want_near(&catalog, eye);
-        let retain = self.settings.draw_distance + CELL + CELL;
+        let retain = self.ring() + CELL;
         // With "auto" and "all" the merged subsets stay until the high mark (`trim_resident`).
         if self.frames % 30 == 0 && self.residency != StaticsResidency::Near {
             self.trim_resident(&catalog, eye);
@@ -5875,6 +5898,18 @@ mod tests {
         assert_eq!(Resident::fade_after(1.0, 2.0), 0.5);
         assert_eq!(Resident::fade_after(9.0, 2.0), 1.0);
         assert_eq!(Resident::fade_after(-1.0, 2.0), 0.0);
+    }
+
+    /// The margin of the requested ring starts at the start value of the tunable
+    /// `statics.margin`, and the tunable's range is the range that `Statics::set_margin` takes.
+    #[test]
+    fn the_ring_margin_starts_at_the_tunable() {
+        use super::super::tunables::{STATICS_MARGIN, Tunables};
+        let tunables = Tunables::new();
+        assert_eq!(tunables.get(STATICS_MARGIN), super::RING_MARGIN_CELLS);
+        let mut most = Tunables::new();
+        most.start_at(STATICS_MARGIN, 99.0);
+        assert_eq!(most.get(STATICS_MARGIN), super::RING_MARGIN_MOST);
     }
 
     /// The draws of a grass call sort by texture, then by subset, then by the order of their

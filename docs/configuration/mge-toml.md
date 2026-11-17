@@ -267,12 +267,14 @@ predecessor, and only the wgpu renderer reads them. They say which merged distan
 stay on the GPU under that limit:
 
 - `"auto"` (the default): a merged static comes to the GPU when the camera is within the
-  draw distance and one cell, and stays. When the merged statics pass the high mark
+  draw distance and a margin of two cells (the renderer parameter `statics.margin`), and
+  stays. When the merged statics pass the high mark
   (`statics_resident_mb`), the ones the camera wanted least recently go, down to 85 % of the
   mark; a static wanted in the last minute or near the camera stays. A return to a place
   seen before finds its statics there.
-- `"near"`: a merged static goes when the camera is farther than the draw distance and two
-  cells (the rule before 2026-10-26). It uses the least memory and loads the most.
+- `"near"`: a merged static goes when the camera is farther than the draw distance, the
+  margin and one more cell (the rule before 2026-10-26, with the margin of one cell then). It
+  uses the least memory and loads the most.
 - `"all"`: all merged statics of the world space go to the GPU at the start, when they fit
   under the high mark; else as `"auto"`.
 
