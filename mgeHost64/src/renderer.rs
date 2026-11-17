@@ -6575,7 +6575,6 @@ impl DistantLand {
             planes,
             fade: [fade_end - 512.0, fade_end],
             draw_distance: self.draw_distance,
-            time: game_time(self.environment, self.started),
             screen: [
                 scene.target_size.0 as f32,
                 scene.target_size.1 as f32,
