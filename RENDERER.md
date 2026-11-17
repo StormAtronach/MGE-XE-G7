@@ -608,3 +608,8 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   test.
 - `MGE_XE_GAME_DIR=<folder>`: the folder of the game (its Data Files and archives), for a
   replay where the distant land is elsewhere.
+- `numidium.exe --distant-land-key --config <mgeXE.toml>`: prints the key of a distant land
+  and ends, with no window and no log. Two lines: `format <8 hex> <text>` (the numbers that
+  decide whether a build reads another build's distant land) and `settings <8 hex>` (the
+  identity of the generation settings of that file). The test tools keep one distant land for
+  each key (W521). A command or a file that gives no key: one line and exit code 2.

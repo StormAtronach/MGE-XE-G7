@@ -10,6 +10,7 @@ use tracing::{error, info};
 
 mod abi;
 mod config;
+mod distant_land_key;
 mod error;
 mod ipc;
 mod logging;
@@ -26,13 +27,18 @@ use ipc::server::{OutputState, Server};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Three modes. The IPC host mode, launched by `d3d8.dll`, is the default. With `--live <name>`
+/// Four modes. The IPC host mode, launched by `d3d8.dll`, is the default. With `--live <name>`
 /// the process is the wgpu renderer: the nirender plugin launches it, and it draws the stream
 /// of the shared memory with that name in the window of the game until the stream ends. With
 /// `--replay <capture file> <picture.png> [--frame N]` it draws a capture file into a picture,
 /// with the distant land of the current folder: the same picture each time, for a test.
+/// `--distant-land-key --config <mgeXE.toml>` prints the key of a distant land and ends
+/// ([`distant_land_key`]): no window, no log.
 fn main() {
     let mut arguments: Vec<String> = std::env::args().collect();
+    if let Some(at) = arguments.iter().position(|argument| argument == distant_land_key::OPTION) {
+        process::exit(distant_land_key::run(&arguments[at + 1..]));
+    }
     if arguments.iter().any(|argument| argument == "--live") {
         renderer::run(arguments);
         return;
