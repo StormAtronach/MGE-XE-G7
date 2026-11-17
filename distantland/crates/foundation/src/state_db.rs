@@ -23,6 +23,12 @@ const STATE_MAGIC: &[u8; 8] = b"TES3GST1";
 const STATE_FORMAT_VERSION: u32 = 9;
 const DIRTY_KEY_LIMIT: usize = 64;
 
+/// The version of the generation state's format, for the distant land's format text
+/// (`distantland::output_format`).
+pub const fn state_format_version() -> u32 {
+    STATE_FORMAT_VERSION
+}
+
 /// One sorted unit-key to fingerprint table.
 ///
 /// Mesh and texture tables use [`String`] path keys. Merge and terrain tables use the typed

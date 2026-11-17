@@ -9,6 +9,7 @@ pub(crate) mod identity;
 mod lights;
 mod metrics;
 mod output;
+mod output_key;
 mod progress;
 mod projection;
 mod startup;
@@ -51,6 +52,7 @@ pub use distantland_job as job;
 pub use job::*;
 pub use metrics::*;
 pub use output::*;
+pub use output_key::{output_format, settings_identity, short_hash};
 pub use progress::*;
 pub use startup::*;
 pub use state_db::{

@@ -54,6 +54,35 @@ pub enum ArtifactKind {
     Lights = 8,
 }
 
+impl ArtifactKind {
+    /// Every kind, in the order of its number. The distant land's format text names each one
+    /// (`distantland::output_format`), and a test there compares this list with the enum's source.
+    pub const ALL: [Self; 8] = [
+        Self::Version,
+        Self::Usage,
+        Self::StaticShard,
+        Self::AtlasDds,
+        Self::TerrainPayload,
+        Self::TerrainDds,
+        Self::TerrainOcclusion,
+        Self::Lights,
+    ];
+
+    /// The kind's name, as the enum spells it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Version => "Version",
+            Self::Usage => "Usage",
+            Self::StaticShard => "StaticShard",
+            Self::AtlasDds => "AtlasDds",
+            Self::TerrainPayload => "TerrainPayload",
+            Self::TerrainDds => "TerrainDds",
+            Self::TerrainOcclusion => "TerrainOcclusion",
+            Self::Lights => "Lights",
+        }
+    }
+}
+
 /// One required artifact recorded in a published state.
 #[derive(Clone, Debug, Eq, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug, Eq, PartialEq))]
