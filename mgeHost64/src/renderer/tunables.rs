@@ -37,6 +37,9 @@ pub const LAMP_STRENGTH: &str = "lights.lamps.strength";
 /// The haze of the distant lamps in the fog (D498): its strength k; 0 has none. The switch
 /// `MGE_XE_LAMP_HAZE` sets its start for a replay ([`super::lamp_grid::haze_switch`]).
 pub const LAMP_HAZE: &str = "lights.lamps.haze";
+/// The flicker and pulse of the distant lamps' light: its depth; 0 has none. The switch
+/// `MGE_XE_LAMP_FLICKER` sets its start for a replay ([`super::lamp_grid::flicker_switch`]).
+pub const LAMP_FLICKER: &str = "lights.lamps.flicker";
 /// The distant statics: the seconds that a subset takes to come in after its arrival.
 pub const STATICS_FADE: &str = "statics.fade";
 /// The shadow on the grass: 2 ends it as the shadow of the ground (the fade at the edge of
@@ -194,6 +197,7 @@ mod tests {
             GRASS_SHADOW,
             PARTICLES,
             LAMP_HAZE,
+            LAMP_FLICKER,
         ] {
             let tunable = tunables
                 .list
@@ -231,6 +235,15 @@ mod tests {
         let haze = tunables.list.iter().find(|tunable| tunable.name == LAMP_HAZE).unwrap();
         assert_eq!((haze.start, haze.least, haze.most), (0.5, 0.0, 2.0));
         assert_eq!(tunables.get(LAMP_HAZE), 0.5);
+    }
+
+    /// The lamps' flicker starts at the depth of the Worldspaces fork, 0.4, inside 0 to 1.
+    #[test]
+    fn the_lamp_flicker_starts_at_the_forks_depth() {
+        let tunables = Tunables::new();
+        let flicker = tunables.list.iter().find(|tunable| tunable.name == LAMP_FLICKER).unwrap();
+        assert_eq!((flicker.start, flicker.least, flicker.most), (0.4, 0.0, 1.0));
+        assert_eq!(tunables.get(LAMP_FLICKER), 0.4);
     }
 
     #[test]

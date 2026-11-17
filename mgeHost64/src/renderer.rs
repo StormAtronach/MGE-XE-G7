@@ -1283,6 +1283,8 @@ pub struct DistantLand {
     lamp_strength_logged: f32,
     /// The log line of the lamps' haze (D498).
     haze_route: lamp_grid::HazeRoute,
+    /// The log line of the lamps' flicker and pulse (W449 step 4).
+    flicker_route: lamp_grid::FlickerRoute,
     /// The view group (group 0) of the pipelines of MGE XE that take it; [`None`] before the
     /// first frame.
     view_binding: Option<view::ViewBinding>,
@@ -1943,6 +1945,9 @@ impl DistantLand {
                 if let Some(k) = lamp_grid::haze_switch() {
                     tunables.start_at(tunables::LAMP_HAZE, k);
                 }
+                if let Some(depth) = lamp_grid::flicker_switch() {
+                    tunables.start_at(tunables::LAMP_FLICKER, depth);
+                }
                 tunables
             },
             settings: None,
@@ -1956,6 +1961,7 @@ impl DistantLand {
             lamps_lit: false,
             lamp_strength_logged: -1.0,
             haze_route: lamp_grid::HazeRoute::default(),
+            flicker_route: lamp_grid::FlickerRoute::default(),
             lamps_wait_told: false,
             view_binding: None,
             shadow: None,
@@ -4474,6 +4480,10 @@ impl Extension for DistantLand {
             draw_distance: self.draw_distance,
             water_plane: self.environment.map_or(f32::MIN, |e| e.sea_plane()),
         };
+        let motion = lamp_grid::MotionFrame {
+            time: game_time(self.environment, self.started),
+            depth: self.tunables.get(tunables::LAMP_FLICKER),
+        };
         let Some(lamps) = self.light_binding.as_mut() else {
             Self::note_world_skipped(self.shadow_in_frame, part::NOT_MADE, true);
             return false;
@@ -4483,6 +4493,7 @@ impl Extension for DistantLand {
             lamp_strength,
             [scene.view[2], scene.view[6], scene.view[10]],
             haze,
+            motion,
         );
         let source = if lamp_grid::haze_switch().is_some() {
             "MGE_XE_LAMP_HAZE at the start"
@@ -4490,6 +4501,14 @@ impl Extension for DistantLand {
             "the tunable"
         };
         if let Some(line) = self.haze_route.line(&haze, source) {
+            println!("{line}");
+        }
+        let source = if lamp_grid::flicker_switch().is_some() {
+            "MGE_XE_LAMP_FLICKER at the start"
+        } else {
+            "the tunable"
+        };
+        if let Some(line) = self.flicker_route.line(motion.depth, source) {
             println!("{line}");
         }
         let Some(views) = self.view_binding.as_ref() else {
