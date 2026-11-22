@@ -6936,16 +6936,16 @@ mod shader_tests {
                 }
             }
         }
-        // The null: the same text without the end mark of the crate's stage loop gives a refusal.
+        // The null: the same text without the end mark of the crate's stage facts gives a refusal.
         // When the crate changes the mark, change this text with it.
-        let mark = "// STAGE LOOP END";
+        let mark = "// STAGE FACTS END";
         let whole = world_source(shadow_hooks.shadow_hooks(), None);
         assert_eq!(whole.matches(mark).count(), 1, "the mark of the crate");
         let refusals = nirender_wgpu::stage_rewrite_refusals(&whole.replace(mark, "// no mark"));
         assert!(
             refusals
                 .iter()
-                .any(|refusal| refusal.contains("the end mark of the stage loop")),
+                .any(|refusal| refusal.contains("the end mark of the stage facts")),
             "{refusals:?}"
         );
     }
