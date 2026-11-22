@@ -273,6 +273,13 @@ void MacroFunctions::ToggleDistantLand() {
     if (Session::plain()) {
         return;
     }
+    // On wgpu this DLL loads no distant land and has no shaders to reload: the helper draws the
+    // land while the flag is on, if the flag was on when the game started.
+    if (Deviceless::active()) {
+        Configuration.MGEFlags ^= USE_DISTANT_LAND;
+        displayFlag(USE_DISTANT_LAND, "Distant land enabled (if it was on at the start)", "Distant land disabled");
+        return;
+    }
     if (!DistantLand::isDistantLandLoaded) {
         return;
     }

@@ -203,7 +203,7 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | old calls `enableShader`, `disableShader`, `setShaderFloat`, `setShaderLong` (opcodes 0x3AB0-0x3AB4) | write to the placeholder store |
 | `saveScreenshot` | the helper writes the picture; a request before the first frame waits for it. The extension of the path picks the format: `.bmp`, `.tga`, `.dds`, `.jpg` or `.jpeg`; any other extension gives PNG data (run 20261112-183552-w423-d397) |
 | `macros.takeScreenshot` (and PrintScreen) | the helper writes the picture, with the name, folder and format of the settings |
-| `macros.toggleDistantLand` | does nothing |
+| `macros.toggleDistantLand` (and its key) | changes `mge.render.distantLand`; the land shows only if the flag was on at the start (the helper loads it then) |
 | `macros.toggleStatusText`, `toggleFpsCounter`, `showLastMessage` | work (record 9 and the settings record) |
 | `macros.toggleShaders`, `toggleShadows`, `toggleGrass`, `toggleZoom`, `increaseFOV`, `decreaseFOV`, `increaseZoom`, `decreaseZoom` | work: each changes its `mge.render` or `mge.camera` value, and the opposite call or a second toggle sets it back (run 20261112-183552-w423-d397, as for the four rows below) |
 | `macros.toggleBlending`, `toggleTransparencyAA` | change their flag (`noMWMGEBlending`, `transparencyAA`); the helper does not use these flags (the row of those features above) |
