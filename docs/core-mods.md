@@ -385,7 +385,7 @@ The struct `ParticlePixel` is part of the interface:
 | `vertex_color` | `vec4f` | The particle's own colour and alpha from the game. The fade of a particle over its life is in it. |
 | `texcoords` | `vec2f` | The coordinate of the first texture stage. On a particle it runs from 0 to 1 across the particle, unless the draw has a texture transform, so a round mask needs no texture. |
 | `pixel` | `vec2f` | The screen pixel. |
-| `distance` | `f32` | The depth along the view, in units of the game. Not the distance that the fog uses. |
+| `distance` | `f32` | The depth along the view, in units of the game. A fog by range uses the distance to the eye in place of it. |
 
 The library of the particle hook:
 
@@ -393,7 +393,7 @@ The library of the particle hook:
 | --- | --- |
 | `particle_texture(uv: vec2f) -> vec4f` | The draw's first texture with its sampler, at the level of the stage's own read. It may be called in a loop or a branch, and at moved coordinates. |
 | `particle_adds() -> bool` | True for a draw that adds to the picture (fire, sparks). For such a draw, fade the colour toward black; for any other draw, fade the alpha toward 0. |
-| `particle_time() -> f32` | The time of the game in seconds: the same value as `sky_time()`, and Direct3D 9's `time`. It stops in a menu. |
+| `particle_time() -> f32` | The time in seconds: the same value as `sky_time()`, and Direct3D 9's `time`. It is the time of the simulation of the game, which stops in a menu; before the game sends its first time, it is the renderer's own clock. |
 
 The age, the size and the speed of a particle are not in the library: the game does not send
 them.
