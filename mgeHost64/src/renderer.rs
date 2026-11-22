@@ -122,10 +122,6 @@ use water::{Water, WaterFrame};
 const CELL: f32 = 8192.0;
 /// The near plane of the projection of the distant land.
 const NEAR: f32 = 64.0;
-/// With one depth buffer (`nirender_wgpu::depth::one_buffer`): the near plane of the distant
-/// land as a part of the game's. A smaller near plane puts the land behind a draw of the game
-/// at the same distance, by 0.25 % of the distance, as Direct3D 9's 4 - 0.01 against 4.
-const LAND_NEAR_SCALE: f32 = 0.9975;
 /// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps`): the parts named are not drawn, for a
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
@@ -1431,8 +1427,7 @@ struct LandUniforms {
     atlas_more: [f32; 4],
     /// Of the patterns: the tile size, the gutter, the physical size, the patterns in a row.
     patterns: [f32; 4],
-    /// x: the view range of the game; y: 1 with the sink of the land off, z: a raise of the
-    /// land in units (the fault injections of a replay, `nirender_wgpu::depth::control`).
+    /// x: the view range of the game; y, z and w are 0.
     range: [f32; 4],
 }
 
@@ -1473,10 +1468,7 @@ struct Out {
         // landBias: the land goes down near the camera, so that a mesh with less detail
         // does not come through the land of the game.
         let distance = length(world - u.eye.xyz);
-        if land.range.y == 0.0 {
-            world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
-        }
-        world.z += land.range.z;
+        world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
     }
     out.position = clip_of(world);
     out.normal = normal.xyz * 2.0 - 1.0;
@@ -1611,9 +1603,36 @@ fn core_mod_file(root: &Path, folder: Option<&Path>, relative: &str) -> Option<V
     Some(bytes)
 }
 
-/// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`).
-fn draw_shader_text(shadow_hooks: &str) -> String {
-    format!("{LIGHT_FUNCTIONS}{DRAW_SHADER}{shadow_hooks}")
+/// The draw part of the world shader with the shadow hooks of the session (`core_mods.rs`), and
+/// with the particle hook of a core mod its library and `extension_particle_color`, which calls
+/// the hook. Without the hook the world shader's plain `extension_particle_color` stays.
+fn draw_shader_text(shadow_hooks: &str, particle_hooks: Option<&str>) -> String {
+    match particle_hooks {
+        None => format!("{LIGHT_FUNCTIONS}{DRAW_SHADER}{shadow_hooks}"),
+        Some(hooks) => format!(
+            "{LIGHT_FUNCTIONS}{DRAW_SHADER}{shadow_hooks}{PARTICLE_LIBRARY_BODIES}{hooks}\nfn extension_particle_color(p: ParticlePixel) -> vec4f {{ return particle_color(p); }}\n"
+        ),
+    }
+}
+
+/// The library of the particle hook (`core_mods::PARTICLE_LIBRARY`): the values of the frame.
+/// `ParticlePixel`, `particle_texture` and `particle_adds` are the world shader's
+/// (`nirender_wgpu`).
+const PARTICLE_LIBRARY_BODIES: &str = "
+fn particle_time() -> f32 { return frame.values[12].x; }
+";
+
+/// The slot of `frame.values` with the time of the simulation of the game in x, for
+/// `particle_time()` of [`PARTICLE_LIBRARY_BODIES`] (a test compares the two).
+const PARTICLE_TIME_SLOT: usize = 12;
+
+/// The text of the world shader of `hooks`, for [`Extension::shader_fallback`] and the others.
+fn world_shader_text(hooks: &core_mods::WorldHooks, label: &str) -> ShaderText {
+    ShaderText {
+        sky: Some(sky_shader_text(hooks.sky.as_deref())),
+        draw: Some(draw_shader_text(&hooks.shadow, hooks.particles.as_deref())),
+        label: label.to_string(),
+    }
 }
 
 /// The light of a point light at a pixel, which the draws of the game ([`DRAW_SHADER`]) and the
@@ -1641,20 +1660,35 @@ fn light_end_fade(distance: f32, end_inverse: f32) -> f32 {
 }
 ";
 
-/// The world shader with the text of this extension, the shadow hooks and the clouds hook, as
-/// the host joins them (`extension_shaders` of `nirender_wgpu`).
+/// [`world_source_with_particles`] with no particle hook, for the tests.
+#[cfg(test)]
 fn world_source(shadow_hooks: &str, sky_hooks: Option<&str>) -> String {
+    world_source_with_particles(shadow_hooks, sky_hooks, None)
+}
+
+/// The world shader with the text of this extension, the shadow hooks, the clouds hook and the
+/// particle hook, as the host joins them (`extension_shaders` of `nirender_wgpu`).
+fn world_source_with_particles(shadow_hooks: &str, sky_hooks: Option<&str>, particle_hooks: Option<&str>) -> String {
     nirender_wgpu::world_shader_source(&format!(
         "{}\n{}\n",
         sky_shader_text(sky_hooks),
-        draw_shader_text(shadow_hooks)
+        draw_shader_text(shadow_hooks, particle_hooks)
     ))
 }
 
 /// The world shader as the device checks it, in both texture tiers: tier A with the binding
 /// arrays of its request, tier C with the request of every adapter.
 fn check_world_source(shadow_hooks: &str, sky_hooks: Option<&str>) -> Result<(), String> {
-    let source = world_source(shadow_hooks, sky_hooks);
+    check_world_source_with_particles(shadow_hooks, sky_hooks, None)
+}
+
+/// [`check_world_source`] with the particle hook of a core mod.
+fn check_world_source_with_particles(
+    shadow_hooks: &str,
+    sky_hooks: Option<&str>,
+    particle_hooks: Option<&str>,
+) -> Result<(), String> {
+    let source = world_source_with_particles(shadow_hooks, sky_hooks, particle_hooks);
     let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
     shader_check::check_with("the world shader, tier a", &source, tier_a)?;
     shader_check::check("the world shader, tier c", &nirender_wgpu::tier_c_shader_source(&source))?;
@@ -1685,6 +1719,15 @@ fn sky_homes() -> [core_mods::Home; 1] {
     [core_mods::Home {
         name: "world shader",
         check: |hooks| check_world_source(core_mods::CoreMods::built_in().shadow_hooks(), Some(hooks)),
+    }]
+}
+
+/// The shader that calls the particle hook: the world shader, with the built-in shadow hooks
+/// and no clouds hook.
+fn particle_homes() -> [core_mods::Home; 1] {
+    [core_mods::Home {
+        name: "world shader",
+        check: |hooks| check_world_source_with_particles(core_mods::CoreMods::built_in().shadow_hooks(), None, Some(hooks)),
     }]
 }
 
@@ -1862,6 +1905,7 @@ impl DistantLand {
             &shadow_homes(),
             &water_homes(),
             &sky_homes(),
+            &particle_homes(),
             &markers,
         );
         let core_mods = core_mods::Shared::new(mods, markers, core_mods::Plant::of_env());
@@ -2899,15 +2943,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
 }
 
 /// The near plane of the land's projection for a view whose own near plane is `game_near`.
-/// With one depth buffer it is the view's near times `near_scale`. Otherwise it is MGE XE's own
-/// near plane, 64 units, unless the view's near plane is farther: a mirror whose near plane
-/// is the mirror itself must not show land or statics between its camera and the mirror.
-fn land_near(game_near: f32, one_buffer: bool, near_scale: f32) -> f32 {
-    if one_buffer {
-        game_near * near_scale
-    } else {
-        (NEAR - 1e-2).max(game_near)
-    }
+/// It is MGE XE's own near plane, 64 units, unless the view's near plane is farther: a mirror
+/// whose near plane is the mirror itself must not show land or statics between its camera and
+/// the mirror.
+fn land_near(game_near: f32) -> f32 {
+    (NEAR - 1e-2).max(game_near)
 }
 
 /// The projection is a perspective one: Direct3D's `m[2][3]` is 1 for it and 0 for an
@@ -3644,7 +3684,7 @@ impl Extension for DistantLand {
         };
         self.free_idle_spares(scene.frame);
         if let Some(statics) = self.statics.as_mut() {
-            statics.set_fade(self.tunables.get(tunables::STATICS_FADE));
+            statics.set_margin(self.tunables.get(tunables::STATICS_MARGIN));
         }
         // A game load or a teleport (the prefetch record) waits for the statics; each world
         // frame counts for a wait.
@@ -3827,6 +3867,7 @@ impl Extension for DistantLand {
         }
         self.shade = self.per_pixel();
         values[11][0] = self.tunables.get(tunables::WATER_LIGHT_COLOUR);
+        values[PARTICLE_TIME_SLOT][0] = game_time(self.environment, self.started);
         // The answers of the frame, after its objects are made; the parameters are made from them.
         self.answers = FrameAnswers::World(WorldAnswers {
             chain,
@@ -3842,6 +3883,7 @@ impl Extension for DistantLand {
             shade: self.shade.is_some() || self.shadow_in_frame || self.under_water(),
             sky,
             clouds: sky.is_some() && self.core_mods.has_sky_hooks(),
+            particles: self.core_mods.has_particle_hooks(),
             blend: distant,
             // The water plane of the game is class 10; the glare of the sun is class 8.
             watched: (if water { 1 << 10 } else { 0 }) | (if no_glare { 1 << 8 } else { 0 }),
@@ -3879,7 +3921,8 @@ impl Extension for DistantLand {
     /// The shadow hooks of the session now. The marker of the world shader goes up only around the
     /// first build of a text ([`Extension::world_shader_building`]).
     fn draw_shader(&self) -> Option<String> {
-        Some(draw_shader_text(&self.core_mods.world_hooks().0))
+        let hooks = self.core_mods.world_hooks();
+        Some(draw_shader_text(&hooks.shadow, hooks.particles.as_deref()))
     }
 
     /// Packs the lights of a world draw for the light of a pixel. A point light stays as the
@@ -3947,7 +3990,7 @@ impl Extension for DistantLand {
     }
 
     fn sky_shader(&self) -> Option<String> {
-        Some(sky_shader_text(self.core_mods.world_hooks().1.as_deref()))
+        Some(sky_shader_text(self.core_mods.world_hooks().sky.as_deref()))
     }
 
     /// The list of W317: the text without each unit of the world shader alone, then without all
@@ -3968,13 +4011,11 @@ impl Extension for DistantLand {
             }
         }
         let dropped = self.world_trials.get(attempt as usize - 1)?;
-        let (shadow, sky) = self.core_mods.world_hooks_without(dropped);
         let label = dropped.iter().map(|unit| unit.label()).collect::<Vec<_>>().join(" and ");
-        Some(ShaderText {
-            sky: Some(sky_shader_text(sky.as_deref())),
-            draw: Some(draw_shader_text(&shadow)),
-            label: format!("without {label}"),
-        })
+        Some(world_shader_text(
+            &self.core_mods.world_hooks_without(dropped),
+            &format!("without {label}"),
+        ))
     }
 
     /// The marker of the world shader goes up around the first build of the text of `attempt`,
@@ -4001,12 +4042,7 @@ impl Extension for DistantLand {
         if units.is_empty() {
             return None;
         }
-        let (shadow, sky) = self.core_mods.world_hooks_without(&units);
-        Some(ShaderText {
-            sky: Some(sky_shader_text(sky.as_deref())),
-            draw: Some(draw_shader_text(&shadow)),
-            label: "built in".to_string(),
-        })
+        Some(world_shader_text(&self.core_mods.world_hooks_without(&units), "built in"))
     }
 
     /// The fault is no core mod's: no unit is dropped, and the marker of the world goes.
@@ -4030,12 +4066,7 @@ impl Extension for DistantLand {
         if !self.core_mods.take_world_changed() {
             return None;
         }
-        let (shadow, sky) = self.core_mods.world_hooks();
-        Some(ShaderText {
-            sky: Some(sky_shader_text(sky.as_deref())),
-            draw: Some(draw_shader_text(&shadow)),
-            label: "of the core mods now".to_string(),
-        })
+        Some(world_shader_text(&self.core_mods.world_hooks(), "of the core mods now"))
     }
 
     /// The events of the distant land for MGE XE (`distantLandReady` of its Lua), at the end
@@ -4449,8 +4480,7 @@ impl Extension for DistantLand {
         };
         // The eye with the view range of the game, as the statics and the glows take it.
         let eye_range = [eye[0], eye[1], eye[2], view_range];
-        let control = nirender_wgpu::depth::control();
-        let range = [view_range, if control.sink { 0.0 } else { 1.0 }, control.raise, 0.0];
+        let range = [view_range, 0.0, 0.0, 0.0];
         let land = LandUniforms {
             terrain: gpu.terrain,
             atlas: gpu.atlas,
@@ -6011,17 +6041,11 @@ impl DistantLand {
     /// plane (64) is MGE XE's own value. The game's near plane is 1.0 (0x4049C2), and
     /// `renderStage0` of the Direct3D 9 path uses 4. A draw of the game then wins the depth
     /// test against the same geometry among the statics (a static of the cell itself, in an
-    /// interior). With one depth buffer the near plane is the game's times
-    /// [`LAND_NEAR_SCALE`] (or the replay's `--depth-control k`), and the GPU gets the
-    /// projection with an infinite far plane (`nirender_wgpu::depth::world_projection`).
+    /// interior).
     fn land_projection(&self, scene: &SceneView) -> [f32; 16] {
         let mut projection = scene.projection;
         let game_near = -scene.projection[14] / scene.projection[10];
-        let near = land_near(
-            game_near,
-            nirender_wgpu::depth::one_buffer(),
-            nirender_wgpu::depth::control().near_scale.unwrap_or(LAND_NEAR_SCALE),
-        );
+        let near = land_near(game_near);
         let far = self.draw_distance.max(NEAR * 2.0);
         projection[10] = far / (far - near);
         projection[14] = -near * far / (far - near);
@@ -6777,11 +6801,9 @@ mod land_near_tests {
     /// mirror with its near plane at 300 moves it to 300, and a nearer one (4) does not move it.
     #[test]
     fn the_land_never_starts_before_the_near_plane_of_its_view() {
-        assert_eq!(land_near(1.0, false, 0.9975), NEAR - 1e-2);
-        assert_eq!(land_near(4.0, false, 0.9975), NEAR - 1e-2);
-        assert_eq!(land_near(300.0, false, 0.9975), 300.0);
-        assert_eq!(land_near(1.0, true, 0.9975), 0.9975);
-        assert_eq!(land_near(300.0, true, 0.9975), 300.0 * 0.9975);
+        assert_eq!(land_near(1.0), NEAR - 1e-2);
+        assert_eq!(land_near(4.0), NEAR - 1e-2);
+        assert_eq!(land_near(300.0), 300.0);
     }
 
     /// A perspective projection of Direct3D has 1 at m[2][3]; an orthographic one has 0.
@@ -6994,6 +7016,103 @@ fn clouds_color(p: CloudPixel) -> vec4f {
         let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", file)], &[], &[], &sky_homes());
         assert!(mods.sky_hooks().is_some());
     }
+
+    /// The core mods of a Particles file, checked with the home of the particle hook.
+    fn particle_mods(file: &str) -> core_mods::CoreMods {
+        core_mods::CoreMods::of_files_with_particles(&[("Particles.wgsl", file)], &[], &[], &[], &particle_homes())
+    }
+
+    /// The sample file of the mod authors' page (docs/core-mods.md, the particle hook): the
+    /// first `wgsl` block after the section's heading.
+    fn particle_sample() -> &'static str {
+        let page = include_str!("../../docs/core-mods.md");
+        let section = &page[page.find("## The particle hook").expect("the section")..];
+        // The page's lines end in CRLF in a checkout with Windows line ends.
+        let fence = &section[section.find("```wgsl").expect("the sample")..];
+        let block = &fence[fence.find('\n').expect("the line of the fence") + 1..];
+        &block[..block.find("```").expect("the end of the sample")]
+    }
+
+    /// The interface of the particle hook is the crate's: `ParticlePixel` has the same members and
+    /// `particle_texture` and `particle_adds` the same signatures in the world shader as in the
+    /// stub that checks a file alone, and the world shader with a particle hook gives the library
+    /// of the interface; `particle_time` reads the slot of the frame that the frame writes.
+    #[test]
+    fn the_particle_interface_is_the_world_shader_s() {
+        use nirender_wgpu::wgpu::naga;
+        let mods = particle_mods(particle_sample());
+        let hooks = mods.particle_hooks().expect("the hook of the sample");
+        let source = world_source_with_particles(core_mods::CoreMods::built_in().shadow_hooks(), None, Some(hooks));
+        for interface in [core_mods::PARTICLE_LIBRARY, core_mods::PARTICLE_INTERFACE] {
+            assert_eq!(core_mods::library_differences(interface, &source), Vec::<String>::new());
+        }
+        let members = |text: &str| {
+            let module = naga::front::wgsl::parse_str(text).unwrap();
+            module
+                .types
+                .iter()
+                .find_map(|(_, kind)| match (&kind.inner, kind.name.as_deref()) {
+                    (naga::TypeInner::Struct { members, .. }, Some("ParticlePixel")) => Some(
+                        members
+                            .iter()
+                            .map(|m| (m.name.clone(), format!("{:?}", module.types[m.ty].inner)))
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                })
+                .expect("ParticlePixel")
+        };
+        assert_eq!(members(core_mods::PARTICLE_INTERFACE), members(&source));
+        assert!(PARTICLE_LIBRARY_BODIES.contains(&format!("frame.values[{PARTICLE_TIME_SLOT}].x")));
+    }
+
+    /// A Particles file joins the world shader only with its particle hook; a file without the
+    /// hook, and a file that breaks a rule, leave the particles as the game draws them. The
+    /// sample of the mod authors' page passes.
+    #[test]
+    fn a_particles_file_gives_the_particle_hook() {
+        let copy = "//! interface: mge-xe-core 1\nfn particle_color(p: ParticlePixel) -> vec4f { return p.color; }\n";
+        let mods = particle_mods(copy);
+        let hooks = mods.particle_hooks().expect("the hook of the file");
+        let source = world_source_with_particles(core_mods::CoreMods::built_in().shadow_hooks(), None, Some(hooks));
+        assert_eq!(source.matches("fn particle_color(").count(), 1);
+        assert_eq!(source.matches("fn extension_particle_color(").count(), 1);
+        assert!(source.contains("{ return particle_color(p); }"));
+        for file in [
+            "//! interface: mge-xe-core 1\nfn mod_nothing() -> f32 { return 1.0; }\n",
+            "//! interface: mge-xe-core 1\nfn particle_color(p: ParticlePixel) -> vec3f { return p.color.rgb; }\n",
+            "//! interface: mge-xe-core 1\nfn helper(p: ParticlePixel) -> vec4f { return p.color; }\n",
+            "//! interface: mge-xe-core 2\nfn particle_color(p: ParticlePixel) -> vec4f { return p.color; }\n",
+            "fn particle_color(p: ParticlePixel) -> vec4f { return p.color; }\n",
+        ] {
+            assert!(particle_mods(file).particle_hooks().is_none(), "{file}");
+        }
+        let plain = world_source(core_mods::CoreMods::built_in().shadow_hooks(), None);
+        assert!(!plain.contains("fn particle_color(") && !plain.contains("fn particle_time("));
+        assert_eq!(
+            plain.matches("fn extension_particle_color(").count(),
+            1,
+            "the crate's plain one"
+        );
+        assert!(particle_mods(particle_sample()).particle_hooks().is_some(), "the sample");
+        // The replay gate's fixture, in the sibling checkout of the crate (Cargo.toml's path).
+        let fixture = include_str!("../../../nirender-plugin/tools/hook-fixtures/XE Mod Particles.wgsl");
+        assert!(particle_mods(fixture).particle_hooks().is_some(), "the gate's fixture");
+    }
+
+    /// The crate's rewrite for the stage shaders takes the world shader with a particle hook, in
+    /// both texture tiers.
+    #[test]
+    fn the_stage_rewrite_takes_the_world_shader_with_a_particle_hook() {
+        let mods = particle_mods(particle_sample());
+        let hooks = mods.particle_hooks().expect("the hook of the sample");
+        let tier_a = world_source_with_particles(core_mods::CoreMods::built_in().shadow_hooks(), None, Some(hooks));
+        let tier_c = nirender_wgpu::tier_c_shader_source(&tier_a);
+        for (tier, source) in [("tier a", tier_a), ("tier c", tier_c)] {
+            assert_eq!(nirender_wgpu::stage_rewrite_refusals(&source), Vec::<String>::new(), "{tier}");
+        }
+    }
+
     #[test]
     fn the_homes_of_the_shadow_hooks_take_the_built_ins() {
         let hooks = core_mods::CoreMods::built_in();

@@ -184,7 +184,7 @@ still installed.
 | (new, no INI key) | `distant_land.expanded_light_limit` |
 | (new, no INI key) | `distant_land.per_pixel_light_fade` (default `false` since 2026-11-15; `true` from 2026-10-16) |
 | (new, no INI key) | `distant_land.per_pixel_light_fade_radius` (default `1.75`, the radius multiplier of OpenMW) |
-| (new, no INI key) | `distant_land.wait_on_load` |
+| (new, no INI key) | `distant_land.wait_on_load` (default `true` since 2026-11-17, the owner's D581; `false` before) |
 | (new, no INI key) | `views.full_tier_max` (default `1`, range 0 to 8: how many views of a frame get the parts of MGE XE that a mod asks for with `mge.camera.setViewOptions`; 0 refuses every request; only the wgpu renderer reads it) |
 
 `src/default.toml` describes each of these new keys, and `render.camera_relative` too.
@@ -267,12 +267,14 @@ predecessor, and only the wgpu renderer reads them. They say which merged distan
 stay on the GPU under that limit:
 
 - `"auto"` (the default): a merged static comes to the GPU when the camera is within the
-  draw distance and one cell, and stays. When the merged statics pass the high mark
+  draw distance and a margin of two cells (the renderer parameter `statics.margin`), and
+  stays. When the merged statics pass the high mark
   (`statics_resident_mb`), the ones the camera wanted least recently go, down to 85 % of the
   mark; a static wanted in the last minute or near the camera stays. A return to a place
   seen before finds its statics there.
-- `"near"`: a merged static goes when the camera is farther than the draw distance and two
-  cells (the rule before 2026-10-26). It uses the least memory and loads the most.
+- `"near"`: a merged static goes when the camera is farther than the draw distance, the
+  margin and one more cell (the rule before 2026-10-26, with the margin of one cell then). It
+  uses the least memory and loads the most.
 - `"all"`: all merged statics of the world space go to the GPU at the start, when they fit
   under the high mark; else as `"auto"`.
 
