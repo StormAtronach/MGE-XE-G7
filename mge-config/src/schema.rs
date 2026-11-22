@@ -583,7 +583,7 @@ impl Default for DistantLandSettings {
             // 2026-10-18); a file that has a key keeps its value.
             enabled: true,
             automatic_rebuild: true,
-            wait_on_load: false,
+            wait_on_load: true,
             native_depth_capture: true,
             native_ppl_packets: true,
             expanded_light_limit: true,
