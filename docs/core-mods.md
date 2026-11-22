@@ -7,8 +7,8 @@ functions of the renderer's shaders (the hooks). The renderer keeps everything e
 passes, the bindings, the entry points and the code around the hooks.
 
 This page describes interface 1 (`mge-xe-core 1`). The source is
-`mgeHost64/src/renderer/core_mods.rs`. Interface 1 has the shadow hooks, the water hooks and
-the clouds hook.
+`mgeHost64/src/renderer/core_mods.rs`. Interface 1 has the shadow hooks, the water hooks, the
+clouds hook and the particle hook.
 
 ## The rules of a file
 
@@ -64,6 +64,9 @@ At its start the renderer writes one line for each event:
 - `core mod: XE Mod Sky.wgsl: <reason>; the clouds stay as the game draws them`: the sky file
   is dropped, and why. A sky file without `clouds_color` is listed as `(no hook)` and changes
   nothing;
+- `core mod: XE Mod Particles.wgsl: <reason>; the particles stay as the game draws them`: the
+  particle file is dropped, and why. A particle file without `particle_color` is listed as
+  `(no hook)` and changes nothing;
 - `core mod: XE Mod <name>.fx is for Direct3D 9; the wgpu renderer reads XE Mod <name>.wgsl,
   and there is none`: a Direct3D 9 core mod with no `.wgsl` file beside it;
 - `core mods: off (MGE_XE_CORE_MODS=0)`: the switch is set;
@@ -75,7 +78,8 @@ At its start the renderer writes one line for each event:
   used`: the file passed the check at the start, but a shader of the home failed in the back end
   or the driver. The file is dropped for the rest of the session: the homes built after it take
   the built-in hooks, and the world shader takes a new text at the next frame. `<home>` is the
-  world shader, the grass, the water plane or the water volume;
+  world shader, the grass, the water plane or the water volume. The particle file's home is the
+  world shader;
 - `core mod: <file>: a start before ended in the build of the <home> with it; it is not used
   until it changes`: the helper ended while it built that home with the file (a lost device or
   a crash in the driver). The file is not used until its text changes. The debug overlay shows
@@ -347,6 +351,77 @@ fn clouds_color(p: CloudPixel) -> vec4f {
 }
 ```
 
+## The particle hook: `XE Mod Particles.wgsl`
+
+Direct3D 9 has no core file for the pixels of a particle: this hook is new on wgpu.
+
+| Hook | Signature | What it gives |
+| --- | --- | --- |
+| `particle_color` | `fn particle_color(p: ParticlePixel) -> vec4f` | The colour and the alpha of a pixel of a particle. |
+
+- **Where it acts.** On each draw of a particle system of the game, in every place and in
+  every picture (the main view, a save picture, a view of a mod). A mesh that only looks like a
+  particle (a flat quad of a model) is not a particle system and does not take the hook.
+- **When it acts.** After the draw's texture stages, and before its alpha test. After the hook,
+  as for any draw: the alpha test, the fog, the light of the frame (the tone curve, the light
+  under water, the sun's shadow), and the draw's own blend, depth and stencil state. So a
+  particle with a mod's colour still fades into the fog as the built-in particle does.
+- **The limit of the stages.** Without per-pixel lighting, the hook's result is kept between 0
+  and 1, as the result of each texture stage is.
+- **The built-in** returns `p.color`: without a file, or with a file that only returns
+  `p.color`, the particles look as before.
+
+**Scale the colour; do not set it or add a fixed one.** The colour in `p.color` is not of one
+kind. With per-pixel lighting on, it is not kept between 0 and 1, and the tone curve acts on it
+after the hook. With per-pixel lighting off, it is between 0 and 1 and gets no tone curve. A
+mask or a flicker multiplies the colour, so it looks the same in each lighting mode. A fixed
+colour that a mod adds or sets has a different brightness in each mode.
+
+The struct `ParticlePixel` is part of the interface:
+
+| Field | Type | What it holds |
+| --- | --- | --- |
+| `color` | `vec4f` | The colour and the alpha after the draw's texture stages: its textures with the lit colour or the vertex colour. |
+| `vertex_color` | `vec4f` | The particle's own colour and alpha from the game. The fade of a particle over its life is in it. |
+| `texcoords` | `vec2f` | The coordinate of the first texture stage. On a particle it runs from 0 to 1 across the particle, unless the draw has a texture transform, so a round mask needs no texture. |
+| `pixel` | `vec2f` | The screen pixel. |
+| `distance` | `f32` | The depth along the view, in units of the game. A fog by range uses the distance to the eye in place of it. |
+
+The library of the particle hook:
+
+| Function | What it gives |
+| --- | --- |
+| `particle_texture(uv: vec2f) -> vec4f` | The draw's first texture with its sampler, at the level of the stage's own read. It may be called in a loop or a branch, and at moved coordinates. |
+| `particle_adds() -> bool` | True for a draw that adds to the picture (fire, sparks). For such a draw, fade the colour toward black; for any other draw, fade the alpha toward 0. |
+| `particle_time() -> f32` | The time in seconds: the same value as `sky_time()`, and Direct3D 9's `time`. It is the time of the simulation of the game, which stops in a menu; before the game sends its first time, it is the renderer's own clock. |
+
+The age, the size and the speed of a particle are not in the library: the game does not send
+them.
+
+An example: round particles with a soft edge, and a slow flicker. Each part scales the colour
+or the alpha, so the look is the same in each lighting mode.
+
+```wgsl
+//! interface: mge-xe-core 1
+
+// 1 at the centre of the particle, 0 at its edge, with a soft rim.
+fn mod_round(texcoords: vec2f) -> f32 {
+    let from_centre = 2.0 * length(texcoords - vec2f(0.5));
+    return 1.0 - smoothstep(0.6, 1.0, from_centre);
+}
+
+fn particle_color(p: ParticlePixel) -> vec4f {
+    let flicker = 0.9 + 0.1 * sin(6.0 * particle_time());
+    let mask = mod_round(p.texcoords);
+    if particle_adds() {
+        // A draw that adds: the edge fades to black.
+        return vec4f(p.color.rgb * flicker * mask, p.color.a);
+    }
+    // Any other draw: the edge fades to alpha 0.
+    return vec4f(p.color.rgb * flicker, p.color.a * mask);
+}
+```
+
 ## The water debug views
 
 The debug view `water <number>` shows one term of the water shader in place of the
@@ -380,3 +455,12 @@ volumes seen from below, as these share the built-in under-water shading.
   choice, not the mod's.
 - **The water debug views** show the terms of the built-in colour only, on the surface of the
   mod (see "The water debug views").
+- **A particle hook runs for each pixel of each particle.** Where many particles cover the
+  screen, as in a thick smoke, one pixel is drawn many times: each operation of the hook can
+  run hundreds of millions of times a frame. Keep the hook short. A slow GPU pays for the hook
+  in proportion to the area that the particles cover.
+- **A particle with an alpha test cuts hard.** Where the hook's alpha goes under the draw's
+  test value, the pixel is not drawn: a soft mask on such a draw has a hard rim. For a draw
+  that adds, fade the colour, not the alpha.
+- **A bump stage.** For a draw whose first stage is a bump stage, `particle_texture` reads the
+  bump map.
