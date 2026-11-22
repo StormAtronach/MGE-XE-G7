@@ -1660,14 +1660,14 @@ fn light_end_fade(distance: f32, end_inverse: f32) -> f32 {
 }
 ";
 
-/// The world shader with the text of this extension, the shadow hooks and the clouds hook, as
-/// the host joins them (`extension_shaders` of `nirender_wgpu`).
+/// [`world_source_with_particles`] with no particle hook, for the tests.
 #[cfg(test)]
 fn world_source(shadow_hooks: &str, sky_hooks: Option<&str>) -> String {
     world_source_with_particles(shadow_hooks, sky_hooks, None)
 }
 
-/// [`world_source`] with the particle hook of a core mod.
+/// The world shader with the text of this extension, the shadow hooks, the clouds hook and the
+/// particle hook, as the host joins them (`extension_shaders` of `nirender_wgpu`).
 fn world_source_with_particles(shadow_hooks: &str, sky_hooks: Option<&str>, particle_hooks: Option<&str>) -> String {
     nirender_wgpu::world_shader_source(&format!(
         "{}\n{}\n",
