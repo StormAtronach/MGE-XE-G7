@@ -380,6 +380,171 @@ void parseFile(const std::string& path, ShaderValues& result, std::map<std::stri
 }
 }
 
+namespace {
+    std::string trimmed(const std::string& text) {
+        const size_t first = text.find_first_not_of(" \t");
+        if (first == std::string::npos) {
+            return std::string();
+        }
+        return text.substr(first, text.find_last_not_of(" \t") - first + 1);
+    }
+
+    // One item of the line `variables`: `name type` or `name type = numbers`, with the types
+    // f32, vec2, vec3, vec4 and `type[N]` (`parse_variable` of mgeHost64's post.rs). The
+    // letters are those of an effect file: f32 is f, f32[N] is F, vecK is K, and vecK[N] is
+    // V, an array of vectors with 4 values for each vector in the API.
+    bool wgslVariable(const std::string& item, ShaderVariable* variable, std::string* error) {
+        const size_t equals = item.find('=');
+        std::istringstream left(item.substr(0, equals));
+        std::string name, kind, extra;
+        if (!(left >> name >> kind) || (left >> extra)) {
+            *error = "the variable `" + item + "` is not `name type`";
+            return false;
+        }
+
+        size_t elements = 1;
+        bool array = false;
+        const size_t open = kind.find('[');
+        if (open != std::string::npos) {
+            const int count = std::atoi(kind.c_str() + open + 1);
+            if (count < 1 || kind.back() != ']') {
+                *error = "the size of the variable " + name + " is not [N]";
+                return false;
+            }
+            elements = static_cast<size_t>(count);
+            array = true;
+            kind.erase(open);
+        }
+        size_t per = 0;
+        if (kind == "f32") {
+            per = 1;
+        } else if (kind == "vec2" || kind == "vec3" || kind == "vec4") {
+            per = static_cast<size_t>(kind[3] - '0');
+        } else {
+            *error = "the type `" + kind + "` of the variable " + name + " is not f32, vec2, vec3 or vec4";
+            return false;
+        }
+
+        std::vector<float> start;
+        if (equals != std::string::npos) {
+            std::istringstream numbers(item.substr(equals + 1));
+            std::string word;
+            while (numbers >> word) {
+                char* end = nullptr;
+                const float value = std::strtof(word.c_str(), &end);
+                if (end == word.c_str() || *end != '\0') {
+                    *error = "the value `" + word + "` of the variable " + name + " is not a number";
+                    return false;
+                }
+                start.push_back(value);
+            }
+        }
+
+        variable->name = name;
+        variable->set = false;
+        if (!array) {
+            variable->type = (per == 1) ? 'f' : static_cast<char>('0' + per);
+            variable->values.assign(per, 0.0f);
+        } else if (per == 1) {
+            variable->type = 'F';
+            variable->values.assign(elements, 0.0f);
+        } else {
+            variable->type = 'V';
+            variable->values.assign(elements * 4, 0.0f);
+        }
+        // The start values come `per` for each element; a vector of V takes 4 places.
+        const size_t stride = (variable->type == 'V') ? 4 : per;
+        for (size_t n = 0; n < start.size(); ++n) {
+            const size_t element = n / per, part = n % per;
+            if (element < elements) {
+                variable->values[element * stride + part] = start[n];
+            }
+        }
+        return true;
+    }
+}
+
+bool ShaderValues::parseWgslHeader(const char* path, ShaderValues* out, std::string* error) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        *error = "the file cannot be read";
+        return false;
+    }
+    ShaderValues result;
+    bool interface = false, passes = false;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.compare(0, 3, "//!") != 0) {
+            break;
+        }
+        const size_t colon = line.find(':', 3);
+        if (colon == std::string::npos) {
+            *error = "the line `" + line + "` has no `key: value`";
+            return false;
+        }
+        const std::string key = trimmed(line.substr(3, colon - 3));
+        const std::string value = trimmed(line.substr(colon + 1));
+        if (key == "interface") {
+            interface = (value == "mge-xe-wgsl 1");
+        } else if (key == "passes") {
+            passes = !value.empty();
+        } else if (key == "category") {
+            if (value != "scene" && value != "atmosphere" && value != "lens" && value != "sensor" && value != "tone" && value != "none"
+                && value != "final") {
+                *error = "the category `" + value + "` is not known";
+                return false;
+            }
+            // `none` is the place of a shader without a category.
+            result.category = (value == "none") ? std::string() : value;
+        } else if (key == "priority_adjust") {
+            result.priorityAdjust = std::atoi(value.c_str());
+        } else if (key == "mgeflags") {
+            ShaderVariable flags;
+            flags.name = "mgeflags";
+            flags.type = 'i';
+            flags.values.assign(1, static_cast<float>(std::atoi(value.c_str())));
+            flags.set = false;
+            result.variables.push_back(flags);
+        } else if (key == "requires_hdr") {
+            result.requiresHDR = (value == "true");
+        } else if (key == "disable_sunglare") {
+            result.disableSunglare = (value == "true");
+        } else if (key == "variables") {
+            std::istringstream items(value);
+            std::string item;
+            while (std::getline(items, item, ',')) {
+                item = trimmed(item);
+                if (item.empty()) {
+                    continue;
+                }
+                ShaderVariable variable;
+                if (!wgslVariable(item, &variable, error)) {
+                    return false;
+                }
+                if (!result.find(variable.name.c_str())) {
+                    result.variables.push_back(variable);
+                }
+            }
+        } else if (key != "texture") {
+            *error = "the key `" + key + "` is not known";
+            return false;
+        }
+    }
+    if (!interface) {
+        *error = "no line `//! interface: mge-xe-wgsl 1` at its start";
+        return false;
+    }
+    if (!passes) {
+        *error = "no line `//! passes: ...` with the fragment functions";
+        return false;
+    }
+    *out = std::move(result);
+    return true;
+}
+
 ShaderVariable* ShaderValues::find(const char* name) {
     for (auto& variable : variables) {
         if (variable.name == name) {

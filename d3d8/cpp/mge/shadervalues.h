@@ -52,6 +52,13 @@ struct ShaderValues {
 
     // Reads the variables of an effect file. A file that cannot be read gives none.
     static ShaderValues parse(const char* path);
+    // Reads the `//!` lines at the start of a WGSL file of a shader (mgeHost64's
+    // POST_SHADERS.md, "The file"), for a shader that has no effect file: the category, the
+    // priority adjustment, `requires_hdr`, `disable_sunglare`, `mgeflags` as the variable
+    // `mgeflags`, and the variables of `variables` with their start values. Returns false,
+    // with the reason in `error`, for a file that cannot be read or a header that the
+    // renderer does not accept: then the renderer does not load the shader either.
+    static bool parseWgslHeader(const char* path, ShaderValues* out, std::string* error);
 
     ShaderVariable* find(const char* name);
 
