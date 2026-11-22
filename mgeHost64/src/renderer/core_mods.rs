@@ -49,6 +49,13 @@
 //!   no built-in in that path. The struct and the texture read are [`SKY_INTERFACE`], the
 //!   library [`SKY_LIBRARY`]. `sky_color` (`SkyPS`) is not a hook yet: no installed mod changes
 //!   it.
+//! - `XE Mod Particles`: `fn particle_color(p: ParticlePixel) -> vec4f`: the colour and the
+//!   alpha of a pixel of a particle after the draw's texture stages. The fog, the light, the
+//!   tone curve, the alpha test and the draw's blend, depth and stencil state stay the
+//!   renderer's, after the hook. Its home: the world shader, for each draw of a particle system
+//!   of the game, in every scene and into every target. Direct3D 9 has no core file for it: the
+//!   hook is new. The struct and the texture read are [`PARTICLE_INTERFACE`], the library
+//!   [`PARTICLE_LIBRARY`]. The built-in returns `p.color`.
 //!
 //! A hook may call the other hooks of its file, also those that the file leaves to the
 //! built-ins. A hook that never ends stops the GPU: the renderer does not limit a hook.
@@ -337,6 +344,53 @@ const SKY_LIBRARY_NAMES: [&str; 10] = [
     "CloudPixel",
 ];
 
+const PARTICLE_HOOKS: [Hook; 1] = [Hook {
+    name: "particle_color",
+    arguments: &["ParticlePixel"],
+    result: "vec4<f32>",
+    built_in: PARTICLE_COLOR,
+}];
+
+/// The built-in `particle_color`: the colour of the texture stages, unchanged.
+const PARTICLE_COLOR: &str = "
+// The colour of a pixel of a particle after the texture stages.
+fn particle_color(p: ParticlePixel) -> vec4f {
+    return p.color;
+}
+";
+
+/// The struct of the particle hook and the functions of the draw, part of the interface, as
+/// declarations for the check of a file alone. The world shader of `nirender_wgpu` defines them
+/// (a test compares them): `ParticlePixel` has the colour after the texture stages, the
+/// particle's own colour and alpha from the game (its fade over its life is in it), the
+/// coordinate of the first texture stage (0 to 1 across a particle's quad without a texture
+/// transform), the screen pixel, and the depth along the view in units of the world;
+/// `particle_texture(uv)` reads the draw's first texture with its sampler at the level of the
+/// stage's own read, also in a branch; `particle_adds()` is true for a draw that adds to the
+/// picture.
+pub(crate) const PARTICLE_INTERFACE: &str = "
+struct ParticlePixel {
+    color: vec4f,
+    vertex_color: vec4f,
+    texcoords: vec2f,
+    pixel: vec2f,
+    distance: f32,
+}
+fn particle_texture(uv: vec2f) -> vec4f { return vec4f(0.0); }
+fn particle_adds() -> bool { return false; }
+";
+
+/// The library of the particle hook as declarations, for the check of a file alone. The world
+/// shader has the bodies (`PARTICLE_LIBRARY_BODIES` of the renderer): `particle_time()`, the
+/// time of the simulation of the game in seconds, the same value as `sky_time()` (`time` of
+/// Direct3D 9).
+pub(crate) const PARTICLE_LIBRARY: &str = "
+fn particle_time() -> f32 { return 0.0; }
+";
+
+/// The names of [`PARTICLE_LIBRARY`] and of [`PARTICLE_INTERFACE`].
+const PARTICLE_LIBRARY_NAMES: [&str; 4] = ["particle_time", "particle_texture", "particle_adds", "ParticlePixel"];
+
 /// The values of `XE Mod Shadow Data.fx` that a core mod may set: the shade of a shadow and
 /// the two numbers of the exponential shadow map.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -449,6 +503,9 @@ pub(crate) struct CoreMods {
     /// The text of the clouds hook of a file that defines it, or [`None`]: the clouds then
     /// stay as the game draws them.
     sky_hooks: Option<String>,
+    /// The text of the particle hook of a file that defines it, or [`None`]: the particles then
+    /// keep the colour of their texture stages, with no call.
+    particle_hooks: Option<String>,
     /// What the log says about the files, one line each.
     report: Vec<String>,
     /// The problems for the debug overlay: the files that a build marker drops.
@@ -467,6 +524,7 @@ impl CoreMods {
             water_hooks: hook_text(&WATER_HOOKS, &[], ""),
             water_debug_hooks: hook_text(&WATER_HOOKS, &[], ""),
             sky_hooks: None,
+            particle_hooks: None,
             report: Vec::new(),
             problems: Vec::new(),
             texts: Texts::default(),
@@ -475,14 +533,15 @@ impl CoreMods {
     }
 
     /// The files under `Data Files` (`read` gives the bytes of a path there), checked with the
-    /// homes of the shadow hooks, of the water hooks and of the clouds hook; nothing with
-    /// `MGE_XE_CORE_MODS=0`. A file that a build marker of `markers` names is not used. The
-    /// report is printed.
+    /// homes of the shadow hooks, of the water hooks, of the clouds hook and of the particle
+    /// hook; nothing with `MGE_XE_CORE_MODS=0`. A file that a build marker of `markers` names is
+    /// not used. The report is printed.
     pub fn load(
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
         shadow_homes: &[Home],
         water_homes: &[Home],
         sky_homes: &[Home],
+        particle_homes: &[Home],
         markers: &BuildMarkers,
     ) -> CoreMods {
         let mods = if off() {
@@ -491,7 +550,7 @@ impl CoreMods {
                 ..CoreMods::built_in()
             }
         } else {
-            CoreMods::read(read, shadow_homes, water_homes, sky_homes, markers)
+            CoreMods::read(read, shadow_homes, water_homes, sky_homes, particle_homes, markers)
         };
         for line in &mods.report {
             println!("{line}");
@@ -505,6 +564,7 @@ impl CoreMods {
         shadow_homes: &[Home],
         water_homes: &[Home],
         sky_homes: &[Home],
+        particle_homes: &[Home],
         markers: &BuildMarkers,
     ) -> CoreMods {
         // A byte order mark, which an editor on Windows can put first, is not part of the text.
@@ -523,6 +583,7 @@ impl CoreMods {
             shadow_data: file("Shadow Data", "wgsl"),
             water: file("Water", "wgsl"),
             sky: file("Sky", "wgsl"),
+            particles: file("Particles", "wgsl"),
         };
         let mut problems = Vec::new();
         for (dropped, home) in markers.left(&texts) {
@@ -537,6 +598,7 @@ impl CoreMods {
             shadow: shadow_homes.to_vec(),
             water: water_homes.to_vec(),
             sky: sky_homes.to_vec(),
+            particles: particle_homes.to_vec(),
         };
         let mut mods = CoreMods::of_texts(texts, homes);
         report.append(&mut mods.report);
@@ -548,7 +610,8 @@ impl CoreMods {
     /// The hooks of the files of `texts`, checked with `homes`.
     fn of_texts(texts: Texts, homes: Homes) -> CoreMods {
         let mut mods = CoreMods::built_in();
-        let (shadow_homes, water_homes, sky_homes) = (&homes.shadow[..], &homes.water[..], &homes.sky[..]);
+        let (shadow_homes, water_homes, sky_homes, particle_homes) =
+            (&homes.shadow[..], &homes.water[..], &homes.sky[..], &homes.particles[..]);
         let mut used = Vec::new();
         let (shadow_file, data_file) = (texts.shadow.clone(), texts.shadow_data.clone());
         if shadow_file.is_some() || data_file.is_some() {
@@ -636,6 +699,24 @@ impl CoreMods {
                 )),
             }
         }
+        if let Some(text) = &texts.particles {
+            match hook_file(
+                text,
+                &PARTICLE_HOOKS,
+                &format!("{PARTICLE_INTERFACE}{PARTICLE_LIBRARY}"),
+                &PARTICLE_LIBRARY_NAMES,
+                particle_homes,
+            ) {
+                Ok((_, defined)) if defined.is_empty() => used.push("XE Mod Particles.wgsl (no hook)".to_string()),
+                Ok((hooks, defined)) => {
+                    mods.particle_hooks = Some(hooks);
+                    used.push(format!("XE Mod Particles.wgsl ({})", defined.join(", ")));
+                }
+                Err(problem) => mods.report.push(format!(
+                    "core mod: XE Mod Particles.wgsl: {problem}; the particles stay as the game draws them"
+                )),
+            }
+        }
         mods.report.push(if used.is_empty() {
             format!("core mods: none used (Data Files/{FOLDER}, interface {INTERFACE})")
         } else {
@@ -659,16 +740,18 @@ impl CoreMods {
             ModFile::Shadow => self.shadow_hooks != hook_text(&SHADOW_HOOKS, &[], ""),
             ModFile::Water => self.water_hooks != hook_text(&WATER_HOOKS, &[], ""),
             ModFile::Sky => self.sky_hooks.is_some(),
+            ModFile::Particles => self.particle_hooks.is_some(),
         }
     }
 
-    /// The hook text of `file` for its homes: the shadow hooks, the water hooks of the plane, or
-    /// the clouds hook (empty without one).
+    /// The hook text of `file` for its homes: the shadow hooks, the water hooks of the plane, the
+    /// clouds hook or the particle hook (empty without one).
     fn hooks(&self, file: ModFile) -> String {
         match file {
             ModFile::Shadow => self.shadow_hooks.clone(),
             ModFile::Water => self.water_hooks.clone(),
             ModFile::Sky => self.sky_hooks.clone().unwrap_or_default(),
+            ModFile::Particles => self.particle_hooks.clone().unwrap_or_default(),
         }
     }
 
@@ -698,9 +781,29 @@ impl CoreMods {
         self.sky_hooks.as_deref()
     }
 
-    /// The core mods of `files` (names under the folder, and texts), for a test of a home.
+    /// The particle hook of a file that defines it, for the world shader after
+    /// [`PARTICLE_INTERFACE`] and the library; [`None`] without one.
+    #[cfg(test)]
+    pub fn particle_hooks(&self) -> Option<&str> {
+        self.particle_hooks.as_deref()
+    }
+
+    /// The core mods of `files` (names under the folder, and texts), for a test of a home. The
+    /// particle hook has no home here: [`of_files_with_particles`](Self::of_files_with_particles).
     #[cfg(test)]
     pub fn of_files(files: &[(&str, &str)], shadow_homes: &[Home], water_homes: &[Home], sky_homes: &[Home]) -> CoreMods {
+        Self::of_files_with_particles(files, shadow_homes, water_homes, sky_homes, &[])
+    }
+
+    /// [`of_files`](Self::of_files) with the homes of the particle hook.
+    #[cfg(test)]
+    pub fn of_files_with_particles(
+        files: &[(&str, &str)],
+        shadow_homes: &[Home],
+        water_homes: &[Home],
+        sky_homes: &[Home],
+        particle_homes: &[Home],
+    ) -> CoreMods {
         let files: std::collections::HashMap<String, String> = files
             .iter()
             .map(|(name, text)| (format!("{FOLDER}/XE Mod {name}"), text.to_string()))
@@ -710,6 +813,7 @@ impl CoreMods {
             shadow_homes,
             water_homes,
             sky_homes,
+            particle_homes,
             &BuildMarkers::default(),
         )
     }
@@ -722,16 +826,17 @@ impl CoreMods {
 }
 
 /// A unit of the core mods that a fault on the device drops as one (W317): the shadow
-/// (`XE Mod Shadow` with `XE Mod Shadow Data`), the water, or the sky.
+/// (`XE Mod Shadow` with `XE Mod Shadow Data`), the water, the sky, or the particles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModFile {
     Shadow,
     Water,
     Sky,
+    Particles,
 }
 
 impl ModFile {
-    const ALL: [ModFile; 3] = [ModFile::Shadow, ModFile::Water, ModFile::Sky];
+    const ALL: [ModFile; 4] = [ModFile::Shadow, ModFile::Water, ModFile::Sky, ModFile::Particles];
 
     /// The name of the unit in a build marker and in `MGE_XE_CORE_MOD_FAULT`.
     fn key(self) -> &'static str {
@@ -739,6 +844,7 @@ impl ModFile {
             ModFile::Shadow => "Shadow",
             ModFile::Water => "Water",
             ModFile::Sky => "Sky",
+            ModFile::Particles => "Particles",
         }
     }
 
@@ -754,6 +860,7 @@ impl ModFile {
             ModFile::Shadow => "XE Mod Shadow.wgsl (with XE Mod Shadow Data.wgsl)",
             ModFile::Water => "XE Mod Water.wgsl",
             ModFile::Sky => "XE Mod Sky.wgsl",
+            ModFile::Particles => "XE Mod Particles.wgsl",
         }
     }
 
@@ -770,6 +877,7 @@ struct Texts {
     shadow_data: Option<String>,
     water: Option<String>,
     sky: Option<String>,
+    particles: Option<String>,
 }
 
 impl Texts {
@@ -782,6 +890,7 @@ impl Texts {
             }
             ModFile::Water => texts.water = None,
             ModFile::Sky => texts.sky = None,
+            ModFile::Particles => texts.particles = None,
         }
         texts
     }
@@ -792,6 +901,7 @@ impl Texts {
             ModFile::Shadow => self.shadow.as_deref(),
             ModFile::Water => self.water.as_deref(),
             ModFile::Sky => self.sky.as_deref(),
+            ModFile::Particles => self.particles.as_deref(),
         }
     }
 }
@@ -802,6 +912,7 @@ struct Homes {
     shadow: Vec<Home>,
     water: Vec<Home>,
     sky: Vec<Home>,
+    particles: Vec<Home>,
 }
 
 /// The length of a text and its FNV-1a hash: a build marker names a file by them, so that a
@@ -985,7 +1096,7 @@ enum PlantEnd {
 }
 
 /// The plant of a test of the fallback (W317): `MGE_XE_CORE_MOD_FAULT=<file>[@<home>][:keep|:exit]`,
-/// with `<file>` Shadow, Water or Sky and `<home>` a home's name of the log (`world shader`,
+/// with `<file>` Shadow, Water, Sky or Particles and `<home>` a home's name of the log (`world shader`,
 /// `grass`, `water plane`, `water volume`). The homes of the file (or the one home) build its
 /// hooks with a fragment entry point that the module lacks: the device refuses the pipeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1036,6 +1147,15 @@ impl Plant {
     }
 }
 
+/// The hooks of the world shader: the shadow hooks (the built-ins without a file), and the
+/// clouds hook and the particle hook of files that define them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorldHooks {
+    pub shadow: String,
+    pub sky: Option<String>,
+    pub particles: Option<String>,
+}
+
 /// The core mods of a running session, shared by the homes (W317). Each home takes its hooks at
 /// its first build, so a file that failed on the device in one home is dropped for the homes
 /// built after it.
@@ -1067,6 +1187,16 @@ impl Session {
             format!("{}\n{hooks}", nirender_wgpu::CORE_MOD_FAULT_PLANT)
         } else {
             hooks
+        }
+    }
+
+    /// The hooks of the world shader in `mods`, with the plant's line where it plants.
+    fn world_hooks_in(&self, mods: &CoreMods) -> WorldHooks {
+        let optional = |file: ModFile| mods.uses(file).then(|| self.hooks_in(mods, file, WORLD_HOME));
+        WorldHooks {
+            shadow: self.hooks_in(mods, ModFile::Shadow, WORLD_HOME),
+            sky: optional(ModFile::Sky),
+            particles: optional(ModFile::Particles),
         }
     }
 
@@ -1123,20 +1253,20 @@ impl Shared {
         self.session().mods.sky_hooks.is_some()
     }
 
+    /// The session has a particle hook.
+    pub fn has_particle_hooks(&self) -> bool {
+        self.session().mods.particle_hooks.is_some()
+    }
+
     /// The problems for the debug overlay.
     pub fn problems(&self) -> Vec<String> {
         self.session().problems.clone()
     }
 
-    /// The hooks of the world shader now, with the plant's line where it plants: the shadow
-    /// hooks and the clouds hook.
-    pub fn world_hooks(&self) -> (String, Option<String>) {
+    /// The hooks of the world shader now, with the plant's line where it plants.
+    pub fn world_hooks(&self) -> WorldHooks {
         let session = self.session();
-        let sky = session
-            .mods
-            .uses(ModFile::Sky)
-            .then(|| session.hooks_for(ModFile::Sky, WORLD_HOME));
-        (session.hooks_for(ModFile::Shadow, WORLD_HOME), sky)
+        session.world_hooks_in(&session.mods)
     }
 
     /// The units in the world shader now.
@@ -1150,17 +1280,13 @@ impl Shared {
 
     /// The hooks of the world shader without the units `dropped`, with the plant's line where
     /// it plants.
-    pub fn world_hooks_without(&self, dropped: &[ModFile]) -> (String, Option<String>) {
+    pub fn world_hooks_without(&self, dropped: &[ModFile]) -> WorldHooks {
         let session = self.session();
         let mut mods = None::<CoreMods>;
         for file in dropped {
             mods = Some(mods.as_ref().unwrap_or(&session.mods).without(*file));
         }
-        let mods = mods.as_ref().unwrap_or(&session.mods);
-        let sky = mods
-            .uses(ModFile::Sky)
-            .then(|| session.hooks_in(mods, ModFile::Sky, WORLD_HOME));
-        (session.hooks_in(mods, ModFile::Shadow, WORLD_HOME), sky)
+        session.world_hooks_in(mods.as_ref().unwrap_or(&session.mods))
     }
 
     /// The plant keeps a failed build of `home`: the null test of the fallback.
@@ -1705,6 +1831,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             homes,
             &[],
             &[],
+            &[],
             markers,
         )
     }
@@ -2172,11 +2299,11 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         );
         let built_in = CoreMods::built_in().shadow_hooks().to_string();
 
-        assert!(shared.world_hooks().0.starts_with(nirender_wgpu::CORE_MOD_FAULT_PLANT));
-        assert_eq!(shared.world_hooks_without(&[ModFile::Shadow]).0, built_in);
+        assert!(shared.world_hooks().shadow.starts_with(nirender_wgpu::CORE_MOD_FAULT_PLANT));
+        assert_eq!(shared.world_hooks_without(&[ModFile::Shadow]).shadow, built_in);
 
         shared.world_held(&[ModFile::Shadow], "planted");
-        assert_eq!(shared.world_hooks().0, built_in);
+        assert_eq!(shared.world_hooks().shadow, built_in);
     }
 
     /// Without `MGE_XE_CORE_MOD_FAULT` there is no plant, and no text of the world has the plant's
@@ -2197,7 +2324,10 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             BuildMarkers::default(),
             Plant::of_env(),
         );
-        let texts = [shared.world_hooks().0, shared.world_hooks_without(&[ModFile::Shadow]).0];
+        let texts = [
+            shared.world_hooks().shadow,
+            shared.world_hooks_without(&[ModFile::Shadow]).shadow,
+        ];
         assert_eq!(texts[0], shadow);
         for text in texts {
             assert!(!text.contains(nirender_wgpu::CORE_MOD_FAULT_PLANT));
