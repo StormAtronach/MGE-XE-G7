@@ -168,7 +168,8 @@ bool PostShaders::loadNewShader(const char* name) {
     if (!device) {
         // No device: the wgpu renderer mode. The renderer in the helper has the shader, as a
         // port in WGSL. A mod that loads a shader gets an object with the variables of the
-        // effect file; what the mod sets goes to the renderer (see sendShaderStates).
+        // effect file, or of the header of the WGSL file when the shader has no effect file;
+        // what the mod sets goes to the renderer (see sendShaderStates).
         initShaderChainPlaceholders();
         auto placeholder = placeholderShader(name);
         if (!placeholder) {
@@ -340,20 +341,42 @@ static void placeholderFileState(MGEShader& shader) {
     shader.disableFlags = shader.values->get("mgeflags", &flags, 1) ? int(flags) : 0;
 }
 
-// The wgpu renderer mode: a shader without an effect, with the variables of its effect
-// file. Null for a name without a file.
-static std::unique_ptr<MGEShader> placeholderShader(const char* name) {
+// The wgpu renderer mode: the variables and the annotations of a shader. They come from its
+// effect file; a shader without one gives them in the `//!` lines of its WGSL file, which the
+// renderer runs. False when neither file gives them.
+static bool placeholderValues(const char* name, ShaderValues* values) {
     char path[MAX_PATH];
     std::snprintf(path, sizeof(path), "Data Files\\shaders\\XEshaders\\%s.fx", name);
-    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
-        LOG::logline("!! Post shader %s missing", path);
+    if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
+        *values = ShaderValues::parse(path);
+        return true;
+    }
+    char wgsl[MAX_PATH];
+    std::snprintf(wgsl, sizeof(wgsl), "Data Files\\shaders\\XEshaders\\%s.wgsl", name);
+    if (GetFileAttributesA(wgsl) == INVALID_FILE_ATTRIBUTES) {
+        LOG::logline("!! Post shader %s missing, and %s too", path, wgsl);
+        return false;
+    }
+    std::string error;
+    if (!ShaderValues::parseWgslHeader(wgsl, values, &error)) {
+        LOG::logline("!! Post shader %s: %s", wgsl, error.c_str());
+        return false;
+    }
+    return true;
+}
+
+// The wgpu renderer mode: a shader without an effect, with the variables of its effect
+// file or of the header of its WGSL file. Null for a name without a file.
+static std::unique_ptr<MGEShader> placeholderShader(const char* name) {
+    ShaderValues values;
+    if (!placeholderValues(name, &values)) {
         return nullptr;
     }
     auto shader = std::make_unique<MGEShader>();
     shader->effect = nullptr;
     // A shader that a mod loads is on, as with a device.
     shader->enabled = true;
-    shader->values = std::make_unique<ShaderValues>(ShaderValues::parse(path));
+    shader->values = std::make_unique<ShaderValues>(std::move(values));
     shader->timestamp = 0;
     shader->name = name;
     std::memset(shader->ehVars, 0, sizeof(shader->ehVars));
@@ -400,12 +423,14 @@ bool PostShaders::reloadPlaceholder(MGEShader* shader) {
     if (!shader->values) {
         return false;
     }
-    // The variables come from the effect file again, as a new effect has them; the
-    // renderer reads the files of the shader again (its WGSL file, its textures).
-    char path[MAX_PATH];
-    std::snprintf(path, sizeof(path), "Data Files\\shaders\\XEshaders\\%s.fx", shader->name.c_str());
+    // The variables come from the effect file (or the header of the WGSL file) again, as a
+    // new effect has them; the renderer reads the files of the shader again (its WGSL file,
+    // its textures). A file that no longer gives them leaves no variables, as an effect file
+    // that cannot be read.
     const unsigned reloads = shader->values->reloads + 1;
-    *shader->values = ShaderValues::parse(path);
+    ShaderValues values;
+    placeholderValues(shader->name.c_str(), &values);
+    *shader->values = std::move(values);
     shader->values->reloads = reloads;
     placeholderFileState(*shader);
     orderShaders();

@@ -197,7 +197,7 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `distantLandRenderConfig`: farStaticMinSize, veryFarStaticMinSize | read when the land loads only, as on Direct3D 9 |
 | `camera`: fov, zoom (all calls), shake, thirdPersonOffset, nearRenderDistance | work (`Deviceless::transform`, `updateFrameLogic`) |
 | `shaders.hdrReactionSpeed` | followed |
-| `shaders.find`, `list`, `load` | placeholders parsed from the `.fx` of the chain; the helper runs the WGSL port; nil if the `.fx` is missing |
+| `shaders.find`, `list`, `load` | placeholders parsed from the `.fx` of the chain, or from the `//!` header of the `.wgsl` for a shader without a `.fx`; the helper runs the WGSL; nil if neither file is there, or if the `.wgsl` header is not one the helper accepts (the log says why) |
 | shader `enabled`, `orderPriority`, number variables (bool, int, float, vector, matrix, arrays), `reload()` | work (shader record; `reload()` makes the helper reload its WGSL) |
 | shader string variables | work (the store keeps the text; the helper does not get it) |
 | old calls `enableShader`, `disableShader`, `setShaderFloat`, `setShaderLong` (opcodes 0x3AB0-0x3AB4) | write to the placeholder store |

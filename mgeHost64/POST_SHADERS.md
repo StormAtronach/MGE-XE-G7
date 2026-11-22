@@ -138,7 +138,12 @@ shader.enabled = true
 
 This works with the wgpu renderer too. MGE XE reads the variables of the effect file
 `my_shader.fx` (its names and types are what the Lua object has, as on Direct3D 9), keeps
-what the mod sets, and sends it to the renderer. The renderer loads the shader of that name
+what the mod sets, and sends it to the renderer. A shader with only `my_shader.wgsl` works
+too: then the Lua object has the variables of the line `variables` (`f32` is a number,
+`f32[N]` a list of N numbers, `vec2` to `vec4` a vector, and `vecK[N]` a list of N
+vectors), with the values after `=` before a mod sets them, and `mgeflags` when the header
+has it; the category, `priority_adjust`, `requires_hdr` and `disable_sunglare` come from
+the header too. When both files are there, the effect file gives the Lua object. The renderer loads the shader of that name
 when a mod loads it: the file `my_shader.wgsl`, or its port. A shader that a mod loaded is
 on until the mod turns it off, and has its place in the chain by its category, as on
 Direct3D 9.
