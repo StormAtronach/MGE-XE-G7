@@ -151,9 +151,8 @@ namespace api {
             auto flag = featureToFlagMap[i];
             if (flag == USE_DISTANT_LAND
                 && enable
-                && !Deviceless::active()
-                && !DistantLand::isDistantLandLoaded) {
-                LOG::logline("-- Ignoring runtime distant-land enable: distant-land resources were not loaded at startup");
+                && !DistantLand::isLoadedForSession()) {
+                LOG::logline("-- Ignoring runtime distant-land enable: the distant land of the session is not loaded");
                 return;
             }
             if (flag == USE_DISTANT_STATICS

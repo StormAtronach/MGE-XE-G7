@@ -1188,6 +1188,12 @@ float calcFPS() {
 // In main.cpp: sends data to the wgpu renderer in the helper.
 void sendToRenderer(UINT id, const void* data, UINT length);
 
+bool DistantLand::helperLandLoaded = false;
+
+bool DistantLand::isLoadedForSession() {
+    return Deviceless::active() ? helperLandLoaded : isDistantLandLoaded;
+}
+
 namespace Deviceless {
     static bool ready = false;
     // A game was loaded since the last environment record: flag 256 of the next one. The
@@ -2017,6 +2023,7 @@ namespace Deviceless {
             UINT words[3] = {};
             std::memcpy(words, data, length >= 12 ? 12 : 8);
             if (words[0] == 1 && (words[1] == DistantLandReady::Loaded || words[1] == DistantLandReady::Arrived)) {
+                DistantLand::helperLandLoaded |= words[1] == DistantLandReady::Loaded;
                 DistantLandReady::push(static_cast<DistantLandReady::Reason>(words[1]));
                 distantLandArrived |= words[1] == DistantLandReady::Arrived && words[2] != 0 && words[2] == waitSerial;
             }
