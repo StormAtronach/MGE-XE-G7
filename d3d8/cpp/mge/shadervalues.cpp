@@ -389,6 +389,38 @@ namespace {
         return text.substr(first, text.find_last_not_of(" \t") - first + 1);
     }
 
+    // A whole number as Rust's `parse` reads it: a sign (`-` only when `negative` allows it),
+    // then digits only. "1o", "x" and "" are not numbers.
+    bool wholeNumber(const std::string& text, bool negative, long long* value) {
+        const size_t digits = (!text.empty() && (text[0] == '+' || (negative && text[0] == '-'))) ? 1 : 0;
+        if (digits == text.size() || text.find_first_not_of("0123456789", digits) != std::string::npos) {
+            return false;
+        }
+        *value = std::strtoll(text.c_str(), nullptr, 10);
+        return true;
+    }
+
+    // The items of a list with commas that are not empty, as the helper counts them.
+    size_t listItems(const std::string& value) {
+        std::istringstream items(value);
+        std::string item;
+        size_t count = 0;
+        while (std::getline(items, item, ',')) {
+            count += trimmed(item).empty() ? 0 : 1;
+        }
+        return count;
+    }
+
+    // `true` or `false`, as the helper's `flag`; any other word is an error.
+    bool flagValue(const std::string& key, const std::string& value, bool* flag, std::string* error) {
+        if (value != "true" && value != "false") {
+            *error = "the " + key + " `" + value + "` is not true or false";
+            return false;
+        }
+        *flag = (value == "true");
+        return true;
+    }
+
     // One item of the line `variables`: `name type` or `name type = numbers`, with the types
     // f32, vec2, vec3, vec4 and `type[N]` (`parse_variable` of mgeHost64's post.rs). The
     // letters are those of an effect file: f32 is f, f32[N] is F, vecK is K, and vecK[N] is
@@ -406,8 +438,13 @@ namespace {
         bool array = false;
         const size_t open = kind.find('[');
         if (open != std::string::npos) {
-            const int count = std::atoi(kind.c_str() + open + 1);
-            if (count < 1 || kind.back() != ']') {
+            // The number after `[`, without the `]` at its end (`trim_end_matches(']')`).
+            std::string size = kind.substr(open + 1);
+            while (!size.empty() && size.back() == ']') {
+                size.pop_back();
+            }
+            long long count = 0;
+            if (!wholeNumber(size, false, &count) || count < 1) {
                 *error = "the size of the variable " + name + " is not [N]";
                 return false;
             }
@@ -490,7 +527,8 @@ bool ShaderValues::parseWgslHeader(const char* path, ShaderValues* out, std::str
         if (key == "interface") {
             interface = (value == "mge-xe-wgsl 1");
         } else if (key == "passes") {
-            passes = !value.empty();
+            // The words of each pass (`/N`, `f16`) are checked only by the helper.
+            passes = listItems(value) > 0;
         } else if (key == "category") {
             if (value != "scene" && value != "atmosphere" && value != "lens" && value != "sensor" && value != "tone" && value != "none"
                 && value != "final") {
@@ -500,18 +538,38 @@ bool ShaderValues::parseWgslHeader(const char* path, ShaderValues* out, std::str
             // `none` is the place of a shader without a category.
             result.category = (value == "none") ? std::string() : value;
         } else if (key == "priority_adjust") {
-            result.priorityAdjust = std::atoi(value.c_str());
+            long long adjust = 0;
+            if (!wholeNumber(value, true, &adjust)) {
+                *error = "the priority adjust `" + value + "` is not a number";
+                return false;
+            }
+            result.priorityAdjust = static_cast<int>(adjust);
         } else if (key == "mgeflags") {
+            long long bits = 0;
+            if (!wholeNumber(value, false, &bits)) {
+                *error = "the flags `" + value + "` are not a number";
+                return false;
+            }
             ShaderVariable flags;
             flags.name = "mgeflags";
             flags.type = 'i';
-            flags.values.assign(1, static_cast<float>(std::atoi(value.c_str())));
+            flags.values.assign(1, static_cast<float>(bits));
             flags.set = false;
             result.variables.push_back(flags);
         } else if (key == "requires_hdr") {
-            result.requiresHDR = (value == "true");
+            if (!flagValue(key, value, &result.requiresHDR, error)) {
+                return false;
+            }
         } else if (key == "disable_sunglare") {
-            result.disableSunglare = (value == "true");
+            if (!flagValue(key, value, &result.disableSunglare, error)) {
+                return false;
+            }
+        } else if (key == "texture") {
+            // The files are the helper's to bind: only their number is checked here.
+            if (listItems(value) > 10) {
+                *error = "more than 10 textures";
+                return false;
+            }
         } else if (key == "variables") {
             std::istringstream items(value);
             std::string item;
@@ -528,7 +586,7 @@ bool ShaderValues::parseWgslHeader(const char* path, ShaderValues* out, std::str
                     result.variables.push_back(variable);
                 }
             }
-        } else if (key != "texture") {
+        } else {
             *error = "the key `" + key + "` is not known";
             return false;
         }
