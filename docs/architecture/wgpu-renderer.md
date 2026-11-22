@@ -168,7 +168,7 @@ flowchart TD
     subgraph main["Main encoder"]
         P0["game pass: sky draws (back buffer + D24S8; multisampled targets resolved into the back buffer with graphics.anti_aliasing)"]
         P1["before_world: distant land, statics set 0, glows"]
-        P2["copies: picture before world, depth; game pass reopened, depth cleared (kept with one depth buffer)"]
+        P2["copies: picture before world, depth; game pass reopened, depth cleared"]
         P3["game world draws (game draw shader + extension frame group)"]
         P4["sorted blends of the table, where the engine flushes its queue in the world scene"]
         P5["after_world: grass; then the copy of the world depth for the post chain"]

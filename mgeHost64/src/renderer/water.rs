@@ -1212,12 +1212,7 @@ impl Water {
                 // terms are those of the GPU's convention).
                 let near = -scene.projection[14] / scene.projection[10];
                 let far = frame.land_projection[14] / (1.0 - frame.land_projection[10]);
-                // With one depth buffer every projection of the world has an infinite far plane.
-                let [plane_a, plane_b] = if nirender_wgpu::depth::one_buffer() {
-                    nirender_wgpu::depth::plane_terms(1.0, -near)
-                } else {
-                    nirender_wgpu::depth::plane_terms(far / (far - near), -near * far / (far - near))
-                };
+                let [plane_a, plane_b] = nirender_wgpu::depth::plane_terms(far / (far - near), -near * far / (far - near));
                 [land_a, land_b, plane_a, plane_b]
             },
             sun_color,

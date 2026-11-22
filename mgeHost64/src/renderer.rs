@@ -122,10 +122,6 @@ use water::{Water, WaterFrame};
 const CELL: f32 = 8192.0;
 /// The near plane of the projection of the distant land.
 const NEAR: f32 = 64.0;
-/// With one depth buffer (`nirender_wgpu::depth::one_buffer`): the near plane of the distant
-/// land as a part of the game's. A smaller near plane puts the land behind a draw of the game
-/// at the same distance, by 0.25 % of the distance, as Direct3D 9's 4 - 0.01 against 4.
-const LAND_NEAR_SCALE: f32 = 0.9975;
 /// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps`): the parts named are not drawn, for a
 /// replay that tests one suspect at a time. Read once.
 fn skipped(part: &str) -> bool {
@@ -1431,8 +1427,7 @@ struct LandUniforms {
     atlas_more: [f32; 4],
     /// Of the patterns: the tile size, the gutter, the physical size, the patterns in a row.
     patterns: [f32; 4],
-    /// x: the view range of the game; y: 1 with the sink of the land off, z: a raise of the
-    /// land in units (the fault injections of a replay, `nirender_wgpu::depth::control`).
+    /// x: the view range of the game; y, z and w are 0.
     range: [f32; 4],
 }
 
@@ -1473,10 +1468,7 @@ struct Out {
         // landBias: the land goes down near the camera, so that a mesh with less detail
         // does not come through the land of the game.
         let distance = length(world - u.eye.xyz);
-        if land.range.y == 0.0 {
-            world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
-        }
-        world.z += land.range.z;
+        world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
     }
     out.position = clip_of(world);
     out.normal = normal.xyz * 2.0 - 1.0;
@@ -2899,15 +2891,11 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
 }
 
 /// The near plane of the land's projection for a view whose own near plane is `game_near`.
-/// With one depth buffer it is the view's near times `near_scale`. Otherwise it is MGE XE's own
-/// near plane, 64 units, unless the view's near plane is farther: a mirror whose near plane
-/// is the mirror itself must not show land or statics between its camera and the mirror.
-fn land_near(game_near: f32, one_buffer: bool, near_scale: f32) -> f32 {
-    if one_buffer {
-        game_near * near_scale
-    } else {
-        (NEAR - 1e-2).max(game_near)
-    }
+/// It is MGE XE's own near plane, 64 units, unless the view's near plane is farther: a mirror
+/// whose near plane is the mirror itself must not show land or statics between its camera and
+/// the mirror.
+fn land_near(game_near: f32) -> f32 {
+    (NEAR - 1e-2).max(game_near)
 }
 
 /// The projection is a perspective one: Direct3D's `m[2][3]` is 1 for it and 0 for an
@@ -4449,8 +4437,7 @@ impl Extension for DistantLand {
         };
         // The eye with the view range of the game, as the statics and the glows take it.
         let eye_range = [eye[0], eye[1], eye[2], view_range];
-        let control = nirender_wgpu::depth::control();
-        let range = [view_range, if control.sink { 0.0 } else { 1.0 }, control.raise, 0.0];
+        let range = [view_range, 0.0, 0.0, 0.0];
         let land = LandUniforms {
             terrain: gpu.terrain,
             atlas: gpu.atlas,
@@ -6011,17 +5998,11 @@ impl DistantLand {
     /// plane (64) is MGE XE's own value. The game's near plane is 1.0 (0x4049C2), and
     /// `renderStage0` of the Direct3D 9 path uses 4. A draw of the game then wins the depth
     /// test against the same geometry among the statics (a static of the cell itself, in an
-    /// interior). With one depth buffer the near plane is the game's times
-    /// [`LAND_NEAR_SCALE`] (or the replay's `--depth-control k`), and the GPU gets the
-    /// projection with an infinite far plane (`nirender_wgpu::depth::world_projection`).
+    /// interior).
     fn land_projection(&self, scene: &SceneView) -> [f32; 16] {
         let mut projection = scene.projection;
         let game_near = -scene.projection[14] / scene.projection[10];
-        let near = land_near(
-            game_near,
-            nirender_wgpu::depth::one_buffer(),
-            nirender_wgpu::depth::control().near_scale.unwrap_or(LAND_NEAR_SCALE),
-        );
+        let near = land_near(game_near);
         let far = self.draw_distance.max(NEAR * 2.0);
         projection[10] = far / (far - near);
         projection[14] = -near * far / (far - near);
@@ -6777,11 +6758,9 @@ mod land_near_tests {
     /// mirror with its near plane at 300 moves it to 300, and a nearer one (4) does not move it.
     #[test]
     fn the_land_never_starts_before_the_near_plane_of_its_view() {
-        assert_eq!(land_near(1.0, false, 0.9975), NEAR - 1e-2);
-        assert_eq!(land_near(4.0, false, 0.9975), NEAR - 1e-2);
-        assert_eq!(land_near(300.0, false, 0.9975), 300.0);
-        assert_eq!(land_near(1.0, true, 0.9975), 0.9975);
-        assert_eq!(land_near(300.0, true, 0.9975), 300.0 * 0.9975);
+        assert_eq!(land_near(1.0), NEAR - 1e-2);
+        assert_eq!(land_near(4.0), NEAR - 1e-2);
+        assert_eq!(land_near(300.0), 300.0);
     }
 
     /// A perspective projection of Direct3D has 1 at m[2][3]; an orthographic one has 0.
