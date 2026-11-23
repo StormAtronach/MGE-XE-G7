@@ -482,9 +482,11 @@ nothing and costs nothing.
   - A wrong argument raises a Lua error that names the call and the argument. A call returns
     false when the limit dropped its shape, else true.
   - At most 65,536 segments in a frame: a line is 1, a box 12, a sphere 48. A shape that would
-    pass the limit is dropped whole, and the log of the plugin gives the count once a second.
+    pass the limit is dropped whole. A call of a later frame writes the count of the dropped
+    shapes to the log of the plugin, at most one line a second.
   - The shapes are kept while the source is off; they show when it goes on. In a replay, the
-    captured shapes show only with `--debug-lines lua`.
+    captured shapes show only with `--debug-lines lua`. A capture has the shapes of the calls
+    after its start only: a shape with seconds from before the start is not in it.
   - Without the renderer (the game on Direct3D 8), the calls do nothing and raise no error.
 - `mge.render.lightDebug = true` turns the `lights` view on, and `false` turns it off. A
   Settings record that does not change the value leaves another view as it is.
