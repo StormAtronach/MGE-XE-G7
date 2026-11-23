@@ -193,8 +193,10 @@ namespace api {
 
     bool MGEAPIv1::reloadDistantLand() {
         if (Deviceless::active()) {
-            // The wgpu renderer mode: the renderer has no shaders of the distant land to
-            // make again, and it takes the settings with the next frame.
+            // The wgpu renderer mode: the next frame sends the request, and the renderer reads
+            // the core-mod files again before it draws its frame after that. The settings go
+            // with each frame.
+            Deviceless::requestReload();
             return true;
         }
         return DistantLand::reloadShaders();

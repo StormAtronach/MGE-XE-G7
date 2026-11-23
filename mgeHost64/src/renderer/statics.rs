@@ -1563,6 +1563,9 @@ struct Gpu {
     /// The grass into a pass with one sample (a view of its own into a rendered texture): no
     /// alpha to coverage.
     grass_picture_pipeline: wgpu::RenderPipeline,
+    /// The layout of the three grass pipelines: a reload of the core mods makes them again in it
+    /// ([`Statics::reload_grass`]).
+    grass_pipeline_layout: wgpu::PipelineLayout,
     /// The values of the grass of the views of their own, one set for each call at the end of
     /// the world in a frame (by the number of the set of the views of their own, as
     /// [`tier_set`] less [`FIXED_SETS`]), made when a call first needs it; `None` while it is
@@ -2117,6 +2120,28 @@ pub struct Statics {
 }
 
 impl Statics {
+    /// Makes the grass pipelines again with the shadow hooks of the session now, after a reload
+    /// of the core mods (`mge.reloadDistantLand`, W426). The guard is that of the first build: a
+    /// file that fails on the device is dropped, and the grass takes the built-in hooks. Before
+    /// the GPU objects of the statics are there it does nothing: their build takes the hooks of
+    /// the session then.
+    pub fn reload_grass(&mut self, scene: &SceneView) {
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        let layout = &gpu.grass_pipeline_layout;
+        let alpha_to_coverage = self.alpha_to_coverage;
+        let pipelines = self.core_mods.first_build(
+            scene.device,
+            super::core_mods::GRASS_HOME,
+            super::core_mods::ModFile::Shadow,
+            |shadow_hooks| GrassPipelines::new(scene, layout, alpha_to_coverage, shadow_hooks),
+        );
+        gpu.grass_pipeline = pipelines.fill;
+        gpu.grass_pipeline_lines = pipelines.lines;
+        gpu.grass_picture_pipeline = pipelines.picture;
+    }
+
     /// Reads the settings and starts the load of the catalog and of the textures.
     /// `core_mods`: the core mods of the session, for the grass shader.
     pub fn start(document: &ConfigDocument, folder: PathBuf, core_mods: &super::core_mods::Shared) -> Statics {
@@ -4665,9 +4690,7 @@ fn make_gpu(
         bind_group_layouts: &[Some(view_layout), Some(&layout), Some(&texture_layout)],
         immediate_size: 0,
     });
-    // A vertex of a statics file has 20 bytes: the position and the palette number as four
-    // half floats, the normal, the colour, and the texture coordinate as two half floats.
-    let vertex = wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4, 3 => Float16x2];
+    let vertex = STATICS_VERTEX;
     let place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
     // The statics of the frame go into the pass of the game (its samples, the alpha as the
     // coverage with `alpha_to_coverage`; the alpha of the back buffer stays 1, as a target
@@ -4957,39 +4980,17 @@ fn make_gpu(
         bind_group_layouts: &[Some(view_layout), Some(&grass_layout), Some(&texture_layout)],
         immediate_size: 0,
     });
-    let grass_place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
     // The grass takes the shadow hooks of the session at its first build (W317): a core mod
     // that fails there on the device gives way to the built-in hooks.
-    let grass_pipelines = |shadow_hooks: &str| {
-        let grass_source = grass_source(shadow_hooks);
-        let fragment_entry = super::core_mods::fragment_entry(&grass_source, "fs");
-        let grass_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("grass"),
-            source: wgpu::ShaderSource::Wgsl(grass_source.into()),
-        });
-        let make_grass_pipeline = |polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| {
-            grass_pipeline_of(
-                scene,
-                &grass_pipeline_layout,
-                &grass_module,
-                fragment_entry,
-                &vertex,
-                &grass_place,
-                polygon_mode,
-                multisample,
-            )
-        };
-        (
-            make_grass_pipeline(wgpu::PolygonMode::Fill, scene.multisample(alpha_to_coverage)),
-            lines.then(|| make_grass_pipeline(wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage))),
-            make_grass_pipeline(wgpu::PolygonMode::Fill, Default::default()),
-        )
-    };
-    let (grass_pipeline, grass_pipeline_lines, grass_picture_pipeline) = core_mods.first_build(
+    let GrassPipelines {
+        fill: grass_pipeline,
+        lines: grass_pipeline_lines,
+        picture: grass_picture_pipeline,
+    } = core_mods.first_build(
         device,
         super::core_mods::GRASS_HOME,
         super::core_mods::ModFile::Shadow,
-        grass_pipelines,
+        |shadow_hooks| GrassPipelines::new(scene, &grass_pipeline_layout, alpha_to_coverage, shadow_hooks),
     );
     let grass_records = device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("grass, the places of a frame"),
@@ -5017,6 +5018,7 @@ fn make_gpu(
         grass_pipeline,
         grass_pipeline_lines,
         grass_picture_pipeline,
+        grass_pipeline_layout,
         grass_sets: Vec::new(),
         grass_no_shadow: no_shadow.clone(),
         grass_group,
@@ -5026,6 +5028,56 @@ fn make_gpu(
         grass_atlas: no_shadow,
         grass_uniforms,
         grass_records,
+    }
+}
+
+/// The vertex of a statics file, 20 bytes: the position and the palette number as four half
+/// floats, the normal, the colour, and the texture coordinate as two half floats.
+const STATICS_VERTEX: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Float16x4, 1 => Unorm8x4, 2 => Unorm8x4, 3 => Float16x2];
+
+/// The place of a grass blade in the records of a frame: its world matrix as four rows.
+const GRASS_PLACE: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
+
+/// The three pipelines of the grass, made with the shadow hooks of one build.
+struct GrassPipelines {
+    /// Into the pass of the game.
+    fill: wgpu::RenderPipeline,
+    /// The same as lines, when the device has the line mode: for a frame in wireframe.
+    lines: Option<wgpu::RenderPipeline>,
+    /// Into a pass with one sample (a view of its own into a rendered texture): no alpha to
+    /// coverage.
+    picture: wgpu::RenderPipeline,
+}
+
+impl GrassPipelines {
+    /// The pipelines of the grass shader with `shadow_hooks`, in `layout`.
+    fn new(scene: &SceneView, layout: &wgpu::PipelineLayout, alpha_to_coverage: bool, shadow_hooks: &str) -> GrassPipelines {
+        let lines = scene.device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
+        let source = grass_source(shadow_hooks);
+        let fragment_entry = super::core_mods::fragment_entry(&source, "fs");
+        let module = scene.device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("grass"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let make = |polygon_mode: wgpu::PolygonMode, multisample: wgpu::MultisampleState| {
+            grass_pipeline_of(
+                scene,
+                layout,
+                &module,
+                fragment_entry,
+                &STATICS_VERTEX,
+                &GRASS_PLACE,
+                polygon_mode,
+                multisample,
+            )
+        };
+        GrassPipelines {
+            fill: make(wgpu::PolygonMode::Fill, scene.multisample(alpha_to_coverage)),
+            lines: lines.then(|| make(wgpu::PolygonMode::Line, scene.multisample(alpha_to_coverage))),
+            picture: make(wgpu::PolygonMode::Fill, Default::default()),
+        }
     }
 }
 

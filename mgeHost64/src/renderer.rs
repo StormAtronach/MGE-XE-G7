@@ -258,6 +258,11 @@ const LIGHT_SETTINGS_ID: u32 = 12;
 /// The game's light records (`Deviceless::checkLightRecords`), kept: the values that the game
 /// holds for each light record, see [`lamp_values::LightRecords`].
 const LIGHT_RECORDS_ID: u32 = 13;
+/// The reload of the core mods (`mge.reloadDistantLand`, `Deviceless::sendReload`), not kept:
+/// version 1, then the number of calls in the session. A higher number reads the core-mod
+/// files again at the start of the next frame (W426). A replay ignores it: its frames stay
+/// those of the capture.
+const RELOAD_ID: u32 = 14;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
@@ -281,6 +286,7 @@ fn changing_record_name(id: u32) -> Option<&'static str> {
         HELLO_ID => Some("extension record hello"),
         LIGHT_SETTINGS_ID => Some("extension record light settings"),
         LIGHT_RECORDS_ID => Some("extension record light records"),
+        RELOAD_ID => Some("extension record reload"),
         _ => Some("extension record of an unknown id"),
     }
 }
@@ -452,6 +458,7 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
             | PREFETCH_ID
             | LIGHT_SETTINGS_ID
             | LIGHT_RECORDS_ID
+            | RELOAD_ID
     );
     if version_1_only && word(0) != 1 {
         return Some(4);
@@ -524,8 +531,17 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
             }
             at
         }
+        // The version and the number of calls.
+        RELOAD_ID => 8,
         _ => return None,
     })
+}
+
+/// The number of calls in a reload record of version 1 ([`RELOAD_ID`]); [`None`] for another
+/// version or a short record.
+fn reload_count(bytes: &[u8]) -> Option<u32> {
+    let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    (word(0)? == 1).then_some(word(4)?)
 }
 
 /// The name of an extension id, for the line of a refused record.
@@ -544,6 +560,7 @@ fn extension_name(id: u32) -> &'static str {
         HELLO_ID => "hello",
         LIGHT_SETTINGS_ID => "light settings",
         LIGHT_RECORDS_ID => "light records",
+        RELOAD_ID => "reload",
         _ => "unknown",
     }
 }
@@ -1380,6 +1397,14 @@ pub struct DistantLand {
     far_water: Vec<water::FarWater>,
     /// The triangles of the dry spaces from the game, until the water takes them.
     water_masks: Option<Vec<[f32; 3]>>,
+    /// The triangles that the water took last: a reload of the core mods makes the water again,
+    /// and the game sends them only once.
+    water_masks_given: Option<Vec<[f32; 3]>>,
+    /// The number of calls of the last reload record ([`RELOAD_ID`]).
+    reloads_seen: u32,
+    /// A reload record asked for a reload of the core mods: it runs at the start of the next
+    /// frame ([`DistantLand::reload_core_mods`]).
+    reload_wanted: bool,
     /// The bytes of the last record of the vis groups, for statics that start after it.
     vis_groups: Vec<u8>,
     /// The wave texture's file, for the water and the post shaders: read at the first need.
@@ -1588,6 +1613,20 @@ fn data_places(root: &Path, relative: &str) -> Vec<PathBuf> {
 fn shown(path: &Path) -> String {
     let text = path.display().to_string();
     text.strip_prefix(r"\\?\").map_or(text.clone(), str::to_owned)
+}
+
+/// The core mods of the session: the files of `folder` (`MGE_XE_CORE_MODS_DIR`), else of the
+/// places of `Data Files` under `root`, checked with the homes of this helper. A file that a
+/// marker of `markers` names is not used.
+fn load_core_mods(root: &Path, folder: Option<&Path>, markers: &core_mods::BuildMarkers) -> core_mods::CoreMods {
+    core_mods::CoreMods::load(
+        &|name| core_mod_file(root, folder, name),
+        &shadow_homes(),
+        &water_homes(),
+        &sky_homes(),
+        &particle_homes(),
+        markers,
+    )
 }
 
 /// The bytes of a core mod file (`relative` under `Data Files`). With `folder`
@@ -1900,14 +1939,7 @@ impl DistantLand {
         let settings = &document.settings().distant_land;
         let mods_folder = core_mods::folder_of_switch();
         let markers = core_mods::BuildMarkers::of_user().apart_from(mods_folder.as_deref());
-        let mods = core_mods::CoreMods::load(
-            &|name| core_mod_file(root, mods_folder.as_deref(), name),
-            &shadow_homes(),
-            &water_homes(),
-            &sky_homes(),
-            &particle_homes(),
-            &markers,
-        );
+        let mods = load_core_mods(root, mods_folder.as_deref(), &markers);
         let core_mods = core_mods::Shared::new(mods, markers, core_mods::Plant::of_env());
         let reflection_kept = Self::reflection_readers(root, &core_mods.shadow_hooks());
         // The places of the full tier: the player's setting, or the environment variable for a
@@ -2065,6 +2097,9 @@ impl DistantLand {
             water_looks: std::collections::HashMap::new(),
             far_water: Vec::new(),
             water_masks: None,
+            water_masks_given: None,
+            reloads_seen: 0,
+            reload_wanted: false,
             vis_groups: Vec::new(),
             waves: water::WaveFile::NotTried,
             problem: None,
@@ -3663,6 +3698,9 @@ impl Extension for DistantLand {
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
         self.frames_seen += 1;
         self.stop_without_hello();
+        if std::mem::take(&mut self.reload_wanted) {
+            self.reload_core_mods(scene);
+        }
         self.scene_sun = scene.sun_direction.map(|direction| (direction, scene.sun_color));
         self.shadow_day = 1.0 - self.night(scene);
         self.finish_generation();
@@ -3739,6 +3777,7 @@ impl Extension for DistantLand {
             if let Some(corners) = self.water_masks.take() {
                 println!("water: {} triangles of dry spaces", corners.len() / 3);
                 water.set_masks(scene, &corners);
+                self.water_masks_given = Some(corners);
             }
         }
         // The surfaces of water volumes: in any cell, when the water is there. The lights of
@@ -4189,6 +4228,12 @@ impl Extension for DistantLand {
         if id == WATER_MASKS_ID {
             if let Some(corners) = water::read_masks(bytes) {
                 self.water_masks = Some(corners);
+            }
+            return;
+        }
+        if id == RELOAD_ID {
+            if let Some(count) = reload_count(bytes) {
+                self.reload_asked(count);
             }
             return;
         }
@@ -5398,6 +5443,47 @@ impl DistantLand {
     /// d3d8 lets the flag go on again only after this message (W581).
     fn loaded_due(&self, on_gpu: bool, statics_loaded: bool) -> bool {
         !self.loaded_said && self.loading.is_none() && on_gpu && statics_loaded
+    }
+
+    /// A reload record with `count` calls (W426): a count above the last one asks for a reload of
+    /// the core mods at the start of the next frame. A replay ignores it: its frames stay those
+    /// of the capture.
+    fn reload_asked(&mut self, count: u32) {
+        if self.synchronous || count <= self.reloads_seen {
+            return;
+        }
+        self.reloads_seen = count;
+        self.reload_wanted = true;
+    }
+
+    /// The reload of the core mods (`mge.reloadDistantLand`, W426), at the start of a frame: the
+    /// files are read again, and each home takes their hooks. The world shader takes them at the
+    /// next frame of nirender (`world_shader_changed`), the water when a frame next needs it (it
+    /// is made again, with the dry spaces it had), the grass now. A file that fails on the
+    /// device is dropped, as at the start.
+    fn reload_core_mods(&mut self, scene: &SceneView) {
+        println!("core mods: read again (mge.reloadDistantLand)");
+        let folder = core_mods::folder_of_switch();
+        let mods = load_core_mods(&self.root, folder.as_deref(), &self.core_mods.markers());
+        self.core_mods.reload(mods);
+        self.drop_water_for_reload();
+        if let Some(statics) = self.statics.as_mut() {
+            statics.reload_grass(scene);
+        }
+        // A new shadow hook may read the reflection. A reason found before stays: a water shader
+        // of a mod that reads it is not listed again until the new water names it.
+        let readers = Self::reflection_readers(&self.root, &self.core_mods.shadow_hooks());
+        self.reflection_kept = readers.or(self.reflection_kept.take());
+    }
+
+    /// Drops the water, so that the next frame that needs it makes it with the hooks of the
+    /// session. d3d8 sends the dry spaces once: the new water gets the last ones that a water
+    /// took, unless newer ones wait.
+    fn drop_water_for_reload(&mut self) {
+        self.water = None;
+        if self.water_masks.is_none() {
+            self.water_masks = self.water_masks_given.clone();
+        }
     }
 
     /// Why the frame draws no distant land, or nothing when it does.
@@ -7807,7 +7893,7 @@ mod extension_record_tests {
     use super::*;
 
     /// Every id with a layout.
-    const IDS: [u32; 11] = [
+    const IDS: [u32; 12] = [
         ENVIRONMENT_ID,
         SHADER_STATE_ID,
         PICTURE_ID,
@@ -7819,6 +7905,7 @@ mod extension_record_tests {
         PREFETCH_ID,
         LIGHT_SETTINGS_ID,
         LIGHT_RECORDS_ID,
+        RELOAD_ID,
     ];
 
     fn words(values: &[u32]) -> Vec<u8> {
@@ -7896,6 +7983,7 @@ mod extension_record_tests {
                 record.extend_from_slice(b"lamp");
                 record
             }
+            RELOAD_ID => words(&[1, 3]),
             _ => Vec::new(),
         }
     }
@@ -7943,6 +8031,7 @@ mod extension_record_tests {
             PREFETCH_ID,
             LIGHT_SETTINGS_ID,
             LIGHT_RECORDS_ID,
+            RELOAD_ID,
         ] {
             assert_eq!(
                 extension_needed(id, &words(&[2])),
@@ -8004,6 +8093,58 @@ mod extension_record_tests {
         assert_eq!(land.arrival_serial, 7);
         assert_eq!(land.light_settings.map(|settings| settings.light_limit), Some(0));
         assert_eq!(land.light_records.as_deref().map(lamp_values::LightRecords::count), Some(2));
+        assert_eq!(land.reloads_seen, 3);
+        assert!(land.reload_wanted);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_reload_record_gives_its_count_only_with_version_1() {
+        assert_eq!(reload_count(&words(&[1, 5])), Some(5));
+        assert_eq!(reload_count(&words(&[2, 5])), None);
+        assert_eq!(reload_count(&words(&[1])), None);
+        assert_eq!(extension_needed(RELOAD_ID, &words(&[1])), Some(8));
+    }
+
+    #[test]
+    fn a_higher_count_asks_for_one_reload_and_a_replay_asks_for_none() {
+        let root = std::env::temp_dir().join(format!("mge-ext-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        land.data(RELOAD_ID, &words(&[1, 1]));
+        assert!(std::mem::take(&mut land.reload_wanted));
+        // The same count again, and a lower one: the mod's call is done.
+        land.data(RELOAD_ID, &words(&[1, 1]));
+        land.data(RELOAD_ID, &words(&[1, 0]));
+        assert!(!land.reload_wanted);
+        land.data(RELOAD_ID, &words(&[1, 2]));
+        assert!(std::mem::take(&mut land.reload_wanted));
+        // A replay draws the capture as it was: a recorded reload is not done again.
+        land.offline();
+        land.data(RELOAD_ID, &words(&[1, 9]));
+        assert!(!land.reload_wanted);
+        assert_eq!(land.reloads_seen, 2);
+        drop(land);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_water_of_a_reload_gets_the_dry_spaces_that_the_last_water_took() {
+        let root = std::env::temp_dir().join(format!("mge-ext-reload-water-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        let taken = vec![[1.0, 2.0, 3.0]; 3];
+        land.water_masks_given = Some(taken.clone());
+        land.drop_water_for_reload();
+        assert_eq!(land.water_masks, Some(taken));
+        // Newer dry spaces that no water took yet stay.
+        let newer = vec![[4.0, 5.0, 6.0]; 3];
+        land.water_masks = Some(newer.clone());
+        land.drop_water_for_reload();
+        assert_eq!(land.water_masks, Some(newer));
+        drop(land);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

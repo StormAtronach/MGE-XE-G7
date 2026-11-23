@@ -183,7 +183,7 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | --- | --- |
 | `getVersion`, the API version | as on Direct3D 9 |
 | `loadConfig`, `saveConfig` | work; the next settings record carries the values |
-| `reloadDistantLand` | returns true and does nothing; the helper takes the settings on the next frame |
+| `reloadDistantLand` | returns true. The helper reads the core-mod files again ([core-mods.md](../core-mods.md)) before its next frame: record 14 (`RELOAD_ID`, a count of the calls), sent by the next frame of the game; a replay ignores it. The helper takes the settings on each frame |
 | `render.*` features: shaders, shadows, grass, distantStatics, updateHDR, blurReflections, dynamicRipples, reflectiveWater, reflectNearStatics, reflectSky, reflectInterior | followed (settings record) |
 | `render.*` features: exponentialFog, atmosphericScattering | followed (environment flags) |
 | `render.distantLand` | "on" is refused until the helper says that the land of the session is loaded (`distantLandReady`, reason loaded), with the log line "-- Ignoring runtime distant-land enable"; after a start with distant land off it is never loaded, so "on" stays refused. "Off" is always followed |
