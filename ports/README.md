@@ -38,6 +38,11 @@ Two packs give `shaders/core-mods/XE Mod Water.wgsl`: Enhanced Water Shader and 
 Style Water. Install one water pack at a time, the one of the water mod that is on. The test
 `each_water_file_of_the_packs_is_used` of `core_mods.rs` checks each water file of the packs.
 
+Three packs give `shaders/XEshaders/Sunshafts.wgsl`: Watch the Skies, the older Watch the Skies
+and STEP Shaders Compilation. Two packs give `shaders/core-mods/XE Mod Sky.wgsl`: Watch the Skies
+and the older Watch the Skies. Install one pack of a mod at a time, the pack of the version of
+the mod that is on.
+
 ## The written ports
 
 A core mod has no built-in port, and some post shaders of mods have none: their pack files are
