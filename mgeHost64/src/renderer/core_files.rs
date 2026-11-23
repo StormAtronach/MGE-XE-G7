@@ -80,9 +80,18 @@ pub(crate) static WATER_STANDARD: CoreFile = core_file!("XE Mod Water Standard.w
 /// The caustics of the sea floor (`XE Mod Caustics.fx`).
 pub(crate) static CAUSTICS: CoreFile = core_file!("XE Mod Caustics.wgsl", &["caustics"]);
 
+/// The distant statics (`XE Mod Statics.fx`): the values of a set, and the statics in a view.
+pub(crate) static STATICS: CoreFile = core_file!("XE Mod Statics.wgsl", &["set", "statics"]);
+
+/// The distant land (`XE Mod Landscape.fx`).
+pub(crate) static LANDSCAPE: CoreFile = core_file!("XE Mod Landscape.wgsl", &["landscape"]);
+
+/// The sky (`XE Mod Sky.fx`): the sky dome, and the built-in clouds hook.
+pub(crate) static SKY: CoreFile = core_file!("XE Mod Sky.wgsl", &["sky", "clouds_color"]);
+
 /// Every core file.
 #[cfg(test)]
-static FILES: [&CoreFile; 8] = [
+static FILES: [&CoreFile; 11] = [
     &GRASS,
     &SHADOW,
     &SHADOWMAP,
@@ -91,6 +100,9 @@ static FILES: [&CoreFile; 8] = [
     &WATER_VOLUME,
     &WATER_STANDARD,
     &CAUSTICS,
+    &STATICS,
+    &LANDSCAPE,
+    &SKY,
 ];
 
 impl CoreFile {
@@ -157,7 +169,8 @@ fn parts_of(text: &str) -> Result<Vec<(&str, &str)>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAUSTICS, FILES, GRASS, SHADOW, SHADOWMAP, WATER, WATER_PASSES, WATER_STANDARD, WATER_VOLUME, lf, parts_of,
+        CAUSTICS, FILES, GRASS, LANDSCAPE, SHADOW, SHADOWMAP, SKY, STATICS, WATER, WATER_PASSES, WATER_STANDARD,
+        WATER_VOLUME, lf, parts_of,
     };
 
     /// FNV-1a, 64 bits.
@@ -200,6 +213,11 @@ mod tests {
         assert_eq!(fnv(WATER_VOLUME.part("dry")), 0x9952_e2ec_0483_7dec);
         assert_eq!(fnv(WATER_STANDARD.part("standard")), 0x383f_896b_efb8_a08b);
         assert_eq!(fnv(CAUSTICS.part("caustics")), 0x1d4b_2843_824d_eade);
+        assert_eq!(fnv(STATICS.part("set")), 0xda48_a194_f44d_ea42);
+        assert_eq!(fnv(STATICS.part("statics")), 0x69a9_edab_d438_69b5);
+        assert_eq!(fnv(LANDSCAPE.part("landscape")), 0x0235_f973_da6d_5c95);
+        assert_eq!(fnv(SKY.part("sky")), 0x2a1d_c750_6184_cb71);
+        assert_eq!(fnv(SKY.part("clouds_color")), 0x39ba_a84c_0d98_ddff);
     }
 
     #[test]

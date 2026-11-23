@@ -975,7 +975,7 @@ impl Environment {
         self.surface_level()
     }
 
-    /// The values of the sky of MGE XE ([`SKY_SHADER`] has their places), when the record has
+    /// The values of the sky of MGE XE ([`sky_shader`] has their places), when the record has
     /// the scattering (the flag 8). The record does not say if the cell is like an exterior
     /// (the scene says it): the caller checks that. `light` is the light of the scene: the sun
     /// colour and the ambient light of the clouds hook take `multipliers` (sun, ambient), the
@@ -1491,121 +1491,6 @@ struct LandUniforms {
     range: [f32; 4],
 }
 
-const SHADER: &str = "
-struct Land {
-    terrain: vec4f,
-    atlas: vec4f,
-    atlas_more: vec4f,
-    patterns: vec4f,
-    range: vec4f,
-}
-@group(1) @binding(0) var<uniform> land: Land;
-@group(1) @binding(1) var atlas: texture_2d<f32>;
-@group(1) @binding(2) var material: texture_2d<f32>;
-@group(1) @binding(3) var material_flags: texture_2d<f32>;
-@group(1) @binding(4) var patch_albedo: texture_2d<f32>;
-@group(1) @binding(5) var blend_patterns: texture_2d<f32>;
-@group(1) @binding(6) var smooth_sampler: sampler;
-
-struct Out {
-    @builtin(position) position: vec4f,
-    @location(0) normal: vec3f,
-    @location(1) color: vec3f,
-    @location(2) local: vec2f,
-    @location(3) world: vec3f,
-}
-
-// The matrix has the numbers of Direct3D, row after row. As the columns of a matrix here
-// they are the transposed matrix, which is the one for a column vector.
-@vertex fn vs(@location(0) position: vec3f, @location(1) normal: vec4f, @location(2) color: vec4f) -> Out {
-    var out: Out;
-    var world = position;
-    if u.flags.y != 0.0 {
-        // LandscapeReflVS: in a reflection the land near the water line sinks, so that the
-        // edge of the water is clean; no landBias.
-        world.z += -16.0 * clamp(1.0 - world.z / 16.0, 0.0, 1.0);
-    } else {
-        // landBias: the land goes down near the camera, so that a mesh with less detail
-        // does not come through the land of the game.
-        let distance = length(world - u.eye.xyz);
-        world.z += -1.0 - 2.0 * max(0.0, land.range.x - 1152.0 - distance);
-    }
-    out.position = clip_of(world);
-    out.normal = normal.xyz * 2.0 - 1.0;
-    // The colour of a vertex has the bytes blue, green, red.
-    out.color = color.bgr;
-    out.local = world.xy - land.terrain.xy;
-    out.world = world;
-    return out;
-}
-
-// The view range of the game, for the fog (`fog_of`).
-fn fog_range() -> f32 {
-    return land.range.x;
-}
-
-fn byte_of(value: f32) -> f32 {
-    return floor(value * 255.0 + 0.5);
-}
-
-fn atlas_uv(id: f32, patch_uv: vec2f) -> vec2f {
-    let tile_y = floor(id / land.atlas.w);
-    let origin = vec2f(id - tile_y * land.atlas.w, tile_y) * land.atlas.z;
-    return (origin + land.atlas.y + patch_uv * land.atlas.x) * land.atlas_more.xy;
-}
-
-fn pattern_uv(id: f32, patch_uv: vec2f) -> vec2f {
-    let rows = floor((land.atlas_more.z - 1.0) / land.patterns.w) + 1.0;
-    let inverse_size = 1.0 / vec2f(land.patterns.w * land.patterns.z, rows * land.patterns.z);
-    let tile_y = floor(id / land.patterns.w);
-    let origin = vec2f(id - tile_y * land.patterns.w, tile_y) * land.patterns.z;
-    return (origin + land.patterns.y + patch_uv * land.patterns.x) * inverse_size;
-}
-
-@fragment fn fs(in: Out) -> @location(0) vec4f {
-    // A patch has 512 units.
-    let patch_coord = in.local / 512.0;
-    let ddx_patch = dpdx(patch_coord);
-    let ddy_patch = dpdy(patch_coord);
-    let patch_uv = fract(patch_coord);
-    let ddx_atlas = ddx_patch * land.atlas.x * land.atlas_more.xy;
-    let ddy_atlas = ddy_patch * land.atlas.x * land.atlas_more.xy;
-    let far_albedo = textureSample(patch_albedo, smooth_sampler, patch_coord * land.terrain.zw).rgb;
-
-    let size = vec2i(textureDimensions(material));
-    let cell = clamp(vec2i(floor(patch_coord)), vec2i(0), size - vec2i(1));
-    let material_sample = textureLoad(material, cell, 0);
-    let flags_sample = textureLoad(material_flags, cell, 0);
-    let base_id = byte_of(material_sample.r) + 256.0 * byte_of(material_sample.g);
-    let decal_id = byte_of(material_sample.b) + 256.0 * byte_of(material_sample.a);
-    let pattern_id = min(byte_of(flags_sample.r), max(land.atlas_more.z - 1.0, 0.0));
-    let has_decal = byte_of(flags_sample.g) % 2.0;
-    let base = textureSampleGrad(atlas, smooth_sampler, atlas_uv(base_id, patch_uv), ddx_atlas, ddy_atlas).rgb;
-    let decal = textureSampleGrad(atlas, smooth_sampler, atlas_uv(decal_id, patch_uv), ddx_atlas, ddy_atlas).rgb;
-    let alpha = textureSampleLevel(blend_patterns, smooth_sampler, pattern_uv(pattern_id, patch_uv), 0.0).r * has_decal;
-    let near_albedo = mix(base, decal, alpha);
-
-    let footprint = max(length(ddx_patch), length(ddy_patch));
-    let albedo = mix(near_albedo, far_albedo, smoothstep(0.5, 1.5, footprint));
-    let normal = normalize(in.normal);
-    let lamps = lamp_sums(in.world, normal);
-    let light = u.ambient.rgb + u.sun_color.rgb * clamp(dot(normal, -u.sun_direction.xyz), 0.0, 1.0) + lamps.surface;
-    let lit = albedo * in.color * light;
-    if lamp_values.values.w > 1.5 {
-        return vec4f(albedo * in.color * lamp_light(in.world, normal), 1.0);
-    }
-    if lamp_values.values.w > 0.5 {
-        return vec4f(lamp_light(in.world, normal), 1.0);
-    }
-
-    // In a reflection, only one side of the water plane: flags.y is the side, flags.z the plane.
-    if u.flags.y != 0.0 && (in.world.z - u.flags.z) * u.flags.y < 0.0 {
-        discard;
-    }
-    return vec4f(fog_of(lit, in.world, lamps.air), 1.0);
-}
-";
-
 /// The bytes of a file under `Data Files`: in the game folder (the mods of Mod Organizer are
 /// in its file system), in `MGE_XE_GAME_DIR`, or beside this program (for a replay).
 fn data_file(root: &Path, relative: &str) -> Option<Vec<u8>> {
@@ -1812,6 +1697,17 @@ fn water_homes() -> [core_mods::Home; 1] {
         name: "water plane",
         check: water::plane_check,
     }]
+}
+
+/// The shader of the distant land: the view group, the light of the distant lamps, the land
+/// (`XE Mod Landscape.fx`) and the fog.
+fn land_source() -> String {
+    format!(
+        "{}{}{}{FOG_FUNCTION}",
+        view::wgsl(),
+        lamp_grid::light_wgsl(),
+        core_files::LANDSCAPE.part("landscape")
+    )
 }
 
 /// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
@@ -2806,7 +2702,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
         layout: &layout,
         entries: &entries,
     });
-    let source = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
+    let source = land_source();
     let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -3581,7 +3477,7 @@ fn sky_class(class: u32) -> bool {
 
 /// True when a draw with these facts takes the sun's shadow (`DrawData::extension` 5 and 7):
 /// it writes depth, it does not add to the picture, and it is not of the sky, whose values have
-/// those places ([`SKY_SHADER`]).
+/// those places ([`sky_shader`]).
 fn takes_sun_shadow(facts: &DrawFacts) -> bool {
     facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) && !sky_class(facts.class)
 }
@@ -3595,45 +3491,12 @@ fn takes_sun_shadow(facts: &DrawFacts) -> bool {
 /// `sunAmb` in w; 5 `inscatter`, and the blue of `sunAmb` in w; 6 the three numbers of the
 /// altitude of the sun; 7 `sunCol`, and `time` in w. `sunVis`, `sunAmb`, `sunCol` and `time`
 /// are for the clouds hook ([`SKY_LIBRARY_BODIES`]).
-const SKY_SHADER: &str = "
-// The dome of the game gets a height that puts its lower edge on the horizon.
-fn extension_sky_position(position: vec3f) -> vec3f {
-    return vec3f(position.xy, 50.0 * (position.z + 200.0));
+fn sky_shader() -> &'static str {
+    core_files::SKY.part("sky")
 }
-
-// fogColourSky: the colour of the fog of the sky in a direction from the eye. The far fog
-// colour at the horizon goes into the sky colour above it; with the scattering,
-// fogColourScatter with a fog distance of 1 and no fog.
-fn sky_fog_color(direction: vec3f) -> vec4f {
-    let e = draw.extension;
-    let up = 1.0 - pow(clamp(1.0 - 2.22 * clamp(direction.z - 0.075, 0.0, 1.0), 0.0, 1.0), 1.15);
-    var color = mix(e[0].rgb, e[1].rgb, up);
-    if e[1].w > 0.001 && e[2].w > 0.5 {
-        let sun_cos = dot(direction, e[3].xyz);
-        let mie = (1.58 / (1.24 - sun_cos)) * e[6].z;
-        let rayleigh = 1.0 - 0.09 * mie;
-        let air = 1.33 * exp(-2.0 * clamp(direction.z, 0.0, 1.0));
-        let sun_scatter = mix(e[5].rgb, e[4].rgb, 0.5 * (1.0 + sun_cos));
-        var lost = air * sun_scatter * (e[6].x + 0.7 * mie);
-        lost = (1.0 - exp(-lost)) / lost;
-        let scattered = (0.125 * mie + e[2].rgb * rayleigh) * lost * (1.17 * air + 0.89) * e[6].y;
-        color = mix(color, scattered, e[1].w);
-    }
-    // The alpha is the fog amount of fogColourScatter: 0 for the sky.
-    return vec4f(color, 0.0);
-}
-
-fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
-    let color = sky_fog_color(direction).rgb;
-    // ditherSky: an ordered dither against bands in the sky.
-    let dither = array<f32, 16>(0.001176, 0.001961, -0.001176, -0.001699, -0.000654, -0.000915, 0.000392, 0.000131, -0.000131, -0.001961, 0.000654, 0.000915, 0.001699, 0.001438, -0.000392, -0.001438);
-    let at = vec2u(pixel) % 4u;
-    return color + dither[at.x * 4u + at.y];
-}
-";
 
 /// The library of the clouds hook (`core_mods::SKY_LIBRARY`) without `sky_fog_color`, which
-/// [`SKY_SHADER`] has: the values of the frame from the sky's values. `cloud_texture` and
+/// [`sky_shader`] has: the values of the frame from the sky's values. `cloud_texture` and
 /// `CloudPixel` are the world shader's (`nirender_wgpu`).
 const SKY_LIBRARY_BODIES: &str = "
 fn sky_time() -> f32 { return draw.extension[7].w; }
@@ -3645,13 +3508,14 @@ fn sky_color_value() -> vec3f { return draw.extension[1].rgb; }
 fn sky_fog_far_color() -> vec3f { return draw.extension[0].rgb; }
 ";
 
-/// The sky part of the world shader: [`SKY_SHADER`], and with the clouds hook of a core mod
+/// The sky part of the world shader: [`sky_shader`], and with the clouds hook of a core mod
 /// (`core_mods.rs`) its library and `extension_clouds_color`, which calls the hook.
 fn sky_shader_text(sky_hooks: Option<&str>) -> String {
     match sky_hooks {
-        None => SKY_SHADER.to_string(),
+        None => sky_shader().to_string(),
         Some(hooks) => format!(
-            "{SKY_SHADER}{SKY_LIBRARY_BODIES}{hooks}\nfn extension_clouds_color(p: CloudPixel) -> vec4f {{ return clouds_color(p); }}\n"
+            "{}{SKY_LIBRARY_BODIES}{hooks}\nfn extension_clouds_color(p: CloudPixel) -> vec4f {{ return clouds_color(p); }}\n",
+            sky_shader()
         ),
     }
 }
@@ -7049,7 +6913,7 @@ mod shader_tests {
     /// view and the mirror, and the caster of the shadow map.
     #[test]
     fn the_land_shaders_are_valid() {
-        let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
+        let land = land_source();
         shader_check::check("distant land", &land).unwrap();
         let shadow = format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"));
         shader_check::check("distant land shadow", &shadow).unwrap();
@@ -7059,7 +6923,7 @@ mod shader_tests {
     /// so a core mod cannot replace a part of the lamps' haze in it.
     #[test]
     fn the_land_shader_names_no_hook() {
-        let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
+        let land = land_source();
         let hooks = core_mods::hook_names();
         assert_eq!(hooks.len(), 7);
         for hook in hooks {
@@ -7241,6 +7105,18 @@ fn clouds_color(p: CloudPixel) -> vec4f {
 ";
         let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", file)], &[], &[], &sky_homes());
         assert!(mods.sky_hooks().is_some());
+    }
+
+    /// The sky file of the pack "Watch the Skies - wgpu shaders" (W609): its clouds hook passes the
+    /// check of its home, and the world shader takes it.
+    #[test]
+    fn the_watch_the_skies_pack_gives_the_clouds_hook() {
+        let file = include_str!("../../ports/Watch the Skies - wgpu shaders/shaders/core-mods/XE Mod Sky.wgsl");
+        let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", file)], &[], &[], &sky_homes());
+        let hooks = mods.sky_hooks().expect("the hook of the pack's file");
+        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks(), Some(hooks));
+        assert_eq!(source.matches("fn clouds_color(").count(), 1);
+        assert_eq!(source.matches("fn extension_clouds_color(").count(), 1);
     }
 
     /// The core mods of a Particles file, checked with the home of the particle hook.

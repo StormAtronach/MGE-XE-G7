@@ -9,13 +9,14 @@ A pack holds only `.wgsl` files. Direct3D 9 reads the mod's own `.fx` files; the
 reads the `.wgsl` file of the same name:
 
 - a post shader: `shaders/XEshaders/<name>.wgsl` (POST_SHADERS.md of mgeHost64);
-- a core mod: `shaders/core-mods/XE Mod <name>.wgsl` (docs/core-mods.md).
+- a core mod: `shaders/core-mods/XE Mod <name>.wgsl` (docs/core-mods.md);
+- a water look: `shaders/water/<name>.wgsl`, the name of the look line's `shader=`.
 
 | Pack | Its mod |
 | --- | --- |
 | Enhanced Water Shader - wgpu shaders | Enhanced Water Shader 2.2 Green-Blue by Krokantor, updated for MGE XE 0.13.0 by Hrnchamd |
 | Ashfall - wgpu shaders | Ashfall (`ashfall.fx`) |
-| Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx`) |
+| Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx` and `XE Mod Sky.fx`) |
 | Watch the Skies (older, Morrowind Refreshed) - wgpu shaders | the older Watch the Skies of Morrowind Refreshed (its `Sunshafts.fx` and `XE Mod Sky.fx`) |
 | Joy of Painting - wgpu shaders | Joy of Painting (its 23 `jop_*.fx` shaders) |
 | Magicka Expanded - wgpu shaders | Magicka Expanded (`oj_me_fog_box.fx`) |
@@ -33,6 +34,9 @@ reads the `.wgsl` file of the same name:
 | Modern Lockpicking (MWSE) - wgpu shaders | Modern Lockpicking (MWSE) (`modern-lockpicking/Bokeh.fx`) |
 | Pixel Shader Style Water for MGE XE - wgpu shaders | Pixel Shader Style Water for MGE XE 1.0 by Hrnchamd (its `XE Mod Water.fx`, md5 7f40c5546d36b84cbdc83b2830def8ff, in Morrowind Refreshed and Morrowind Refreshed (260602)) |
 | CRT Shader - wgpu shaders | CRT Shader (`CRT.fx`, md5 6a8b5ea4e1f7bc11074aa8e4752abed7, and `CRT Zoomed Out.fx`, md5 0be439714569ad6176827e796595ae15, in Outlander) |
+| Darker Nights - wgpu shaders | `Darker Nights.fx`, md5 85d20186c83457f61cc449dcfa1544d3: a file of MGE XE v0.20.0 that MGE XE removed (d2ed258), in `mods/MGE XE G7 Fork` of Morrowind75 - Poison Song and in the game folder of Morrowind Refreshed (260602). Written by hand from the `.fx` |
+| True Water - Odai - wgpu shaders | `tw_foam.fx`, md5 10c758a2be9a6e447316c655798409eb, of the True Water showcase `True Water - Odai`. Written by hand from the `.fx` |
+| True Water - Flow Map - wgpu shaders | `tw_flowmap.fx`, md5 5439e388e2823c125485b09eebc912c4, of the True Water showcase `True Water - Flow Map`. Written by hand from the `.fx` |
 
 Two packs give `shaders/core-mods/XE Mod Water.wgsl`: Enhanced Water Shader and Pixel Shader
 Style Water. Install one water pack at a time, the one of the water mod that is on. The test
@@ -48,6 +52,11 @@ the mod that is on.
 A core mod has no built-in port, and some post shaders of mods have none: their pack files are
 written by hand from the mod's `.fx`.
 
+- `Watch the Skies - wgpu shaders/shaders/core-mods/XE Mod Sky.wgsl`: the `clouds_color` hook,
+  from `CloudsPS` of `XE Mod Sky.fx`, md5 9ec82f14916051527a12be3577689c53, of
+  `mods/Watch the Skies` in Outlander and Outlander-test and of
+  `mods/Watch the Skies - Dynamic Weather and Sky Effects` in Morrowind Refreshed (260602). The
+  `.fx` changes only `CloudsPS`, so the file has only that hook.
 - `Pixel Shader Style Water for MGE XE - wgpu shaders/shaders/core-mods/XE Mod Water.wgsl`: the
   four water hooks, from `XE Mod Water.fx`, md5 7f40c5546d36b84cbdc83b2830def8ff, of
   `mods/Pixel Shader Style Water for MGE XE` in Morrowind Refreshed and Morrowind Refreshed
@@ -90,7 +99,7 @@ The `.fx` copies that each exported pack was made from. All copies of a pack giv
   `mods/Watch the Skies` in Outlander and Outlander-test and of
   `mods/Watch the Skies - Dynamic Weather and Sky Effects` in Morrowind Refreshed (260602). The
   older Watch the Skies of Morrowind Refreshed (md5 a0265743472e0aa94336b530a830c9d0) is
-  another shader, with a pack of its own (below). `Sunshafts.wgsl` has the name of a stock shader,
+  another shader, with a pack of its own (above). `Sunshafts.wgsl` has the name of a stock shader,
   so the gate's game folder does not take it (D640 piece 2, addendum 2): a change of this file
   is not under the gate, and replays check it.
 - `Joy of Painting - wgpu shaders/shaders/XEshaders/jop_*.wgsl`, 23 files: the `jop_*.fx` of
