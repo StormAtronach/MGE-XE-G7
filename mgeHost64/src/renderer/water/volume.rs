@@ -1736,4 +1736,16 @@ fn water_shader(surface: WaterSurface) -> vec4f {
             test_water_shader("//! interface: mge-xe-water-wgsl 1\nfn water_shader(x: f32) -> f32 { return x; }").is_err()
         );
     }
+
+    /// The water shaders of the True Water packs in ports/ compile against the water library.
+    #[test]
+    fn the_true_water_packs_give_water_shaders() {
+        let files = [
+            include_str!("../../../../ports/True Water - Odai - wgpu shaders/shaders/water/tw_foam.wgsl"),
+            include_str!("../../../../ports/True Water - Flow Map - wgpu shaders/shaders/water/tw_flowmap.wgsl"),
+        ];
+        for file in files {
+            assert!(test_water_shader(file).is_ok(), "{:?}", test_water_shader(file).err());
+        }
+    }
 }
