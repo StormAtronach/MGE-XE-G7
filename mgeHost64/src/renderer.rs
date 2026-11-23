@@ -1559,9 +1559,11 @@ fn wave_file(root: &Path) -> Option<Vec<u8>> {
 
 /// The places of a path under `Data Files`, in the order [`data_file`] tries them. A place
 /// whose real path is one already in the list (the game folder is also the folder of this
-/// program, or `MGE_XE_GAME_DIR`) is left out.
+/// program, or `MGE_XE_GAME_DIR`) is left out. `relative` names its folders with `/`; each
+/// place has the separator of the system only, so the log shows one kind.
 fn data_places(root: &Path, relative: &str) -> Vec<PathBuf> {
-    let name = Path::new("Data Files").join(relative);
+    let mut name = PathBuf::from("Data Files");
+    name.extend(relative.split('/'));
     let mut places = vec![root.join(&name)];
     if let Some(game) = nirender_wgpu::switches::path("MGE_XE_GAME_DIR") {
         places.push(game.join(&name));
@@ -6944,6 +6946,16 @@ mod data_place_tests {
         let places = data_places(folder, "shaders/water");
         let in_folder = places.iter().filter(|place| place.starts_with(folder)).count();
         assert_eq!(in_folder, 1, "{places:?}");
+    }
+
+    #[test]
+    fn a_place_has_one_kind_of_separator() {
+        // Path equality ignores the kind of separator, so the test compares the texts.
+        let places = data_places(Path::new("game"), "shaders/core/XE Common.wgsl");
+        let expected = ["game", "Data Files", "shaders", "core", "XE Common.wgsl"]
+            .iter()
+            .collect::<PathBuf>();
+        assert_eq!(shown(&places[0]), shown(&expected));
     }
 
     #[test]
