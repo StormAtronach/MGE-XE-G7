@@ -3751,6 +3751,11 @@ impl Extension for DistantLand {
             }
             self.changed = self.changed.or(Some(live_parts::CHANGE));
         }
+        // The tests of the cull that the main view's statics leave out (the tune `nocull`); they
+        // change only at the end of a frame.
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_no_cull(self.live_parts.nocull());
+        }
         self.apply_settings();
         self.reject_unknown_statics();
         self.cell_facts(scene);
@@ -4235,6 +4240,10 @@ impl Extension for DistantLand {
             SKIP_NOW.store(set, std::sync::atomic::Ordering::Relaxed);
             self.changed = Some(live_parts::CHANGE);
         }
+        // New tests of the cull: the next frame can draw places that need buffers.
+        if self.live_parts.take_nocull_change() {
+            self.changed = Some(live_parts::CHANGE);
+        }
         change
     }
 
@@ -4582,6 +4591,13 @@ impl Extension for DistantLand {
         };
         // The eye with the view range of the game, as the statics and the glows take it.
         let eye_range = [eye[0], eye[1], eye[2], view_range];
+        // The same for the main view's distant statics; 0 in w, as a set without the handoff has
+        // it, leaves out their handoff to the near scene (the tune `nocull handoff`).
+        let statics_eye = if self.live_parts.nocull() & live_parts::NOCULL_HANDOFF != 0 {
+            [eye[0], eye[1], eye[2], 0.0]
+        } else {
+            eye_range
+        };
         let range = [view_range, 0.0, 0.0, 0.0];
         let land = LandUniforms {
             terrain: gpu.terrain,
@@ -4679,7 +4695,7 @@ impl Extension for DistantLand {
             let mut sets = vec![statics::CullSet {
                 set: 0,
                 planes,
-                eye: eye_range,
+                eye: statics_eye,
                 fog_end,
             }];
             if let Some(shadow) = self.shadow.as_ref().filter(|_| self.shadow_in_frame) {
@@ -4908,7 +4924,7 @@ impl Extension for DistantLand {
             pass_report::note_skipped(part::STATICS, "left out by MGE_XE_SKIP");
         } else if let Some(statics) = self.statics.as_mut() {
             let frame = statics::Frame {
-                eye: eye_range,
+                eye: statics_eye,
                 planes,
                 fog_end: self.environment.map_or(self.settings_fog.1, |e| e.fog_end),
                 time: game_time(self.environment, self.started),

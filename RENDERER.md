@@ -544,6 +544,13 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   setting "transparency antialiasing". A change comes in at the end of the frame;
   `reset all` resets both. Nothing is saved, and the debug overlay (F10) shows a set or a
   value that differs from its start.
+- `nirender.tune("nocull bands,view")`, while the game runs: the distant statics of the main
+  view are drawn without those tests of their cull, to see whether a missing static is a
+  fault of the cull. `bands`: the end of the band of its tier and of the fog; `view`: the
+  planes of the view; `handoff`: the handoff to the game's near scene (the distant static
+  then draws over the game's own). `nocull none` and `reset nocull` run every test again. A
+  static whose subset is not loaded, or whose group a quest hides, stays out. The mirror and
+  the shadow map keep their cull. The statics report counts what was cut and why.
 - `MGE_XE_LAMP_VIEW=1`: the land and the distant statics show the light of the distant lamps
   alone, without their colour, their texture, the sun and the fog; `2`: the light times the
   colour and the texture, without the sun and the fog. For the test of the lamps' light.

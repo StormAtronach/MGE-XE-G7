@@ -1975,6 +1975,10 @@ pub struct Statics {
     alpha_to_coverage: bool,
     /// The same as the user's setting: the value that the test's reset gives back.
     alpha_to_coverage_setting: bool,
+    /// The tests of the cull that the main view's set leaves out, for a test (the tune `nocull`,
+    /// [`super::live_parts`]): [`super::live_parts::NOCULL_BANDS`] and
+    /// [`super::live_parts::NOCULL_VIEW`]. The handoff goes with the eye of the set. 0 runs all.
+    no_cull: u32,
     /// The core mods of the session: the shadow hooks of the grass shader at its first build
     /// (`core_mods.rs`).
     core_mods: super::core_mods::Shared,
@@ -2180,6 +2184,12 @@ impl Statics {
         self.reload_grass(scene);
     }
 
+    /// The tests of the cull that the main view's set leaves out from now on (the tune `nocull`,
+    /// [`super::live_parts`]); the bits of the bands and of the view only.
+    pub fn set_no_cull(&mut self, tests: u32) {
+        self.no_cull = tests & (super::live_parts::NOCULL_BANDS | super::live_parts::NOCULL_VIEW);
+    }
+
     /// Reads the settings and starts the load of the catalog and of the textures.
     /// `core_mods`: the core mods of the session, for the grass shader.
     pub fn start(document: &ConfigDocument, folder: PathBuf, core_mods: &super::core_mods::Shared) -> Statics {
@@ -2222,6 +2232,7 @@ impl Statics {
             settings,
             alpha_to_coverage: document.settings().graphics.transparency_antialiasing,
             alpha_to_coverage_setting: document.settings().graphics.transparency_antialiasing,
+            no_cull: 0,
             core_mods: super::core_mods::Shared::built_in(),
             loading: Some(receiver),
             catalog: None,
@@ -3796,7 +3807,13 @@ impl Statics {
                                 nirender_wgpu::stamps::StampKind::Detail,
                             );
                             for cull_set in sets {
-                                let values = cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end);
+                                let values = cull_values(
+                                    &self.settings,
+                                    cull_set.planes,
+                                    cull_set.eye,
+                                    cull_set.fog_end,
+                                    tests_off(cull_set.set, self.no_cull),
+                                );
                                 culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
                                 mark_prepared(&mut self.prepared, cull_set.set);
                                 count_culled(&mut self.culled_sets, cull_set.set);
@@ -3855,7 +3872,13 @@ impl Statics {
             scene.queue,
             &mut encoder,
             cull_set.set,
-            &cull_values(&self.settings, cull_set.planes, cull_set.eye, cull_set.fog_end),
+            &cull_values(
+                &self.settings,
+                cull_set.planes,
+                cull_set.eye,
+                cull_set.fog_end,
+                tests_off(cull_set.set, self.no_cull),
+            ),
         );
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
@@ -4289,7 +4312,17 @@ impl Statics {
                 if !culling.has_world(&self.world) {
                     culling.set_world(scene.device, &self.world, &world_places(&catalog, world));
                 }
-                culling.run(scene, set, &cull_values(&settings, frame.planes, frame.eye, frame.fog_end));
+                culling.run(
+                    scene,
+                    set,
+                    &cull_values(
+                        &settings,
+                        frame.planes,
+                        frame.eye,
+                        frame.fog_end,
+                        tests_off(set, self.no_cull),
+                    ),
+                );
                 return Ok(Self::draw_chosen(
                     gpu,
                     group_of(&self.view_groups, set),
@@ -4302,6 +4335,9 @@ impl Statics {
         }
 
         // The places chosen on the CPU.
+        let off = tests_off(set, self.no_cull);
+        let bands_off = off & super::live_parts::NOCULL_BANDS != 0;
+        let view_off = off & super::live_parts::NOCULL_VIEW != 0;
         let gone_before = frame.eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL;
         let admit = settings.draw_distance + CELL;
         self.draws.clear();
@@ -4332,24 +4368,30 @@ impl Statics {
                     };
                     // The band of the tier of the place, and the end of the fog.
                     let band_end = settings.band_ends[instance.tier as usize].min(frame.fog_end);
-                    if range > band_end + instance.radius || range + instance.radius < gone_before {
+                    if (!bands_off && range > band_end + instance.radius) || range + instance.radius < gone_before {
                         stats.distance += 1;
                         continue;
                     }
-                    if !frame.planes.iter().all(|p| {
-                        p[0] * instance.center[0] + p[1] * instance.center[1] + p[2] * instance.center[2] + p[3]
-                            >= -instance.radius
-                    }) {
+                    if !view_off
+                        && !frame.planes.iter().all(|p| {
+                            p[0] * instance.center[0] + p[1] * instance.center[1] + p[2] * instance.center[2] + p[3]
+                                >= -instance.radius
+                        })
+                    {
                         stats.frustum += 1;
                         continue;
                     }
-                    // The level of detail by the distance.
-                    let faces = if range <= settings.band_ends[0] + instance.radius {
+                    // The level of detail by the distance; past its tier with the bands' test off,
+                    // the finest when that level has no triangles.
+                    let faces = match if range <= settings.band_ends[0] + instance.radius {
                         resident.faces[0]
                     } else if range <= settings.band_ends[1] + instance.radius {
                         resident.faces[1]
                     } else {
                         resident.faces[2]
+                    } {
+                        0 if bands_off => resident.faces[0],
+                        faces => faces,
                     };
                     if faces != 0 {
                         self.draws.push((subset.texture, instance.subset, *index, faces));
@@ -4433,15 +4475,29 @@ fn world_places(catalog: &Catalog, world: &World) -> Vec<(u32, u32)> {
 }
 
 /// The values of the culling of a set: the planes, the eye with the view range of the game in
-/// w, the ends of the tiers and of the fog, and the handoff.
-fn cull_values(settings: &Settings, planes: [[f32; 4]; 6], eye: [f32; 4], fog_end: f32) -> cull::CullUniforms {
+/// w, the ends of the tiers and of the fog, the handoff, and the tests that a test leaves out
+/// (`tests_off`, [`tests_off`]; in `limits.y`, 0 for none).
+fn cull_values(
+    settings: &Settings,
+    planes: [[f32; 4]; 6],
+    eye: [f32; 4],
+    fog_end: f32,
+    tests_off: u32,
+) -> cull::CullUniforms {
     cull::CullUniforms {
         planes,
         eye: [eye[0], eye[1], eye[2], 0.0],
         bands: [settings.band_ends[0], settings.band_ends[1], settings.band_ends[2], fog_end],
-        limits: [eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL, 0.0, 0.0, 0.0],
+        limits: [eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL, tests_off as f32, 0.0, 0.0],
         counts: [0; 4],
     }
+}
+
+/// The tests of the cull that `set` leaves out: those of the tune `nocull` (`no_cull`,
+/// [`super::live_parts::NOCULL_BANDS`] and [`super::live_parts::NOCULL_VIEW`]) for the main
+/// view's set 0, none for the other sets.
+fn tests_off(set: usize, no_cull: u32) -> u32 {
+    if set == 0 { no_cull } else { 0 }
 }
 
 /// The values of the draws of a set (group 1).
@@ -5261,6 +5317,53 @@ mod shader_tests {
             &super::grass_source(crate::renderer::core_mods::CoreMods::built_in().shadow_hooks()),
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cull_value_tests {
+    use super::super::live_parts::{NOCULL_BANDS, NOCULL_VIEW};
+    use super::{HANDOFF, HANDOFF_BAND, HANDOFF_CULL, Settings, cull_values, tests_off};
+
+    fn settings() -> Settings {
+        Settings {
+            statics: true,
+            grass: true,
+            band_ends: [8192.0, 16384.0, 32768.0],
+            far_min_size: 400.0,
+            very_far_min_size: 800.0,
+            draw_distance: 65536.0,
+        }
+    }
+
+    /// Without the tune the cull runs every test: limits.y is 0 and limits.x is the handoff of the
+    /// eye, as before.
+    #[test]
+    fn without_the_tune_every_test_runs() {
+        let values = cull_values(&settings(), [[0.0; 4]; 6], [1.0, 2.0, 3.0, 7168.0], 50000.0, tests_off(0, 0));
+        assert_eq!(values.limits, [7168.0 - HANDOFF - HANDOFF_BAND - HANDOFF_CULL, 0.0, 0.0, 0.0]);
+        assert_eq!(values.eye, [1.0, 2.0, 3.0, 0.0]);
+    }
+
+    /// The tune's tests go into limits.y for the main view's set only; the handoff stays.
+    #[test]
+    fn the_tests_go_to_the_main_views_set_only() {
+        let off = NOCULL_BANDS | NOCULL_VIEW;
+        assert_eq!(tests_off(0, off), off);
+        for set in [1, 2, 3, 4, 9] {
+            assert_eq!(tests_off(set, off), 0, "set {set}");
+        }
+        let values = cull_values(
+            &settings(),
+            [[0.0; 4]; 6],
+            [0.0, 0.0, 0.0, 7168.0],
+            50000.0,
+            tests_off(0, off),
+        );
+        assert_eq!(values.limits[1], 3.0);
+        assert_eq!(values.limits[0], 7168.0 - HANDOFF - HANDOFF_BAND - HANDOFF_CULL);
+        // The null: a set of the shadow map with the tune's bits would draw out of its view.
+        assert_ne!(cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, off).limits[1], 0.0);
     }
 }
 

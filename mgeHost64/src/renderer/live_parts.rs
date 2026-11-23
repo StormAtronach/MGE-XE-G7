@@ -6,14 +6,25 @@
 //! - `skip <part>,<part>,...` leaves those parts out ([`PARTS`]); `skip none` leaves none out;
 //!   `reset skip` gives back the set of the switch `MGE_XE_SKIP`.
 //! - `a2c on`, `a2c off`; `reset a2c` gives back the user's `transparency_antialiasing`.
-//! - `reset all` resets both, beside the parameters of `tunables.toml`.
+//! - `nocull <test>,<test>,...` draws the distant statics of the main view without those tests
+//!   of their cull ([`NOCULL_TESTS`]); `nocull none` and `reset nocull` run every test again.
+//! - `reset all` resets all of them, beside the parameters of `tunables.toml`.
 //!
 //! A command is held until the end of the frame in which it came ([`LiveParts::end_frame`]): the
 //! next frame draws all its views with one set. Without a command, the set is that of
-//! `MGE_XE_SKIP`, as before.
+//! `MGE_XE_SKIP`, as before, and the cull runs every test.
 
 /// The parts that a test can leave out, by the word of `MGE_XE_SKIP` and of the command `skip`.
 pub const PARTS: [&str; 7] = ["water", "terrain", "statics", "grass", "blend", "glows", "lamps"];
+
+/// The tests of the cull of the distant statics that the command `nocull` can leave out in the
+/// main view: the band of the tier of a place (its distance and the end of the fog), the planes
+/// of the view, and the handoff to the near scene of the game. Their bits: [`NOCULL_BANDS`],
+/// [`NOCULL_VIEW`], [`NOCULL_HANDOFF`].
+pub const NOCULL_TESTS: [&str; 3] = ["bands", "view", "handoff"];
+pub const NOCULL_BANDS: u32 = 1;
+pub const NOCULL_VIEW: u32 = 2;
+pub const NOCULL_HANDOFF: u32 = 4;
 
 /// The name of the change of a frame that a command of this module made
 /// ([`super::Extension::frame_changed`]).
@@ -21,7 +32,33 @@ pub const CHANGE: &str = "a tune of the parts left out for a test";
 
 /// The bit of a part in a set, or [`None`] for a word that is not a part.
 pub fn bit(part: &str) -> Option<u32> {
-    PARTS.iter().position(|name| *name == part).map(|index| 1 << index)
+    bit_in(&PARTS, part)
+}
+
+/// The bit of `word` in a set of `names`, or [`None`].
+fn bit_in(names: &[&str], word: &str) -> Option<u32> {
+    names.iter().position(|name| *name == word).map(|index| 1 << index)
+}
+
+/// The words of a command, split at commas and spaces, as a set of `names`: 0 for the one word
+/// "none"; `Err` with the first word that is not a name, or with nothing for no word.
+fn words_in(rest: &str, names: &[&str]) -> Result<u32, String> {
+    let words: Vec<&str> = rest.split([',', ' ']).filter(|word| !word.is_empty()).collect();
+    if words.is_empty() {
+        return Err(String::new());
+    }
+    if words == ["none"] {
+        return Ok(0);
+    }
+    words.iter().try_fold(0, |set, word| {
+        bit_in(names, word).map(|bit| set | bit).ok_or_else(|| word.to_string())
+    })
+}
+
+/// The rest of a command that starts with the word `name`, or [`None`] for another command.
+fn after_word<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let rest = text.strip_prefix(name)?;
+    (rest.is_empty() || rest.starts_with(' ')).then(|| rest.trim())
 }
 
 /// The set of `MGE_XE_SKIP`'s text: its words split at commas; a word that is not a part is left
@@ -34,7 +71,12 @@ pub fn set_of_switch(text: &str) -> u32 {
 
 /// The parts of a set as a text, in the order of [`PARTS`]; "none" for the empty set.
 pub fn text_of(set: u32) -> String {
-    let names: Vec<&str> = PARTS
+    text_in(&PARTS, set)
+}
+
+/// The names of a set as a text, in the order of `names`; "none" for the empty set.
+fn text_in(names: &[&str], set: u32) -> String {
+    let names: Vec<&str> = names
         .iter()
         .enumerate()
         .filter(|(index, _)| set & (1 << index) != 0)
@@ -66,6 +108,12 @@ pub struct LiveParts {
     due_coverage: Option<Coverage>,
     /// The alpha to coverage in force: `None` while it is the user's setting.
     coverage: Coverage,
+    /// The tests of the cull that the main view's statics leave out, in force; 0 runs them all.
+    nocull: u32,
+    /// The same of a command of this frame, for the end of the frame.
+    held_nocull: Option<u32>,
+    /// A change of `nocull` at the end of the last frame, for [`LiveParts::take_nocull_change`].
+    nocull_changed: bool,
 }
 
 impl LiveParts {
@@ -77,7 +125,21 @@ impl LiveParts {
             held_coverage: None,
             due_coverage: None,
             coverage: None,
+            nocull: 0,
+            held_nocull: None,
+            nocull_changed: false,
         }
+    }
+
+    /// The tests of the cull that the main view's statics leave out ([`NOCULL_TESTS`]); 0 runs
+    /// them all. It changes only at the end of a frame.
+    pub fn nocull(&self) -> u32 {
+        self.nocull
+    }
+
+    /// Whether the end of the last frame changed [`LiveParts::nocull`]; once.
+    pub fn take_nocull_change(&mut self) -> bool {
+        std::mem::take(&mut self.nocull_changed)
     }
 
     /// One command. Returns the line for the log, or [`None`] for a command of another kind (the
@@ -87,10 +149,33 @@ impl LiveParts {
         if text == "reset all" {
             self.held = Some(self.start);
             self.held_coverage = Some(None);
+            self.held_nocull = Some(0);
             return Some(format!(
-                "skip {} and a2c as the setting, from the next frame",
+                "skip {}, a2c as the setting and nocull none, from the next frame",
                 text_of(self.start)
             ));
+        }
+        if text == "reset nocull" {
+            self.held_nocull = Some(0);
+            return Some("nocull none, from the next frame".to_string());
+        }
+        if let Some(rest) = after_word(text, "nocull") {
+            return Some(match words_in(rest, &NOCULL_TESTS) {
+                Ok(tests) => {
+                    self.held_nocull = Some(tests);
+                    format!("nocull {}, from the next frame", text_in(&NOCULL_TESTS, tests))
+                }
+                Err(word) => format!(
+                    "nocull {rest}: refused, {} ({} or none); the cull leaves out {}",
+                    if word.is_empty() {
+                        "no test".to_string()
+                    } else {
+                        format!("'{word}' is not a test")
+                    },
+                    NOCULL_TESTS.join(", "),
+                    text_in(&NOCULL_TESTS, self.held_nocull.unwrap_or(self.nocull))
+                ),
+            });
         }
         if text == "reset skip" {
             self.held = Some(self.start);
@@ -113,45 +198,36 @@ impl LiveParts {
                 other => format!("a2c {other}: refused, not on or off"),
             });
         }
-        let rest = text.strip_prefix("skip")?;
-        if !(rest.is_empty() || rest.starts_with(' ')) {
-            return None;
-        }
-        let rest = rest.trim();
-        let words: Vec<&str> = rest.split([',', ' ']).filter(|word| !word.is_empty()).collect();
-        if words == ["none"] {
-            self.held = Some(0);
-            return Some("skip none, from the next frame".to_string());
-        }
-        let mut set = 0;
-        for word in &words {
-            match bit(word) {
-                Some(bit) => set |= bit,
-                None => {
-                    return Some(format!(
-                        "skip {rest}: refused, '{word}' is not a part ({} or none); the set stays {}",
-                        PARTS.join(", "),
-                        text_of(self.held.unwrap_or(self.now))
-                    ));
-                }
+        let rest = after_word(text, "skip")?;
+        Some(match words_in(rest, &PARTS) {
+            Ok(set) => {
+                self.held = Some(set);
+                format!("skip {}, from the next frame", text_of(set))
             }
-        }
-        if words.is_empty() {
-            return Some(format!(
-                "skip: refused, no part; the set stays {}",
+            Err(word) if word.is_empty() => {
+                format!(
+                    "skip: refused, no part; the set stays {}",
+                    text_of(self.held.unwrap_or(self.now))
+                )
+            }
+            Err(word) => format!(
+                "skip {rest}: refused, '{word}' is not a part ({} or none); the set stays {}",
+                PARTS.join(", "),
                 text_of(self.held.unwrap_or(self.now))
-            ));
-        }
-        self.held = Some(set);
-        Some(format!("skip {}, from the next frame", text_of(set)))
+            ),
+        })
     }
 
-    /// The end of a frame: a held set comes in force, and a held alpha to coverage becomes due for
-    /// the next frame's start. Returns the new set when it differs from the set before, else
-    /// [`None`]; a new alpha to coverage counts in [`LiveParts::take_coverage`].
+    /// The end of a frame: a held set comes in force, a held alpha to coverage becomes due for
+    /// the next frame's start, and held tests of the cull come in force. Returns the new set when
+    /// it differs from the set before, else [`None`]; a new alpha to coverage counts in
+    /// [`LiveParts::take_coverage`], new tests of the cull in [`LiveParts::take_nocull_change`].
     pub fn end_frame(&mut self) -> Option<u32> {
         if let Some(coverage) = self.held_coverage.take() {
             self.due_coverage = Some(coverage);
+        }
+        if let Some(tests) = self.held_nocull.take() {
+            self.nocull_changed |= std::mem::replace(&mut self.nocull, tests) != tests;
         }
         let set = self.held.take()?;
         let before = std::mem::replace(&mut self.now, set);
@@ -175,6 +251,12 @@ impl LiveParts {
         }
         if let Some(on) = self.coverage {
             lines.push(format!("a2c: {}   (start: the setting)", if on { "on" } else { "off" }));
+        }
+        if self.nocull != 0 {
+            lines.push(format!(
+                "nocull: {}   (the distant statics of the main view)",
+                text_in(&NOCULL_TESTS, self.nocull)
+            ));
         }
         lines
     }
@@ -335,6 +417,107 @@ mod tests {
         assert_eq!(parts.command("set water.blur.angle 0.01"), None);
         assert_eq!(parts.command("reset water.blur.angle"), None);
         assert_eq!(parts.command("skipper water"), None);
+        assert_eq!(parts.command("nocullx bands"), None);
         assert!(parts.command("reset all").is_some());
+    }
+
+    /// Without a command the cull runs every test: no picture changes.
+    #[test]
+    fn without_a_command_the_cull_runs_every_test() {
+        let mut parts = LiveParts::new(0);
+        parts.end_frame();
+        assert_eq!(parts.nocull(), 0);
+        assert!(!parts.take_nocull_change());
+    }
+
+    /// The rule of `nocull`: a command leaves the tests of its frame as they were, they change at
+    /// the end of that frame, once, and the change is reported once.
+    fn nocull_holds_until_the_end_of_the_frame(parts: &mut impl NocullFrames) -> bool {
+        parts.command("nocull bands, view");
+        let held = parts.nocull() == 0;
+        parts.end_frame();
+        let in_force = parts.nocull() == NOCULL_BANDS | NOCULL_VIEW;
+        let reported = parts.take_change() && !parts.take_change();
+        parts.end_frame();
+        let stays = parts.nocull() == NOCULL_BANDS | NOCULL_VIEW && !parts.take_change();
+        held && in_force && reported && stays
+    }
+
+    /// What the rule of `nocull` needs.
+    trait NocullFrames {
+        fn command(&mut self, text: &str);
+        fn nocull(&self) -> u32;
+        fn end_frame(&mut self);
+        fn take_change(&mut self) -> bool;
+    }
+
+    impl NocullFrames for LiveParts {
+        fn command(&mut self, text: &str) {
+            LiveParts::command(self, text);
+        }
+        fn nocull(&self) -> u32 {
+            LiveParts::nocull(self)
+        }
+        fn end_frame(&mut self) {
+            LiveParts::end_frame(self);
+        }
+        fn take_change(&mut self) -> bool {
+            self.take_nocull_change()
+        }
+    }
+
+    #[test]
+    fn the_tests_of_the_cull_change_at_the_end_of_the_frame() {
+        assert!(nocull_holds_until_the_end_of_the_frame(&mut LiveParts::new(0)));
+    }
+
+    /// The null of the test above: a plant that changes the tests at the command fails it.
+    #[test]
+    fn tests_of_the_cull_changed_at_the_command_fail_the_rule() {
+        struct AtOnce(LiveParts);
+        impl NocullFrames for AtOnce {
+            fn command(&mut self, text: &str) {
+                self.0.command(text);
+                self.0.end_frame();
+            }
+            fn nocull(&self) -> u32 {
+                self.0.nocull()
+            }
+            fn end_frame(&mut self) {}
+            fn take_change(&mut self) -> bool {
+                self.0.take_nocull_change()
+            }
+        }
+        assert!(!nocull_holds_until_the_end_of_the_frame(&mut AtOnce(LiveParts::new(0))));
+    }
+
+    /// The words of `nocull`, its refusals, and its resets.
+    #[test]
+    fn nocull_takes_its_tests_and_refuses_other_words() {
+        let mut parts = LiveParts::new(0);
+        let line = parts.command("nocull handoff").unwrap();
+        assert_eq!(line, "nocull handoff, from the next frame");
+        parts.end_frame();
+        assert_eq!(parts.nocull(), NOCULL_HANDOFF);
+        assert!(parts.lines().iter().any(|line| line.starts_with("nocull: handoff")));
+        let refused = parts.command("nocull bands,horizon").unwrap();
+        assert!(refused.contains("refused") && refused.contains("'horizon'"), "{refused}");
+        assert!(parts.command("nocull").unwrap().contains("no test"));
+        parts.end_frame();
+        assert_eq!(parts.nocull(), NOCULL_HANDOFF, "a refused command changes nothing");
+        parts.command("nocull none");
+        parts.end_frame();
+        assert_eq!(parts.nocull(), 0);
+        parts.command("nocull bands,view,handoff");
+        parts.end_frame();
+        parts.command("reset nocull");
+        parts.end_frame();
+        assert_eq!(parts.nocull(), 0);
+        parts.command("nocull view");
+        parts.end_frame();
+        parts.command("reset all");
+        parts.end_frame();
+        assert_eq!(parts.nocull(), 0);
+        assert!(parts.lines().is_empty());
     }
 }
