@@ -458,9 +458,7 @@ The line sources: `lights`, `shadow-boxes`, `bounds`, `lua`.
 | `bounds`, `lua` | not drawn yet |
 
 The line pass draws after the post chain and before the interface of the game. A picture file
-then shows the lines, and the post chain does not blur or tint them. (The design,
-designs/debug-views-2026-11-11, has it before the post chain; the Coordinator agreed to the
-change for that reason.) A line is hidden where the frame drew something nearer, by the depth
+then shows the lines, and the post chain does not blur or tint them. A line is hidden where the frame drew something nearer, by the depth
 of the game and of the distant land, unless its source draws it over everything. While a line
 source is on, the overlay gives the number of segments. With no line source on, the pass makes
 nothing and costs nothing.
