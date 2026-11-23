@@ -703,6 +703,8 @@ const MOD_FILES: &[(&str, u64, &str)] = &[
     ("jop_vignette", 0x20dfac92c2828d91, "jop_vignette"),
     ("jop_watercolor", 0x48a80762115e64eb, "jop_watercolor"),
     ("jop_window", 0xfd2c875d2b5577e4, "jop_window"),
+    // Ultra Bloom (the ports are in post_look.rs).
+    ("XERO-lut", 0xa9673036fce07524, "XERO-lut"),
 ];
 
 /// A line of an effect file that gives a name one number: `#define NAME value`, or
@@ -4662,9 +4664,12 @@ fn color(coords: vec2f, blur: f32, desky: f32) -> vec3f {
 }
 ";
 
-/// Each port: those of this file, and those of the Joy of Painting.
+/// Each port: those of this file, those of the Joy of Painting, and the looks of W576.
 fn ports() -> impl Iterator<Item = &'static Shader> {
-    SHADERS.iter().chain(super::post_jop::SHADERS)
+    SHADERS
+        .iter()
+        .chain(super::post_jop::SHADERS)
+        .chain(super::post_look::SHADERS)
 }
 
 /// The shaders that this program has a port of.
