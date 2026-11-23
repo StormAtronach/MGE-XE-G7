@@ -45,6 +45,7 @@ mod distant_lights;
 mod gpu_time;
 mod lamp_grid;
 mod lamp_values;
+mod live_parts;
 mod menu_keep;
 mod post;
 mod post_jop;
@@ -123,14 +124,30 @@ use water::{Water, WaterFrame};
 const CELL: f32 = 8192.0;
 /// The near plane of the projection of the distant land.
 const NEAR: f32 = 64.0;
-/// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps`): the parts named are not drawn, for a
-/// replay that tests one suspect at a time. Read once.
+/// A test mask (`MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps` at the start, the tune `skip` while the
+/// game runs: [`live_parts`]): the parts named are not drawn, for a test of one suspect at a time.
 fn skipped(part: &str) -> bool {
-    static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SKIP.get_or_init(|| nirender_wgpu::switches::text("MGE_XE_SKIP").unwrap_or_default())
-        .split(',')
-        .any(|p| p.trim() == part)
+    live_parts::bit(part).is_some_and(|bit| skip_set() & bit != 0)
 }
+
+/// The set of the parts left out that is in force: that of `MGE_XE_SKIP` until a tune changes it, at the end of a
+/// frame (`frame_changed` of the extension).
+fn skip_set() -> u32 {
+    match SKIP_NOW.load(std::sync::atomic::Ordering::Relaxed) {
+        SKIP_FROM_SWITCH => skip_switch(),
+        set => set,
+    }
+}
+
+/// The set of `MGE_XE_SKIP`, read once.
+fn skip_switch() -> u32 {
+    static SKIP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *SKIP.get_or_init(|| live_parts::set_of_switch(&nirender_wgpu::switches::text("MGE_XE_SKIP").unwrap_or_default()))
+}
+
+/// The set in force after a tune; [`SKIP_FROM_SWITCH`] before the first.
+static SKIP_NOW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(SKIP_FROM_SWITCH);
+const SKIP_FROM_SWITCH: u32 = u32::MAX;
 /// The number of the environment data in the stream. `Deviceless::EnvironmentId` of MGE XE.
 /// The adaptation point of the main view is logged at every this many runs of its post chain,
 /// for the first this many lines.
@@ -1272,6 +1289,8 @@ pub struct DistantLand {
     changed: Option<&'static str>,
     /// The parameters that a person can change while the game runs (tunables.rs).
     tunables: tunables::Tunables,
+    /// The parts left out for a test and the alpha to coverage, changed by a tune (live_parts.rs).
+    live_parts: live_parts::LiveParts,
     /// The last settings record of MGE XE, and the one that the renderer follows.
     settings: Option<Settings>,
     settings_applied: Option<Settings>,
@@ -2029,6 +2048,7 @@ impl DistantLand {
                 }
                 tunables
             },
+            live_parts: live_parts::LiveParts::new(skip_switch()),
             settings: None,
             settings_applied: None,
             settings_told_distance: (settings.draw_distance, settings.very_far_static_end),
@@ -3648,6 +3668,7 @@ impl Extension for DistantLand {
             .cloned()
             .chain(self.core_mods.problems())
             .chain(self.tunables.lines())
+            .chain(self.live_parts.lines())
             .collect()
     }
 
@@ -3721,6 +3742,14 @@ impl Extension for DistantLand {
         self.poll_lights(scene);
         if let Some(statics) = self.statics.as_mut() {
             statics.finish_load(scene);
+        }
+        // A tune's alpha to coverage, due since the end of the last frame: the pipelines of the pass of the game, with
+        // the main view's samples, before the first draw that uses them.
+        if let Some(coverage) = self.live_parts.take_coverage() {
+            if let Some(statics) = self.statics.as_mut() {
+                statics.set_alpha_to_coverage(scene, coverage);
+            }
+            self.changed = self.changed.or(Some(live_parts::CHANGE));
         }
         self.apply_settings();
         self.reject_unknown_statics();
@@ -4198,7 +4227,14 @@ impl Extension for DistantLand {
     fn frame_changed(&mut self) -> Option<&'static str> {
         // Each frame takes the change of the statics, so that it does not stay for the next.
         let statics = self.statics.as_mut().and_then(|statics| statics.take_change());
-        frame_change(self.changed.take(), self.loading.is_some(), statics)
+        let change = frame_change(self.changed.take(), self.loading.is_some(), statics);
+        // A tune's set of the parts left out comes in force here, between two frames: each view of the next frame
+        // draws with it. That frame is a changed one: a part that comes back can make its pipeline.
+        if let Some(set) = self.live_parts.end_frame() {
+            SKIP_NOW.store(set, std::sync::atomic::Ordering::Relaxed);
+            self.changed = Some(live_parts::CHANGE);
+        }
+        change
     }
 
     fn data(&mut self, id: u32, bytes: &[u8]) {
@@ -4374,6 +4410,15 @@ impl Extension for DistantLand {
                     statics.grass_report(*x, *y, *radius);
                 }
                 return;
+            }
+            // `skip ...`, `a2c ...` and their resets: the parts left out for a test, from the end of this frame
+            // (live_parts.rs). `reset all` goes on to the parameters too.
+            let text = core::str::from_utf8(bytes).unwrap_or_default();
+            if let Some(line) = self.live_parts.command(text) {
+                println!("tune: {line}");
+                if text.trim() != "reset all" {
+                    return;
+                }
             }
             // A command for a parameter, as a text. It changes a value of this run only.
             if let Some(line) = core::str::from_utf8(bytes).ok().and_then(|text| self.tunables.command(text)) {

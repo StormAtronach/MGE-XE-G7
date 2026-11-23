@@ -1526,6 +1526,10 @@ struct BufferSet {
 }
 
 struct Gpu {
+    /// The shader and the pipeline layout of the statics: a change of the alpha to coverage
+    /// makes `pipeline` and `pipeline_lines` again in them ([`Statics::set_alpha_to_coverage`]).
+    statics_module: wgpu::ShaderModule,
+    statics_layout: wgpu::PipelineLayout,
     pipeline: wgpu::RenderPipeline,
     /// The same with the other side culled: for the reflection, where the mirror turns the
     /// winding of each triangle.
@@ -1967,8 +1971,10 @@ pub struct Statics {
     /// The alpha of a static with an alpha test and of a blade of grass becomes the coverage
     /// of the samples of its pixel (`graphics.transparency_antialiasing`, with more than one
     /// sample): the `beginAlphaToCoverage` of the Direct3D 9 path around the statics and the
-    /// grass.
+    /// grass. A test changes it while the game runs ([`Statics::set_alpha_to_coverage`]).
     alpha_to_coverage: bool,
+    /// The same as the user's setting: the value that the test's reset gives back.
+    alpha_to_coverage_setting: bool,
     /// The core mods of the session: the shadow hooks of the grass shader at its first build
     /// (`core_mods.rs`).
     core_mods: super::core_mods::Shared,
@@ -2142,6 +2148,38 @@ impl Statics {
         gpu.grass_picture_pipeline = pipelines.picture;
     }
 
+    /// The alpha to coverage of the statics and the grass in the pass of the game, for a test
+    /// (the tune `a2c`, [`super::live_parts`]): `None` is the user's setting. A change makes the
+    /// pipelines of that pass again, with the samples of `scene`, the main view's; the pipelines
+    /// of the mirror and of a view of its own have one sample and stay. Before the GPU objects
+    /// are there, their build takes the value.
+    pub fn set_alpha_to_coverage(&mut self, scene: &SceneView, coverage: Option<bool>) {
+        let on = coverage.unwrap_or(self.alpha_to_coverage_setting);
+        if on == self.alpha_to_coverage {
+            return;
+        }
+        self.alpha_to_coverage = on;
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        let make = |polygon_mode| {
+            statics_pipeline(
+                scene,
+                &gpu.statics_module,
+                &gpu.statics_layout,
+                wgpu::Face::Back,
+                polygon_mode,
+                scene.multisample(on),
+                wgpu::ColorWrites::COLOR,
+            )
+        };
+        let pipeline = make(wgpu::PolygonMode::Fill);
+        let pipeline_lines = gpu.pipeline_lines.is_some().then(|| make(wgpu::PolygonMode::Line));
+        gpu.pipeline = pipeline;
+        gpu.pipeline_lines = pipeline_lines;
+        self.reload_grass(scene);
+    }
+
     /// Reads the settings and starts the load of the catalog and of the textures.
     /// `core_mods`: the core mods of the session, for the grass shader.
     pub fn start(document: &ConfigDocument, folder: PathBuf, core_mods: &super::core_mods::Shared) -> Statics {
@@ -2183,6 +2221,7 @@ impl Statics {
         let statics = Statics {
             settings,
             alpha_to_coverage: document.settings().graphics.transparency_antialiasing,
+            alpha_to_coverage_setting: document.settings().graphics.transparency_antialiasing,
             core_mods: super::core_mods::Shared::built_in(),
             loading: Some(receiver),
             catalog: None,
@@ -4692,66 +4731,11 @@ fn make_gpu(
     });
     let vertex = STATICS_VERTEX;
     let place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
-    // The statics of the frame go into the pass of the game (its samples, the alpha as the
-    // coverage with `alpha_to_coverage`; the alpha of the back buffer stays 1, as a target
-    // of the game without alpha gives). The mirror of the water is a texture of this
-    // program, with one sample.
     let make_pipeline = |cull: wgpu::Face,
                          polygon_mode: wgpu::PolygonMode,
                          multisample: wgpu::MultisampleState,
                          write_mask: wgpu::ColorWrites| {
-        device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("distant statics"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: VERTEX as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &vertex,
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: 80,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &place,
-                    }),
-                ],
-            },
-            // `CullMode = CW` of the pass of MGE XE: a triangle with its corners clockwise on
-            // the screen is not drawn.
-            primitive: wgpu::PrimitiveState {
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(cull),
-                polygon_mode,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: scene.depth_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample,
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
-                    ..Default::default()
-                },
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: scene.target_format,
-                    blend: None,
-                    write_mask,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        })
+        statics_pipeline(scene, &module, &pipeline_layout, cull, polygon_mode, multisample, write_mask)
     };
     let pipeline = make_pipeline(
         wgpu::Face::Back,
@@ -4999,6 +4983,8 @@ fn make_gpu(
         mapped_at_creation: false,
     });
     Gpu {
+        statics_module: module,
+        statics_layout: pipeline_layout,
         pipeline,
         mirror_pipeline,
         pipeline_lines,
@@ -5029,6 +5015,76 @@ fn make_gpu(
         grass_uniforms,
         grass_records,
     }
+}
+
+/// A pipeline of the distant statics in `module` and `layout` ([`make_gpu`];
+/// [`Statics::set_alpha_to_coverage`] makes those of the pass of the game again). The statics of
+/// the frame go into the pass of the game (its samples, the alpha as the coverage with the alpha
+/// to coverage of `multisample`; the alpha of the back buffer stays 1, as a target of the game
+/// without alpha gives). The mirror of the water is a texture of this program, with one sample.
+fn statics_pipeline(
+    scene: &SceneView,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    cull: wgpu::Face,
+    polygon_mode: wgpu::PolygonMode,
+    multisample: wgpu::MultisampleState,
+    write_mask: wgpu::ColorWrites,
+) -> wgpu::RenderPipeline {
+    let vertex = STATICS_VERTEX;
+    let place = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
+    scene.device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("distant statics"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: VERTEX as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &vertex,
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: 80,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &place,
+                }),
+            ],
+        },
+        // `CullMode = CW` of the pass of MGE XE: a triangle with its corners clockwise on
+        // the screen is not drawn.
+        primitive: wgpu::PrimitiveState {
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(cull),
+            polygon_mode,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: scene.depth_format,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(nirender_wgpu::depth::compare(wgpu::CompareFunction::LessEqual)),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample,
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some("fs"),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[("ALPHA_TO_COVERAGE", multisample.alpha_to_coverage_enabled as u32 as f64)],
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState {
+                format: scene.target_format,
+                blend: None,
+                write_mask,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// The vertex of a statics file, 20 bytes: the position and the palette number as four half

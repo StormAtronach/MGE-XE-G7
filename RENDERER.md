@@ -537,7 +537,13 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_SKIP=water,terrain,statics,grass,blend,glows,lamps`: the parts named are not
   drawn, for a replay that tests one suspect at a time. `glows` leaves out the glows of the
   distant lights; `lamps` leaves out the light of the distant lamps on the land and the
-  distant statics.
+  distant statics. While the game runs, `nirender.tune("skip water,grass")` changes the set,
+  `nirender.tune("skip none")` leaves nothing out, and `nirender.tune("reset skip")` gives
+  back the switch's set. `nirender.tune("a2c off")` (or `on`) turns the alpha to coverage of
+  the grass and the distant statics off or on; `nirender.tune("reset a2c")` gives back the
+  setting "transparency antialiasing". A change comes in at the end of the frame;
+  `reset all` resets both. Nothing is saved, and the debug overlay (F10) shows a set or a
+  value that differs from its start.
 - `MGE_XE_LAMP_VIEW=1`: the land and the distant statics show the light of the distant lamps
   alone, without their colour, their texture, the sun and the fog; `2`: the light times the
   colour and the texture, without the sun and the fog. For the test of the lamps' light.
