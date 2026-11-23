@@ -435,7 +435,7 @@ fn underwater(uv: vec2f, w: f32, texcoords: vec4f, world_xy: vec2f, eye_vec: vec
     let normal = -water_normal(texcoords, dist, world_xy);
     let reffactor = 2.0 * (water.sun_col.w * dist + 0.1) * normal.xy;
     let seen = textureSample(picture, clamp_sampler, uv + 2.0 * -reffactor.xy / w).rgb;
-    let refracted = mix(u.fog_color.rgb, seen, exp(-dist / 500.0));
+    let refracted = mix(u.fog_color.rgb, seen, underwater_clear(dist));
     let reflected = reflection_at(uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / w, w, 1.0);
     // A look at one term, for a test: the debug view `water`, as above the water (1 and 2), and
     // 10 for the picture of the game before the fog of the water is mixed into it.
@@ -454,6 +454,21 @@ fn underwater(uv: vec2f, w: f32, texcoords: vec4f, world_xy: vec2f, eye_vec: vec
     let refract_sun = dot(-eye_vec, normalize(-water.sun_pos.xyz + normal));
     let spec = water.sun_col.rgb * pow(max(refract_sun, 0.0), 6.0) * fog;
     return vec4f(result + spec, 1.0);
+}
+
+// What is left of the picture behind the water seen from below, at the distance `dist`: the
+// rest is the fog colour (`underwater`).
+fn underwater_clear(dist: f32) -> f32 {
+    return exp(-dist / 500.0);
+}
+
+// The debug view `fog` on a surface of the water: the part of the fog at a pixel, as grey.
+// Above the water it is the fog of `fog_water`, from below that of `underwater`.
+fn water_fog_view(eye_vec: vec3f, dist: f32) -> vec4f {
+    if water.modes.y > 0.5 {
+        return vec4f(vec3f(1.0 - underwater_clear(dist)), 1.0);
+    }
+    return vec4f(vec3f(1.0 - fog_water(eye_vec, dist).a), 1.0);
 }
 ";
 

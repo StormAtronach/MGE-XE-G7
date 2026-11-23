@@ -1844,6 +1844,9 @@ fn fog_with(lit: vec3f, world: vec3f, scatter: bool, lamp_air: vec3f) -> vec3f {
     let fog_distance = (distance - u.fog.x) / max(u.fog.y, 1.0);
     let exponential = clamp(exp(-fog_distance), 0.0, 1.0);
     let fog = select(linear, exponential, u.flags.x > 0.5 && distance > fog_range());
+    if fog_view_on() {
+        return vec3f(1.0 - fog);
+    }
     // fogColourScatter: the light that the air adds, in good weather and over the water.
     var added = u.fog_color.rgb * (1.0 - fog);
     if scatter && u.sky.w > 0.5 && u.sun_pos.w > 0.001 && u.eye.z > u.flags.w {
@@ -3669,6 +3672,7 @@ impl Extension for DistantLand {
             .chain(self.core_mods.problems())
             .chain(self.tunables.lines())
             .chain(self.live_parts.lines())
+            .chain(self.debug_view.fog().then(|| debug_view::FOG_VIEW_LINE.to_owned()))
             .collect()
     }
 
@@ -4727,7 +4731,9 @@ impl Extension for DistantLand {
         }
         // The glows of the distant lights at night, past the handoff to the game.
         let is_night = night > 0.0;
-        let glows_skip = if skipped("glows") {
+        let glows_skip = if self.debug_view.fog() {
+            Some(debug_view::FOG_VIEW_OUT)
+        } else if skipped("glows") {
             Some("left out by MGE_XE_SKIP")
         } else if !is_night {
             Some("not night")
@@ -5468,7 +5474,8 @@ impl Extension for DistantLand {
         before: &wgpu::TextureView,
         depth: &wgpu::TextureView,
     ) {
-        if skipped("blend") {
+        // The view `fog` leaves the blend out: it mixes the near scene into the distant land's colour.
+        if skipped("blend") || self.debug_view.fog() {
             return;
         }
         // Without the view range from the game, 7168: the top of the game's "Render Distance",
@@ -5786,6 +5793,9 @@ impl DistantLand {
 
     /// Why the frame has no chain of post shaders, or nothing when it has one.
     fn chain_skip(&self) -> Option<Skip> {
+        if self.debug_view.fog() {
+            return Some(debug_view::FOG_VIEW_OUT);
+        }
         if !self.post_enabled {
             return Some("the post shaders are off");
         }
@@ -6057,6 +6067,9 @@ impl DistantLand {
     /// water and the setting above 0. The held stage draws them, where the count of the dry
     /// spaces is.
     fn sea_caustics_skip(&self) -> Option<Skip> {
+        if self.debug_view.fog() {
+            return Some(debug_view::FOG_VIEW_OUT);
+        }
         if self.interior {
             return Some("an interior");
         }
@@ -6290,6 +6303,7 @@ impl DistantLand {
             inscatter: scattering[3],
             sun_altitude: scattering[4],
             relative,
+            debug: view::fog_view_lane(self.debug_view.fog()),
         }
     }
 
@@ -7098,7 +7112,7 @@ mod shader_tests {
             for (tier, source) in [("tier a", tier_a), ("tier c", tier_c)] {
                 let no_refusal = Vec::<String>::new();
                 assert_eq!(nirender_wgpu::stage_rewrite_refusals(&source), no_refusal, "{name}, {tier}");
-                for id in [view_id::LIGHTS, view_id::SHADOW_LAYERS] {
+                for id in [view_id::LIGHTS, view_id::SHADOW_LAYERS, view_id::FOG] {
                     let variant = nirender_wgpu::world_variant_source(&source, id).expect("the DEBUG_VIEW line");
                     assert_eq!(
                         nirender_wgpu::stage_rewrite_refusals(&variant),
@@ -7380,11 +7394,14 @@ fn clouds_color(p: CloudPixel) -> vec4f {
     }
 
     /// The draw part tests a debug view if and only if the crate makes a world variant of it
-    /// (`world_variant`), and it has no other test of `DEBUG_VIEW`. The world shader with the
-    /// extension compiles in each variant, in both texture tiers.
+    /// (`world_variant`), and it has no other test of `DEBUG_VIEW`; the one exception is the view
+    /// `fog`, a variant whose test is in the crate's own shader, before `extension_finish`. The
+    /// world shader with the extension compiles in each variant, in both texture tiers.
     #[test]
     fn the_draw_shader_tests_the_views_of_the_world_variants() {
         use nirender_wgpu::debug_lines::{view_id, world_variant};
+        assert_eq!(world_variant(view_id::FOG), view_id::FOG);
+        assert_eq!(DRAW_SHADER.matches("VIEW_FOG").count(), 0);
         let mut tests = 0;
         for (id, name) in [
             (view_id::LIGHTS, "VIEW_LIGHTS"),
@@ -7401,7 +7418,7 @@ fn clouds_color(p: CloudPixel) -> vec4f {
 
         let source = world_source(core_mods::CoreMods::built_in().shadow_hooks(), None);
         let tier_a = nirender_wgpu::required_features_of(nirender_wgpu::TextureTier::A);
-        for id in [view_id::LIGHTS, view_id::SHADOW_LAYERS] {
+        for id in [view_id::LIGHTS, view_id::SHADOW_LAYERS, view_id::FOG] {
             let variant = nirender_wgpu::world_variant_source(&source, id).expect("the DEBUG_VIEW line");
             shader_check::check_with(&format!("world variant {id}, tier a"), &variant, tier_a).unwrap();
             let tier_c = nirender_wgpu::tier_c_shader_source(&variant);
@@ -7723,6 +7740,27 @@ mod settings_tests {
         });
         assert!(land.picture_without_ui_wanted());
         assert!(land.chain_skip().is_some());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The view `fog` leaves out the post chain and the caustics of the sea with its reason, and
+    /// names the passes that it leaves out on the overlay; without it, neither reason and no
+    /// line.
+    #[test]
+    fn the_fog_view_leaves_out_its_passes_and_says_so() {
+        let root = std::env::temp_dir().join(format!("mge-fog-view-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        assert_ne!(land.chain_skip(), Some(debug_view::FOG_VIEW_OUT));
+        assert_ne!(land.sea_caustics_skip(), Some(debug_view::FOG_VIEW_OUT));
+        assert!(!land.overlay_lines().iter().any(|line| line == debug_view::FOG_VIEW_LINE));
+        land.debug_view.tune("view fog");
+        assert_eq!(land.chain_skip(), Some(debug_view::FOG_VIEW_OUT));
+        assert_eq!(land.sea_caustics_skip(), Some(debug_view::FOG_VIEW_OUT));
+        assert!(land.overlay_lines().iter().any(|line| line == debug_view::FOG_VIEW_LINE));
+        land.debug_view.tune("view off");
+        assert_ne!(land.chain_skip(), Some(debug_view::FOG_VIEW_OUT));
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -729,6 +729,10 @@ fn finish_water(surface: WaterSurface, shade: WaterShade, look: WaterLook) -> ve
     // sea, so the two agree at a seam.
     let upward = select(facing, -facing, facing.z < 0.0);
     let flat = tilt_to(vec3f(-upward.x, -upward.y, upward.z), in.world - s.anchor.xyz) + s.anchor.xyz;
+    // The debug view `fog`, before the look's own shader.
+    if fog_view_on() {
+        return water_fog_view(eye_vec, dist);
+    }
     // From under the water each surface has the look from below, as the plane has it.
     if water.modes.y > 0.5 {
         return underwater(uv, w, vec4f(flat.xy / 3900.0, flat.xy / 527.0), flat.xy, eye_vec, dist);

@@ -94,6 +94,14 @@ pub struct View {
     /// the two rows round together, as the view and then the projection of the Direct3D 9
     /// path do (`transformGrassVert`).
     pub relative: [f32; 16],
+    /// x: 1 for the debug view `fog`: a draw writes the part of the fog that it applied, as
+    /// grey ([`fog_view_lane`]). 0 in normal play.
+    pub debug: [f32; 4],
+}
+
+/// The debug lane of a view ([`View::debug`]): x is 1 with the debug view `fog`.
+pub fn fog_view_lane(fog_view: bool) -> [f32; 4] {
+    [if fog_view { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0]
 }
 
 /// `relative` of a view: `view` and `projection` with the layout of Direct3D, `eye` the
@@ -133,8 +141,14 @@ struct View {
     inscatter: vec4f,
     sun_altitude: vec4f,
     relative: mat4x4f,
+    debug: vec4f,
 }
 @group(0) @binding(0) var<uniform> u: View;
+
+// The debug view `fog` (`View::debug` x): a draw writes the part of the fog that it applied.
+fn fog_view_on() -> bool {
+    return u.debug.x > 0.5;
+}
 
 // The clip position of a position in the space of the world, by a matrix that is relative to
 // the eye (made as `View::relative` makes it, for the projection that the caller needs): the
@@ -913,9 +927,9 @@ mod tests {
 
     #[test]
     fn the_view_struct_has_the_size_of_its_wgsl() {
-        // A matrix, twelve vectors of four numbers, and the relative matrix.
-        assert_eq!(size_of::<View>(), 4 * (16 + 12 * 4 + 16));
-        assert_eq!(VIEW_WGSL.matches(": vec4f,").count(), 12);
+        // A matrix, twelve vectors of four numbers, the relative matrix and the debug lane.
+        assert_eq!(size_of::<View>(), 4 * (16 + 12 * 4 + 16 + 4));
+        assert_eq!(VIEW_WGSL.matches(": vec4f,").count(), 13);
         // The two matrices of the struct and the parameter of `clip_with`.
         assert_eq!(VIEW_WGSL.matches(": mat4x4f,").count(), 3);
     }

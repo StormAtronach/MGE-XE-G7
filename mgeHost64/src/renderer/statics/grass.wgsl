@@ -239,5 +239,8 @@ override ALPHA_TO_COVERAGE: bool = false;
         color *= 1.0 - v * g.shade.rgb;
     }
     // The pipeline writes no alpha: the alpha is only the coverage.
+    if fog_view_on() {
+        return vec4f(vec3f(1.0 - in.fog), coverage);
+    }
     return vec4f(mix(g.fog_color.rgb, color, in.fog), coverage);
 }
