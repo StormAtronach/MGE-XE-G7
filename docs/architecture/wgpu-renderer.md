@@ -360,8 +360,8 @@ simulation time (`MotionFrame`), so the light is still while the game's time is 
 depth comes from the tunable `lights.lamps.flicker` (start 0.4, the fork's) or the switch
 `MGE_XE_LAMP_FLICKER`. The light on the surfaces and the haze take the same motion.
 The same walk gives the light of the lamps in the air, without the facing and only from
-the lights at or above the water plane; the fog (`FOG_FUNCTION`) adds it as the lamps' haze
-(D498), with k from the tunable `lights.lamps.haze`. With the camera at or under the water
+the lights at or above the water plane; the fog (the part `fog` of `core/XE Common.wgsl`) adds it
+as the lamps' haze (D498), with k from the tunable `lights.lamps.haze`. With the camera at or under the water
 plane (`u.eye.z <= u.flags.w`, the test of the sun's light in the air) there is no haze, in the
 main view and in the mirror.
 

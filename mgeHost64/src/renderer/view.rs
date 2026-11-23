@@ -16,6 +16,7 @@ use nirender_wgpu::wgpu;
 const REPEATED: Skip = "the place had its call in this frame";
 const REFUSED: Skip = "no place for the view (none in its key, or one past the places)";
 
+use super::core_files::COMMON;
 use super::lamp_grid::{self, LampBinding};
 
 /// The views of a frame, and the group of each. The main view and its mirror have the
@@ -125,48 +126,9 @@ pub fn relative_of_product(view_projection: &[f32; 16], eye: [f32; 3]) -> [f32; 
 
 const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
-const VIEW_WGSL: &str = "
-struct View {
-    view_projection: mat4x4f,
-    eye: vec4f,
-    fog_color: vec4f,
-    fog: vec4f,
-    flags: vec4f,
-    sun_direction: vec4f,
-    sun_color: vec4f,
-    ambient: vec4f,
-    sun_pos: vec4f,
-    sky: vec4f,
-    outscatter: vec4f,
-    inscatter: vec4f,
-    sun_altitude: vec4f,
-    relative: mat4x4f,
-    debug: vec4f,
-}
-@group(0) @binding(0) var<uniform> u: View;
-
-// The debug view `fog` (`View::debug` x): a draw writes the part of the fog that it applied.
-fn fog_view_on() -> bool {
-    return u.debug.x > 0.5;
-}
-
-// The clip position of a position in the space of the world, by a matrix that is relative to
-// the eye (made as `View::relative` makes it, for the projection that the caller needs): the
-// position less the eye goes through the matrix, never the absolute position.
-fn clip_with(relative: mat4x4f, world: vec3f) -> vec4f {
-    return relative * vec4f(world - u.eye.xyz, 1.0);
-}
-
-// The clip position of a position in the space of the world, for the projection of this view
-// (see `View::relative`).
-fn clip_of(world: vec3f) -> vec4f {
-    return clip_with(u.relative, world);
-}
-";
-
 /// The code of the view group for the start of a shader: `u` and the lamps.
 pub fn wgsl() -> String {
-    format!("{VIEW_WGSL}{}", lamp_grid::wgsl_at(1))
+    format!("{}{}", COMMON.part("view"), lamp_grid::wgsl_at(1))
 }
 
 /// The views of their own that drew the full tier (the places that the player allows): which
@@ -929,9 +891,10 @@ mod tests {
     fn the_view_struct_has_the_size_of_its_wgsl() {
         // A matrix, twelve vectors of four numbers, the relative matrix and the debug lane.
         assert_eq!(size_of::<View>(), 4 * (16 + 12 * 4 + 16 + 4));
-        assert_eq!(VIEW_WGSL.matches(": vec4f,").count(), 13);
+        let view = crate::renderer::core_files::COMMON.part("view");
+        assert_eq!(view.matches(": vec4f,").count(), 13);
         // The two matrices of the struct and the parameter of `clip_with`.
-        assert_eq!(VIEW_WGSL.matches(": mat4x4f,").count(), 3);
+        assert_eq!(view.matches(": mat4x4f,").count(), 3);
     }
 
     /// The relative matrix gives the clip position of the absolute one, computed in f64.
