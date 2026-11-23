@@ -17,6 +17,7 @@ reads the `.wgsl` file of the same name:
 | Ashfall - wgpu shaders | Ashfall (`ashfall.fx`) |
 | Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx`) |
 | Eternal Shine - wgpu shaders | Eternal Shine |
+| Darker Nights - wgpu shaders | `Darker Nights.fx`, md5 85d20186c83457f61cc449dcfa1544d3: a file of MGE XE v0.20.0 that MGE XE removed (d2ed258), in `mods/MGE XE G7 Fork` of Morrowind75 - Poison Song and in the game folder of Morrowind Refreshed (260602). Written by hand from the `.fx` |
 
 ## The exported packs
 
