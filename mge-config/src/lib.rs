@@ -1,6 +1,7 @@
 mod bindings;
 mod document;
 pub mod ffi;
+pub mod post_values;
 mod schema;
 mod validation;
 

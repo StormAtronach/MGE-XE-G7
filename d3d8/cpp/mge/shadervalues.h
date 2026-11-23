@@ -26,6 +26,9 @@ struct ShaderVariable {
     // The mod set the variable. Only such a variable goes to the renderer: a variable
     // that no mod set keeps the default of the port.
     bool set;
+    // A setting of the port (mge-config's post_values): its value is kept in the values file
+    // of the shader between game sessions.
+    bool setting = false;
 };
 
 struct ShaderValues {
@@ -49,6 +52,10 @@ struct ShaderValues {
     // The first technique was read. The annotations of a second one do not count, as with
     // a device (GetTechnique(0)).
     bool techniqueRead = false;
+    // The shader and the folder of its values file, for the writes of the settings; empty
+    // for a shader whose port has no settings.
+    std::string settingsShader;
+    std::string settingsFolder;
 
     // Reads the variables of an effect file. A file that cannot be read gives none.
     static ShaderValues parse(const char* path);
@@ -60,9 +67,17 @@ struct ShaderValues {
     // renderer does not accept: then the renderer does not load the shader either.
     static bool parseWgslHeader(const char* path, ShaderValues* out, std::string* error);
 
+    // Adds the settings of the port of `shader` that the file does not have, with their
+    // defaults, and marks every setting; then takes the values of the shader's values file
+    // `<shader>.values.toml` in `folder` as set. A missing or broken file leaves the defaults.
+    void addPortSettings(const char* folder, const char* shader);
+    // Some variable is set: the renderer must get the state.
+    bool anySet() const;
+
     ShaderVariable* find(const char* name);
 
     // Sets a variable from `count` floats. Returns false for a name the file does not have.
+    // A set of a setting queues a write of the values file (see addPortSettings).
     bool set(const char* name, const float* values, size_t count);
     // Copies the values of a variable into `out`, at most `count`. Returns the number of
     // values the variable has, 0 for a name the file does not have.

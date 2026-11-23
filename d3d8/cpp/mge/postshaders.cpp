@@ -341,18 +341,23 @@ static void placeholderFileState(MGEShader& shader) {
     shader.disableFlags = shader.values->get("mgeflags", &flags, 1) ? int(flags) : 0;
 }
 
+// The folder of the effect files, and of the values files of the ports' settings.
+static const char* const ShaderFolder = "Data Files\\shaders\\XEshaders";
+
 // The wgpu renderer mode: the variables and the annotations of a shader. They come from its
 // effect file; a shader without one gives them in the `//!` lines of its WGSL file, which the
-// renderer runs. False when neither file gives them.
+// renderer runs. Then the settings of its port, with the values of its values file. False
+// when neither file gives the variables.
 static bool placeholderValues(const char* name, ShaderValues* values) {
     char path[MAX_PATH];
-    std::snprintf(path, sizeof(path), "Data Files\\shaders\\XEshaders\\%s.fx", name);
+    std::snprintf(path, sizeof(path), "%s\\%s.fx", ShaderFolder, name);
     if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
         *values = ShaderValues::parse(path);
+        values->addPortSettings(ShaderFolder, name);
         return true;
     }
     char wgsl[MAX_PATH];
-    std::snprintf(wgsl, sizeof(wgsl), "Data Files\\shaders\\XEshaders\\%s.wgsl", name);
+    std::snprintf(wgsl, sizeof(wgsl), "%s\\%s.wgsl", ShaderFolder, name);
     if (GetFileAttributesA(wgsl) == INVALID_FILE_ATTRIBUTES) {
         LOG::logline("!! Post shader %s missing, and %s too", path, wgsl);
         return false;
@@ -362,6 +367,7 @@ static bool placeholderValues(const char* name, ShaderValues* values) {
         LOG::logline("!! Post shader %s: %s", wgsl, error.c_str());
         return false;
     }
+    values->addPortSettings(ShaderFolder, name);
     return true;
 }
 
@@ -395,8 +401,9 @@ void PostShaders::initShaderChainPlaceholders() {
         if (!shader) {
             continue;
         }
-        // The helper has the chain already: a record goes when a mod changes the shader.
-        shader->values->changed = false;
+        // The helper has the chain already: a record goes when a mod changes the shader, or
+        // now when the values file of the shader set some of its settings.
+        shader->values->changed = shader->values->anySet();
         // The flags of the chain, as initShader sets them from the effect: the API reads
         // them, and the settings record carries them. The helper also skips the draw of
         // the glare.

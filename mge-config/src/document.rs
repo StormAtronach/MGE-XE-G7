@@ -611,7 +611,7 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), counter))
 }
 
-fn atomic_replace(path: &Path, bytes: &[u8], replace: bool) -> Result<(), ConfigError> {
+pub(crate) fn atomic_replace(path: &Path, bytes: &[u8], replace: bool) -> Result<(), ConfigError> {
     let temporary = temp_path(path);
     let write_result = (|| -> io::Result<()> {
         let mut file = File::create_new(&temporary)?;

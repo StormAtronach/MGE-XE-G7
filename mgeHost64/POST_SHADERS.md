@@ -25,8 +25,13 @@ night, 1.5 in an interior. The mod's menu values Exposure, Interior exposure bon
 exposure bonus do not act on wgpu; its other values do. Eternal Shine (Eternal Shine) gives a
 glow around each light from the lights of the frame, without the mod's Lua. Its menu does not
 act on wgpu; its values are variables of the shader with the Lua's defaults: `radmult` 0.3,
-`int` 0.25, `ext` 0.4, `rain` 0.5, and `near_eye` 100. A set of these from Lua does not reach
-the renderer yet. A light gives a glow only when a draw that it lights is in view, and a light within
+`int` 0.25, `ext` 0.4, `rain` 0.5, and `near_eye` 100. A line of Lua sets one, for example
+`mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`. MGE XE keeps the values between
+game sessions in `Eternal Shine.values.toml` beside the effect file
+(`Data Files/shaders/XEshaders`; under Mod Organizer 2, in its overwrite folder). It writes the
+file about 1 s after the last change, so a change in the last second before the game ends can
+be lost. A missing file gives the defaults; a line that is not valid is skipped, with a line in
+mgeXE.log. A light gives a glow only when a draw that it lights is in view, and a light within
 `near_eye` units of the eye gives none (the torch of the player in first person). Files with the name
 of a stock shader and other code have a port of their own, found by the code of the file:
 Eye Adaptation (HDR), SSAO HQ and Sunshafts of the STEP Shaders Compilation, Sunshafts of

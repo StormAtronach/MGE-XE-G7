@@ -7,13 +7,13 @@
 //! The inputs that a mod's Lua gave the shader on Direct3D 9 come from the helper here.
 //!
 //! Eternal Shine takes the lights of the frame from the renderer (`frame_lights` of the common
-//! part of `post.rs`) in place of the mod's Lua. Its values are variables of the shader with the
-//! Lua's defaults: the glow word of a light is `radmult` (0.3) of its radius (at most 1000), and
-//! the air is `int` (0.25) in an interior, `rain` (0.5) in rain, thunder and snow, else `ext`
-//! (0.4). A shader-state record that names one sets it. A Lua set does not reach the port yet:
-//! d3d8.dll lists only the variables of the effect file, and MWSE sets only listed variables
-//! (W576 part 4 adds the names and a file that keeps the values). The differences from the
-//! mod on Direct3D 9:
+//! part of `post.rs`) in place of the mod's Lua. Its values are variables of the shader: the
+//! settings of mge-config's `post_values`, with the Lua's defaults. The glow word of a light is
+//! `radmult` (0.3) of its radius (at most 1000), and the air is `int` (0.25) in an interior,
+//! `rain` (0.5) in rain, thunder and snow, else `ext` (0.4). A line of Lua sets one, for
+//! example `mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`; d3d8.dll keeps the
+//! values in `Eternal Shine.values.toml` beside the effect file. The differences from the mod
+//! on Direct3D 9:
 //! - The lights are those of the lit draws of the world in the frame. A light with no lit draw
 //!   in view gives no glow; the Lua took every light of the active cells.
 //! - Fog, ash, blight and blizzard get 0.4 or 0.5: the helper does not know these weathers
@@ -28,6 +28,7 @@
 //! - The mod's menu does not act on wgpu: its values are the variables above.
 
 use super::post::{Shader, Variable, full};
+use mge_config::post_values::{self, Setting};
 
 /// A variable that a mod sets from Lua: one value, with the value of the effect file.
 const fn value(name: &'static str, default: &'static [f32; 1]) -> Variable {
@@ -331,16 +332,24 @@ const GLOW_SKY: f32 = 1.0e7;
 "
 );
 
-/// The values of Eternal Shine that a player or a mod can set from Lua, with the defaults of
-/// the mod's Lua (its names; `near_eye` is ours): the multiplier of a light's radius, the
-/// strength of the air in an interior, outside, and in rain, thunder and snow, and the
-/// distance from the eye within which a light gives no glow.
+/// A setting of a port as a variable of the shader: one value, with the setting's default.
+const fn setting(setting: &'static Setting) -> Variable {
+    Variable {
+        name: setting.name,
+        slots: 1,
+        per: 1,
+        default: setting.default,
+    }
+}
+
+/// The values of Eternal Shine that a player or a mod can set from Lua: the settings of the
+/// port in mge-config, in their order. A test checks that this list has all of them.
 const ETERNAL_SHINE_VALUES: &[Variable] = &[
-    value("radmult", &[0.3]),
-    value("int", &[0.25]),
-    value("ext", &[0.4]),
-    value("rain", &[0.5]),
-    value("near_eye", &[100.0]),
+    setting(&post_values::ETERNAL_SHINE[0]),
+    setting(&post_values::ETERNAL_SHINE[1]),
+    setting(&post_values::ETERNAL_SHINE[2]),
+    setting(&post_values::ETERNAL_SHINE[3]),
+    setting(&post_values::ETERNAL_SHINE[4]),
 ];
 
 /// The ports of this file, after those of `post.rs` and `post_jop.rs`.
@@ -808,20 +817,17 @@ fn case_of(i: u32) -> vec4f {
         assert!(ETERNAL_SHINE.contains("frame_lights"));
     }
 
-    /// The values that a player sets from Lua start at the defaults of the mod's Lua
-    /// (`mwse.loadConfig` of its main.lua: radmult 0.3, int 0.25, ext 0.4, rain 0.5) and the
-    /// owner's 100 units from the eye, and the port reads each one.
+    /// The variables of the port are all the settings of mge-config, in their order and with
+    /// their defaults (mge-config's own test checks those against the mod's Lua), and the port
+    /// reads each one.
     #[test]
-    fn the_glow_values_start_at_the_defaults_of_the_lua() {
-        let want = [
-            ("radmult", 0.3),
-            ("int", 0.25),
-            ("ext", 0.4),
-            ("rain", 0.5),
-            ("near_eye", 100.0),
-        ];
+    fn the_glow_values_are_the_settings_of_the_port() {
         let port = SHADERS.iter().find(|s| s.name == "Eternal Shine").expect("the port");
-        let have: Vec<(&str, f32)> = port.variables.iter().map(|v| (v.name, v.default[0])).collect();
+        let have: Vec<(&str, &[f32])> = port.variables.iter().map(|v| (v.name, v.default)).collect();
+        let want: Vec<(&str, &[f32])> = post_values::settings_of("Eternal Shine")
+            .iter()
+            .map(|s| (s.name, s.default))
+            .collect();
         assert_eq!(have, want);
         for (name, _) in want {
             assert!(ETERNAL_SHINE.contains(&format!("{name}()")), "the port reads {name}");

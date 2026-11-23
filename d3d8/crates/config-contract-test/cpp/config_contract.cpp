@@ -41,6 +41,10 @@ extern "C" void __cdecl mge_log_panic(const char* message) noexcept {
     LOG::logline("%s", message);
 }
 
+extern "C" void __cdecl mge_log_line(const char* text) {
+    LOG::logline("%s", text);
+}
+
 extern "C" std::size_t mge_config_contract_binding_count() {
     return countof(iniSettings);
 }
