@@ -1,8 +1,8 @@
 //! interface: mge-xe-wgsl 1
 //! passes: glow
 //! category: scene
-//! variables: radmult f32 = 0.3, int f32 = 0.25, ext f32 = 0.4, rain f32 = 0.5, near_eye f32 = 100
-//! settings: radmult, int, ext, rain, near_eye
+//! variables: radmult f32 = 0.3, int f32 = 0.25, ext f32 = 0.4, rain f32 = 0.5, near_eye f32 = 100, fog f32 = 0.75, storm f32 = 0.75
+//! settings: radmult, int, ext, rain, near_eye, fog, storm
 
 // Eternal Shine.wgsl: the wgpu renderer's port of Eternal Shine.fx of the mod Eternal Shine.
 // Put this file beside Eternal Shine.fx in Data Files/shaders/XEshaders: Direct3D 9 reads the
@@ -13,15 +13,20 @@
 // line of Lua sets one, for example mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4:
 //   radmult   the multiplier of a light's radius for the glow (the mod's default 0.3)
 //   int       the strength of the air in an interior (0.25)
-//   ext       the strength of the air outside (0.4)
+//   ext       the strength of the air outside in clear, cloudy and overcast weather (0.4)
 //   rain      the strength of the air in rain, thunder and snow (0.5)
 //   near_eye  a light nearer to the eye than this, in units of the game, gives no glow (100)
+//   fog       the strength of the air in fog (0.75)
+//   storm     the strength of the air in ash, blight and blizzard (0.75)
 //
 // The differences from the mod on Direct3D 9:
 // - The lights are those of the lit draws of the world in the frame. A light with no lit draw
 //   in view gives no glow; the mod's Lua took every light of the active cells.
-// - Fog, ash, blight and blizzard get ext or rain: the renderer does not know these weathers
-//   (the Lua gave them 0.75).
+// - The strength of the air follows a change of the weather as it comes, and mixes the
+//   strengths of the two weathers by the ratio of the change. The mod's Lua took the weather at
+//   a change of cell only, with no mix.
+// - Without the weather of the game (a d3d8.dll or a capture from before W622), rain, thunder,
+//   snow and blizzard get rain, and the other weathers ext.
 // - The colour of a light holds its dimmer, so the glow takes the dimmer squared.
 // - No fade-in of 3 seconds after a light comes, and no skip of the lights of value 40000.
 // - The mod's menu does not act on wgpu: its values are the settings above.
@@ -70,13 +75,15 @@ fn glow_light(colour: vec3f, radius: f32, mult: f32, centre: vec3f, dir: vec3f, 
     return air * 10.0 / word * colour * colour * (density * density * density);
 }
 
-// The strength of the air: thin in an interior, thick in rain, thunder and snow, and none in
-// the light of a bright day (the sun's red). The variables `int`, `rain` and `ext` hold the
-// three strengths.
+// The strength of the air: `int` in an interior, outside the strength of the weather by the
+// mod's table, and none in the light of a bright day (the sun's red).
 fn glow_air() -> f32 {
     var air = ext();
     if u.sunamb.w > 0.5 {
         air = int();
+    } else if weather_known() {
+        // Clear, cloudy, foggy, overcast, rain, thunder, ash, blight, snow, blizzard.
+        air = weather_mix(array<f32, 10>(ext(), ext(), fog(), ext(), rain(), rain(), storm(), storm(), rain(), storm()));
     } else if u.switches.z > 0.0 {
         air = rain();
     }

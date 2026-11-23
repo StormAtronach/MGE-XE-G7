@@ -286,6 +286,10 @@ const RELOAD_ID: u32 = 14;
 /// the plugin), one record for each call, not kept: the layout is
 /// [`nirender_wgpu::debug_shapes_format`], see [`lua_shapes`].
 const DEBUG_SHAPES_ID: u32 = nirender_wgpu::debug_shapes_format::RECORD_ID;
+/// The weather of the game (`Deviceless::sendWeather`), not kept: it comes with each
+/// environment record. See [`Weather`]; the post shaders read it (`weather_mix` of their
+/// library, W622).
+const WEATHER_ID: u32 = 16;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
@@ -299,7 +303,7 @@ const HELLO_BUILD_ID_BYTES: usize = 64;
 /// for the shader state, which `data` judges by its content.
 fn changing_record_name(id: u32) -> Option<&'static str> {
     match id {
-        ENVIRONMENT_ID | PICTURE_ID | STATUS_ID | SHADER_STATE_ID => None,
+        ENVIRONMENT_ID | WEATHER_ID | PICTURE_ID | STATUS_ID | SHADER_STATE_ID => None,
         SETTINGS_ID => Some("extension record settings"),
         TUNE_ID => Some("extension record tune"),
         WATER_LOOKS_ID => Some("extension record water looks"),
@@ -483,6 +487,7 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
             | LIGHT_SETTINGS_ID
             | LIGHT_RECORDS_ID
             | RELOAD_ID
+            | WEATHER_ID
     );
     if version_1_only && word(0) != 1 {
         return Some(4);
@@ -557,6 +562,8 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
         }
         // The version and the number of calls.
         RELOAD_ID => 8,
+        // Five words.
+        WEATHER_ID => Weather::BYTES,
         // The whole record of its version 1; another version needs its version word only.
         DEBUG_SHAPES_ID => nirender_wgpu::debug_shapes_format::needed(bytes),
         _ => return None,
@@ -588,6 +595,7 @@ fn extension_name(id: u32) -> &'static str {
         LIGHT_RECORDS_ID => "light records",
         RELOAD_ID => "reload",
         DEBUG_SHAPES_ID => "debug shapes",
+        WEATHER_ID => "weather",
         _ => "unknown",
     }
 }
@@ -687,6 +695,11 @@ pub fn run(mut arguments: Vec<String>) {
         let debug_view = debug_view.unwrap_or_else(|problem| {
             eprintln!("debug view: {problem}");
             std::process::exit(2);
+        });
+        // The core files before every pipeline, and before the core mods, whose checks take
+        // the texts chosen here.
+        core_files::use_files(&|name| core_file(Path::new("."), name), &build_id(), &|file, text| {
+            core_files::with_candidate(file, text, check_core_files)
         });
         let mut land = DistantLand::start(Path::new("."), live);
         if let Some(line) = debug_view::retired_switches_line(|name| nirender_wgpu::switches::text(name).is_some()) {
@@ -856,6 +869,45 @@ fn usable_or_say(usable: Result<(), String>) -> bool {
         Err(reason) => {
             println!("distant land: not usable: {reason}");
             false
+        }
+    }
+}
+
+/// The weather of the game, record 16 ([`WEATHER_ID`]): the twin of `Deviceless::Weather` in
+/// `mged3d8device.cpp`. Its version is the literal 1 of `version_1_only` in
+/// [`extension_needed`], not a `const VERSION`: the handshake check does not see this layout,
+/// so a change of it needs another [`EXTENSION_FORMAT`] by hand.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct Weather {
+    version: u32,
+    /// No flag yet: kept for later.
+    flags: u32,
+    /// The weather now, as the game's index (0 clear to 9 blizzard).
+    now: u32,
+    /// The weather it changes to; the same as `now` when the weather does not change.
+    next: u32,
+    /// The ratio of the change, 0 to 1.
+    ratio: f32,
+}
+
+impl Weather {
+    /// The bytes of the record.
+    const BYTES: usize = 20;
+
+    /// Reads the record; [`None`] for a short record or another version than 1.
+    fn read(bytes: &[u8]) -> Option<Weather> {
+        let weather: Weather = bytemuck::pod_read_unaligned(bytes.get(..Self::BYTES)?);
+        (weather.version == 1).then_some(weather)
+    }
+
+    /// The `weather` of the post shaders' uniform: the weather now, the weather it changes
+    /// to, the ratio, and 1 when a record came; all 0 without one (an older d3d8.dll or
+    /// capture). The library of the shaders clamps the indices to 0 to 9.
+    fn uniform(weather: Option<Weather>) -> [f32; 4] {
+        match weather {
+            Some(w) => [w.now as f32, w.next as f32, w.ratio, 1.0],
+            None => [0.0; 4],
         }
     }
 }
@@ -1187,6 +1239,8 @@ pub struct DistantLand {
     draw_distance: f32,
     settings_fog: (f32, f32),
     environment: Option<Environment>,
+    /// The last weather record ([`WEATHER_ID`]), or none yet.
+    weather: Option<Weather>,
     loading: Option<Receiver<Result<Loaded, String>>>,
     /// The start check of a game session (the startup generation, or the output check
     /// without the automatic rebuild): when it is done, whether the distant land is usable
@@ -1533,6 +1587,63 @@ fn shown(path: &Path) -> String {
     text.strip_prefix(r"\\?\").map_or(text.clone(), str::to_owned)
 }
 
+/// The core file `name` (`Data Files/shaders/core`) at the first of the places of [`data_file`]
+/// that has it: its place for the log, and its bytes.
+fn core_file(root: &Path, name: &str) -> Option<core_files::Found> {
+    let place = data_places(root, &format!("{}/{name}", core_files::FOLDER))
+        .into_iter()
+        .find(|place| place.is_file())?;
+    Some((shown(&place), std::fs::read(&place).map_err(|error| error.to_string())))
+}
+
+/// Every shader that a core file is part of, by its name, as the device checks it, with the
+/// built-in hooks of the core mods: the check of an edited core file ([`check_core_files`]). A
+/// test of `core_files.rs` proves that each part of each core file is in one of them.
+fn core_file_compositions() -> [(&'static str, fn() -> Result<(), String>); 15] {
+    fn checked(label: &str, source: &str) -> Result<(), String> {
+        shader_check::check(label, source).map(drop)
+    }
+    fn built_in() -> core_mods::CoreMods {
+        core_mods::CoreMods::built_in()
+    }
+    [
+        ("the world shader", || check_world_source(built_in().shadow_hooks(), None)),
+        ("the world shader with the clouds hook", || {
+            check_world_source(built_in().shadow_hooks(), Some(&core_mods::built_in_sky_hooks()))
+        }),
+        ("distant land", || checked("distant land", &land_source())),
+        ("distant land shadow", || {
+            checked("distant land shadow", &land_shadow_source())
+        }),
+        ("distant statics", || checked("distant statics", &statics::shader_source())),
+        ("distant statics shadow", || {
+            checked("distant statics shadow", &statics::shadow_source())
+        }),
+        ("grass", || {
+            checked("grass", &statics::grass_source(built_in().shadow_hooks()))
+        }),
+        ("shadow blur", || checked("shadow blur", core_files::SHADOWMAP.part("blur"))),
+        ("water plane", || water::plane_check(built_in().water_hooks())),
+        ("water reflection level", || {
+            checked("water reflection level", core_files::WATER.part("level"))
+        }),
+        ("water volume", || {
+            checked("water volume", &water::volume_source(built_in().shadow_hooks()))
+        }),
+        ("dry spaces", || checked("dry spaces", &water::dry_source())),
+        ("caustics", || checked("caustics", &caustics::shader())),
+        ("ripples", || checked("ripples", core_files::WATER_PASSES.part("ripples"))),
+        ("distant lights, glows", || {
+            checked("distant lights, glows", &distant_lights::glow_source())
+        }),
+    ]
+}
+
+/// Checks the shaders of [`core_file_compositions`]: the first fault, by its shader.
+fn check_core_files() -> Result<(), String> {
+    core_file_compositions().into_iter().try_for_each(|(_, check)| check())
+}
+
 /// The core mods of the session: the files of `folder` (`MGE_XE_CORE_MODS_DIR`), else of the
 /// places of `Data Files` under `root`, checked with the homes of this helper. A file that a
 /// marker of `markers` names is not used.
@@ -1709,6 +1820,12 @@ fn land_source() -> String {
     )
 }
 
+/// The casters of the shadow map of the land (`ShadowVS` and `ShadowPS` of `XE Shadowmap.fx`):
+/// the view group and the land's part of the shadow map.
+fn land_shadow_source() -> String {
+    format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"))
+}
+
 /// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
 /// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
 /// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
@@ -1816,6 +1933,7 @@ impl DistantLand {
             draw_distance: settings.draw_distance * CELL,
             settings_fog: (settings.fog.above_water_start * CELL, settings.fog.above_water_end * CELL),
             environment: None,
+            weather: None,
             loading: None,
             generation: None,
             statics_after_generation: None,
@@ -2734,7 +2852,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     // The casters of the shadow map (`ShadowVS` and `ShadowPS` of `XE Shadowmap.fx`): the land
     // with the depth from the sun. The view group only (the matrix of the layer in
     // `view_projection`).
-    let shadow_source = format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"));
+    let shadow_source = land_shadow_source();
     let shadow_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land shadow"),
         source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
@@ -4116,6 +4234,12 @@ impl Extension for DistantLand {
         if id == RELOAD_ID {
             if let Some(count) = reload_count(bytes) {
                 self.reload_asked(count);
+            }
+            return;
+        }
+        if id == WEATHER_ID {
+            if let Some(weather) = Weather::read(bytes) {
+                self.weather = Some(weather);
             }
             return;
         }
@@ -5881,6 +6005,7 @@ impl DistantLand {
                 1.0 / scene.target_size.1.max(1) as f32,
             ],
             switches: [if exponential { 1.0 } else { 0.0 }, e.night, e.precipitation, 0.0],
+            weather: Weather::uniform(self.weather),
         };
         // The flags of the environment, as `postProcess` of the Direct3D 9 path sets them: 1
         // an interior that is not like an exterior, 2 an exterior, 4 an interior that
@@ -6862,7 +6987,7 @@ mod shader_tests {
     fn the_land_shaders_are_valid() {
         let land = land_source();
         shader_check::check("distant land", &land).unwrap();
-        let shadow = format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"));
+        let shadow = land_shadow_source();
         shader_check::check("distant land shadow", &shadow).unwrap();
     }
 
@@ -7892,11 +8017,65 @@ mod generation_tests {
 }
 
 #[cfg(test)]
+mod weather_tests {
+    use super::*;
+
+    /// A weather record: the version, no flags, the weather now and next, the ratio.
+    pub(super) fn record(version: u32, now: u32, next: u32, ratio: f32) -> Vec<u8> {
+        let mut bytes: Vec<u8> = [version, 0, now, next].iter().flat_map(|word| word.to_le_bytes()).collect();
+        bytes.extend_from_slice(&ratio.to_le_bytes());
+        bytes
+    }
+
+    /// Version 1 needs its 20 bytes; a shorter record waits for them; another version needs
+    /// its version word only, and the reader drops it.
+    #[test]
+    fn the_weather_record_needs_20_bytes_at_version_1_only() {
+        let whole = record(1, 2, 6, 0.25);
+        assert_eq!(whole.len(), Weather::BYTES);
+        assert_eq!(extension_needed(WEATHER_ID, &whole), Some(20));
+        assert_eq!(extension_needed(WEATHER_ID, &whole[..12]), Some(20));
+        let other = record(2, 2, 6, 0.25);
+        assert_eq!(extension_needed(WEATHER_ID, &other), Some(4));
+        assert_eq!(Weather::read(&other), None);
+        assert_eq!(Weather::read(&whole[..19]), None);
+    }
+
+    /// A record gives the uniform's `weather`: the two indices, the ratio and 1. Without a
+    /// record all four are 0, so `weather_known()` of the shaders is false.
+    #[test]
+    fn a_record_gives_the_weather_of_the_uniform_and_no_record_gives_0() {
+        let weather = Weather::read(&record(1, 2, 6, 0.25));
+        assert_eq!(Weather::uniform(weather), [2.0, 6.0, 0.25, 1.0]);
+        assert_eq!(Weather::uniform(None), [0.0; 4]);
+    }
+
+    /// The twin in d3d8.dll: `Deviceless::Weather` has 20 bytes by its `static_assert`, and
+    /// its id is this one.
+    #[test]
+    fn the_weather_record_of_the_cpp_is_the_one_of_this_build() {
+        let source = include_str!("../../d3d8/cpp/mge/mged3d8device.cpp");
+        let size = source
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("static_assert(sizeof(Weather) == "))
+            .and_then(|rest| rest.split([',', ')']).next())
+            .expect("mged3d8device.cpp has the static_assert of the size of Weather");
+        assert_eq!(size.trim().parse::<usize>().unwrap(), Weather::BYTES);
+        assert_eq!(size_of::<Weather>(), Weather::BYTES);
+        let id = source
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("static const UINT WeatherId = "))
+            .expect("mged3d8device.cpp has WeatherId");
+        assert_eq!(id.trim_end_matches(';').trim().parse::<u32>().unwrap(), WEATHER_ID);
+    }
+}
+
+#[cfg(test)]
 mod extension_record_tests {
     use super::*;
 
     /// Every id with a layout.
-    const IDS: [u32; 13] = [
+    const IDS: [u32; 14] = [
         ENVIRONMENT_ID,
         SHADER_STATE_ID,
         PICTURE_ID,
@@ -7910,6 +8089,7 @@ mod extension_record_tests {
         LIGHT_RECORDS_ID,
         RELOAD_ID,
         DEBUG_SHAPES_ID,
+        WEATHER_ID,
     ];
 
     fn words(values: &[u32]) -> Vec<u8> {
@@ -7988,6 +8168,7 @@ mod extension_record_tests {
                 record
             }
             RELOAD_ID => words(&[1, 3]),
+            WEATHER_ID => weather_tests::record(1, 2, 6, 0.25),
             DEBUG_SHAPES_ID => nirender_wgpu::debug_shapes_format::Shape {
                 kind: nirender_wgpu::debug_shapes_format::Kind::Line,
                 on_top: false,
@@ -8047,6 +8228,7 @@ mod extension_record_tests {
             LIGHT_RECORDS_ID,
             RELOAD_ID,
             DEBUG_SHAPES_ID,
+            WEATHER_ID,
         ] {
             assert_eq!(
                 extension_needed(id, &words(&[2])),

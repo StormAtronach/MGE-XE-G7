@@ -24,7 +24,7 @@ fn draws(strength: f32) -> u32 {
     (1.0 + strength.max(0.0)).log2().ceil().max(1.0) as u32
 }
 
-fn shader() -> String {
+pub(super) fn shader() -> String {
     format!(
         "{}{}{}{}{}",
         super::view::wgsl(),
