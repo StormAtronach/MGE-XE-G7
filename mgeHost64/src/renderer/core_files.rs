@@ -86,9 +86,12 @@ pub(crate) static STATICS: CoreFile = core_file!("XE Mod Statics.wgsl", &["set",
 /// The distant land (`XE Mod Landscape.fx`).
 pub(crate) static LANDSCAPE: CoreFile = core_file!("XE Mod Landscape.wgsl", &["landscape"]);
 
+/// The sky (`XE Mod Sky.fx`): the sky dome, and the built-in clouds hook.
+pub(crate) static SKY: CoreFile = core_file!("XE Mod Sky.wgsl", &["sky", "clouds_color"]);
+
 /// Every core file.
 #[cfg(test)]
-static FILES: [&CoreFile; 10] = [
+static FILES: [&CoreFile; 11] = [
     &GRASS,
     &SHADOW,
     &SHADOWMAP,
@@ -99,6 +102,7 @@ static FILES: [&CoreFile; 10] = [
     &CAUSTICS,
     &STATICS,
     &LANDSCAPE,
+    &SKY,
 ];
 
 impl CoreFile {
@@ -165,8 +169,8 @@ fn parts_of(text: &str) -> Result<Vec<(&str, &str)>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAUSTICS, FILES, GRASS, LANDSCAPE, SHADOW, SHADOWMAP, STATICS, WATER, WATER_PASSES, WATER_STANDARD, WATER_VOLUME,
-        lf, parts_of,
+        CAUSTICS, FILES, GRASS, LANDSCAPE, SHADOW, SHADOWMAP, SKY, STATICS, WATER, WATER_PASSES, WATER_STANDARD,
+        WATER_VOLUME, lf, parts_of,
     };
 
     /// FNV-1a, 64 bits.
@@ -212,6 +216,8 @@ mod tests {
         assert_eq!(fnv(STATICS.part("set")), 0xda48_a194_f44d_ea42);
         assert_eq!(fnv(STATICS.part("statics")), 0x69a9_edab_d438_69b5);
         assert_eq!(fnv(LANDSCAPE.part("landscape")), 0x0235_f973_da6d_5c95);
+        assert_eq!(fnv(SKY.part("sky")), 0x2a1d_c750_6184_cb71);
+        assert_eq!(fnv(SKY.part("clouds_color")), 0x39ba_a84c_0d98_ddff);
     }
 
     #[test]
