@@ -3984,7 +3984,8 @@ impl Extension for DistantLand {
                 )
             }),
             hold: self.volumes_ready || (self.water_on && self.water_enabled && self.water.is_none()),
-            lights: self.volume_point_lights && near_volumes && self.volumes_ready,
+            lights: (self.volume_point_lights && near_volumes && self.volumes_ready)
+                || self.post.as_ref().is_some_and(Post::reads_lights),
             clustered_lights: self.clustered_lights,
             world_lights: self.world_lights,
             // `distant_land.per_pixel_particles` false, or the tune `lights.particles` 0: a
@@ -6003,7 +6004,7 @@ impl DistantLand {
                 1.0 / scene.target_size.0.max(1) as f32,
                 1.0 / scene.target_size.1.max(1) as f32,
             ],
-            switches: [if exponential { 1.0 } else { 0.0 }, e.night, 0.0, 0.0],
+            switches: [if exponential { 1.0 } else { 0.0 }, e.night, e.precipitation, 0.0],
         };
         // The flags of the environment, as `postProcess` of the Direct3D 9 path sets them: 1
         // an interior that is not like an exterior, 2 an exterior, 4 an interior that

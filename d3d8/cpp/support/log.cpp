@@ -197,6 +197,13 @@ extern "C" void __cdecl mge_log_panic(const char* message) noexcept {
     LOG::flush();
 }
 
+// A line of d3d8.dll's Rust side in mgeXE.log, under the lock: any thread may call it.
+extern "C" void __cdecl mge_log_line(const char* text) {
+    if (text) {
+        LOG::logline("%s", text);
+    }
+}
+
 // The plugin's lines in mgeXE.log (the contract mge_render_link.h, the logs-and-files design of
 // the Numidium notes): each line of `text` (a text can have more than one, at its '\n') is
 // written as "nirender: <line>\r\n", with no limit of length, all under the lock, so that the

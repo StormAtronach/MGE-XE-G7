@@ -1,4 +1,5 @@
 #include "shadervalues.h"
+#include "../mge_config_ffi.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -603,6 +604,47 @@ bool ShaderValues::parseWgslHeader(const char* path, ShaderValues* out, std::str
     return true;
 }
 
+void ShaderValues::addPortSettings(const char* folder, const char* shader) {
+    const std::uint32_t count = mge_post_setting_count(shader);
+    if (count == 0) {
+        return;
+    }
+    settingsShader = shader;
+    settingsFolder = folder;
+
+    std::vector<float> fileValues(count, 0.0f);
+    std::vector<std::uint8_t> given(count, 0);
+    mge_post_values_read(folder, shader, fileValues.data(), given.data(), count);
+
+    for (std::uint32_t index = 0; index < count; ++index) {
+        char name[64] = {};
+        float defaultValue = 0.0f;
+        if (!mge_post_setting(shader, index, name, sizeof(name), &defaultValue)) {
+            continue;
+        }
+        ShaderVariable* variable = find(name);
+        if (!variable) {
+            variables.push_back(ShaderVariable{ name, 'f', { defaultValue }, std::string(), false });
+            variable = &variables.back();
+        }
+        variable->setting = true;
+        if (given[index] && !variable->values.empty()) {
+            variable->values[0] = fileValues[index];
+            variable->set = true;
+            changed = true;
+        }
+    }
+}
+
+bool ShaderValues::anySet() const {
+    for (const auto& variable : variables) {
+        if (variable.set) {
+            return true;
+        }
+    }
+    return false;
+}
+
 ShaderVariable* ShaderValues::find(const char* name) {
     for (auto& variable : variables) {
         if (variable.name == name) {
@@ -622,6 +664,22 @@ bool ShaderValues::set(const char* name, const float* values, size_t count) {
     }
     variable->set = true;
     changed = true;
+    if (variable->setting) {
+        // The values of all the settings, in the order of the port's list; the write is on
+        // the thread of the values files, about 1 s after the last change.
+        const std::uint32_t settingCount = mge_post_setting_count(settingsShader.c_str());
+        std::vector<float> settingValues;
+        for (std::uint32_t index = 0; index < settingCount; ++index) {
+            char settingName[64] = {};
+            float defaultValue = 0.0f;
+            if (!mge_post_setting(settingsShader.c_str(), index, settingName, sizeof(settingName), &defaultValue)) {
+                return true;
+            }
+            const ShaderVariable* setting = find(settingName);
+            settingValues.push_back(setting && !setting->values.empty() ? setting->values[0] : defaultValue);
+        }
+        mge_post_values_queue(settingsFolder.c_str(), settingsShader.c_str(), settingValues.data(), settingCount);
+    }
     return true;
 }
 

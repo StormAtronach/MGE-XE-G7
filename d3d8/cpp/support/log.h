@@ -17,6 +17,8 @@ namespace LOG {
 };
 
 extern "C" void __cdecl mge_log_panic(const char* message) noexcept;
+// A line of d3d8.dll's Rust side in mgeXE.log; any thread may call it.
+extern "C" void __cdecl mge_log_line(const char* text);
 // The plugin's lines in mgeXE.log, prefixed "nirender: "; an export of d3d8.dll (exports.def),
 // declared in the contract mge_render_link.h of the nirender plugin too. The two declarations
 // must be equal (a file that sees both stops at a difference), and the contract is a C
