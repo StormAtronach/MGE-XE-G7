@@ -288,6 +288,10 @@ fn each_pack_file_is_its_port() {
             if candidates.is_empty() {
                 continue;
             }
+            // A written file has a test of its own.
+            if WRITTEN_FILES.iter().any(|written| ports_folder().join(written) == path) {
+                continue;
+            }
             let text = std::fs::read_to_string(&path).unwrap();
             let definition = of_pack_file(&name, &text).unwrap_or_else(|problem| panic!("{}: {problem}", path.display()));
             let matches: Vec<&str> = candidates
@@ -357,6 +361,54 @@ fn the_key_of_mgg_bloom_soft_sky_finds_the_bloom_soft_port() {
     let mut of_port = Definition::of_port(bloom_soft);
     of_port.name = "Bloom Soft Sky".to_string();
     assert!(is_port_with_file_numbers(&file, &of_port));
+}
+
+/// The post shader files of the packs that are written, not exported: a file of a mod with the
+/// name of a port and no `MOD_FILES` entry of its own, whose pack file is a port with changes that
+/// the export does not make. Each one has a test of its own.
+const WRITTEN_FILES: &[&str] = &[OLDER_WTS_SUNSHAFTS];
+
+/// The Sunshafts of the older Watch the Skies (Morrowind Refreshed, md5 a0265743): the stock
+/// Sunshafts.fx with other numbers. Two of them are inside expressions, which the code key counts
+/// as code: so the stock port does not take the file's numbers, and runs as it is for this file.
+/// The pack file is the stock port with all the numbers of the file.
+const OLDER_WTS_SUNSHAFTS: &str =
+    "Watch the Skies (older, Morrowind Refreshed) - wgpu shaders/shaders/XEshaders/Sunshafts.wgsl";
+
+/// The file of the older Watch the Skies is the stock port with the numbers of its `.fx`: the
+/// `// file` constants, and the two lines of the numbers in expressions (the sharpness of the rays
+/// and the fade of the sun disc at the horizon). Any other changed line fails.
+#[test]
+fn the_older_watch_the_skies_sunshafts_is_the_stock_port_with_its_numbers() {
+    let path = ports_folder().join(OLDER_WTS_SUNSHAFTS);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let file = of_pack_file("Sunshafts", &text).unwrap_or_else(|problem| panic!("{}: {problem}", path.display()));
+    let port = Definition::of_port(ports().find(|port| port.name == "Sunshafts").expect("the stock port"));
+    let file_lines: Vec<&str> = file.source.lines().collect();
+    let port_lines: Vec<&str> = port.source.lines().collect();
+    assert_eq!(file_lines.len(), port_lines.len(), "{}", path.display());
+    let differ: Vec<usize> = (0..file_lines.len())
+        .filter(|&i| without_file_numbers(file_lines[i]) != without_file_numbers(port_lines[i]))
+        .collect();
+    assert_eq!(differ.len(), 2, "the lines that differ: {differ:?}");
+    assert!(
+        file_lines[differ[0]].contains("mix(60.0, 660.0 + 360.0 * s.sundir.z,"),
+        "{}",
+        file_lines[differ[0]]
+    );
+    assert!(
+        file_lines[differ[1]].contains("smoothstep(-0.04, 0.09, azi - s.azi_horizon)"),
+        "{}",
+        file_lines[differ[1]]
+    );
+    // With the two lines of the stock port, the file is the port with the numbers of a file.
+    let mut restored = of_pack_file("Sunshafts", &text).unwrap();
+    let mut lines: Vec<String> = file_lines.iter().map(|line| line.to_string()).collect();
+    for &i in &differ {
+        lines[i] = port_lines[i].to_string();
+    }
+    restored.source = lines.join("\n");
+    assert!(is_port_with_file_numbers(&restored, &port));
 }
 
 /// The null of `each_pack_file_is_its_port`: a changed line of code shows.
