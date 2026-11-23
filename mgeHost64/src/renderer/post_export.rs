@@ -157,6 +157,17 @@ fn pack_root(pack: &str) -> std::path::PathBuf {
     }
 }
 
+/// The stock port of `name` when `key` is the code key of our package's `.fx` of that name: a
+/// stock shader whose name the file of a mod also has (Sunshafts, Underwater Effects, SSAO HQ and
+/// Eye Adaptation (HDR); W609 step 5 part B).
+fn stock_port_of(name: &str, key: u64) -> Option<&'static str> {
+    STOCK_FILES
+        .iter()
+        .find(|(stock_name, text)| *stock_name == name && code_key(text) == key)
+        .and_then(|_| ports().find(|port| port.name == name))
+        .map(|port| port.name)
+}
+
 /// The ports that a file of the chain name `name` may be: those of its `MOD_FILES` entries, or,
 /// for a name with no entry, the port of that name (a stock or S_A shader). None: a shader with
 /// no port, whose file is the shader (Eternal Shine).
@@ -281,8 +292,15 @@ fn each_pack_file_is_its_port() {
     roots.push(package_folder());
     let mut checked = 0;
     for root in roots {
+        // A file of our package is the port of its name, also where a mod's file has that name
+        // (the stock Sunshafts, Underwater Effects, SSAO HQ and Eye Adaptation (HDR)).
+        let of_package = root == package_folder();
         for (name, path) in pack_post_files(&root) {
-            let candidates = port_names(&name);
+            let candidates = if of_package {
+                ports().filter(|port| port.name == name).map(|port| port.name).collect()
+            } else {
+                port_names(&name)
+            };
             // A pack with no port (Eternal Shine): its file is the shader. The test
             // `each_post_file_of_the_packs_is_valid` of post.rs reads it.
             if candidates.is_empty() {
@@ -458,6 +476,7 @@ fn export_packs() {
                     .iter()
                     .find(|(mod_name, mod_key, _)| *mod_name == keyed && *mod_key == key)
                     .map(|(_, _, port)| *port)
+                    .or_else(|| stock_port_of(keyed, key))
                     .unwrap_or_else(|| panic!("{path}: no MOD_FILES entry of {keyed} with the code key {key:#018x}"))
             } else {
                 *port_names(name)
