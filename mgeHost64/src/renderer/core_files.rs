@@ -80,9 +80,12 @@ pub(crate) static WATER_STANDARD: CoreFile = core_file!("XE Mod Water Standard.w
 /// The caustics of the sea floor (`XE Mod Caustics.fx`).
 pub(crate) static CAUSTICS: CoreFile = core_file!("XE Mod Caustics.wgsl", &["caustics"]);
 
+/// The distant statics (`XE Mod Statics.fx`): the values of a set, and the statics in a view.
+pub(crate) static STATICS: CoreFile = core_file!("XE Mod Statics.wgsl", &["set", "statics"]);
+
 /// Every core file.
 #[cfg(test)]
-static FILES: [&CoreFile; 8] = [
+static FILES: [&CoreFile; 9] = [
     &GRASS,
     &SHADOW,
     &SHADOWMAP,
@@ -91,6 +94,7 @@ static FILES: [&CoreFile; 8] = [
     &WATER_VOLUME,
     &WATER_STANDARD,
     &CAUSTICS,
+    &STATICS,
 ];
 
 impl CoreFile {
@@ -157,7 +161,7 @@ fn parts_of(text: &str) -> Result<Vec<(&str, &str)>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAUSTICS, FILES, GRASS, SHADOW, SHADOWMAP, WATER, WATER_PASSES, WATER_STANDARD, WATER_VOLUME, lf, parts_of,
+        CAUSTICS, FILES, GRASS, SHADOW, SHADOWMAP, STATICS, WATER, WATER_PASSES, WATER_STANDARD, WATER_VOLUME, lf, parts_of,
     };
 
     /// FNV-1a, 64 bits.
@@ -200,6 +204,8 @@ mod tests {
         assert_eq!(fnv(WATER_VOLUME.part("dry")), 0x9952_e2ec_0483_7dec);
         assert_eq!(fnv(WATER_STANDARD.part("standard")), 0x383f_896b_efb8_a08b);
         assert_eq!(fnv(CAUSTICS.part("caustics")), 0x1d4b_2843_824d_eade);
+        assert_eq!(fnv(STATICS.part("set")), 0xda48_a194_f44d_ea42);
+        assert_eq!(fnv(STATICS.part("statics")), 0x69a9_edab_d438_69b5);
     }
 
     #[test]
