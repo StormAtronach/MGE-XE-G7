@@ -14,9 +14,12 @@
 //!   [`Definition::of_file`], gives the same Definition.
 //! - `each_pack_file_is_its_port`: each file under `ports/` parses, and it is the port of a
 //!   `MOD_FILES` entry of its name, but for the numbers that a mod's file sets. A file whose
-//!   name has no entry is a pack with no port, and is not compared.
+//!   name has no entry is a pack with no port, and is not compared. A name in `SAME_PORT` is
+//!   compared with the port of its entry there. A file in a folder of `XEshaders` has the folder
+//!   in its name (`InspectIt/Bokeh`).
 //! - `export_packs` (ignored): writes the files from the mods' `.fx` copies. The list file named
-//!   by `W609_PACKS` has one line for each copy: `<pack folder>\t<chain name>\t<.fx path>`.
+//!   by `W609_PACKS` has one line for each copy: `<pack folder>\t<chain name>\t<.fx path>`. The
+//!   path `-` means no copy of the mod's file: the port with its own numbers.
 //!   Without `W609_PACKS` it writes nothing and passes (the merge step runs all ignored tests). All
 //!   copies of a name in a pack must give one Definition, else the test names them and fails.
 //!   `cargo test -p mgeHost64 --release export_packs -- --ignored --nocapture`
@@ -192,29 +195,58 @@ fn is_port_with_file_numbers(file: &Definition, port: &Definition) -> bool {
     shape(file) == shape(port) && without_file_numbers(&file.source) == without_file_numbers(&port.source)
 }
 
+/// The names that a mod loads a shader by, with no `MOD_FILES` entry, and the `MOD_FILES` name
+/// whose port its file is: Modern Lockpicking loads Inspect It's `Bokeh.fx` (the same file) by
+/// its own name.
+const SAME_PORT: &[(&str, &str)] = &[("modern-lockpicking/Bokeh", "InspectIt/Bokeh")];
+
+/// The `MOD_FILES` name of the port of the shader that a mod loads as `name`.
+fn keyed_name(name: &str) -> &str {
+    SAME_PORT
+        .iter()
+        .find(|(load_name, _)| *load_name == name)
+        .map_or(name, |(_, keyed)| *keyed)
+}
+
+/// The `.wgsl` files of a pack's `shaders/XEshaders`, with their names as a chain gives them:
+/// a file in a folder of its own (`InspectIt/Bokeh.wgsl`) has the folder in its name.
+fn pack_post_files(pack: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
+    let folder = pack.join("shaders").join("XEshaders");
+    let mut found = Vec::new();
+    let mut folders = vec![(String::new(), folder)];
+    while let Some((prefix, folder)) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                folders.push((format!("{prefix}{name}/"), path));
+            } else if path.extension().is_some_and(|extension| extension == "wgsl") {
+                found.push((format!("{prefix}{stem}"), path));
+            }
+        }
+    }
+    found
+}
+
 #[test]
 fn each_pack_file_is_its_port() {
     let packs = std::fs::read_dir(ports_folder()).unwrap_or_else(|e| panic!("{}: {e}", ports_folder().display()));
     // A pack with no post shader (only a core mod) has no XEshaders folder; the count shows that the walk found files.
     let mut checked = 0;
     for pack in packs.flatten().filter(|entry| entry.path().is_dir()) {
-        let folder = pack.path().join("shaders").join("XEshaders");
-        for file in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
-            let path = file.path();
-            if path.extension().is_none_or(|extension| extension != "wgsl") {
-                continue;
-            }
-            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        for (name, path) in pack_post_files(&pack.path()) {
+            let keyed = keyed_name(&name);
             // A pack with no port (Eternal Shine): its file is the shader. The test
             // `each_post_file_of_the_packs_is_valid` of post.rs reads it.
-            if !MOD_FILES.iter().any(|(mod_name, _, _)| *mod_name == name) {
+            if !MOD_FILES.iter().any(|(mod_name, _, _)| *mod_name == keyed) {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
             let definition = of_pack_file(&name, &text).unwrap_or_else(|problem| panic!("{}: {problem}", path.display()));
             let matches: Vec<&str> = MOD_FILES
                 .iter()
-                .filter(|(mod_name, _, _)| *mod_name == name)
+                .filter(|(mod_name, _, _)| *mod_name == keyed)
                 .filter_map(|(_, _, port_name)| ports().find(|port| port.name == *port_name))
                 .filter(|port| {
                     let mut of_port = Definition::of_port(port);
@@ -234,7 +266,33 @@ fn each_pack_file_is_its_port() {
     );
 }
 
-/// The null of the test above: a changed line of code shows.
+/// The walk of a pack finds a file in a folder of `XEshaders`, by its name with the folder.
+#[test]
+fn a_file_in_a_folder_has_the_folder_in_its_name() {
+    let pack = std::env::temp_dir().join(format!("w609-pack-walk-{}", std::process::id()));
+    let folder = pack.join("shaders").join("XEshaders");
+    std::fs::create_dir_all(folder.join("InspectIt")).unwrap();
+    std::fs::write(folder.join("top.wgsl"), "").unwrap();
+    std::fs::write(folder.join("InspectIt").join("Bokeh.wgsl"), "").unwrap();
+    std::fs::write(folder.join("InspectIt").join("Bokeh.fx"), "").unwrap();
+    let mut names: Vec<String> = pack_post_files(&pack).into_iter().map(|(name, _)| name).collect();
+    names.sort();
+    for file in [
+        folder.join("top.wgsl"),
+        folder.join("InspectIt").join("Bokeh.wgsl"),
+        folder.join("InspectIt").join("Bokeh.fx"),
+    ] {
+        std::fs::remove_file(file).unwrap();
+    }
+    for empty in [folder.join("InspectIt"), folder.clone(), pack.join("shaders"), pack.clone()] {
+        std::fs::remove_dir(empty).unwrap();
+    }
+    assert_eq!(names, ["InspectIt/Bokeh", "top"]);
+    assert_eq!(keyed_name("modern-lockpicking/Bokeh"), "InspectIt/Bokeh");
+    assert_eq!(keyed_name("InspectIt/Bokeh"), "InspectIt/Bokeh");
+}
+
+/// The null of `each_pack_file_is_its_port`: a changed line of code shows.
 #[test]
 fn a_changed_line_is_not_the_port() {
     let port = ports().find(|port| port.name == "ashfall").expect("the port ashfall");
@@ -261,15 +319,29 @@ fn export_packs() {
         let (Some(pack), Some(name), Some(path), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
             panic!("the line `{line}` is not `pack<TAB>name<TAB>path`");
         };
-        let effect = String::from_utf8_lossy(&std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"))).into_owned();
-        let key = code_key(&effect);
-        let port = MOD_FILES
-            .iter()
-            .find(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key)
-            .map(|(_, _, port)| *port)
-            .unwrap_or_else(|| panic!("{path}: no MOD_FILES entry of {name} with the code key {key:#018x}"));
-        let definition = keyed_definition(name, Some(&effect)).expect("a port of a MOD_FILES entry");
-        println!("export: {pack} | {name} | port {port} | key {key:#018x} | {path}");
+        let keyed = keyed_name(name);
+        let mut definition = if path == "-" {
+            // No copy of the mod's file: the port with its own numbers.
+            let port = MOD_FILES
+                .iter()
+                .find(|(mod_name, _, _)| *mod_name == keyed)
+                .map(|(_, _, port)| *port)
+                .unwrap_or_else(|| panic!("{name}: no MOD_FILES entry of {keyed}"));
+            println!("export: {pack} | {name} | port {port} | no file");
+            keyed_definition(port, None).expect("the port of a MOD_FILES entry")
+        } else {
+            let effect =
+                String::from_utf8_lossy(&std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"))).into_owned();
+            let key = code_key(&effect);
+            let port = MOD_FILES
+                .iter()
+                .find(|(mod_name, mod_key, _)| *mod_name == keyed && *mod_key == key)
+                .map(|(_, _, port)| *port)
+                .unwrap_or_else(|| panic!("{path}: no MOD_FILES entry of {keyed} with the code key {key:#018x}"));
+            println!("export: {pack} | {name} | port {port} | key {key:#018x} | {path}");
+            keyed_definition(keyed, Some(&effect)).expect("a port of a MOD_FILES entry")
+        };
+        definition.name = name.to_string();
         let at = (pack.to_string(), name.to_string());
         match groups.iter_mut().find(|(group, _)| *group == at) {
             Some((_, copies)) => copies.push((path.to_string(), definition)),
@@ -294,9 +366,13 @@ fn export_packs() {
             first.1,
             "{name}: the file does not give its Definition back"
         );
-        let folder = ports_folder().join(pack).join("shaders").join("XEshaders");
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join(format!("{name}.wgsl"));
+        // A name with a folder (`InspectIt/Bokeh`) writes into that folder.
+        let path = ports_folder()
+            .join(pack)
+            .join("shaders")
+            .join("XEshaders")
+            .join(format!("{name}.wgsl"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &text).unwrap();
         println!(
             "export: wrote {} ({} copies, {} bytes)",

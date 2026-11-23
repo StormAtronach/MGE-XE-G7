@@ -15,6 +15,7 @@ use nirender_wgpu::objects::Create;
 use nirender_wgpu::{SceneView, wgpu};
 
 use super::shading;
+use crate::renderer::core_files::WATER_VOLUME;
 
 /// The bit of the stencil buffer that says "inside a dry space".
 pub(super) const DRY_BIT: u32 = 0x02;
@@ -35,55 +36,14 @@ pub(super) fn outside() -> wgpu::StencilState {
     }
 }
 
-const DRY: &str = "
-@vertex fn vs_zero(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
-    return vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.5, 1.0);
-}
-
-@fragment fn fs_none() -> @location(0) vec4f {
-    return vec4f(0.0);
-}
-
-struct Mask {
-    @builtin(position) position: vec4f,
-    @location(0) world: vec3f,
-}
-
-// A corner of a dry space, with the clip depth of the plane of the sea (`water.rs`).
-@vertex fn vs_mask_plane(@location(0) world: vec3f) -> Mask {
-    var out: Mask;
-    out.world = world;
-    out.position = clip_of(world);
-    out.position.z = out.position.w * water.land.z + water.land.w;
-    return out;
-}
-
-// The same with the depth of the game, for the surfaces of volumes.
-@vertex fn vs_mask(@location(0) world: vec3f) -> Mask {
-    var out: Mask;
-    out.world = world;
-    out.position = clip_of(world);
-    return out;
-}
-
-// Only the faces on the far side of the plane of the sea (the level less 1) from the eye.
-@fragment fn fs_mask_plane(in: Mask) -> @location(0) vec4f {
-    let level = water.world.z - 1.0;
-    if (in.world.z - level) * (u.eye.z - level) > 0.0 {
-        discard;
-    }
-    return vec4f(0.0);
-}
-";
-
 pub(super) fn shader() -> String {
     format!(
         "{}{}{}{}{}",
         super::super::view::wgsl(),
         nirender_wgpu::depth::wgsl(),
-        shading::COMMON,
-        shading::WATER_NORMAL,
-        DRY
+        shading::common(),
+        shading::water_normal(),
+        WATER_VOLUME.part("dry")
     )
 }
 
