@@ -705,7 +705,6 @@ const MOD_FILES: &[(&str, u64, &str)] = &[
     // Ultra Bloom (the ports are in post_look.rs).
     ("XERO-lut", 0xa9673036fce07524, "XERO-lut"),
     ("Ultra Bloom", 0xa1cb2855ecbfb4f4, "Ultra Bloom"),
-    ("Eternal Shine", 0x4b774efbffa76dc7, "Eternal Shine"),
 ];
 
 /// A line of an effect file that gives a name one number: `#define NAME value`, or

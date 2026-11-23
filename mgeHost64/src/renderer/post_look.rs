@@ -1,31 +1,14 @@
 //! The looks of post shaders of MGE XE mods on the wgpu renderer (W576, the owner's D606 and
-//! D607): XERO-lut, Ultra Bloom and Eternal Shine. Each port gives the look of its effect file
-//! with new code: no line of the effect files is in it. A port is found through `MOD_FILES` of
-//! `post.rs`, by the name and the code key of the mod's file, so a chain that names the mod's
-//! shader gets the port.
+//! D607): XERO-lut and Ultra Bloom. Each port gives the look of its effect file with new code:
+//! no line of the effect files is in it. A port is found through `MOD_FILES` of `post.rs`, by
+//! the name and the code key of the mod's file, so a chain that names the mod's shader gets the
+//! port.
 //!
 //! The inputs that a mod's Lua gave the shader on Direct3D 9 come from the helper here.
 //!
-//! Eternal Shine takes the lights of the frame from the renderer (`frame_lights` of the common
-//! part of `post.rs`) in place of the mod's Lua. Its values are variables of the shader: the
-//! settings of mge-config's `post_values`, with the Lua's defaults. The glow word of a light is
-//! `radmult` (0.3) of its radius (at most 1000), and the air is `int` (0.25) in an interior,
-//! `rain` (0.5) in rain, thunder and snow, else `ext` (0.4). A line of Lua sets one, for
-//! example `mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`; d3d8.dll keeps the
-//! values in `Eternal Shine.values.toml` beside the effect file. The differences from the mod
-//! on Direct3D 9:
-//! - The lights are those of the lit draws of the world in the frame. A light with no lit draw
-//!   in view gives no glow; the Lua took every light of the active cells.
-//! - Fog, ash, blight and blizzard get 0.4 or 0.5: the helper does not know these weathers
-//!   (the Lua gave them 0.75).
-//! - The colour of a light holds its dimmer, so the glow takes the dimmer squared; the Lua took
-//!   it once.
-//! - No fade-in of 3 seconds after a light comes, and no skip of the lights of value 40000.
-//! - A light within `near_eye` (100) units of the eye gives no glow: the player's own light in
-//!   first person, which would put the eye inside its glow. The Lua left out the player's light
-//!   in every view; here the player's light in a far third-person view glows as the others (the
-//!   owner's choice, 2026-11-23).
-//! - The mod's menu does not act on wgpu: its values are the variables above.
+//! Eternal Shine was a port of this file; it is the file `Eternal Shine.wgsl` of the pack
+//! "Eternal Shine - wgpu shaders" in `ports/` now (W609). The GPU tests of its glow terms are
+//! here and read that file.
 
 use super::post::{Shader, Variable, full};
 
@@ -41,8 +24,6 @@ const fn value(name: &'static str, default: &'static [f32; 1]) -> Variable {
 
 /// The place of an effect file without a category in the order of the chain.
 const NO_CATEGORY: i64 = 6_000_000;
-/// The place of an effect file of the category scene.
-const SCENE: i64 = 1_000_000;
 
 /// The colour grade through a table of N x N x N colours, stored as a strip of N squares
 /// side by side, N x N each: red across a square, green down, blue from square to square.
@@ -204,143 +185,6 @@ fn exposure() -> f32 {
 }
 ";
 
-/// The glow of a light: a sphere around it, its density 1 at the centre and 0 at the edge, as
-/// 1 - (d / R)^2 for the distance d from the centre and the radius R of the sphere. The eye
-/// ray of a pixel gathers the density up to the surface of the pixel; the glow is that density
-/// cubed, in the colour of the light squared. No term reads the frame: a test runs them alone.
-macro_rules! glow_math {
-    () => {
-        "
-// The density that a ray gathers through a sphere of radius 1, from the eye to `far`, all in
-// the units of the sphere: `o` is the eye relative to the centre, `d` the direction (length 1).
-// Along the ray p(t) = o + t d the density is 1 - |p|^2 = h2 - (t + b)^2, with b = d . o and
-// h2 = b^2 - |o|^2 + 1, the square of the half chord. With u = t + b the integral is
-// h2 u - u^3 / 3, between the start of the ray or of the chord (u = max(b, -h)) and its end
-// or the surface (u = min(h, far + b)). The chord through the centre gives 4/3; the scale 3/4
-// makes it 1.
-fn glow_density(o: vec3f, d: vec3f, far: f32) -> f32 {
-    let b = dot(d, o);
-    let h2 = b * b - dot(o, o) + 1.0;
-    if h2 <= 0.0 {
-        return 0.0;
-    }
-    let h = sqrt(h2);
-    let u1 = max(-h, b);
-    let u2 = min(h, far + b);
-    if u2 <= u1 {
-        return 0.0;
-    }
-    return 0.75 * (h2 * (u2 - u1) - (u2 * u2 * u2 - u1 * u1 * u1) / 3.0);
-}
-
-// The glow word of a light of the game's radius `radius` (`mult` of it, the radius at most
-// 1000), and the radius of its sphere, which grows faster than the word.
-fn glow_word(radius: f32, mult: f32) -> f32 {
-    return min(radius, 1000.0) * mult;
-}
-fn glow_sphere(word: f32) -> f32 {
-    return pow(word / 256.0, 1.0 / 0.6) * 2500.0;
-}
-
-// The glow of one light along the eye ray: `centre` relative to the eye, `dir` of length 1,
-// `far` the distance to the surface of the pixel, `air` the strength of the air, `mult` the
-// multiplier of the radius.
-fn glow_light(colour: vec3f, radius: f32, mult: f32, centre: vec3f, dir: vec3f, far: f32, air: f32) -> vec3f {
-    let word = glow_word(radius, mult);
-    if word <= 0.0 {
-        return vec3f(0.0);
-    }
-    let sphere = glow_sphere(word);
-    let density = glow_density(-centre / sphere, dir, far / sphere);
-    return air * 10.0 / word * colour * colour * (density * density * density);
-}
-"
-    };
-}
-
-const ETERNAL_SHINE: &str = concat!(
-    glow_math!(),
-    "
-// The strength of the air: thin in an interior, thick in rain, thunder and snow, and none in
-// the light of a bright day (the sun's red). The variables `int`, `rain` and `ext` hold the
-// three strengths.
-fn glow_air() -> f32 {
-    var air = ext();
-    if u.sunamb.w > 0.5 {
-        air = int();
-    } else if u.switches.z > 0.0 {
-        air = rain();
-    }
-    return air * saturate(1.0 - u.suncol.r);
-}
-
-// The eye ray of a point of the picture in the world, with a view depth of 1.
-fn eye_ray(tex: vec2f) -> vec3f {
-    var v = vec3f(mview(0u, 2u), mview(1u, 2u), mview(2u, 2u));
-    v += (1.0 / mproj(0u, 0u) * (2.0 * tex.x - 1.0)) * vec3f(mview(0u, 0u), mview(1u, 0u), mview(2u, 0u));
-    v += (-1.0 / mproj(1u, 1u) * (2.0 * tex.y - 1.0)) * vec3f(mview(0u, 1u), mview(1u, 1u), mview(2u, 1u));
-    return v;
-}
-
-// Half a level of 8 bits, up or down in the order of a 4 x 4 Bayer cell: no bands in the
-// soft edge of a glow.
-fn dither(pixel: vec2f) -> f32 {
-    let order = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
-    let cell = vec2u(pixel) % 4u;
-    return ((order[cell.y * 4u + cell.x] + 0.5) / 16.0 - 0.5) / 255.0;
-}
-
-const GLOW_SKY: f32 = 1.0e7;
-
-// The glows of all the lights of the frame, added to the picture in linear light. The sum
-// stops at 1, as the 8-bit passes of the mod cut it.
-@fragment fn glow(in: Quad) -> @location(0) vec4f {
-    let picture = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0);
-    let count = frame_light_info.count;
-    if count == 0u {
-        return picture;
-    }
-    let shaken = saturate3(picture.rgb + dither(in.position.xy));
-    let air = glow_air();
-    if air <= 0.0 {
-        return vec4f(shaken, picture.a);
-    }
-    let ray = eye_ray(in.tex);
-    let along = length(ray);
-    let dir = ray / along;
-    let far = min(textureSampleLevel(depthframe, point_clamp, in.tex, 0.0).r, GLOW_SKY) * along;
-    let offset = frame_light_info.offset.xyz;
-    let mult = radmult();
-    // A light nearer to the eye than this gives no glow: the light that the player holds in
-    // first person.
-    let near = near_eye();
-    var glow = vec3f(0.0);
-    for (var i = 0u; i < count; i += 1u) {
-        if frame_lights[i].position.w > 2.5 || frame_lights[i].cone.z <= 0.0 {
-            continue;
-        }
-        let centre = frame_lights[i].position.xyz + offset;
-        if dot(centre, centre) < near * near {
-            continue;
-        }
-        glow += glow_light(frame_lights[i].diffuse.rgb, frame_lights[i].cone.z, mult, centre, dir, far, air);
-    }
-    let lit = pow(pow(picture.rgb, vec3f(2.2)) + min(glow, vec3f(1.0)), vec3f(1.0 / 2.2));
-    return vec4f(saturate3(lit + dither(in.position.xy)), picture.a);
-}
-"
-);
-
-/// The values of Eternal Shine that a player or a mod can set from Lua: the settings of its
-/// file in `ports/`, in their order. A test checks that this list has all of them.
-const ETERNAL_SHINE_VALUES: &[Variable] = &[
-    value("radmult", &[0.3]),
-    value("int", &[0.25]),
-    value("ext", &[0.4]),
-    value("rain", &[0.5]),
-    value("near_eye", &[100.0]),
-];
-
 /// The ports of this file, after those of `post.rs` and `post_jop.rs`.
 pub const SHADERS: &[Shader] = &[
     Shader {
@@ -374,18 +218,6 @@ pub const SHADERS: &[Shader] = &[
             value("dist1", &[1.5]),
             value("dist2", &[0.5]),
         ],
-    },
-    // One pass loops all the lights of the frame; the mod's Lua split them over four passes.
-    Shader {
-        name: "Eternal Shine",
-        source: ETERNAL_SHINE,
-        passes: &[full("glow")],
-        disable_flags: 0,
-        no_sun_glare: false,
-        priority: SCENE,
-        textures: &[],
-        requires_hdr: false,
-        variables: ETERNAL_SHINE_VALUES,
     },
 ];
 
@@ -597,6 +429,18 @@ const COLOURS = array<vec3f, {width}>({list});
         assert!(XERO_LUT.starts_with(lut_lookup!()));
     }
 
+    /// The file of the pack "Eternal Shine - wgpu shaders".
+    const ETERNAL_SHINE_FILE: &str =
+        include_str!("../../../ports/Eternal Shine - wgpu shaders/shaders/XEshaders/Eternal Shine.wgsl");
+
+    /// The glow terms of the file: from its first function to the function `glow_air`. They
+    /// read nothing of the frame, so a test runs them alone.
+    fn glow_terms() -> &'static str {
+        let start = ETERNAL_SHINE_FILE.find("fn glow_density(").expect("glow_density in the file");
+        let end = ETERNAL_SHINE_FILE.find("fn glow_air(").expect("glow_air in the file");
+        &ETERNAL_SHINE_FILE[start..end]
+    }
+
     /// Runs `cases`, WGSL with `fn case_of(i: u32) -> vec4f` after the glow terms, for `count`
     /// cases (at most 16) on the GPU, and gives the results.
     fn glow_cases(cases: &str, count: u32) -> Vec<[f32; 4]> {
@@ -628,7 +472,7 @@ const COLOURS = array<vec3f, {width}>({list});
     return case_of(u32(position.x));
 }}
 ",
-            glow_math!()
+            glow_terms()
         );
         let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("test glow"),
@@ -798,48 +642,39 @@ fn case_of(i: u32) -> vec4f {
         assert_eq!(results[2][..3], [0.0; 3], "a surface before the sphere");
     }
 
-    /// The port reads the lights of the frame (the chain then asks for them) and has the
-    /// glow terms of the tests.
+    /// The file reads the lights of the frame (the chain then asks for them) and has the glow
+    /// terms of the tests.
     #[test]
-    fn the_glow_port_reads_the_lights_and_has_the_terms() {
-        assert!(ETERNAL_SHINE.starts_with(glow_math!()));
-        assert!(ETERNAL_SHINE.contains("frame_lights"));
+    fn the_glow_file_reads_the_lights_and_has_the_terms() {
+        assert!(ETERNAL_SHINE_FILE.contains("frame_lights"));
+        for term in ["glow_density", "glow_word", "glow_sphere", "glow_light"] {
+            assert!(glow_terms().contains(&format!("fn {term}(")), "{term}");
+        }
     }
 
-    /// The file of the pack "Eternal Shine - wgpu shaders".
-    const ETERNAL_SHINE_FILE: &str =
-        include_str!("../../../ports/Eternal Shine - wgpu shaders/shaders/XEshaders/Eternal Shine.wgsl");
-
-    /// The lines of a text that are not empty.
-    fn code_lines(text: &str) -> Vec<&str> {
-        text.lines().filter(|line| !line.trim().is_empty()).collect()
-    }
-
-    /// The WGSL of the file is that of the port, after its header: the pictures are equal by
-    /// construction.
-    #[test]
-    fn the_file_has_the_wgsl_of_the_port() {
-        assert!(code_lines(ETERNAL_SHINE_FILE).ends_with(&code_lines(ETERNAL_SHINE)));
-    }
-
-    /// The variables of the port are the settings of its file in `ports/`, in their order and
-    /// with their defaults, and the port reads each one.
+    /// The variables of the file are its settings, with the defaults of the mod's Lua
+    /// (`mwse.loadConfig` of its main.lua) and the owner's 100 units of `near_eye`, and the file
+    /// reads each one.
     #[test]
     fn the_glow_values_are_the_settings_of_the_file() {
         let header = mge_config::post_header::parse(ETERNAL_SHINE_FILE).expect("the header");
-        let port = SHADERS.iter().find(|s| s.name == "Eternal Shine").expect("the port");
-        let have: Vec<(&str, &[f32])> = port.variables.iter().map(|v| (v.name, v.default)).collect();
-        let defaults = header.setting_defaults();
-        let want: Vec<(&str, &[f32])> = header
+        let have: Vec<(&str, f32)> = header
             .settings
             .iter()
-            .zip(&defaults)
-            .map(|(name, default)| (name.as_str(), std::slice::from_ref(default)))
+            .map(String::as_str)
+            .zip(header.setting_defaults())
             .collect();
+        let want = [
+            ("radmult", 0.3),
+            ("int", 0.25),
+            ("ext", 0.4),
+            ("rain", 0.5),
+            ("near_eye", 100.0),
+        ];
         assert_eq!(have, want);
         assert_eq!(header.variables.len(), header.settings.len());
         for (name, _) in want {
-            assert!(ETERNAL_SHINE.contains(&format!("{name}()")), "the port reads {name}");
+            assert!(ETERNAL_SHINE_FILE.contains(&format!("{name}()")), "the file reads {name}");
         }
     }
 }

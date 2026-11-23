@@ -22,20 +22,21 @@ Shaders Compilation), the 23 shaders of Joy of Painting (`jop_*`), and Ultra Blo
 XERO-lut (Ultra Bloom; XERO-lut reads the colour table `Textures/XERO-lut.tga` of the mod).
 On wgpu, Ultra Bloom takes its exposure from the night and the cell: 1 in the day, 2 at
 night, 1.5 in an interior. The mod's menu values Exposure, Interior exposure bonus and Night
-exposure bonus do not act on wgpu; its other values do. Eternal Shine (Eternal Shine) gives a
-glow around each light from the lights of the frame, without the mod's Lua. Its menu does not
-act on wgpu; its values are variables of the shader with the Lua's defaults: `radmult` 0.3,
-`int` 0.25, `ext` 0.4, `rain` 0.5, and `near_eye` 100. A line of Lua sets one, for example
-`mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`. MGE XE keeps the values between
-game sessions in `Eternal Shine.values.toml` beside the effect file
-(`Data Files/shaders/XEshaders`; under Mod Organizer 2, in its overwrite folder). It writes the
-file about 1 s after the last change, so a change in the last second before the game ends can
-be lost. A missing file gives the defaults; a line that is not valid is skipped, with a line in
-mgeXE.log. A light gives a glow only when a draw that it lights is in view, and a light within
-`near_eye` units of the eye gives none (the torch of the player in first person). Files with the name
+exposure bonus do not act on wgpu; its other values do. Files with the name
 of a stock shader and other code have a port of their own, found by the code of the file:
 Eye Adaptation (HDR), SSAO HQ and Sunshafts of the STEP Shaders Compilation, Sunshafts of
 Watch the Skies, Underwater Effects of Krokantor's Enhanced Water Shader.
+
+Mods with a shader pack: a pack is a small mod `<Mod> - wgpu shaders` with the `.wgsl` files
+of the mod's shaders (the folders of `ports/` in the repository), installed after the mod.
+Eternal Shine has the pack "Eternal Shine - wgpu shaders", and runs on wgpu only with it: its
+`Eternal Shine.wgsl` gives a glow around each light from the lights of the frame, without the
+mod's Lua. The mod's menu does not act on wgpu; the values are the settings of the file (see
+"Settings"), with the Lua's defaults: `radmult` 0.3, `int` 0.25, `ext` 0.4, `rain` 0.5, and
+`near_eye` 100. A line of Lua sets one, for example
+`mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`. A light gives a glow only when a
+draw that it lights is in view, and a light within `near_eye` units of the eye gives none (the
+torch of the player in first person).
 
 ## A port and the effect file of a mod
 
