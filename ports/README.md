@@ -17,6 +17,11 @@ reads the `.wgsl` file of the same name:
 | Ashfall - wgpu shaders | Ashfall (`ashfall.fx`) |
 | Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx`) |
 | Eternal Shine - wgpu shaders | Eternal Shine |
+| Pixel Shader Style Water for MGE XE - wgpu shaders | Pixel Shader Style Water for MGE XE 1.0 by Hrnchamd (its `XE Mod Water.fx`, md5 7f40c5546d36b84cbdc83b2830def8ff, in Morrowind Refreshed and Morrowind Refreshed (260602)) |
+
+Two packs give `shaders/core-mods/XE Mod Water.wgsl`: Enhanced Water Shader and Pixel Shader
+Style Water. Install one water pack at a time, the one of the water mod that is on. The test
+`each_water_file_of_the_packs_is_used` of `core_mods.rs` checks each water file of the packs.
 
 ## The exported packs
 
