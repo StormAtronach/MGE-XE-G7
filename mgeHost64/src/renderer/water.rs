@@ -157,6 +157,10 @@ fn plane_color(in: Out) -> vec4f {
         p.reflect_w = in.clamped.z;
         p.reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / p.reflect_w, 0.5 - 0.5 * in.clamped.y / p.reflect_w);
     }
+    // The debug view `fog`, before the hooks: a core mod's water shows the fog of the plane too.
+    if fog_view_on() {
+        return water_fog_view(p.eye_vec, p.distance);
+    }
     if water.modes.y > 0.5 {
         return underwater_color(p);
     }

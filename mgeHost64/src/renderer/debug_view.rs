@@ -28,11 +28,23 @@ pub enum View {
     Water(f32),
     /// One term of the post chain: 1 tints the result, 2 shows the linear depth.
     Post(f32),
+    /// Each draw writes the part of the fog that it applied, as grey (black no fog, white all
+    /// fog); the sky and the clouds are blue. The passes that would add to the grey or change
+    /// it are left out while it is on ([`FOG_VIEW_OUT`]).
+    Fog,
 }
 
+/// Why a pass is left out with the view `fog`: the glows of the distant lights and the caustics
+/// of the sea add to the picture, the blend mixes the near scene into the distant land's
+/// colour, and the post chain changes the picture.
+pub const FOG_VIEW_OUT: &str = "left out by the debug view fog";
+
+/// The overlay line of the view `fog`: the passes that it leaves out.
+pub const FOG_VIEW_LINE: &str = "debug view fog: glows, sea caustics, blend and post chain left out";
+
 impl View {
-    /// The names of the views, in the order of their ids (1 to 5).
-    const NAMES: [&'static str; 5] = ["lights", "shadow-layers", "shadow-map", "water", "post"];
+    /// The names of the views, in the order of their ids (1 to 6).
+    const NAMES: [&'static str; 6] = ["lights", "shadow-layers", "shadow-map", "water", "post", "fog"];
 
     /// The view of a name and its term. The water and the post chain take a term above 0;
     /// the other views take none.
@@ -49,14 +61,17 @@ impl View {
             ("shadow-map", None) => View::ShadowMap,
             ("water", Some(term)) => View::Water(term?),
             ("post", Some(term)) => View::Post(term?),
+            ("fog", None) => View::Fog,
             ("water" | "post", None) => return Err(format!("the view {name} takes a term")),
-            ("lights" | "shadow-layers" | "shadow-map", Some(_)) => return Err(format!("the view {name} takes no term")),
+            ("lights" | "shadow-layers" | "shadow-map" | "fog", Some(_)) => {
+                return Err(format!("the view {name} takes no term"));
+            }
             _ => return Err(format!("no view is named {name:?} (the views: {})", View::NAMES.join(", "))),
         };
         Ok(view)
     }
 
-    /// The id of the view ([`view_id`]): 0 none, then 1 to 5 in the order of [`View::NAMES`].
+    /// The id of the view ([`view_id`]): 0 none, then 1 to 6 in the order of [`View::NAMES`].
     pub fn id(self) -> u32 {
         match self {
             View::None => view_id::NONE,
@@ -65,6 +80,7 @@ impl View {
             View::ShadowMap => view_id::SHADOW_MAP,
             View::Water(_) => view_id::WATER,
             View::Post(_) => view_id::POST,
+            View::Fog => view_id::FOG,
         }
     }
 
@@ -124,6 +140,12 @@ impl DebugView {
 
     pub fn shadow_map(&self) -> bool {
         self.view == View::ShadowMap
+    }
+
+    /// The view `fog`: the world shader's variant, the debug lane of the view group, and the
+    /// passes left out ([`FOG_VIEW_OUT`]).
+    pub fn fog(&self) -> bool {
+        self.view == View::Fog
     }
 
     /// The id of the frame's view for the crate (`FrameParameters::debug_view`). The view of
@@ -256,6 +278,9 @@ mod tests {
         assert!(View::parse("post", Some("x")).is_err());
         assert!(View::parse("lights", Some("1")).is_err());
         assert!(View::parse("light", None).is_err());
+        assert_eq!(View::parse("fog", None), Ok(View::Fog));
+        assert!(View::parse("fog", Some("1")).is_err());
+        assert_eq!(View::Fog.describe(), "fog");
         for (id, name) in View::NAMES.iter().enumerate() {
             let term = matches!(*name, "water" | "post").then_some("1");
             assert_eq!(View::parse(name, term).unwrap().id(), id as u32 + 1);
@@ -360,5 +385,24 @@ mod tests {
         assert_eq!(debug.frame_id(false), view_id::LIGHTS);
         debug.tune("view water 1");
         assert_eq!(debug.frame_id(false), view_id::WATER);
+    }
+
+    /// The view `fog` is the world shader's variant of its id, and only it turns on the debug
+    /// lane of the view group: no other view, and no view, leaves the lane at 0.
+    #[test]
+    fn the_fog_view_is_a_world_variant_and_the_only_lane() {
+        let mut debug = DebugView::default();
+        assert!(!debug.fog());
+        assert_eq!(crate::renderer::view::fog_view_lane(debug.fog()), [0.0; 4]);
+        debug.tune("view fog");
+        assert!(debug.fog());
+        assert_eq!(debug.frame_id(false), view_id::FOG);
+        assert_eq!(nirender_wgpu::debug_lines::world_variant(debug.frame_id(false)), view_id::FOG);
+        assert_eq!(crate::renderer::view::fog_view_lane(debug.fog())[0], 1.0);
+        for other in ["view lights", "view shadow-map", "view water 5", "view post 2", "view off"] {
+            debug.tune(other);
+            assert!(!debug.fog(), "{other}");
+            assert_eq!(crate::renderer::view::fog_view_lane(debug.fog()), [0.0; 4], "{other}");
+        }
     }
 }

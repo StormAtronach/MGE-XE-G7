@@ -434,7 +434,7 @@ A debug view shows one value of the renderer in the picture, for a developer's t
 one shader view is on at a time. The line sources are a set beside it; this build has no line
 pass yet, so a line source has no effect.
 
-The views `lights`, `shadow-layers` and `water` add no work to normal play. Their code is only
+The views `lights`, `shadow-layers`, `fog` and `water` add no work to normal play. Their code is only
 in the pipelines that the view makes when it goes on, and the view drops them when it goes
 off. So the frame in which a view goes on makes its first pipelines and takes longer. While
 the `water` view is on, each frame draws the reflection, also with the plane out of
@@ -447,6 +447,7 @@ view.
 | `shadow-map` | the atlas of the shadow map in the lower left of the picture |
 | `water <term>` | one term of the built-in water shader, 1 to 10: the table and the rule for a core mod's `water_color` are in `docs/core-mods.md`, "The water debug views" |
 | `post <term>` | 1 tints the result of the post chain, 2 shows its linear depth over 10000 units as grey |
+| `fog` | each draw writes the part of the fog that it applied, as grey: black no fog, white all fog. It is the draw's own fog: that of the game's scene or of the shape's own fog property for a draw of the game, none for a material without fog, the curve of the distant land for the land, the statics and the grass, and that of the water for the water, from above or below. Each draw of the sky (the dome, the clouds, the stars, the sun, the moons) is blue; a draw that adds to the picture writes black, the sun glare too. The dark overlay of the actors' stencil shadows writes nothing, so the fog under a shadow shows. The glows of the distant lights, the caustics of the sea, the blend and the post chain are left out while it is on (they add to the grey or change it), and the overlay names them |
 
 The line sources: `lights`, `shadow-boxes`, `bounds`, `lua`.
 
