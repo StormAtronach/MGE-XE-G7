@@ -37,8 +37,12 @@ clouds hook and the particle hook.
   versions, and the log names the file and the reason. Exception: `XE Mod Shadow` and
   `XE Mod Shadow Data` are dropped together, so the code of one mod never runs with the values
   of another.
-- **The files are read once,** when the renderer's helper starts. To try a change, start the
-  game again.
+- **The files are read when the renderer's helper starts,** and again at each call of
+  `mge.reloadDistantLand()` (for example from the MWSE console). To try a change, save the
+  file and make the call: the world, the grass and the water take the new hooks within two
+  frames, and the log writes `core mods: read again (mge.reloadDistantLand)` and the lines of
+  the start. A file that fails is dropped alone, as at the start. A replay does not read the
+  files again.
 
 ## The log
 

@@ -1590,6 +1590,26 @@ namespace Deviceless {
         }
     }
 
+    // The number of calls of mge.reloadDistantLand, and the number that the renderer has.
+    // A mod calls from Lua, which can run on the cell worker; the frame sends on the main thread.
+    static std::atomic<UINT> reloadsAsked{ 0 };
+    static UINT reloadsSent = 0;
+
+    void requestReload() {
+        reloadsAsked.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    static void sendReload() {
+        static const UINT ReloadId = 14;
+        const UINT asked = reloadsAsked.load(std::memory_order_relaxed);
+        if (asked == reloadsSent) {
+            return;
+        }
+        reloadsSent = asked;
+        const UINT record[2] = { 1, asked };
+        sendToRenderer(ReloadId, record, sizeof(record));
+    }
+
     static void prepare() {
         if (!ready) {
             D3DXMatrixIdentity(&camEffectsMatrix);
@@ -2136,6 +2156,7 @@ namespace Deviceless {
         environmentSent = false;
         sendSettings();
         sendPictureRequests();
+        sendReload();
         WaterLooks::sendToRenderer();
         StatusOverlay::sendToRenderer();
     }

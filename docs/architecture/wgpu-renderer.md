@@ -58,9 +58,10 @@ Morrowind.exe (32-bit)                                 numidium.exe --live (64-b
 | 11 | hello: version, `MGE_EXTENSION_FORMAT`, the build id of d3d8.dll (64 bytes) | yes | once, at the plugin's load |
 | 12 | light settings (`Deviceless::sendLightSettings`): version, the engine's nine `[LightAttenuation]` values, the light limit asked and in force | yes | once, when the game is loaded |
 | 13 | light records (`Deviceless::checkLightRecords`): version, the count, then for each of the game's light records its radius, colour, flags and id; from MWSE's native query 2 | yes | when MWSE's answer differs from its last answer; the check runs at a teleport, a door or the load of a game (MWSE's native event 5; a walk across the border of an exterior cell gives no such event), at the first frame after a load, and one time in each second of real time, in a menu too. Always at the load of a game. No check runs before the game resolved its ids for the first time (MWSE's native event 3: the load or the start of a game), where the first check runs: while the game reads its plugins it has only a part of its light records. So no record 13 goes at the main menu of a normal start |
+| 14 | reload (`Deviceless::requestReload`, `mge.reloadDistantLand`): version, the number of calls since the start. The helper reads the core-mod files again before its next frame; a replay ignores it | no | at Present after a call |
 
 A kept record (bit `0x80000000`) stays in the stream, so a capture file holds it. Use kept
-records for state. The next free id is 14. The ids are constants at the top of `renderer.rs`
+records for state. The next free id is 15. The ids are constants at the top of `renderer.rs`
 and in `Deviceless`; each side names the other.
 
 The environment flags (record 1): 1 exponential fog, 2 under water, 4 an exterior or an

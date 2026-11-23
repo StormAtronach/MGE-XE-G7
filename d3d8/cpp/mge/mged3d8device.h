@@ -63,6 +63,9 @@ namespace Deviceless {
     // Asks the renderer for a picture file of the next frame, with or without the
     // interface of the game. The format is that of the extension of the path.
     void requestPicture(const char* path, bool withUI);
+    // Asks the renderer to read the core-mod files again (mge.reloadDistantLand). The next
+    // frame sends the request.
+    void requestReload();
     // True on the thread of the game's Present, the main thread; false before the first Present.
     bool onMainThread();
     void transform(unsigned state, D3DMATRIX* matrix, bool targetIsBackBuffer);

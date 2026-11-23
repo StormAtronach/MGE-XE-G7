@@ -1224,6 +1224,21 @@ impl Shared {
         })))
     }
 
+    /// The build markers of the session, for a load of the files again.
+    pub fn markers(&self) -> BuildMarkers {
+        self.session().markers.clone()
+    }
+
+    /// The core-mod files were read again (`mge.reloadDistantLand`, W426): the session takes
+    /// `mods` and their problems, and the world shader takes a new text. The markers and the
+    /// plant stay. Each home takes the new hooks at its next build.
+    pub fn reload(&self, mods: CoreMods) {
+        let mut session = self.session();
+        session.problems = mods.problems.clone();
+        session.mods = mods;
+        session.world_changed = true;
+    }
+
     /// The built-in hooks, with no marker and no plant.
     pub fn built_in() -> Shared {
         Shared::new(CoreMods::built_in(), BuildMarkers::default(), None)
@@ -2265,6 +2280,45 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert!(grass.plants(ModFile::Shadow, GRASS_HOME));
         assert!(!grass.plants(ModFile::Shadow, WORLD_HOME) && !grass.plants(ModFile::Sky, GRASS_HOME));
         assert!(Plant::parse("Shadow").unwrap().plants(ModFile::Shadow, WORLD_HOME));
+    }
+
+    /// A reload (`mge.reloadDistantLand`) gives the session the new hooks and their problems,
+    /// and the world a new text; the plant stays. The null: before the reload, the session has
+    /// the old hooks and no change of the world.
+    #[test]
+    fn a_reload_gives_the_new_hooks_and_problems_and_keeps_the_plant() {
+        let shared = Shared::new(
+            mods_of(&[], &HOMES),
+            BuildMarkers::default(),
+            Plant::parse("Shadow@grass:keep"),
+        );
+        assert_eq!(shared.shadow_hooks(), CoreMods::built_in().shadow_hooks());
+        assert!(shared.problems().is_empty());
+        assert!(!shared.take_world_changed());
+        // Every clone sees a reload: the statics and the water hold one.
+        let other = shared.clone();
+
+        // A file that breaks a rule is dropped, and the built-ins stay. The problems of the load
+        // (the drops by a build marker) replace those of the session.
+        let mut broken = mods_of(&[("Shadow.wgsl", "fn shadow_esm(dz: f32) -> f32 { return 0.0; }\n")], &HOMES);
+        assert!(!broken.uses(ModFile::Shadow));
+        broken.problems = vec!["core mod: a drop of the load".to_string()];
+        shared
+            .session()
+            .problems
+            .push("core mod: a drop of the first build".to_string());
+        shared.reload(broken);
+        assert_eq!(other.shadow_hooks(), CoreMods::built_in().shadow_hooks());
+        assert_eq!(other.problems(), ["core mod: a drop of the load"]);
+        assert!(other.take_world_changed());
+
+        // The file fixed: its hooks, and no problem.
+        let file = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        shared.reload(mods_of(&[("Shadow.wgsl", &file)], &HOMES));
+        assert_eq!(other.shadow_hooks(), file);
+        assert!(other.problems().is_empty());
+        assert!(other.take_world_changed());
+        assert!(shared.plant_keeps(GRASS_HOME));
     }
 
     /// No build marker goes into the folder of `MGE_XE_CORE_MODS_DIR`. The null: a marker folder
