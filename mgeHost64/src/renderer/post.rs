@@ -42,7 +42,9 @@ pub struct Variables {
     pub fognearcol: [f32; 4],
     /// `fognearstart`, `fognearrange`, and `rcpres`.
     pub fog_near: [f32; 4],
-    /// x: 1 with the exponential fog (the macro `USE_EXPFOG` of an effect file).
+    /// x: 1 with the exponential fog (the macro `USE_EXPFOG` of an effect file). y: the night,
+    /// 0 in the day and 1 at night (the environment's `night`), which no variable of MGE XE
+    /// has: a port reads it in place of a mod's Lua that set a variable by the hour.
     pub switches: [f32; 4],
 }
 
@@ -705,6 +707,7 @@ const MOD_FILES: &[(&str, u64, &str)] = &[
     ("jop_window", 0xfd2c875d2b5577e4, "jop_window"),
     // Ultra Bloom (the ports are in post_look.rs).
     ("XERO-lut", 0xa9673036fce07524, "XERO-lut"),
+    ("Ultra Bloom", 0xa1cb2855ecbfb4f4, "Ultra Bloom"),
 ];
 
 /// A line of an effect file that gives a name one number: `#define NAME value`, or

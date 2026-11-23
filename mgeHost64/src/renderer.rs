@@ -5948,7 +5948,7 @@ impl DistantLand {
                 1.0 / scene.target_size.0.max(1) as f32,
                 1.0 / scene.target_size.1.max(1) as f32,
             ],
-            switches: [if exponential { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            switches: [if exponential { 1.0 } else { 0.0 }, e.night, 0.0, 0.0],
         };
         // The flags of the environment, as `postProcess` of the Direct3D 9 path sets them: 1
         // an interior that is not like an exterior, 2 an exterior, 4 an interior that
@@ -8706,6 +8706,30 @@ mod frame_value_tests {
         drop(pass);
         scene.queue.submit([encoder.finish()]);
         drew
+    }
+
+    /// W576: the post chain gets the night of the environment in `switches.y`, for a port that
+    /// sets a look by the hour (Ultra Bloom's exposure). The null: a day gives 0.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_post_chain_gets_the_night() {
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gpu = TestDevice::new();
+        let scene = gpu.scene();
+        let (mut land, root) = super::set_free_tests::land_with_no_data("night");
+        for night in [0.7, 0.0] {
+            land.environment = Some(Environment {
+                version: Environment::VERSION,
+                night,
+                ..bytemuck::Zeroable::zeroed()
+            });
+            match land.post_inputs(&scene) {
+                Ok((variables, _, _)) => assert_eq!(variables.switches[1], night),
+                Err(_) => panic!("no inputs of the post chain with an environment"),
+            }
+        }
+        drop(land);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// W341 step B, acceptance 1: a load of the terrain that ends between `frame` and

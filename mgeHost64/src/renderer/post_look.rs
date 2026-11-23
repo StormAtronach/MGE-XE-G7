@@ -1,11 +1,22 @@
 //! The looks of post shaders of MGE XE mods on the wgpu renderer (W576, the owner's D606 and
 //! D607): XERO-lut, Ultra Bloom and Eternal Shine. Each port gives the look of its effect file
-//! with new code: no line of the effect files is in it. A port is found through `MOD_FILES` of `post.rs`, by the name and
-//! the code key of the mod's file, so a chain that names the mod's shader gets the port.
+//! with new code: no line of the effect files is in it. A port is found through `MOD_FILES` of
+//! `post.rs`, by the name and the code key of the mod's file, so a chain that names the mod's
+//! shader gets the port.
 //!
 //! The inputs that a mod's Lua gave the shader on Direct3D 9 come from the helper here.
 
-use super::post::{Shader, full};
+use super::post::{Shader, Variable, full};
+
+/// A variable that a mod sets from Lua: one value, with the value of the effect file.
+const fn value(name: &'static str, default: &'static [f32; 1]) -> Variable {
+    Variable {
+        name,
+        slots: 1,
+        per: 1,
+        default,
+    }
+}
 
 /// The place of an effect file without a category in the order of the chain.
 const NO_CATEGORY: i64 = 6_000_000;
@@ -46,18 +57,165 @@ const XERO_LUT: &str = concat!(
 "
 );
 
+/// Ultra Bloom: a bloom that squares its blur taps, a red halo on the brightest pixels, and a
+/// tone pass. The mod's Lua set `exposure` by the hour and the cell; here the exposure comes
+/// from the night of the environment (`u.switches.y`) and the interior flag, with the values of
+/// the mod's menu at their defaults: 1 in the day, 2 at night, 1.5 in an interior. The other
+/// values of the menu stay variables (`sun` is 1 less the bloom power).
+const ULTRA_BLOOM: &str = "
+fn night() -> f32 {
+    return u.switches.y;
+}
+fn is_interior() -> bool {
+    return u.sunamb.w > 0.5;
+}
+fn fog_range() -> f32 {
+    return u.fognearcol.w;
+}
+
+// The sky in the depth frame: no surface there (1e38).
+const SKY_DEPTH: f32 = 1.0e7;
+
+// The share of the effect that a pixel keeps by its depth, in an exterior: sky() for the sky;
+// all of it up to dist1() fog ranges, then less, to none dist2() fog ranges farther.
+fn far_share(tex: vec2f) -> f32 {
+    if is_interior() {
+        return 1.0;
+    }
+    let depth = textureSampleLevel(depthframe, point_clamp, tex, 0.0).r;
+    if depth > SKY_DEPTH {
+        return min(sky(), 1.0);
+    }
+    let start = fog_range() * dist1();
+    return saturate(1.0 - max(depth - start, 0.0) / (fog_range() * dist2()));
+}
+
+// The light that blooms: each channel softly from the threshold sun() up to 1. The alpha is
+// the hot mask: the brightest pixels only.
+@fragment fn bright(in: Quad) -> @location(0) vec4f {
+    let color = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0).rgb;
+    let glow = smoothstep(vec3f(sun()), vec3f(1.0), color) * far_share(in.tex);
+    let hot = smoothstep(0.9, 1.0, pow(length(color), 1.0 / 4.5));
+    return vec4f(glow, hot);
+}
+
+// The blur: 17 taps 2 texels apart (the middle one, and 8 to each side at 1.5, 3.5 ... 15.5
+// texels), weighted by a bell of variance 103 texels squared; the middle tap has half a
+// weight. The step is a texel over lerp(1.66, 6, the red of the sun), times radmult(): a
+// bright sun makes the glow tighter.
+const VARIANCE: f32 = 103.0;
+fn weight(x: f32) -> f32 {
+    return exp(-x * x / (2.0 * VARIANCE));
+}
+fn weight_sum() -> f32 {
+    var sum = 0.5 * weight(0.0);
+    for (var i = 0; i < 8; i++) {
+        sum += 2.0 * weight(1.5 + 2.0 * f32(i));
+    }
+    return sum;
+}
+fn tap_step(axis: vec2f) -> vec2f {
+    let radius = mix(1.66, 6.0, u.suncol.r) / radmult();
+    return axis * rcpres() / radius;
+}
+
+// Across: each tap is squared after its weight, so that the brightest parts lead. The 8-bit
+// target cuts the sum at 1, as the target of Direct3D 9 did.
+@fragment fn blur_across(in: Quad) -> @location(0) vec4f {
+    let step = tap_step(vec2f(1.0, 0.0));
+    let middle = 0.5 * weight(0.0) * textureSampleLevel(lastpass, linear_clamp, in.tex, 0.0);
+    var sum = middle * middle;
+    for (var i = 0; i < 8; i++) {
+        let x = 1.5 + 2.0 * f32(i);
+        let w = weight(x);
+        let a = w * textureSampleLevel(lastpass, linear_clamp, in.tex + x * step, 0.0);
+        let b = w * textureSampleLevel(lastpass, linear_clamp, in.tex - x * step, 0.0);
+        sum += a * a + b * b;
+    }
+    let total = weight_sum();
+    return 16.0 * sum / (total * total);
+}
+
+// Down, with the squared weights; then onto the picture in gamma 2: the glow added, the red
+// halo of the hot mask, a soft curve 2x / (1 + 2x), and back.
+@fragment fn blur_down_combine(in: Quad) -> @location(0) vec4f {
+    let step = tap_step(vec2f(0.0, 1.0));
+    let w0 = 0.5 * weight(0.0);
+    var sum = w0 * w0 * textureSampleLevel(lastpass, linear_clamp, in.tex, 0.0);
+    for (var i = 0; i < 8; i++) {
+        let x = 1.5 + 2.0 * f32(i);
+        let w = weight(x);
+        let pair = textureSampleLevel(lastpass, linear_clamp, in.tex + x * step, 0.0)
+            + textureSampleLevel(lastpass, linear_clamp, in.tex - x * step, 0.0);
+        sum += w * w * pair;
+    }
+    let total = weight_sum();
+    let glow = 16.0 * sum / (total * total);
+    let picture = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0).rgb;
+    var color = picture * picture + glow.rgb;
+    let halo = 3.0 * glow.rgb * glow.a * vec3f(0.6, 0.0091, 0.0);
+    color += saturate3(halo - color);
+    color = 2.0 * color / (1.0 + 2.0 * color);
+    return vec4f(sqrt(color), 1.0);
+}
+
+// The tone: an exposure curve in gamma 2.2, the contrast toward a quintic S curve, and the
+// saturation, stronger in bright pixels. The sky and the far land go back to the picture
+// before the shader, as in the bright pass.
+fn exposure() -> f32 {
+    if is_interior() {
+        return 1.5;
+    }
+    return 1.0 + night();
+}
+@fragment fn tone(in: Quad) -> @location(0) vec4f {
+    let lit = pow(textureSampleLevel(lastpass, linear_clamp, in.tex, 0.0).rgb, vec3f(2.2)) * exposure();
+    var x = pow(lit / (1.0 + lit), vec3f(1.0 / 2.2));
+    let s = x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
+    x = mix(x, s, contrast());
+    let grey = dot(vec3f(0.2125, 0.7154, 0.0721), x);
+    let saturated = mix(vec3f(grey), x, saturation());
+    let color = mix(x, saturated, 0.33 * (x.r + x.g + x.b));
+    let before = textureSampleLevel(lastshader, point_clamp, in.tex, 0.0).rgb;
+    return vec4f(mix(before, color, far_share(in.tex)), 1.0);
+}
+";
+
 /// The ports of this file, after those of `post.rs` and `post_jop.rs`.
-pub const SHADERS: &[Shader] = &[Shader {
-    name: "XERO-lut",
-    source: XERO_LUT,
-    passes: &[full("grade")],
-    disable_flags: 0,
-    no_sun_glare: false,
-    priority: NO_CATEGORY,
-    textures: &["XERO-lut.tga"],
-    requires_hdr: false,
-    variables: &[],
-}];
+pub const SHADERS: &[Shader] = &[
+    Shader {
+        name: "XERO-lut",
+        source: XERO_LUT,
+        passes: &[full("grade")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: NO_CATEGORY,
+        textures: &["XERO-lut.tga"],
+        requires_hdr: false,
+        variables: &[],
+    },
+    // The passes go into 8-bit targets of the picture's size, as on Direct3D 9: the blur's
+    // sums cut at 1 there, and that is a part of the look.
+    Shader {
+        name: "Ultra Bloom",
+        source: ULTRA_BLOOM,
+        passes: &[full("bright"), full("blur_across"), full("blur_down_combine"), full("tone")],
+        disable_flags: 0,
+        no_sun_glare: false,
+        priority: NO_CATEGORY,
+        textures: &[],
+        requires_hdr: false,
+        variables: &[
+            value("radmult", &[1.0]),
+            value("contrast", &[0.5]),
+            value("saturation", &[1.5]),
+            value("sun", &[0.3]),
+            value("sky", &[0.0]),
+            value("dist1", &[1.5]),
+            value("dist2", &[0.5]),
+        ],
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -250,6 +408,7 @@ const COLOURS = array<vec3f, {width}>({list});
     /// middle, and colours between texels and between squares of blue. A wrong square, a
     /// wrong place in a square or a wrong weight of blue moves a colour.
     #[test]
+    #[ignore = "needs a GPU"]
     fn the_identity_table_gives_each_colour_back() {
         let results = graded(&identity_table(), &COLOURS);
         for (colour, result) in COLOURS.iter().zip(&results) {
