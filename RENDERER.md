@@ -456,7 +456,7 @@ The line sources: `lights`, `shadow-boxes`, `bounds`, `lua`.
 | `shadow-boxes` | the box of each layer of the shadow map in this frame, from the matrix that the shadow pass used (with its snap to whole texels): the near layer red, the far layer green, over everything. A frame with no shadow pass draws none, and the overlay says so |
 | `lights` | a sphere for each light of the world that is on, at its place, with the reach that the draws use: a light with an end (the extension's fade) in yellow, with its reach in the clusters; a light with no end in cyan, with the radius by which it reaches the bound of a draw. The overlay gives the number of each kind |
 | `lua` | the lines, boxes and spheres that a mod sends from Lua (below), each in its colour, tested against the frame's depth or over everything. The overlay gives the shapes, their segments and the shapes refused past the limit |
-| `bounds` | not drawn yet |
+| `bounds` | the cull sphere of each instance that the main view of the frame drew (the engine's bound, which decides whether the shape is cut), the nearest to the camera first, at most 2,048: a plain draw magenta, a blend that the engine sorts orange, a skinned draw blue. Tested against the frame's depth. The overlay gives the spheres drawn and the instances drawn. The particle systems and the distant statics have no sphere here |
 
 The line pass draws after the post chain and before the interface of the game. A picture file
 then shows the lines, and the post chain does not blur or tint them. A line is hidden where the frame drew something nearer, by the depth
