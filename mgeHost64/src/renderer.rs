@@ -8346,10 +8346,11 @@ mod set_free_tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Real GPU objects: the glows and the post state of a spare. The bytes that the views count are
-    /// the sum of the two; a free of the set takes both away (the glow set has the number of the set
-    /// plus 1, since 0 is the main view's) and gives back the bytes before the spare; and the hold of
-    /// an error ends. `cargo test -p mgeHost64 -- --ignored`.
+    /// Real GPU objects: the glows, the post state and the grass set of a spare, and the statics'
+    /// GPU objects of a small catalog. The bytes that the views count are the sum of the three; a
+    /// free of the set takes all three away (the glow set has the number of the set plus 1, since 0
+    /// is the main view's) and gives back the bytes before the spare; and the hold of an error ends.
+    /// `cargo test -p mgeHost64 -- --ignored`.
     #[test]
     #[ignore = "needs a GPU"]
     fn a_free_of_a_set_takes_its_glows_and_post_state_and_their_bytes() {
@@ -8358,8 +8359,14 @@ mod set_free_tests {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        // The features and the limits that the helper asks for: the statics make their GPU objects too.
+        let descriptor = wgpu::DeviceDescriptor {
+            required_features: nirender_wgpu::required_features(),
+            required_limits: nirender_wgpu::fixed_limits(),
+            ..Default::default()
+        };
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+            pollster::block_on(adapter.request_device(&descriptor)).expect("a device with the helper's features and limits");
         let mut views = view::ViewBinding::new(&device);
         let commands = nirender_wgpu::FrameCommands::default();
         let scene = nirender_wgpu::SceneView {
@@ -8396,28 +8403,52 @@ mod set_free_tests {
         land.lights = Some(distant_lights::DistantLights::with_glows(&scene, &views.layout, 4));
         let light = lamp_grid::LampBinding::new(&device);
         views.refresh(&device, &light);
+        // The statics with the GPU objects of a catalog of one place, as after the load (W215: N5, N6).
+        let document = ConfigDocument::open(root.join(FILE_NAME));
+        let (mut statics, late) = statics::Statics::with_late_catalog(&document, b"W215 set free");
+        statics.set_views(&views);
+        late.arrive();
+        statics.finish_load(&scene);
+        land.statics = Some(statics);
         let before = land.views_live_bytes();
         assert_eq!(before, 0, "no spare: the main view's own sets are not counted");
 
-        // Every part that this land can have for the spare 2: its glow set (number 3) and its post state.
+        // Every part that this land can have for the spare 2: its glow set (number 3), its post state and its grass set.
         let spare = 2;
         assert!(land.lights.as_mut().unwrap().ensure_set(&device, spare + 1) > 0);
         land.post_places.resize_with(spare + 1, || None);
         land.post_places[spare] = Some(post::PostView::place_with_textures(&device, (64, 64)));
+        let statics = land.statics.as_mut().unwrap();
+        let grass_wanted = statics.grass_set_bytes_needed(spare);
+        assert!(
+            grass_wanted > 0,
+            "the statics have their GPU objects, and the spare has no grass set yet"
+        );
+        assert_eq!(
+            statics.ensure_grass_set(&device, spare),
+            grass_wanted,
+            "the grass set of the spare is made"
+        );
+        assert_eq!(
+            statics.grass_set_bytes_needed(spare),
+            0,
+            "the grass set of the spare is there"
+        );
         // The view binding of the land holds the two view groups of the spare, as the first frame of a view of its own makes them.
         assert!(views.ensure_set(&device, &light, spare));
         assert!(views.group(view::tier(spare)).is_some() && views.group(view::tier_game(spare)).is_some());
         land.view_binding = Some(views);
         let glow_bytes = land.lights.as_ref().unwrap().views_bytes();
         let post_bytes = land.post_places[spare].as_ref().unwrap().bytes();
+        let statics_bytes = land.statics.as_ref().unwrap().views_bytes();
         assert!(
-            glow_bytes > 0 && post_bytes > 0,
-            "both parts have bytes: {glow_bytes} and {post_bytes}"
+            glow_bytes > 0 && post_bytes > 0 && statics_bytes == grass_wanted,
+            "the three parts have bytes: {glow_bytes}, {post_bytes} and {statics_bytes} (the grass set {grass_wanted})"
         );
         assert_eq!(
             land.views_live_bytes(),
-            glow_bytes + post_bytes,
-            "the bytes of the views count the glows and the post states"
+            glow_bytes + post_bytes + statics_bytes,
+            "the bytes of the views count the glows, the post states and the statics"
         );
 
         land.tier_views.creation_failed();
@@ -8429,6 +8460,17 @@ mod set_free_tests {
             "the glow set of the spare is gone"
         );
         assert!(land.post_places[spare].is_none(), "the post state of the spare is gone");
+        let statics = land.statics.as_ref().unwrap();
+        assert_eq!(
+            statics.grass_set_bytes_needed(spare),
+            grass_wanted,
+            "the grass set of the spare is gone"
+        );
+        assert_eq!(
+            statics.views_bytes(),
+            0,
+            "the statics have no bytes of the views after the free"
+        );
         let views = land.view_binding.as_ref().unwrap();
         assert!(
             views.group(view::tier(spare)).is_none() && views.group(view::tier_game(spare)).is_none(),
