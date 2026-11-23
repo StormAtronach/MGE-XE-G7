@@ -46,6 +46,7 @@ mod gpu_time;
 mod lamp_grid;
 mod lamp_values;
 mod live_parts;
+mod lua_shapes;
 mod menu_keep;
 mod post;
 mod post_jop;
@@ -282,6 +283,10 @@ const LIGHT_RECORDS_ID: u32 = 13;
 /// files again at the start of the next frame (W426). A replay ignores it: its frames stay
 /// those of the capture.
 const RELOAD_ID: u32 = 14;
+/// The Lua shapes of the debug views (`nirender.debug.line`, `box`, `sphere` and `clear` of
+/// the plugin), one record for each call, not kept: the layout is
+/// [`nirender_wgpu::debug_shapes_format`], see [`lua_shapes`].
+const DEBUG_SHAPES_ID: u32 = nirender_wgpu::debug_shapes_format::RECORD_ID;
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
@@ -306,6 +311,7 @@ fn changing_record_name(id: u32) -> Option<&'static str> {
         LIGHT_SETTINGS_ID => Some("extension record light settings"),
         LIGHT_RECORDS_ID => Some("extension record light records"),
         RELOAD_ID => Some("extension record reload"),
+        DEBUG_SHAPES_ID => Some("extension record debug shapes"),
         _ => Some("extension record of an unknown id"),
     }
 }
@@ -552,6 +558,8 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
         }
         // The version and the number of calls.
         RELOAD_ID => 8,
+        // The whole record of its version 1; another version needs its version word only.
+        DEBUG_SHAPES_ID => nirender_wgpu::debug_shapes_format::needed(bytes),
         _ => return None,
     })
 }
@@ -580,6 +588,7 @@ fn extension_name(id: u32) -> &'static str {
         LIGHT_SETTINGS_ID => "light settings",
         LIGHT_RECORDS_ID => "light records",
         RELOAD_ID => "reload",
+        DEBUG_SHAPES_ID => "debug shapes",
         _ => "unknown",
     }
 }
@@ -1201,6 +1210,8 @@ pub struct DistantLand {
     /// light it takes (the world variant `VIEW_LIGHTS`), without its material, its textures and the fog:
     /// a seam of the lights is a step at the edge of a shape.
     debug_view: DebugView,
+    /// The shapes of the line source `lua`, from the records [`DEBUG_SHAPES_ID`].
+    lua_shapes: lua_shapes::LuaShapes,
     /// The world of the frame is in an interior cell.
     interior: bool,
     /// The cell of the frame is an exterior, or an interior that is like one: the fact of the
@@ -2001,6 +2012,7 @@ impl DistantLand {
             clustered_lights: settings.clustered_lights,
             world_lights: false,
             debug_view: DebugView::default(),
+            lua_shapes: lua_shapes::LuaShapes::default(),
             interior: false,
             like_exterior: true,
             distant_cell: true,
@@ -3677,6 +3689,12 @@ impl Extension for DistantLand {
             .chain(self.live_parts.lines())
             .chain(self.debug_view.fog().then(|| debug_view::FOG_VIEW_LINE.to_owned()))
             .chain(debug_view::shadow_boxes_line(self.debug_view.lines, self.shadow_in_frame))
+            .chain(
+                self.debug_view
+                    .lines
+                    .contains(LineSources::LUA)
+                    .then(|| self.lua_shapes.line()),
+            )
             .collect()
     }
 
@@ -4253,6 +4271,8 @@ impl Extension for DistantLand {
         if self.live_parts.take_nocull_change() {
             self.changed = Some(live_parts::CHANGE);
         }
+        // The Lua shapes of this frame only go, and those whose seconds have passed.
+        self.lua_shapes.end_frame(game_time(self.environment, self.started));
         change
     }
 
@@ -4283,6 +4303,10 @@ impl Extension for DistantLand {
                     bytes.len()
                 );
             }
+            return;
+        }
+        if id == DEBUG_SHAPES_ID {
+            self.lua_shapes.take_record(bytes, game_time(self.environment, self.started));
             return;
         }
         if id == WATER_LOOKS_ID {
@@ -5307,7 +5331,12 @@ impl Extension for DistantLand {
     /// frame, from the inverse of its matrix (the one the pass of the casters used, with its
     /// snap to whole texels). Drawn on top: the camera is inside the boxes. A frame with no
     /// shadow pass adds nothing; the overlay says why (`debug_lines_line`).
+    ///
+    /// The line source `lua`: the shapes that a mod sent ([`lua_shapes`]).
     fn debug_lines(&mut self, _scene: &SceneView, sources: LineSources, list: &mut LineList) {
+        if sources.contains(LineSources::LUA) {
+            self.lua_shapes.add_segments(list);
+        }
         if !sources.contains(LineSources::SHADOW_BOXES) || !self.shadow_in_frame {
             return;
         }
@@ -8048,7 +8077,7 @@ mod extension_record_tests {
     use super::*;
 
     /// Every id with a layout.
-    const IDS: [u32; 12] = [
+    const IDS: [u32; 13] = [
         ENVIRONMENT_ID,
         SHADER_STATE_ID,
         PICTURE_ID,
@@ -8061,6 +8090,7 @@ mod extension_record_tests {
         LIGHT_SETTINGS_ID,
         LIGHT_RECORDS_ID,
         RELOAD_ID,
+        DEBUG_SHAPES_ID,
     ];
 
     fn words(values: &[u32]) -> Vec<u8> {
@@ -8139,6 +8169,16 @@ mod extension_record_tests {
                 record
             }
             RELOAD_ID => words(&[1, 3]),
+            DEBUG_SHAPES_ID => nirender_wgpu::debug_shapes_format::Shape {
+                kind: nirender_wgpu::debug_shapes_format::Kind::Line,
+                on_top: false,
+                tag: 0,
+                seconds: 0.0,
+                color: [1.0; 3],
+                values: [0.0; 6],
+            }
+            .encode()
+            .to_vec(),
             _ => Vec::new(),
         }
     }
@@ -8187,6 +8227,7 @@ mod extension_record_tests {
             LIGHT_SETTINGS_ID,
             LIGHT_RECORDS_ID,
             RELOAD_ID,
+            DEBUG_SHAPES_ID,
         ] {
             assert_eq!(
                 extension_needed(id, &words(&[2])),
