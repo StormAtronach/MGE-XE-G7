@@ -50,9 +50,29 @@ pub(crate) static SHADOW: CoreFile = core_file!("XE Mod Shadow.wgsl", &["shadow_
 /// distant statics.
 pub(crate) static SHADOWMAP: CoreFile = core_file!("XE Shadowmap.wgsl", &["blur", "land", "statics"]);
 
+/// The water (`XE Mod Water.fx` and `XE Water Shaders.fx`): the shading that each surface of
+/// water shares, the caustics function, the built-ins of the water hooks, the plane, and a level
+/// of the reflection.
+pub(crate) static WATER: CoreFile = core_file!(
+    "XE Mod Water.wgsl",
+    &[
+        "common",
+        "caustics",
+        "water_normal",
+        "water_vertex",
+        "water_color",
+        "underwater_color",
+        "plane",
+        "level"
+    ]
+);
+
+/// The passes of the dynamic waves (`XE Water Shader Passes.fx`): the ripples.
+pub(crate) static WATER_PASSES: CoreFile = core_file!("XE Water Shader Passes.wgsl", &["ripples"]);
+
 /// Every core file.
 #[cfg(test)]
-static FILES: [&CoreFile; 3] = [&GRASS, &SHADOW, &SHADOWMAP];
+static FILES: [&CoreFile; 5] = [&GRASS, &SHADOW, &SHADOWMAP, &WATER, &WATER_PASSES];
 
 impl CoreFile {
     /// The whole text, with LF line ends.
@@ -117,7 +137,7 @@ fn parts_of(text: &str) -> Result<Vec<(&str, &str)>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FILES, GRASS, SHADOW, SHADOWMAP, lf, parts_of};
+    use super::{FILES, GRASS, SHADOW, SHADOWMAP, WATER, WATER_PASSES, lf, parts_of};
 
     /// FNV-1a, 64 bits.
     fn fnv(text: &str) -> u64 {
@@ -146,6 +166,15 @@ mod tests {
         assert_eq!(fnv(SHADOWMAP.part("blur")), 0x43b7_4db6_2d00_892d);
         assert_eq!(fnv(SHADOWMAP.part("land")), 0x1b2f_cbb0_6159_7102);
         assert_eq!(fnv(SHADOWMAP.part("statics")), 0xbbf3_bfe5_8a90_495b);
+        assert_eq!(fnv(WATER.part("common")), 0xb3a9_9136_d140_4fc6);
+        assert_eq!(fnv(WATER.part("caustics")), 0x7c9f_798d_fb1b_82ac);
+        assert_eq!(fnv(WATER.part("water_normal")), 0xc7fa_1ed7_c273_59f8);
+        assert_eq!(fnv(WATER.part("water_vertex")), 0xa00b_e822_b195_6596);
+        assert_eq!(fnv(WATER.part("water_color")), 0x503c_9872_6fa2_1c2a);
+        assert_eq!(fnv(WATER.part("underwater_color")), 0xcc0f_7200_b15b_69aa);
+        assert_eq!(fnv(WATER.part("plane")), 0xa3ad_fab8_e938_8210);
+        assert_eq!(fnv(WATER.part("level")), 0xa891_3b38_8e63_f3aa);
+        assert_eq!(fnv(WATER_PASSES.part("ripples")), 0xf92d_65d2_3f52_5c72);
     }
 
     #[test]

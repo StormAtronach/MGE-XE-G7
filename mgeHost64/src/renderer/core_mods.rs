@@ -142,25 +142,25 @@ const WATER_HOOKS: [Hook; 4] = [
         name: "water_vertex",
         arguments: &["vec3<f32>"],
         result: "WaterVertex",
-        built_in: || super::water::WATER_VERTEX,
+        built_in: super::water::water_vertex,
     },
     Hook {
         name: "water_normal",
         arguments: &["vec4<f32>", "f32", "vec2<f32>"],
         result: "vec3<f32>",
-        built_in: || super::water::WATER_NORMAL,
+        built_in: super::water::water_normal,
     },
     Hook {
         name: "water_color",
         arguments: &["WaterPixel"],
         result: "vec4<f32>",
-        built_in: || super::water::WATER_COLOR,
+        built_in: super::water::water_color,
     },
     Hook {
         name: "underwater_color",
         arguments: &["WaterPixel"],
         result: "vec4<f32>",
-        built_in: || super::water::UNDERWATER_COLOR,
+        built_in: super::water::underwater_color,
     },
 ];
 
@@ -2179,9 +2179,9 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             mods.water_hooks(),
             format!(
                 "{}{}{}{file}",
-                super::super::water::WATER_VERTEX,
-                super::super::water::WATER_NORMAL,
-                super::super::water::UNDERWATER_COLOR
+                super::super::water::water_vertex(),
+                super::super::water::water_normal(),
+                super::super::water::underwater_color()
             )
         );
         assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks());
@@ -2209,8 +2209,8 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         // The debug view: the built-in colour hooks, and the file's colour under another name.
         let debug = mods.water_debug_hooks();
         assert_eq!(debug.matches("fn water_color(").count(), 1);
-        assert!(debug.contains(super::super::water::WATER_COLOR) && debug.contains("fn mod_replaced_water_color("));
-        assert!(debug.contains(super::super::water::UNDERWATER_COLOR) && debug.contains("fn mod_marker("));
+        assert!(debug.contains(super::super::water::water_color()) && debug.contains("fn mod_replaced_water_color("));
+        assert!(debug.contains(super::super::water::underwater_color()) && debug.contains("fn mod_marker("));
         assert_eq!(CoreMods::built_in().water_debug_hooks(), CoreMods::built_in().water_hooks());
     }
 
@@ -2219,10 +2219,12 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     fn the_debug_text_of_a_water_file_keeps_its_normal() {
         let text = "fn water_normal(a: vec4f, b: f32, c: vec2f) -> vec3f { return vec3f(0.0, 0.0, 1.0); }\nfn  underwater_color (p: WaterPixel) -> vec4f { return water_color(p); }\n";
         let debug = water_debug_hooks(text, &["water_normal", "underwater_color"]);
-        assert!(!debug.contains(super::super::water::WATER_NORMAL));
+        assert!(!debug.contains(super::super::water::water_normal()));
         assert!(debug.contains("fn water_normal(a: vec4f"));
         assert!(debug.contains("fn mod_replaced_underwater_color (p: WaterPixel)"));
-        assert!(debug.contains(super::super::water::WATER_COLOR) && debug.contains(super::super::water::UNDERWATER_COLOR));
+        assert!(
+            debug.contains(super::super::water::water_color()) && debug.contains(super::super::water::underwater_color())
+        );
         // Only a definition is renamed: a call, a longer name and a comment word stay.
         assert_eq!(
             rename_definition(
@@ -2627,7 +2629,7 @@ struct TestOut { @builtin(position) position: vec4f, @location(0) s0: vec3f, @lo
         assert!(mods.uses(ModFile::Water), "{:?}", mods.report());
         assert_eq!(mods.water_hooks().matches("fn water_vertex(").count(), 1);
         assert!(mods.water_hooks().contains("start + vec3f(0.0, 0.0, 50.0)"));
-        assert!(!mods.water_hooks().contains(super::super::water::WATER_VERTEX));
+        assert!(!mods.water_hooks().contains(super::super::water::water_vertex()));
         assert!(
             mods.report()
                 .iter()

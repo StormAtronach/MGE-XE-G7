@@ -11,6 +11,7 @@ use nirender_wgpu::gpu::KeptGroup;
 use nirender_wgpu::objects::{Create, CreateView};
 use nirender_wgpu::{Replay, ReplayView, SceneView, wgpu};
 
+use super::core_files::WATER;
 use super::multiply;
 
 /// The size of the reflection, as the Direct3D 9 path has it.
@@ -18,21 +19,6 @@ const REFLECTION_SIZE: u32 = 1024;
 /// The levels of the reflection, for the blur that is sharp at the waterline: 1024 to 32.
 const REFLECTION_LEVELS: u32 = 6;
 
-/// Makes a level of the reflection from the level before: the mean of 2 x 2 pixels.
-const LEVEL_SHADER: &str = "
-@group(0) @binding(0) var source: texture_2d<f32>;
-@group(0) @binding(1) var source_sampler: sampler;
-
-@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
-    return vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0);
-}
-
-@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
-    // The target has half of the size of the source.
-    let size = vec2f(textureDimensions(source)) * 0.5;
-    return textureSampleLevel(source, source_sampler, position.xy / size, 0.0);
-}
-";
 /// The near plane of the distant land, as the Direct3D 9 path has it.
 const NEAR: f32 = 4.0;
 /// How near the level of the water the eye in a dry space has the plane edge-on
@@ -44,7 +30,7 @@ use shading::Uniforms;
 mod dry;
 mod volume;
 pub use dry::read_masks;
-pub(super) use shading::{CAUSTICS, WATER_NORMAL, caustic_strength};
+pub(super) use shading::{caustic_strength, caustics, water_normal};
 pub use volume::{FarWater, Look, VolumeLight, VolumeLook, marked as volume_marked};
 
 /// The shader of the surfaces of the water volumes with the standard look and `shadow_hooks`.
@@ -60,166 +46,12 @@ pub(super) fn plane_source(water_hooks: &str) -> String {
         "{}{}{}{}{}{}",
         super::view::wgsl(),
         nirender_wgpu::depth::wgsl(),
-        shading::COMMON,
+        shading::common(),
         super::core_mods::WATER_INTERFACE,
-        PLANE,
+        WATER.part("plane"),
         water_hooks
     )
 }
-
-/// The entry points of the plane, after the shared shading.
-const PLANE: &str = "
-struct Out {
-    @builtin(position) position: vec4f,
-    @location(0) world: vec3f,
-    @location(1) texcoords: vec4f,
-    @location(2) clip_w: f32,
-    // With the dynamic waves: the clip x, y and w of the point at or under the plane, for
-    // the place of the reflection (screenposclamp).
-    @location(3) clamped: vec3f,
-    // For a test (the debug view `water 9`): the height that the vertex read in the wave texture.
-    @location(4) probe: f32,
-}
-
-@vertex fn vs(@location(0) local: vec3f) -> Out {
-    var out: Out;
-    // The vertex at the water level; the hook `water_vertex` moves it.
-    let start = local + water.world.xyz;
-    let moved = water_vertex(start);
-    let world = moved.world;
-    if WATER_DEBUG && water.wave.w > 0.5 {
-        out.probe = textureSampleLevel(waves, wave_sampler, vec3f(start.xy / 1104.0, 0.4 * water.time.x), 0.0).a;
-    }
-    out.world = world;
-    out.texcoords = moved.texcoords;
-    out.position = clip_of(world);
-    // The far plane of the game is its view distance; the sea goes on to the draw distance of
-    // the distant land, as on Direct3D 9, where MGE XE moves the far plane of the game there.
-    // The near plane stays that of the game. The depth that the pixel writes is that of the
-    // game (see `fs`).
-    out.position.z = out.position.w * water.land.z + water.land.w;
-    out.clip_w = out.position.w;
-    // The point of the reflection is not above the plane.
-    out.clamped = clip_of(vec3f(world.xy, world.z - moved.lowered)).xyw;
-    return out;
-}
-
-struct Pixel {
-    @location(0) color: vec4f,
-    @builtin(frag_depth) depth: f32,
-}
-
-@fragment fn fs(in: Out) -> Pixel {
-    // The distant land in front of the water hides it. The renderer cleared its depth for the
-    // game, so the test is here; the test against the draws of the game is that of the pass.
-    if in.clip_w > land_distance_at(in.position.xy / water.size.xy) * 1.0005 + 1.0 {
-        discard;
-    }
-    var out: Pixel;
-    out.color = plane_color(in);
-    // The depth in the range of the game: what blends after the water tests it. Past the far
-    // plane of the game it is the far end.
-    out.depth = clamp(water.projection.x + water.projection.y / in.clip_w, 0.0, 1.0);
-    return out;
-}
-
-fn plane_color(in: Out) -> vec4f {
-    // The end of the plane in an interior and under the water.
-    if water.size.z > 0.0 && in.clip_w > water.size.z {
-        discard;
-    }
-    var p: WaterPixel;
-    let eye_vec = in.world - u.eye.xyz;
-    p.distance = length(eye_vec);
-    p.eye_vec = eye_vec / p.distance;
-    // The position of the pixel in the picture. The offsets of the shader are in the
-    // projected space: here they are divided by the clip w of the pixel.
-    p.uv = in.position.xy / water.size.xy;
-    p.clip_w = in.clip_w;
-    p.texcoords = in.texcoords;
-    p.world = in.world;
-    // With the dynamic waves the reflection is read at the point that is not above the plane.
-    p.reflect_uv = p.uv;
-    p.reflect_w = p.clip_w;
-    if water.wave.w > 0.5 {
-        p.reflect_w = in.clamped.z;
-        p.reflect_uv = vec2f(0.5 + 0.5 * in.clamped.x / p.reflect_w, 0.5 - 0.5 * in.clamped.y / p.reflect_w);
-    }
-    // The debug view `fog`, before the hooks: a core mod's water shows the fog of the plane too.
-    if fog_view_on() {
-        return water_fog_view(p.eye_vec, p.distance);
-    }
-    if water.modes.y > 0.5 {
-        return underwater_color(p);
-    }
-    if WATER_DEBUG && water.modes.x == 9.0 {
-        // A look at the waves, for a test (the debug view `water 9`). Red: the height that the
-        // vertices read. Green: the same read for the pixel.
-        let here = textureSampleLevel(waves, wave_sampler, vec3f(in.world.xy / 1104.0, 0.4 * water.time.x), 0.0).a;
-        return vec4f(in.probe, here, 0.0, 1.0);
-    }
-    return water_color(p);
-}
-
-// The library of the water hooks (`core_mods.rs`, `WATER_LIBRARY`), with the functions of the
-// shared shading: the picture, the distance of the ground and the values of the frame.
-fn picture_at(uv: vec2f) -> vec3f {
-    return textureSample(picture, clamp_sampler, uv).rgb;
-}
-fn ground_distance_at(uv: vec2f) -> f32 {
-    return ground_at(uv, true);
-}
-fn water_time() -> f32 {
-    return water.time.x;
-}
-fn water_sun_direction() -> vec3f {
-    return water.sun_pos.xyz;
-}
-fn water_sun_visibility() -> f32 {
-    return water.sun_pos.w;
-}
-fn water_sun_color() -> vec3f {
-    return water.sun_color.rgb;
-}
-fn water_wind() -> vec2f {
-    return water.wind.xy;
-}
-fn water_sky_color() -> vec3f {
-    return water.sky_col.rgb;
-}
-fn water_fog_color() -> vec3f {
-    return u.fog_color.rgb;
-}
-fn water_eye() -> vec3f {
-    return u.eye.xyz;
-}
-fn water_ambient_color() -> vec3f {
-    return u.ambient.rgb;
-}
-fn water_texel() -> vec2f {
-    return 1.0 / water.size.xy;
-}
-fn water_wave_height() -> f32 {
-    return water.wave.z;
-}
-fn water_is_interior() -> bool {
-    return water.modes.z > 0.5;
-}
-// The functions of the library that `water_vertex` can call too.
-fn wave_level_at(coords: vec3f) -> vec4f {
-    return textureSampleLevel(waves, wave_sampler, coords, 0.0);
-}
-fn water_level() -> f32 {
-    return water.world.z;
-}
-// fogMWScalar: the linear fog of the game, from its start (u.fog.z) to its end (u.fog.w).
-fn water_near_fog(distance: f32) -> f32 {
-    return clamp((u.fog.w - distance) / max(u.fog.w - u.fog.z, 0.001), 0.0, 1.0);
-}
-fn water_dynamic_waves() -> bool {
-    return water.wave.w > 0.5;
-}
-";
 
 /// The bindings of the plane's group 1 that the vertices have (the layout of
 /// [`Water::new`]): the values of the water, the wave texture and its sampler. The
@@ -261,91 +93,22 @@ pub(super) fn plane_check(water_hooks: &str) -> Result<(), String> {
 
 /// The built-in `water_vertex` (`WaterVS`): a hook of `XE Mod Water` (`core_mods.rs`), the
 /// place of a vertex of the plane.
-pub(super) const WATER_VERTEX: &str = "
-// WaterVS: the place of a vertex of the plane.
-fn water_vertex(start: vec3f) -> WaterVertex {
-    var out: WaterVertex;
-    var world = start;
-    if water_dynamic_waves() {
-        // With DYNAMIC_RIPPLES: the waves move the plane, most between 200 and 6400 units
-        // from the camera.
-        let t = 0.4 * water_time();
-        let height = wave_level_at(vec3f(world.xy / 1104.0, t)).a;
-        let height2 = wave_level_at(vec3f(world.xy / 3900.0, t)).a;
-        let dist = length(water_eye() - world);
-        let add = water_wave_height() * (mix(height, height2, clamp(dist / 8000.0, 0.0, 1.0)) - 0.5) * clamp(1.0 - dist / 6400.0, 0.0, 1.0) * clamp(dist / 200.0, 0.0, 1.0);
-        world.z += add;
-        out.lowered = abs(add);
-    } else {
-        // The plane lies at the water level less 0.1, a little under the ripples of the game.
-        world.z -= 0.1;
-    }
-    out.world = world;
-    out.texcoords = vec4f(world.xy / 3900.0, world.xy / 527.0);
-    return out;
+pub(super) fn water_vertex() -> &'static str {
+    WATER.part("water_vertex")
 }
-";
 
 /// The built-in `water_color` (`WaterPS`): a hook of `XE Mod Water` (`core_mods.rs`), the
 /// colour of the plane seen from above. It shows the terms of the debug view `water`.
-pub(super) const WATER_COLOR: &str = "
-// WaterPS: the colour of the water at a pixel seen from above.
-fn water_color(p: WaterPixel) -> vec4f {
-    let eye_vec = p.eye_vec;
-    let dist = p.distance;
-    let uv = p.uv;
-    let w = p.clip_w;
-    let fog = fog_water(eye_vec, dist);
-    let normal = water_normal(p.texcoords, dist, p.world.xy);
-    let reffactor = (water.sun_col.w * dist + 0.1) * normal.xy;
-    let below = refraction(uv, w, reffactor, eye_vec, normal, deep_color(fog, vec3f(0.0)), vec3f(0.0), 800.0, vec3f(1.0), true, 1.0);
-    let refracted = below.color;
-    let reflect_uv = p.reflect_uv;
-    let reflect_w = p.reflect_w;
-    // A flat look at the water makes the blur taller: 1 from straight above, and at most
-    // the number of the parameter.
-    let stretch = clamp(1.0 / max(abs(eye_vec.z), 0.05), 1.0, max(water.projection.z, 1.0));
-    var reflected = reflection_at(reflect_uv - vec2f(2.1 * reffactor.x, -abs(reffactor.y)) / reflect_w, reflect_w, stretch);
-    reflected = mix(fog.rgb, reflected, fog.a);
-    var adjust = mix(vec3f(0.0, 0.0, 0.1), normal, pow(clamp(1.05 * fog.a, 0.0, 1.0), 2.0));
-    adjust = mix(adjust, vec3f(0.0, 0.0, 1.0), (1.0 + eye_vec.z) * (1.0 - clamp(1.0 / (dist / 1000.0 + 1.0), 0.0, 1.0)));
-    let fresnel = 0.02 + pow(clamp(0.9988 - 0.28 * dot(-eye_vec, adjust), 0.0, 1.0), 16.0);
-    var result = mix(refracted, reflected, fresnel);
-    result += sun_glint(eye_vec, normal, fog.a);
-    result = mix(result, refracted, below.shore * fog.a);
-    // A look at one term, for a test: the debug view `water`.
-    if WATER_DEBUG {
-        if water.modes.x == 1.0 {
-            return vec4f(reflected, 1.0);
-        } else if water.modes.x == 2.0 {
-            return vec4f(refracted, 1.0);
-        } else if water.modes.x == 3.0 {
-            return vec4f(vec3f(below.depth_first / 1000.0), 1.0);
-        } else if water.modes.x == 4.0 {
-            return vec4f(vec3f(fresnel), 1.0);
-        } else if water.modes.x == 5.0 {
-            return vec4f(vec3f(fog.a), 1.0);
-        } else if water.modes.x == 6.0 {
-            return vec4f(vec3f(dist / 10000.0), 1.0);
-        } else if water.modes.x == 7.0 {
-            return vec4f(normal * 0.5 + 0.5, 1.0);
-        } else if water.modes.x == 8.0 {
-            return vec4f(vec3f(w / 10000.0), 1.0);
-        }
-    }
-    return vec4f(result, 1.0);
+pub(super) fn water_color() -> &'static str {
+    WATER.part("water_color")
 }
-";
 
 /// The built-in `underwater_color` (`UnderwaterPS`): a hook of `XE Mod Water` (`core_mods.rs`),
 /// the plane seen from under the water. The surfaces of the water volumes call `underwater`
 /// itself.
-pub(super) const UNDERWATER_COLOR: &str = "
-// UnderwaterPS: the plane seen from under the water.
-fn underwater_color(p: WaterPixel) -> vec4f {
-    return underwater(p.uv, p.clip_w, p.texcoords, p.world.xy, p.eye_vec, p.distance);
+pub(super) fn underwater_color() -> &'static str {
+    WATER.part("underwater_color")
 }
-";
 
 /// The values of the sun and of the wind for the water shader: `sun_col` of the built-in
 /// shading (the sun's colour times the sunlight factor of `sunVis`, and the wind factor in w),
@@ -881,7 +644,7 @@ impl Water {
             .collect();
         let level_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water reflection level"),
-            source: wgpu::ShaderSource::Wgsl(LEVEL_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(WATER.part("level").into()),
         });
         let level_pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water reflection level"),
@@ -1817,7 +1580,7 @@ mod tests {
                 "{name}"
             );
             assert_eq!(source.matches("fn water_normal(").count(), 1, "{name}");
-            assert!(source.contains(WATER_NORMAL), "{name}: not the built-in normal");
+            assert!(source.contains(water_normal()), "{name}: not the built-in normal");
         }
         assert_eq!(
             volume::standard_source(mods.shadow_hooks()),
@@ -1826,7 +1589,7 @@ mod tests {
 
         // The debug view of the plane: the built-in colour on the mod's text, and it compiles.
         let debug = shading::debug_source(&plane_source(mods.water_debug_hooks())).expect("the WATER_DEBUG line");
-        assert!(debug.contains(WATER_COLOR) && debug.contains("fn mod_replaced_water_color("));
+        assert!(debug.contains(water_color()) && debug.contains("fn mod_replaced_water_color("));
         crate::renderer::shader_check::check("water plane with the marker, debug view", &debug).unwrap();
     }
 
@@ -1877,7 +1640,7 @@ mod tests {
         for entry in ["vs", "fs"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
-        check("water reflection level", LEVEL_SHADER).unwrap();
+        check("water reflection level", WATER.part("level")).unwrap();
     }
 
     #[test]

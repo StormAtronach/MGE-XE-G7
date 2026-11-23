@@ -2,7 +2,7 @@
 //!
 //! A pass over the picture of the game at the end of its world scene, before the surfaces of
 //! water volumes. For a pixel of the game under the level of the water, the light that the
-//! waves send down modulates its colour (`water::CAUSTICS`, the function that the surfaces of
+//! waves send down modulates its colour (`water::caustics`, the function that the surfaces of
 //! water volumes have too): brighter where the waves focus it, and darker in the mean, less
 //! with the depth of the water and with the distance. Not in a dry space: the pass is drawn
 //! with the count of the dry spaces in the stencil buffer (`water::Water::draw_sea_caustics`).
@@ -89,7 +89,7 @@ struct Corner {
 ";
 
 /// The draws of the chain for a strength: the factor of a pixel is at most 1 + `strength`
-/// (`water::CAUSTICS`), and each draw multiplies by at most 2.
+/// (`water::caustics`), and each draw multiplies by at most 2.
 fn draws(strength: f32) -> u32 {
     (1.0 + strength.max(0.0)).log2().ceil().max(1.0) as u32
 }
@@ -100,7 +100,7 @@ fn shader() -> String {
         super::view::wgsl(),
         nirender_wgpu::depth::wgsl(),
         SHADER,
-        super::water::CAUSTICS,
+        super::water::caustics(),
         super::blend::DISTANCE
     )
 }
