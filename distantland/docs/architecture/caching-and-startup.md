@@ -143,7 +143,10 @@ and the text never drives builder decisions.
 Fingerprints use the exact bytes consumed, not filesystem metadata. The request, committed-settings,
 and load-order identities use explicit little-endian, length-prefixed `CanonicalWriter` encodings
 with separate domain tags and versions. Settings identity excludes execution-only `force_rebuild`
-so a forced clean rebuild does not alter later no-ops. Their coordinated format conversion causes
+so a forced clean rebuild does not alter later no-ops. It also excludes `distant_lights` and
+`discover_override_files`, whose effects have their own checks (the lights file, and the identities
+of the found overrides). Each excluded key keeps a constant byte of its default in its place, so an
+output made with the defaults keeps its identity. Their coordinated format conversion causes
 one intentional full rebuild. Per-unit recipe versions invalidate algorithms independently (see
 `state_db` / `unit_fingerprint`).
 

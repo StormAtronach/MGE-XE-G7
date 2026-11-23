@@ -78,8 +78,8 @@ pub fn write_generation_settings_canonical(writer: &mut CanonicalWriter, setting
         texture_dedupe_mode,
         deep_water_static_cull_depth,
         static_texture_sizing,
-        distant_lights,
-        discover_override_files,
+        distant_lights: _,
+        discover_override_files: _,
     } = settings;
     let StaticTextureSizingSettings {
         mode,
@@ -126,9 +126,13 @@ pub fn write_generation_settings_canonical(writer: &mut CanonicalWriter, setting
     writer.write_f32(*protected_density);
     writer.write_u32(*min_texture_size);
     writer.write_u8(*max_mip_reduction);
-    writer.write_bool(*distant_lights);
-    // The place of the setting `bake_lights`, which went in W449, at its default: an output made
-    // with the default keeps its identity, so its first start after the change is no rebuild.
+    // The three places below hold constants, the defaults of their keys: an output made with the
+    // defaults keeps its identity, so its first start after the change is no rebuild (W459).
+    // `distant_lights`: the lights have a file of their own (`lights.rs`), outside the identity.
     writer.write_bool(true);
-    writer.write_bool(*discover_override_files);
+    // The place of the setting `bake_lights`, which went in W449.
+    writer.write_bool(true);
+    // `discover_override_files`: the overrides that it finds reach the units through their
+    // identities.
+    writer.write_bool(false);
 }
