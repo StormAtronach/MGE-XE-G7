@@ -432,6 +432,21 @@ pub struct RenderSettings {
     pub ui_scale: f32,
     pub window_align_x: Alignment,
     pub window_align_y: Alignment,
+    /// The order of the wgpu renderer's draws that the engine does not sort. Read by
+    /// numidium.exe when it starts.
+    pub table_order: TableOrder,
+}
+
+/// The order of the draws of the wgpu renderer that the engine does not sort (W563, the
+/// owner's D528 and D584). Both values are the engine's order.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TableOrder {
+    /// The draws whose order cannot show go together in groups, so that fewer calls draw them.
+    #[default]
+    Grouped,
+    /// Each draw at its place in the engine's order, with no group.
+    Engine,
 }
 
 impl Default for RenderSettings {
@@ -454,6 +469,7 @@ impl Default for RenderSettings {
             ui_scale: 1.0,
             window_align_x: Alignment::Center,
             window_align_y: Alignment::Center,
+            table_order: TableOrder::Grouped,
         }
     }
 }

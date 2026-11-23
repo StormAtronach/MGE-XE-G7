@@ -69,6 +69,7 @@ renderer needs it, because it draws the picture.
 | `render.screenshot_format` | `bmp`, `jpeg`, `dds`, `png`, `tga` |
 | `render.screenshot_suffix` | `timestamp`, `ordinal`, `character_ordinal`, `character_game_time_ordinal` |
 | `render.window_align_x`, `render.window_align_y` | `left`, `center`, `right` |
+| `render.table_order` | `grouped`, `engine` |
 | `distant_land.per_pixel_mode` | `always`, `interiors_only` |
 | `input.macros[].type` | `unused`, `console1`, `console2`, `hammer1`, `hammer2`, `unhammer`, `alternate_hammer1`, `alternate_hammer2`, `alternate_unhammer`, `press1`, `press2`, `unpress`, `begin_timer`, `end_timer`, `graphics` |
 
@@ -119,6 +120,15 @@ the same mapping ten times.
 | `[Render State] Window Align X` | `render.window_align_x` |
 | `[Render State] Window Align Y` | `render.window_align_y` |
 | (new, no INI key) | `render.camera_relative` |
+| (new, no INI key) | `render.table_order` |
+
+`render.table_order` (default `grouped`) is the order of the wgpu renderer's draws that the
+engine does not sort. Both values are the engine's order. `grouped` draws together the draws
+whose order cannot show, so that fewer calls draw them; `engine` draws each at its place, with
+no group. A value that is not known reads as `grouped`, with a warning. Read by numidium.exe
+when it starts; a replay reads the `mgeXE.toml` beside numidium.exe, as for the samples and
+the anisotropy. For a test, `MGE_XE_TABLE_ORDER` overrides it. The helper's log names the
+order in use (`table order:`) and its source (`table order from:`).
 
 `render.indexed_skinning` has no obsolete INI predecessor. It enables the
 indexed bone-palette skinning path: MGE XE rebuilds Morrowind's skin partitions

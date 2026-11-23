@@ -63,6 +63,10 @@ ui_scale = 1.0
 # Window placement alignment: left, center, or right.
 window_align_x = "center"
 window_align_y = "center"
+# The order of the wgpu renderer's draws that the engine does not sort: grouped or engine.
+# Both are the engine's order. grouped draws together the draws whose order cannot show,
+# in fewer calls; engine draws each at its place. Read once when the renderer starts.
+table_order = "grouped"
 
 # Startup gates and live runtime behavior.
 [runtime]
