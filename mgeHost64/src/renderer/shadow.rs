@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use nirender_wgpu::{SceneView, wgpu};
 
+use super::core_files::SHADOWMAP;
 use super::debug_view::DebugView;
 use super::multiply;
 
@@ -42,41 +43,6 @@ pub fn light_vector(sun_direction: Option<[f32; 3]>) -> Option<[f32; 3]> {
 /// The radii of the two layers, and the depth range of a layer in units.
 pub const RADII: [f32; 2] = [1000.0, 4000.0];
 const ZRANGE: f32 = 8192.0;
-
-const BLUR_SHADER: &str = "
-struct Uniforms {
-    // The offset of a tap in uv, and the axis.
-    step: vec4f,
-}
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var source: texture_2d<f32>;
-@group(0) @binding(2) var source_sampler: sampler;
-
-struct Out {
-    @builtin(position) position: vec4f,
-    @location(0) uv: vec2f,
-}
-
-@vertex fn vs(@builtin(vertex_index) index: u32) -> Out {
-    var out: Out;
-    let x = f32(i32(index & 1u) * 4 - 1);
-    let y = f32(i32(index >> 1u) * 4 - 1);
-    out.position = vec4f(x, y, 0.0, 1.0);
-    out.uv = vec2f(0.5 + 0.5 * x, 0.5 - 0.5 * y);
-    return out;
-}
-
-// shadowSoften: five taps along one axis, a mean with weights 0.2, 0.8, 1, 0.8, 0.2.
-@fragment fn fs(in: Out) -> @location(0) vec4f {
-    let off = u.step.xy;
-    var d = textureSample(source, source_sampler, in.uv).r;
-    d += 0.2 * textureSample(source, source_sampler, in.uv - 1.42 * off).r;
-    d += 0.8 * textureSample(source, source_sampler, in.uv - 0.71 * off).r;
-    d += 0.8 * textureSample(source, source_sampler, in.uv + 0.71 * off).r;
-    d += 0.2 * textureSample(source, source_sampler, in.uv + 1.42 * off).r;
-    return vec4f(d / 3.0, 0.0, 0.0, 1.0);
-}
-";
 
 const DEBUG_SHADER: &str = "
 @group(0) @binding(0) var<uniform> u: vec4f;
@@ -379,7 +345,7 @@ impl Shadow {
             })
         };
         // The blur draws into the atlas (1 sample); the debug view draws into the main pass.
-        let blur_pipeline = make_pipeline("shadow blur", BLUR_SHADER, wgpu::TextureFormat::R16Float, None, 1);
+        let blur_pipeline = make_pipeline("shadow blur", SHADOWMAP.part("blur"), wgpu::TextureFormat::R16Float, None, 1);
         let debug_pipeline = make_pipeline(
             "shadow debug",
             DEBUG_SHADER,
@@ -576,7 +542,7 @@ impl Shadow {
 
 #[cfg(test)]
 mod tests {
-    use super::{BLUR_SHADER, DEBUG_SHADER, RADII, Shadow, layer_matrix, light_vector, sun_light};
+    use super::{DEBUG_SHADER, RADII, Shadow, layer_matrix, light_vector, sun_light};
     use nirender_wgpu::wgpu::TextureFormat;
 
     /// The shadow camera follows the sun light of the game, normalized, by day and at night
@@ -624,7 +590,7 @@ mod tests {
     #[test]
     fn the_shaders_of_the_shadow_map_are_valid() {
         let check = crate::renderer::shader_check::check;
-        check("shadow blur", BLUR_SHADER).unwrap();
+        check("shadow blur", crate::renderer::core_files::SHADOWMAP.part("blur")).unwrap();
         check("shadow debug", DEBUG_SHADER).unwrap();
     }
 

@@ -67,6 +67,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::naga;
 
+use super::core_files::SHADOW;
 use super::shadow;
 
 /// The interface that the first line of a file names.
@@ -96,7 +97,7 @@ struct Hook {
     name: &'static str,
     arguments: &'static [&'static str],
     result: &'static str,
-    built_in: &'static str,
+    built_in: fn() -> &'static str,
 }
 
 const SHADOW_HOOKS: [Hook; 2] = [
@@ -104,41 +105,25 @@ const SHADOW_HOOKS: [Hook; 2] = [
         name: "shadow_delta",
         arguments: &["vec3<f32>", "vec3<f32>"],
         result: "f32",
-        built_in: SHADOW_DELTA,
+        built_in: shadow_delta,
     },
     Hook {
         name: "shadow_esm",
         arguments: &["f32"],
         result: "f32",
-        built_in: SHADOW_ESM,
+        built_in: shadow_esm,
     },
 ];
 
-const SHADOW_DELTA: &str = "
-// shadowDeltaZ: the depth of the shadow map less that of the pixel, in the layer that has
-// the pixel; a positive number when the map has nothing nearer to the sun.
-fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {
-    let rcp = shadow_texel();
-    let margin = vec3f(1.0 - 8.0 * rcp, 1.0 - 8.0 * rcp, 1.0);
-    if all(abs(s0) < margin) {
-        let uv = vec2f(0.5 + 0.5 * s0.x, 0.5 - 0.5 * s0.y);
-        return shadow_map_depth(0u, uv) / shadow_esm_scale() - s0.z;
-    }
-    if all(abs(s1) < margin) {
-        let uv = vec2f(0.5 + 0.5 * s1.x, 0.5 - 0.5 * s1.y);
-        return shadow_map_depth(1u, uv) / shadow_esm_scale() - s1.z;
-    }
-    return 1e-6;
+/// The built-in `shadow_delta` (`shadowDeltaZ`).
+fn shadow_delta() -> &'static str {
+    SHADOW.part("shadow_delta")
 }
-";
 
-const SHADOW_ESM: &str = "
-// shadowESM: the shadow amount of a pixel behind the map by `dz` (a negative number).
-fn shadow_esm(dz: f32) -> f32 {
-    let esm = shadow_esm_values();
-    return 1.0 - clamp(exp(esm.x * dz + esm.y), 0.0, 1.0);
+/// The built-in `shadow_esm` (`shadowESM`).
+fn shadow_esm() -> &'static str {
+    SHADOW.part("shadow_esm")
 }
-";
 
 /// The library of the shadow hooks as declarations, for the check of a file alone. Each home
 /// has its own bodies.
@@ -157,25 +142,25 @@ const WATER_HOOKS: [Hook; 4] = [
         name: "water_vertex",
         arguments: &["vec3<f32>"],
         result: "WaterVertex",
-        built_in: super::water::WATER_VERTEX,
+        built_in: || super::water::WATER_VERTEX,
     },
     Hook {
         name: "water_normal",
         arguments: &["vec4<f32>", "f32", "vec2<f32>"],
         result: "vec3<f32>",
-        built_in: super::water::WATER_NORMAL,
+        built_in: || super::water::WATER_NORMAL,
     },
     Hook {
         name: "water_color",
         arguments: &["WaterPixel"],
         result: "vec4<f32>",
-        built_in: super::water::WATER_COLOR,
+        built_in: || super::water::WATER_COLOR,
     },
     Hook {
         name: "underwater_color",
         arguments: &["WaterPixel"],
         result: "vec4<f32>",
-        built_in: super::water::UNDERWATER_COLOR,
+        built_in: || super::water::UNDERWATER_COLOR,
     },
 ];
 
@@ -314,7 +299,7 @@ const SKY_HOOKS: [Hook; 1] = [Hook {
     name: "clouds_color",
     arguments: &["CloudPixel"],
     result: "vec4<f32>",
-    built_in: CLOUDS_COLOR,
+    built_in: || CLOUDS_COLOR,
 }];
 
 /// The built-in `clouds_color` (`CloudsPS` of `XE Mod Sky.fx`): the colour of the vertex times
@@ -382,7 +367,7 @@ const PARTICLE_HOOKS: [Hook; 1] = [Hook {
     name: "particle_color",
     arguments: &["ParticlePixel"],
     result: "vec4<f32>",
-    built_in: PARTICLE_COLOR,
+    built_in: || PARTICLE_COLOR,
 }];
 
 /// The built-in `particle_color`: the colour of the texture stages, unchanged.
@@ -1703,7 +1688,7 @@ fn hook_text(hooks: &[Hook], defined: &[&str], text: &str) -> String {
     let mut joined: String = hooks
         .iter()
         .filter(|hook| !defined.contains(&hook.name))
-        .map(|hook| hook.built_in)
+        .map(|hook| (hook.built_in)())
         .collect();
     joined.push_str(text);
     joined
@@ -1902,7 +1887,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
 
     #[test]
     fn a_copy_of_the_built_ins_is_used_whole() {
-        let file = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let file = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
         let mods = mods_of(&[("Shadow.wgsl", &file)], &HOMES);
         // Both hooks come from the file: no built-in is joined.
         assert_eq!(mods.shadow_hooks(), file);
@@ -1921,7 +1906,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             header_line()
         );
         let mods = mods_of(&[("Shadow.wgsl", &file)], &HOMES);
-        assert_eq!(mods.shadow_hooks(), format!("{SHADOW_DELTA}{file}"));
+        assert_eq!(mods.shadow_hooks(), format!("{}{file}", shadow_delta()));
         assert!(
             mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)"),
             "{:?}",
@@ -2001,7 +1986,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
 
     #[test]
     fn a_file_that_a_home_refuses_is_dropped() {
-        let file = format!("{}{SHADOW_ESM}", header_line());
+        let file = format!("{}{}", header_line(), shadow_esm());
         let homes = [
             Home {
                 name: "test home",
@@ -2043,7 +2028,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     #[test]
     fn shadow_and_shadow_data_fall_back_together() {
         let good_data = format!("{}//! values: shade = 0.8\n", header_line());
-        let good_shadow = format!("{}{SHADOW_ESM}", header_line());
+        let good_shadow = format!("{}{}", header_line(), shadow_esm());
         for (shadow_file, data, reason) in [
             (
                 good_shadow.clone(),
@@ -2138,7 +2123,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         let marked = format!("\u{feff}{}//! values: shade = 0.8\n", header_line());
         let mods = mods_of(&[("Shadow Data.wgsl", &marked)], &HOMES);
         assert_eq!(mods.shadow_values.shade, 0.8, "{:?}", mods.report());
-        let marked = format!("\u{feff}{}{SHADOW_ESM}", header_line());
+        let marked = format!("\u{feff}{}{}", header_line(), shadow_esm());
         let mods = mods_of(&[("Shadow.wgsl", &marked)], &HOMES);
         assert!(
             !mods.shadow_hooks().contains('\u{feff}') && mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)"),
@@ -2352,7 +2337,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert!(other.take_world_changed());
 
         // The file fixed: its hooks, and no problem.
-        let file = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let file = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
         shared.reload(mods_of(&[("Shadow.wgsl", &file)], &HOMES));
         assert_eq!(other.shadow_hooks(), file);
         assert!(other.problems().is_empty());
@@ -2383,7 +2368,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     /// with the file has the plant.
     #[test]
     fn the_world_without_the_planted_file_has_no_plant() {
-        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
         let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow)].into();
         let shared = Shared::new(
             mods_with_markers(files, &HOMES, &BuildMarkers::default()),
@@ -2410,7 +2395,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         );
         assert_eq!(Plant::of_env(), None);
 
-        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
         let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
         let shared = Shared::new(
             mods_with_markers(files, &HOMES, &BuildMarkers::default()),
@@ -2434,7 +2419,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         let folder = std::env::temp_dir().join(format!("core-mod-markers-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let markers = BuildMarkers::in_folder(&folder);
-        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
         markers.write(WATER_PLANE_HOME, &[(ModFile::Water, "water".to_string())]);
         markers.write(
             WORLD_HOME,
@@ -2497,7 +2482,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     fn the_world_marker_holds_its_file_over_the_start_that_obeys_it() {
         let folder = std::env::temp_dir().join(format!("core-mod-world-marker-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
-        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
         let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
         BuildMarkers::in_folder(&folder).write(WORLD_HOME, &[(ModFile::Shadow, shadow.clone())]);
 
@@ -2545,7 +2530,7 @@ struct TestOut { @builtin(position) position: vec4f, @location(0) s0: vec3f, @lo
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
         let folder = std::env::temp_dir().join(format!("core-mod-first-build-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
-        let shadow = format!("{}{SHADOW_DELTA}{SHADOW_ESM}", header_line());
+        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
         let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
         let build = |plant: &str| {
             let markers = BuildMarkers::in_folder(&folder);

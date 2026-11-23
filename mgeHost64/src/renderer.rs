@@ -38,6 +38,7 @@ use std::time::{Duration, Instant};
 
 mod blend;
 mod caustics;
+mod core_files;
 mod core_mods;
 mod debug_view;
 use debug_view::DebugView;
@@ -1813,28 +1814,6 @@ fn water_homes() -> [core_mods::Home; 1] {
     }]
 }
 
-/// The casters of the shadow map: `ShadowVS` and `ShadowPS` of `XE Shadowmap.fx` for the
-/// land. It has the view group only (the matrix of the layer in `view_projection`).
-const LAND_SHADOW_SHADER: &str = "
-struct Out {
-    @builtin(position) position: vec4f,
-    @location(0) depth: f32,
-}
-
-@vertex fn vs(@location(0) position: vec3f, @location(1) normal: vec4f, @location(2) color: vec4f) -> Out {
-    var out: Out;
-    var clip = clip_of(position);
-    clip.z = max(0.0, clip.z);
-    out.position = clip;
-    out.depth = clip.z / clip.w;
-    return out;
-}
-
-@fragment fn fs(in: Out) -> @location(0) vec4f {
-    return vec4f(32768.0 * in.depth, 0.0, 0.0, 1.0);
-}
-";
-
 /// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
 /// pixel at a place in the world with the fog on it. The uniforms `u` of the shader must
 /// have `eye`, `fog_color`, `fog`, `flags`, `sun_pos`, `sky`, `outscatter`, `inscatter` and
@@ -2909,8 +2888,10 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     let picture_pipeline = make_pipeline(None, wgpu::PolygonMode::Fill, Default::default());
     let picture_pipeline_lines = lines.then(|| make_pipeline(None, wgpu::PolygonMode::Line, Default::default()));
 
-    // The casters of the shadow map: the land with the depth from the sun.
-    let shadow_source = format!("{}{LAND_SHADOW_SHADER}", view::wgsl());
+    // The casters of the shadow map (`ShadowVS` and `ShadowPS` of `XE Shadowmap.fx`): the land
+    // with the depth from the sun. The view group only (the matrix of the layer in
+    // `view_projection`).
+    let shadow_source = format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"));
     let shadow_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land shadow"),
         source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
@@ -7070,7 +7051,8 @@ mod shader_tests {
     fn the_land_shaders_are_valid() {
         let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
         shader_check::check("distant land", &land).unwrap();
-        shader_check::check("distant land shadow", &format!("{}{LAND_SHADOW_SHADER}", view::wgsl())).unwrap();
+        let shadow = format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"));
+        shader_check::check("distant land shadow", &shadow).unwrap();
     }
 
     /// The land's shader takes no core mod (D498, test 7): its source names none of the hooks,
