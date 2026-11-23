@@ -431,8 +431,8 @@ mouse pointer of the menus follows your hand late, send us this line.
 ## Debug views
 
 A debug view shows one value of the renderer in the picture, for a developer's test. At most
-one shader view is on at a time. The line sources are a set beside it; this build has no line
-pass yet, so a line source has no effect.
+one shader view is on at a time. The line sources are a set beside it: each source that is on
+adds lines to one line pass, which draws them on the picture.
 
 The views `lights`, `shadow-layers`, `fog` and `water` add no work to normal play. Their code is only
 in the pipelines that the view makes when it goes on, and the view drops them when it goes
@@ -450,6 +450,18 @@ view.
 | `fog` | each draw writes the part of the fog that it applied, as grey: black no fog, white all fog. It is the draw's own fog: that of the game's scene or of the shape's own fog property for a draw of the game, none for a material without fog, the curve of the distant land for the land, the statics and the grass, and that of the water for the water, from above or below. Each draw of the sky (the dome, the clouds, the stars, the sun, the moons) is blue; a draw that adds to the picture writes black, the sun glare too. The dark overlay of the actors' stencil shadows writes nothing, so the fog under a shadow shows. The glows of the distant lights, the caustics of the sea, the blend and the post chain are left out while it is on (they add to the grey or change it), and the overlay names them |
 
 The line sources: `lights`, `shadow-boxes`, `bounds`, `lua`.
+
+| Line source | What it draws |
+| --- | --- |
+| `shadow-boxes` | the box of each layer of the shadow map in this frame, from the matrix that the shadow pass used (with its snap to whole texels): the near layer red, the far layer green, over everything. A frame with no shadow pass draws none, and the overlay says so |
+| `lights` | a sphere for each light of the world that is on, at its place, with the reach that the draws use: a light with an end (the extension's fade) in yellow, with its reach in the clusters; a light with no end in cyan, with the radius by which it reaches the bound of a draw. The overlay gives the number of each kind |
+| `bounds`, `lua` | not drawn yet |
+
+The line pass draws after the post chain and before the interface of the game. A picture file
+then shows the lines, and the post chain does not blur or tint them. A line is hidden where the frame drew something nearer, by the depth
+of the game and of the distant land, unless its source draws it over everything. While a line
+source is on, the overlay gives the number of segments. With no line source on, the pass makes
+nothing and costs nothing.
 
 - In a game, from Lua: `nirender.debug.view(name, term)` (`nirender.debug.view("off")` for
   none) and `nirender.debug.lines(name, on)`. Each sends a tune.

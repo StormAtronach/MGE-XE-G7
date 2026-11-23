@@ -250,9 +250,50 @@ pub fn retired_switches_line(is_set: impl Fn(&str) -> bool) -> Option<String> {
     })
 }
 
+/// The colours of the boxes of the two shadow layers (the line source `shadow-boxes`): those of
+/// the layers in the view `shadow-layers`, the near layer red and the far one green.
+pub const SHADOW_BOX_COLORS: [[u8; 4]; 2] = [[255, 0, 0, 255], [0, 255, 0, 255]];
+
+/// The overlay line of the line source `shadow-boxes`, while it is on: what it draws in the
+/// frame, or why it draws nothing.
+pub fn shadow_boxes_line(lines: LineSources, shadow_in_frame: bool) -> Option<String> {
+    if !lines.contains(LineSources::SHADOW_BOXES) {
+        return None;
+    }
+    Some(if shadow_in_frame {
+        "debug lines: shadow boxes: the near layer red, the far layer green, on top".to_owned()
+    } else {
+        "debug lines: shadow boxes: none, no shadow pass in this frame".to_owned()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The overlay names the shadow boxes only while their source is on, and says why a frame
+    /// has none.
+    #[test]
+    fn the_shadow_boxes_line_follows_the_source_and_the_shadow_pass() {
+        assert_eq!(shadow_boxes_line(LineSources::NONE, true), None);
+        assert_eq!(shadow_boxes_line(LineSources::LIGHTS, true), None);
+        let with = shadow_boxes_line(LineSources::SHADOW_BOXES, true).unwrap();
+        assert!(with.contains("near layer red"), "{with}");
+        let without = shadow_boxes_line(LineSources::SHADOW_BOXES, false).unwrap();
+        assert!(without.contains("no shadow pass"), "{without}");
+    }
+
+    /// The boxes take the colours of the layers in the view `shadow-layers` (the world shader's
+    /// VIEW_SHADOW_LAYERS branch: the first layer red, the second green).
+    #[test]
+    fn the_shadow_boxes_have_the_colours_of_the_layers_view() {
+        let shader = include_str!("../renderer.rs").replace('\r', "");
+        assert!(shader.contains(
+            "c = vec3f(0.0, 1.0, 0.0);\n        } else if shadow_layer > 0.5 {\n            c = vec3f(1.0, 0.0, 0.0);"
+        ));
+        assert_eq!(SHADOW_BOX_COLORS[0][..3], [255, 0, 0]);
+        assert_eq!(SHADOW_BOX_COLORS[1][..3], [0, 255, 0]);
+    }
 
     fn arguments(text: &str) -> Vec<String> {
         text.split_whitespace().map(str::to_owned).collect()

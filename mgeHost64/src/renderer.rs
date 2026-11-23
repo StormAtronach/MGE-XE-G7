@@ -112,6 +112,7 @@ mod part {
     /// The crate's name of the post chain's span (`Player::post_process`).
     pub const POST: &str = "the post chain (extension)";
 }
+use nirender_wgpu::debug_lines::{LineGroup, LineList, LineSources};
 use nirender_wgpu::{
     Additions, DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay,
     SceneView, ShaderText, Status, TableShade,
@@ -3675,6 +3676,7 @@ impl Extension for DistantLand {
             .chain(self.tunables.lines())
             .chain(self.live_parts.lines())
             .chain(self.debug_view.fog().then(|| debug_view::FOG_VIEW_LINE.to_owned()))
+            .chain(debug_view::shadow_boxes_line(self.debug_view.lines, self.shadow_in_frame))
             .collect()
     }
 
@@ -4006,6 +4008,7 @@ impl Extension for DistantLand {
             shadow_reach: if self.shadow_in_frame { shadow::RADII[1] } else { 0.0 },
             full_tier_max: Some(self.full_tier_max),
             debug_view: self.debug_view.frame_id(self.shadow_in_frame),
+            debug_lines: self.debug_view.lines,
         }
     }
 
@@ -5298,6 +5301,30 @@ impl Extension for DistantLand {
             return;
         }
         self.run_post(scene, encoder, target);
+    }
+
+    /// The line source `shadow-boxes`: the box that each layer of the shadow map drew in this
+    /// frame, from the inverse of its matrix (the one the pass of the casters used, with its
+    /// snap to whole texels). Drawn on top: the camera is inside the boxes. A frame with no
+    /// shadow pass adds nothing; the overlay says why (`debug_lines_line`).
+    fn debug_lines(&mut self, _scene: &SceneView, sources: LineSources, list: &mut LineList) {
+        if !sources.contains(LineSources::SHADOW_BOXES) || !self.shadow_in_frame {
+            return;
+        }
+        if let Some(shadow) = self.shadow.as_ref() {
+            for (matrix, color) in shadow.viewproj.iter().zip(debug_view::SHADOW_BOX_COLORS) {
+                list.projection_box(matrix, color, LineGroup::OnTop);
+            }
+        }
+    }
+
+    /// The depth of `before_world` is that of the distant land, with its own projection, while
+    /// the distant land is on (as for the post chain's depth frame, `post_inputs`; here also
+    /// under the water, where the lines need the depth as it is).
+    fn before_depth_terms(&self, scene: &SceneView) -> Option<[f32; 2]> {
+        self.facts
+            .on
+            .then(|| nirender_wgpu::depth::terms(&self.land_projection(scene)))
     }
 
     /// Takes the surfaces of water volumes: a material that a mod marked with its specular

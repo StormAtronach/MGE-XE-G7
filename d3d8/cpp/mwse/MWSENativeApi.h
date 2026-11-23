@@ -69,7 +69,8 @@ typedef struct MwseNativeCameraTransformsUpdatedV1 {
 } MwseNativeCameraTransformsUpdatedV1;
 
 // The engine configured the scale of its UI when it made its UI (the call of
-// `WorldController::configUIScaling` in `WorldController::initUIAndAudio`). Main thread. It fires
+// `WorldController::configUIScaling` in `WorldController::initUIAndAudio`), and again after each
+// renderer restart. Main thread. It fires
 // after MWSE applied the UI scale of a request (MWSE_NATIVE_REQUEST_UI_SCALE). Latest
 // subscribe: before the game initializes (before the engine makes its renderer).
 #define MWSE_NATIVE_EVENT_UI_CONFIGURED 2u
