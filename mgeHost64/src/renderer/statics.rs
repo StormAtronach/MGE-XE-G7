@@ -1762,7 +1762,7 @@ struct SetUniforms {
 /// The statics in a view: after the view group and [`set_wgsl`].
 /// The source of the shader of the distant statics: the view group, the light of the distant
 /// lamps, the values of the set, the statics and the fog.
-fn shader_source() -> String {
+pub(super) fn shader_source() -> String {
     format!(
         "{}{}{}{}{}",
         super::view::wgsl(),
@@ -1771,6 +1771,13 @@ fn shader_source() -> String {
         STATICS.part("statics"),
         super::fog_function()
     )
+}
+
+/// The source of the shader of the casters of the shadow map (`StaticShadowVS` and
+/// `StaticShadowPS` of `XE Shadowmap.fx`): the view group, the values of the set, and the
+/// statics' part of the shadow map.
+pub(super) fn shadow_source() -> String {
+    format!("{}{}{}", super::view::wgsl(), set_wgsl(), SHADOWMAP.part("statics"))
 }
 
 /// How many times each part of a view's set was freed: for the test that a free of a set frees
@@ -4651,7 +4658,7 @@ fn make_gpu(
     // The casters of the shadow map (`StaticShadowVS` and `StaticShadowPS` of `XE Shadowmap.fx`):
     // the same vertices and places, the depth from the sun. After the view group and
     // [`set_wgsl`] (the matrix of the layer in `view_projection`).
-    let shadow_source = format!("{}{}{}", super::view::wgsl(), set_wgsl(), SHADOWMAP.part("statics"));
+    let shadow_source = shadow_source();
     let shadow_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant statics shadow"),
         source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
