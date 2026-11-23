@@ -48,6 +48,34 @@ pub struct Variables {
     pub switches: [f32; 4],
 }
 
+/// The uniform of the lights of the frame, for a shader that reads them (`frame_lights` and
+/// `frame_light_info` of [`COMMON`]; the lights are the crate's `LightData`).
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct FrameLightInfo {
+    /// The point that the positions of the lights are relative to, less the eye: a position
+    /// plus it is the place of the light relative to the eye.
+    offset: [f32; 4],
+    /// The number of lights in `frame_lights`.
+    count: u32,
+    pad: [u32; 3],
+}
+
+impl FrameLightInfo {
+    /// The uniform for `lights` of the frame and the eye.
+    fn of(lights: Option<&nirender_wgpu::FrameLights>, eye: [f32; 3]) -> FrameLightInfo {
+        let Some(lights) = lights else {
+            return FrameLightInfo::default();
+        };
+        let offset: [f32; 3] = core::array::from_fn(|axis| (lights.origin[axis] - eye[axis] as f64) as f32);
+        FrameLightInfo {
+            offset: [offset[0], offset[1], offset[2], 0.0],
+            count: lights.count,
+            pad: [0; 3],
+        }
+    }
+}
+
 /// The part of each shader module that every shader has: the variables, the textures, the
 /// samplers, the quad, and the helpers of HLSL that WGSL does not have.
 const COMMON: &str = "
@@ -76,6 +104,24 @@ struct Variables {
 @group(0) @binding(6) var linear_mirror: sampler;
 @group(0) @binding(7) var point_wrap: sampler;
 @group(0) @binding(8) var point_mirror: sampler;
+// The lights of the frame (the crate's `LightData`), for a shader that names `frame_lights`:
+// the lights of the lit draws of the world in this frame. `position.w` is the type (1 point,
+// 2 spot, 3 directional); `cone.z` is the radius of the game's light. A position plus
+// `frame_light_info.offset.xyz` is the place of the light relative to the eye.
+struct FrameLight {
+    diffuse: vec4f,
+    ambient: vec4f,
+    position: vec4f,
+    direction: vec4f,
+    attenuation: vec4f,
+    cone: vec4f,
+}
+struct FrameLightInfo {
+    offset: vec4f,
+    count: u32,
+}
+@group(0) @binding(9) var<storage, read> frame_lights: array<FrameLight>;
+@group(0) @binding(10) var<uniform> frame_light_info: FrameLightInfo;
 
 // Group 1, the shader: made when the shader is loaded.
 // The variables of the shader that a mod sets from Lua. The renderer makes a function for
@@ -708,6 +754,7 @@ const MOD_FILES: &[(&str, u64, &str)] = &[
     // Ultra Bloom (the ports are in post_look.rs).
     ("XERO-lut", 0xa9673036fce07524, "XERO-lut"),
     ("Ultra Bloom", 0xa1cb2855ecbfb4f4, "Ultra Bloom"),
+    ("Eternal Shine", 0x4b774efbffa76dc7, "Eternal Shine"),
 ];
 
 /// A line of an effect file that gives a name one number: `#define NAME value`, or
@@ -5449,6 +5496,8 @@ struct Compiled {
     /// The code of the shader reads the depth frame (`depthframe`; the common part only
     /// declares it).
     reads_depth: bool,
+    /// The code of the shader reads the lights of the frame (`frame_lights`).
+    reads_lights: bool,
     passes: Vec<CompiledPass>,
     variables: Vec<VariableDef>,
     /// The uniform `modv` of the shader, when it has variables.
@@ -5481,6 +5530,8 @@ pub struct PostView {
     /// The variables of the frame and the terms of the depth frame.
     uniforms: wgpu::Buffer,
     depth_uniform: wgpu::Buffer,
+    /// The uniform of the lights of the frame ([`FrameLightInfo`]).
+    light_info: wgpu::Buffer,
     /// The uniform with the size of the target of each pass, by the name of the shader and the
     /// number of the pass in it, so that a reload or a reorder of the chain gives a pass no
     /// buffer of another. A buffer is written before its pass in every run.
@@ -5529,12 +5580,19 @@ impl PostView {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let light_info = device.counted_buffer(&wgpu::BufferDescriptor {
+            label: Some("post lights"),
+            size: size_of::<FrameLightInfo>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         PostView {
             size: (0, 0),
             pool: Vec::new(),
             depth: None,
             uniforms,
             depth_uniform,
+            light_info,
             infos: std::collections::HashMap::new(),
             depth_group: KeptGroup::default(),
             frame_group: KeptGroup::default(),
@@ -5655,6 +5713,8 @@ pub struct Post {
     pipeline_layout: wgpu::PipelineLayout,
     /// The uniform `modv` of a shader without variables.
     no_values: wgpu::Buffer,
+    /// The lights of a frame without lights: one light of zeros.
+    no_lights: wgpu::Buffer,
     hdr_reaction: f32,
     /// The shaders that came from a port, and from a file of a mod.
     counts: (u32, u32),
@@ -5742,6 +5802,17 @@ impl Post {
                 sampler(6, wgpu::SamplerBindingType::Filtering),
                 sampler(7, wgpu::SamplerBindingType::NonFiltering),
                 sampler(8, wgpu::SamplerBindingType::NonFiltering),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                uniform(10, wgpu::ShaderStages::FRAGMENT),
             ],
         });
         let mut entries = vec![uniform(0, wgpu::ShaderStages::FRAGMENT)];
@@ -5896,6 +5967,12 @@ impl Post {
             usage: wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: false,
         });
+        let no_lights = device.counted_buffer(&wgpu::BufferDescriptor {
+            label: Some("post no lights"),
+            size: size_of::<nirender_wgpu::LightData>() as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let mut post = Post {
             chain: Vec::new(),
             failed: Vec::new(),
@@ -5906,6 +5983,7 @@ impl Post {
             pass_layout,
             pipeline_layout,
             no_values,
+            no_lights,
             hdr_reaction,
             counts: (0, 0),
             reloads: std::collections::HashMap::new(),
@@ -6152,6 +6230,7 @@ impl Post {
             enabled: true,
             no_sun_glare: shader.no_sun_glare,
             reads_depth: shader.source.contains("depthframe"),
+            reads_lights: shader.source.contains("frame_lights"),
             passes,
             variables: shader.variables,
             values,
@@ -6277,6 +6356,11 @@ impl Post {
         !self.chain.iter().any(|c| c.enabled)
     }
 
+    /// A shader that is on reads the lights of the frame: the frame asks the renderer for them.
+    pub fn reads_lights(&self) -> bool {
+        self.chain.iter().any(|c| c.enabled && c.reads_lights)
+    }
+
     /// Runs the chain on the picture and writes the result into `target`. `view` is the state of
     /// the view whose picture it is: everything that a run writes is in it, so that two runs in
     /// one frame (the main view and a picture) do not write the same buffer (the one-submit
@@ -6330,6 +6414,14 @@ impl Post {
         }
         let variables = &variables;
         scene.queue.write_buffer(&view.uniforms, 0, bytemuck::bytes_of(variables));
+        let eye = [variables.eyepos[0], variables.eyepos[1], variables.eyepos[2]];
+        let light_info = FrameLightInfo::of(scene.lights.as_ref(), eye);
+        scene.queue.write_buffer(&view.light_info, 0, bytemuck::bytes_of(&light_info));
+        let lights = scene
+            .lights
+            .as_ref()
+            .filter(|l| l.count > 0)
+            .map_or(&self.no_lights, |l| l.lights);
         // The linear depth of the game.
         // Without a depth of the distant stage, the depth of the game stands in for it:
         // it is 1 where the first read was 1.
@@ -6432,6 +6524,14 @@ impl Post {
                     wgpu::BindGroupEntry {
                         binding: 8,
                         resource: wgpu::BindingResource::Sampler(&self.samplers[5]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: lights.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: view.light_info.as_entire_binding(),
                     },
                 ],
             },
