@@ -399,6 +399,41 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// W563: the default document has `render.table_order = "grouped"`; "engine" reads as
+    /// Engine; a value that is not known reads as the default, with a warning of its path.
+    #[test]
+    fn table_order_reads_its_two_values_and_defaults_one_not_known() {
+        assert!(DEFAULT_DOCUMENT.contains("table_order = \"grouped\""));
+        for (written, read) in [
+            ("grouped", TableOrder::Grouped),
+            ("engine", TableOrder::Engine),
+            ("today", TableOrder::Grouped),
+        ] {
+            let root = test_root(&format!("table-order-{written}"));
+            let path = root.join(FILE_NAME);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(
+                &path,
+                DEFAULT_DOCUMENT.replace("table_order = \"grouped\"", &format!("table_order = \"{written}\"")),
+            )
+            .unwrap();
+            let document = ConfigDocument::open(&path);
+            assert_eq!(
+                document.settings().render.table_order,
+                read,
+                "written {written}: {:?}",
+                document.warnings()
+            );
+            assert_eq!(
+                document.warnings().iter().any(|warning| warning.path == "render.table_order"),
+                written == "today",
+                "written {written}: {:?}",
+                document.warnings()
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[test]
     fn texture_slots_keep_a_room_in_range_and_default_one_out_of_it() {
         // A value out of 256 to 1048576 (0 is automatic) is not valid in the file: the

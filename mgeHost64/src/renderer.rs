@@ -1316,6 +1316,8 @@ pub struct DistantLand {
     texture_slots: u32,
     /// The frames that may wait for the GPU (`runtime.renderer_frame_latency`).
     frame_latency: u32,
+    /// The order of the draws that the engine does not sort (`render.table_order`, W563).
+    table_order: nirender_wgpu::TableOrder,
     /// Whether the window waits for the refresh of the screen (`graphics.vsync`, any
     /// interval but `immediate`).
     vsync: bool,
@@ -2048,6 +2050,10 @@ impl DistantLand {
             samples: (document.settings().graphics.anti_aliasing.runtime_value() as u32).max(1),
             texture_slots: document.settings().runtime.renderer_texture_slots,
             frame_latency: document.settings().runtime.renderer_frame_latency,
+            table_order: match document.settings().render.table_order {
+                mge_config::TableOrder::Grouped => nirender_wgpu::TableOrder::Grouped,
+                mge_config::TableOrder::Engine => nirender_wgpu::TableOrder::Engine,
+            },
             vsync: document.settings().graphics.vsync.waits_for_screen(),
             post: None,
             menu_keep: None,
@@ -3676,6 +3682,10 @@ impl Extension for DistantLand {
 
     fn frame_latency(&self) -> u32 {
         self.frame_latency
+    }
+
+    fn table_order(&self) -> Option<nirender_wgpu::TableOrder> {
+        Some(self.table_order)
     }
 
     fn vsync(&self) -> bool {
