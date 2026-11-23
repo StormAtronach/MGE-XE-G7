@@ -4092,7 +4092,7 @@ impl Extension for DistantLand {
                     .collect::<Vec<u8>>(),
             )
         };
-        if !self.loaded_said && self.enabled && self.loading.is_none() && self.gpu.is_some() && statics_loaded {
+        if self.loaded_due(self.gpu.is_some(), statics_loaded) {
             self.loaded_said = true;
             println!("distant land: ready (loaded)");
             self.messages_out.push(say(LOADED, 0));
@@ -5390,6 +5390,14 @@ impl DistantLand {
         if self.hello.is_none() {
             stop_mismatch(&no_hello_text(), self.synchronous);
         }
+    }
+
+    /// [`LOADED`] is due: the load of the session ended with its data on the GPU (`on_gpu`; a
+    /// failed load has none) and its statics, and it was not said yet. The flag of distant land
+    /// does not count: a land that the player turned off during its load is still loaded, and
+    /// d3d8 lets the flag go on again only after this message (W581).
+    fn loaded_due(&self, on_gpu: bool, statics_loaded: bool) -> bool {
+        !self.loaded_said && self.loading.is_none() && on_gpu && statics_loaded
     }
 
     /// Why the frame draws no distant land, or nothing when it does.
@@ -7631,6 +7639,38 @@ full_tier_max = 0
             land.apply_settings();
             assert_eq!((land.enabled, land.water_on), (enabled, water_on), "flags {flags:#x}");
         }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// W581: "loaded" comes once when the load ends, also with the flag of distant land off
+    /// at that time; a failed load (no data on the GPU) never says it.
+    #[test]
+    fn loaded_is_said_once_whatever_the_flag() {
+        let root = std::env::temp_dir().join(format!("mge-loaded-flag-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // No load starts here: the test sets the state of the load by hand.
+        std::fs::write(root.join(FILE_NAME), "[distant_land]\nenabled = false\n").unwrap();
+        let mut land = DistantLand::start(&root, false);
+        // The player turned the land off during the load.
+        land.settings = Some(Settings {
+            version: Settings::VERSION,
+            flags: 0,
+            ..bytemuck::Zeroable::zeroed()
+        });
+        land.apply_settings();
+        assert!(!land.enabled);
+        // The load has not ended yet.
+        let (_sender, receiver) = channel();
+        land.loading = Some(receiver);
+        assert!(!land.loaded_due(true, true));
+        // The load ended.
+        land.loading = None;
+        assert!(!land.loaded_due(true, false), "the statics are still loading");
+        assert!(!land.loaded_due(false, true), "a failed load has no data on the GPU");
+        assert!(land.loaded_due(true, true));
+        // Said one time.
+        land.loaded_said = true;
+        assert!(!land.loaded_due(true, true));
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -194,6 +194,12 @@ public:
     static bool lastWorldSpaceFound;
     static bool worldSpaceCacheValid;
     static bool isDistantLandLoaded;
+    // The wgpu renderer mode: the helper said that the land of the session is loaded
+    // (DistantLandReady::Loaded). isDistantLandLoaded stays for the objects of Direct3D 9.
+    static bool helperLandLoaded;
+    // The land of the session is loaded, so that USE_DISTANT_LAND may go on: on wgpu after
+    // the helper's message, on Direct3D 9 after its own load.
+    static bool isLoadedForSession();
     static bool staticsUploaded;
 
     static VisibleSet visLandShared;

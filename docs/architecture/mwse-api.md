@@ -186,7 +186,7 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | `reloadDistantLand` | returns true and does nothing; the helper takes the settings on the next frame |
 | `render.*` features: shaders, shadows, grass, distantStatics, updateHDR, blurReflections, dynamicRipples, reflectiveWater, reflectNearStatics, reflectSky, reflectInterior | followed (settings record) |
 | `render.*` features: exponentialFog, atmosphericScattering | followed (environment flags) |
-| `render.distantLand` | refused before the first frame; after it, followed only if the helper loaded the land at the start |
+| `render.distantLand` | "on" is refused until the helper says that the land of the session is loaded (`distantLandReady`, reason loaded), with the log line "-- Ignoring runtime distant-land enable"; after a start with distant land off it is never loaded, so "on" stays refused. "Off" is always followed |
 | `render.*` features: fpsCounter, displayMessages | followed: the helper draws the status text and the frame rate on the window (not in screenshots, as on Direct3D 9) |
 | `render.pauseRenderingInMenus` | followed: the helper keeps the picture of the first menu frame and does no distant land or post work until a click (`renderer/menu_keep.rs`) |
 | `render.distantWater` | followed: the water draws with distant land on or with only distant water on, as on Direct3D 9 (`distantWater` of `mged3d8device.cpp`). One parity gap is open: after a start with distant land off the exterior water does not draw (Direct3D 9 draws it). The water-only picture equals that of Direct3D 9 (mean difference 0.73 of 255 against 1.0 to 1.7 in the other cases of the matrix; run 20261103-211741-d82s3d-water-wgpu against 20261103-190215-d82w4-d3d9) |
@@ -203,7 +203,7 @@ the distant land of `d3d8.dll` stays unloaded. The helper loads and draws the di
 | old calls `enableShader`, `disableShader`, `setShaderFloat`, `setShaderLong` (opcodes 0x3AB0-0x3AB4) | write to the placeholder store |
 | `saveScreenshot` | the helper writes the picture; a request before the first frame waits for it. The extension of the path picks the format: `.bmp`, `.tga`, `.dds`, `.jpg` or `.jpeg`; any other extension gives PNG data (run 20261112-183552-w423-d397) |
 | `macros.takeScreenshot` (and PrintScreen) | the helper writes the picture, with the name, folder and format of the settings |
-| `macros.toggleDistantLand` (and its key) | changes `mge.render.distantLand`; the land shows only if the flag was on at the start (the helper loads it then) |
+| `macros.toggleDistantLand` (and its key) | changes `mge.render.distantLand` by the same rule: "on" only after the helper says that the land is loaded, "off" always |
 | `macros.toggleStatusText`, `toggleFpsCounter`, `showLastMessage` | work (record 9 and the settings record) |
 | `macros.toggleShaders`, `toggleShadows`, `toggleGrass`, `toggleZoom`, `increaseFOV`, `decreaseFOV`, `increaseZoom`, `decreaseZoom` | work: each changes its `mge.render` or `mge.camera` value, and the opposite call or a second toggle sets it back (run 20261112-183552-w423-d397, as for the four rows below) |
 | `macros.toggleBlending`, `toggleTransparencyAA` | change their flag (`noMWMGEBlending`, `transparencyAA`); the helper does not use these flags (the row of those features above) |
