@@ -15,8 +15,18 @@ reads the `.wgsl` file of the same name:
 | --- | --- |
 | Enhanced Water Shader - wgpu shaders | Enhanced Water Shader 2.2 Green-Blue by Krokantor, updated for MGE XE 0.13.0 by Hrnchamd |
 | Ashfall - wgpu shaders | Ashfall (`ashfall.fx`) |
-| Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx`) |
+| Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx` and `XE Mod Sky.fx`) |
 | Eternal Shine - wgpu shaders | Eternal Shine |
+
+## The written ports
+
+A core mod has no built-in port: its pack file is written by hand from the mod's `.fx`.
+
+- `Watch the Skies - wgpu shaders/shaders/core-mods/XE Mod Sky.wgsl`: the `clouds_color` hook,
+  from `CloudsPS` of `XE Mod Sky.fx`, md5 9ec82f14916051527a12be3577689c53, of
+  `mods/Watch the Skies` in Outlander and Outlander-test and of
+  `mods/Watch the Skies - Dynamic Weather and Sky Effects` in Morrowind Refreshed (260602). The
+  `.fx` changes only `CloudsPS`, so the file has only that hook.
 
 ## The exported packs
 

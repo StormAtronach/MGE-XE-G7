@@ -7261,6 +7261,18 @@ fn clouds_color(p: CloudPixel) -> vec4f {
         assert!(mods.sky_hooks().is_some());
     }
 
+    /// The sky file of the pack "Watch the Skies - wgpu shaders" (W609): its clouds hook passes the
+    /// check of its home, and the world shader takes it.
+    #[test]
+    fn the_watch_the_skies_pack_gives_the_clouds_hook() {
+        let file = include_str!("../../ports/Watch the Skies - wgpu shaders/shaders/core-mods/XE Mod Sky.wgsl");
+        let mods = core_mods::CoreMods::of_files(&[("Sky.wgsl", file)], &[], &[], &sky_homes());
+        let hooks = mods.sky_hooks().expect("the hook of the pack's file");
+        let source = world_source(core_mods::CoreMods::built_in().shadow_hooks(), Some(hooks));
+        assert_eq!(source.matches("fn clouds_color(").count(), 1);
+        assert_eq!(source.matches("fn extension_clouds_color(").count(), 1);
+    }
+
     /// The core mods of a Particles file, checked with the home of the particle hook.
     fn particle_mods(file: &str) -> core_mods::CoreMods {
         core_mods::CoreMods::of_files_with_particles(&[("Particles.wgsl", file)], &[], &[], &[], &particle_homes())
