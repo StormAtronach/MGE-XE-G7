@@ -83,27 +83,15 @@ struct Out {
 
 @vertex fn vs(@location(0) local: vec3f) -> Out {
     var out: Out;
-    var world = local + water.world.xyz;
-    var lowered = 0.0;
-    if water.wave.w > 0.5 {
-        // WaterVS with DYNAMIC_RIPPLES: the waves move the plane, most between 200 and
-        // 6400 units from the camera.
-        let t = 0.4 * water.time.x;
-        let height = textureSampleLevel(waves, wave_sampler, vec3f(world.xy / 1104.0, t), 0.0).a;
-        let height2 = textureSampleLevel(waves, wave_sampler, vec3f(world.xy / 3900.0, t), 0.0).a;
-        let dist = length(u.eye.xyz - world);
-        let add = water.wave.z * (mix(height, height2, clamp(dist / 8000.0, 0.0, 1.0)) - 0.5) * clamp(1.0 - dist / 6400.0, 0.0, 1.0) * clamp(dist / 200.0, 0.0, 1.0);
-        world.z += add;
-        lowered = abs(add);
-        if WATER_DEBUG {
-            out.probe = height;
-        }
-    } else {
-        // The plane lies at the water level less 1, a little under the ripples of the game.
-        world.z -= 0.1;
+    // The vertex at the water level; the hook `water_vertex` moves it.
+    let start = local + water.world.xyz;
+    let moved = water_vertex(start);
+    let world = moved.world;
+    if WATER_DEBUG && water.wave.w > 0.5 {
+        out.probe = textureSampleLevel(waves, wave_sampler, vec3f(start.xy / 1104.0, 0.4 * water.time.x), 0.0).a;
     }
     out.world = world;
-    out.texcoords = vec4f(world.xy / 3900.0, world.xy / 527.0);
+    out.texcoords = moved.texcoords;
     out.position = clip_of(world);
     // The far plane of the game is its view distance; the sea goes on to the draw distance of
     // the distant land, as on Direct3D 9, where MGE XE moves the far plane of the game there.
@@ -112,7 +100,7 @@ struct Out {
     out.position.z = out.position.w * water.land.z + water.land.w;
     out.clip_w = out.position.w;
     // The point of the reflection is not above the plane.
-    out.clamped = clip_of(vec3f(world.xy, world.z - lowered)).xyw;
+    out.clamped = clip_of(vec3f(world.xy, world.z - moved.lowered)).xyw;
     return out;
 }
 
@@ -216,6 +204,85 @@ fn water_wave_height() -> f32 {
 }
 fn water_is_interior() -> bool {
     return water.modes.z > 0.5;
+}
+// The functions of the library that `water_vertex` can call too.
+fn wave_level_at(coords: vec3f) -> vec4f {
+    return textureSampleLevel(waves, wave_sampler, coords, 0.0);
+}
+fn water_level() -> f32 {
+    return water.world.z;
+}
+// fogMWScalar: the linear fog of the game, from its start (u.fog.z) to its end (u.fog.w).
+fn water_near_fog(distance: f32) -> f32 {
+    return clamp((u.fog.w - distance) / max(u.fog.w - u.fog.z, 0.001), 0.0, 1.0);
+}
+fn water_dynamic_waves() -> bool {
+    return water.wave.w > 0.5;
+}
+";
+
+/// The bindings of the plane's group 1 that the vertices have (the layout of
+/// [`Water::new`]): the values of the water, the wave texture and its sampler. The
+/// view group's values `u` are binding 0 of group 0.
+const VERTEX_BINDINGS: [(u32, u32); 4] = [(0, 0), (1, 0), (1, 3), (1, 4)];
+
+/// The check of the plane's shader with the water hooks `water_hooks`, as the device checks it
+/// ([`shader_check::check`](super::shader_check::check)), and one more: the vertex entry reads
+/// only the bindings that the layout gives the vertices ([`VERTEX_BINDINGS`]). A `water_vertex`
+/// that calls a function for the pixel only fails here, and not in the build of the pipeline.
+pub(super) fn plane_check(water_hooks: &str) -> Result<(), String> {
+    use nirender_wgpu::wgpu::naga;
+    let source = plane_source(water_hooks);
+    let module = super::shader_check::check("water plane", &source)?;
+    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .map_err(|error| format!("water plane: {}", error.emit_to_string(&source)))?;
+    let Some(vertex) = module
+        .entry_points
+        .iter()
+        .position(|entry| entry.stage == naga::ShaderStage::Vertex)
+    else {
+        return Err("water plane: no vertex entry".to_string());
+    };
+    let uses = info.get_entry_point(vertex);
+    for (handle, variable) in module.global_variables.iter() {
+        let Some(binding) = &variable.binding else {
+            continue;
+        };
+        if !uses[handle].is_empty() && !VERTEX_BINDINGS.contains(&(binding.group, binding.binding)) {
+            return Err(format!(
+                "water plane: the vertices read `{}`, which only the pixels have: water_vertex calls a function of the library for the pixel only",
+                variable.name.as_deref().unwrap_or("?")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The built-in `water_vertex` (`WaterVS`): a hook of `XE Mod Water` (`core_mods.rs`), the
+/// place of a vertex of the plane.
+pub(super) const WATER_VERTEX: &str = "
+// WaterVS: the place of a vertex of the plane.
+fn water_vertex(start: vec3f) -> WaterVertex {
+    var out: WaterVertex;
+    var world = start;
+    if water_dynamic_waves() {
+        // With DYNAMIC_RIPPLES: the waves move the plane, most between 200 and 6400 units
+        // from the camera.
+        let t = 0.4 * water_time();
+        let height = wave_level_at(vec3f(world.xy / 1104.0, t)).a;
+        let height2 = wave_level_at(vec3f(world.xy / 3900.0, t)).a;
+        let dist = length(water_eye() - world);
+        let add = water_wave_height() * (mix(height, height2, clamp(dist / 8000.0, 0.0, 1.0)) - 0.5) * clamp(1.0 - dist / 6400.0, 0.0, 1.0) * clamp(dist / 200.0, 0.0, 1.0);
+        world.z += add;
+        out.lowered = abs(add);
+    } else {
+        // The plane lies at the water level less 0.1, a little under the ripples of the game.
+        world.z -= 0.1;
+    }
+    out.world = world;
+    out.texcoords = vec4f(world.xy / 3900.0, world.xy / 527.0);
+    return out;
 }
 ";
 
@@ -1733,7 +1800,7 @@ mod tests {
     fn the_water_hooks_of_a_mod_join_the_plane_only() {
         let homes = [core_mods::Home {
             name: "water plane",
-            check: |hooks| crate::renderer::shader_check::check("water plane", &plane_source(hooks)).map(|_| ()),
+            check: plane_check,
         }];
         let mods = CoreMods::of_files(&[("Water.wgsl", &core_mods::marker_water_file())], &[], &homes, &[]);
         let plane = plane_source(mods.water_hooks());

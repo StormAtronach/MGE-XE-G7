@@ -34,9 +34,10 @@
 //!   stays out: it matches the map's format. A value out of its range drops the file and the
 //!   Shadow file with it: `shade` 0.01 or more, each number of `shade_color` 0 to 1, `esm_c`
 //!   above 0 and at most 88, `esm_bias` any number.
-//! - `XE Mod Water`: `fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) ->
-//!   vec3f` (`getFinalWaterNormal`), `fn water_color(p: WaterPixel) -> vec4f` (`WaterPS`) and
-//!   `fn underwater_color(p: WaterPixel) -> vec4f` (`UnderwaterPS`), with the struct
+//! - `XE Mod Water`: `fn water_vertex(start: vec3f) -> WaterVertex` (`WaterVS`), `fn
+//!   water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f`
+//!   (`getFinalWaterNormal`), `fn water_color(p: WaterPixel) -> vec4f` (`WaterPS`) and `fn
+//!   underwater_color(p: WaterPixel) -> vec4f` (`UnderwaterPS`), with the structs of
 //!   [`WATER_INTERFACE`]. Their home: the plane of the water only. The surfaces of the water
 //!   volumes and the dry spaces keep the built-ins, as Direct3D 9 has a core file of its own
 //!   for the volumes. The library is [`WATER_LIBRARY`]. Only the built-in `water_color` and
@@ -151,7 +152,13 @@ fn shadow_esm_values() -> vec2f { return vec2f(0.0); }
 /// The names of the functions of [`SHADOW_LIBRARY`].
 const SHADOW_LIBRARY_NAMES: [&str; 4] = ["shadow_map_depth", "shadow_texel", "shadow_esm_scale", "shadow_esm_values"];
 
-const WATER_HOOKS: [Hook; 3] = [
+const WATER_HOOKS: [Hook; 4] = [
+    Hook {
+        name: "water_vertex",
+        arguments: &["vec3<f32>"],
+        result: "WaterVertex",
+        built_in: super::water::WATER_VERTEX,
+    },
     Hook {
         name: "water_normal",
         arguments: &["vec4<f32>", "f32", "vec2<f32>"],
@@ -172,8 +179,17 @@ const WATER_HOOKS: [Hook; 3] = [
     },
 ];
 
-/// The struct of the water hooks, part of the interface: it joins the plane's shader.
+/// The structs of the water hooks, part of the interface: they join the plane's shader.
 pub(crate) const WATER_INTERFACE: &str = "
+// A vertex of the plane of the water from `water_vertex`: its place in the world, the two wave
+// coordinates (far in xy, close in zw), and how far under that place the reflection is read
+// (with the dynamic waves, the point that is not above the plane).
+struct WaterVertex {
+    world: vec3f,
+    texcoords: vec4f,
+    lowered: f32,
+}
+
 // The pixel of the plane of the water for the hooks of `XE Mod Water`: its place in the
 // picture (0 to 1) and its view depth (the clip w); the two wave coordinates (far in xy, close
 // in zw); its place in the world; the direction from the eye to it (length 1) and its
@@ -224,6 +240,15 @@ struct WaterPixel {
 /// - `water_is_interior()`: true in a plain interior, false in an exterior and in an interior
 ///   that behaves like one. A mod tells an interior by this fact, not by `sunCol > 0.003`;
 ///   the raw `water_sun_color()` stays for a faithful port.
+/// - for `water_vertex` too: `wave_level_at(coords)`, the volume of the waves read with no
+///   derivatives (`tex3Dlod`); `water_level()`, the level of the water (`waterLevel`);
+///   `water_near_fog(distance)`, the linear fog of the game (`fogMWScalar`); and
+///   `water_dynamic_waves()`, true with the dynamic waves (`DYNAMIC_RIPPLES`).
+///
+/// Pixel only: `reflection_at`, `picture_at`, `ground_distance_at`, `wave_at` and
+/// `ripples_on` read what the vertices of the plane do not have (the textures of the pixel, or
+/// a read with the derivatives of the pixel). A `water_vertex` that calls one of them fails the
+/// check of the plane (`water.rs`, `plane_check`).
 pub(crate) const WATER_LIBRARY: &str = "
 fn reflection_at(uv: vec2f, w: f32, stretch: f32) -> vec3f { return vec3f(0.0); }
 fn fog_water(direction: vec3f, distance: f32) -> vec4f { return vec4f(0.0); }
@@ -247,10 +272,14 @@ fn water_ambient_color() -> vec3f { return vec3f(0.0); }
 fn water_texel() -> vec2f { return vec2f(0.0); }
 fn water_wave_height() -> f32 { return 0.0; }
 fn water_is_interior() -> bool { return false; }
+fn wave_level_at(coords: vec3f) -> vec4f { return vec4f(0.0); }
+fn water_level() -> f32 { return 0.0; }
+fn water_near_fog(distance: f32) -> f32 { return 0.0; }
+fn water_dynamic_waves() -> bool { return false; }
 ";
 
-/// The names of [`WATER_LIBRARY`] and of the struct of [`WATER_INTERFACE`].
-const WATER_LIBRARY_NAMES: [&str; 23] = [
+/// The names of [`WATER_LIBRARY`] and of the structs of [`WATER_INTERFACE`].
+const WATER_LIBRARY_NAMES: [&str; 28] = [
     "reflection_at",
     "fog_water",
     "sun_glint",
@@ -273,7 +302,12 @@ const WATER_LIBRARY_NAMES: [&str; 23] = [
     "water_texel",
     "water_wave_height",
     "water_is_interior",
+    "wave_level_at",
+    "water_level",
+    "water_near_fog",
+    "water_dynamic_waves",
     "WaterPixel",
+    "WaterVertex",
 ];
 
 const SKY_HOOKS: [Hook; 1] = [Hook {
@@ -2139,7 +2173,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             .iter()
             .filter_map(|(_, function)| function.name.as_deref())
             .collect();
-        names.push("WaterPixel");
+        names.extend(["WaterPixel", "WaterVertex"]);
         assert_eq!(names, WATER_LIBRARY_NAMES);
     }
 
@@ -2159,7 +2193,8 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert_eq!(
             mods.water_hooks(),
             format!(
-                "{}{}{file}",
+                "{}{}{}{file}",
+                super::super::water::WATER_VERTEX,
                 super::super::water::WATER_NORMAL,
                 super::super::water::UNDERWATER_COLOR
             )
@@ -2248,8 +2283,12 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     #[test]
     fn a_hook_is_declared_by_its_signature() {
         assert_eq!(
-            declaration(&WATER_HOOKS[1]),
+            declaration(&WATER_HOOKS[2]),
             "fn water_color(a0: WaterPixel) -> vec4<f32> { return vec4<f32>(); }\n"
+        );
+        assert_eq!(
+            declaration(&WATER_HOOKS[0]),
+            "fn water_vertex(a0: vec3<f32>) -> WaterVertex { return WaterVertex(); }\n"
         );
         assert_eq!(
             declaration(&SHADOW_HOOKS[0]),
@@ -2572,5 +2611,80 @@ struct TestOut { @builtin(position) position: vec4f, @location(0) s0: vec3f, @lo
         assert_eq!(texts, [shadow.as_str()]);
         assert_eq!(shared.shadow_hooks(), shadow);
         std::fs::remove_dir(&folder).unwrap();
+    }
+
+    /// The plane of the water as the home of the water hooks, checked as the renderer checks it.
+    const PLANE_HOMES: [Home; 1] = [Home {
+        name: "water plane",
+        check: super::super::water::plane_check,
+    }];
+
+    /// A water file with a `water_vertex` whose body is `body`.
+    fn vertex_file(body: &str) -> String {
+        format!(
+            "{}fn water_vertex(start: vec3f) -> WaterVertex {{\n    var out: WaterVertex;\n{body}    return out;\n}}\n",
+            header_line()
+        )
+    }
+
+    /// The file of the hook's null: it raises the plane by a constant, with the built-in's wave
+    /// coordinates and no lowered point of the reflection.
+    pub(crate) fn raise_water_file() -> String {
+        vertex_file(
+            "    out.world = start + vec3f(0.0, 0.0, 50.0);\n    out.texcoords = vec4f(start.xy / 3900.0, start.xy / 527.0);\n",
+        )
+    }
+
+    #[test]
+    fn a_water_file_can_move_the_plane() {
+        let file = raise_water_file();
+        let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &[], &PLANE_HOMES, &[]);
+        assert!(mods.uses(ModFile::Water), "{:?}", mods.report());
+        assert_eq!(mods.water_hooks().matches("fn water_vertex(").count(), 1);
+        assert!(mods.water_hooks().contains("start + vec3f(0.0, 0.0, 50.0)"));
+        assert!(!mods.water_hooks().contains(super::super::water::WATER_VERTEX));
+        assert!(
+            mods.report()
+                .iter()
+                .any(|line| line.contains("XE Mod Water.wgsl (water_vertex)")),
+            "{:?}",
+            mods.report()
+        );
+        // The built-in through the hook passes the same check.
+        super::super::water::plane_check(CoreMods::built_in().water_hooks()).unwrap();
+    }
+
+    #[test]
+    fn a_water_vertex_can_call_the_functions_for_both_stages() {
+        let file = vertex_file(
+            "    let fog = fog_water(vec3f(0.0, 0.0, -1.0), 100.0).a * water_near_fog(100.0);\n    let wave = wave_level_at(vec3f(start.xy, water_time())).a;\n    let deep = deep_color(vec4f(0.0), sky_color(vec3f(0.0, 0.0, 1.0))).r + transmission(vec3f(1.0), 1.0).g;\n    out.world = vec3f(start.xy, water_level() + fog + wave + deep + water_wave_height() + f32(water_dynamic_waves()));\n    out.texcoords = vec4f(start.xy, start.xy) + vec4f(water_wind(), water_eye().xy);\n",
+        );
+        let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &[], &PLANE_HOMES, &[]);
+        assert!(mods.uses(ModFile::Water), "{:?}", mods.report());
+    }
+
+    #[test]
+    fn a_water_vertex_that_reads_a_pixel_function_drops_the_file() {
+        for (call, reason) in [
+            // A read with the derivatives of the pixel: naga refuses it at the vertex stage.
+            ("picture_at(start.xy).r", "forbidden at this stage"),
+            ("ground_distance_at(start.xy)", "which only the pixels have"),
+            ("reflection_at(start.xy, 1.0, 1.0).r", "which only the pixels have"),
+            ("ripples_on(start.xy, start.xy, start.xy).x", "which only the pixels have"),
+            ("wave_at(start).a", "forbidden at this stage"),
+        ] {
+            let file = vertex_file(&format!("    out.world = start + vec3f(0.0, 0.0, {call});\n"));
+            let mods = CoreMods::of_files(&[("Water.wgsl", &file)], &[], &PLANE_HOMES, &[]);
+            assert!(!mods.uses(ModFile::Water), "{call}");
+            assert_eq!(mods.water_hooks(), CoreMods::built_in().water_hooks(), "{call}");
+            assert!(
+                mods.report().iter().any(|line| line
+                    .starts_with("core mod: XE Mod Water.wgsl: the water plane fails with it: ")
+                    && line.contains(reason)
+                    && line.ends_with("; the built-in water is used")),
+                "{call}: {:?}",
+                mods.report()
+            );
+        }
     }
 }
