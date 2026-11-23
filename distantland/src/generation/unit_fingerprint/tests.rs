@@ -151,6 +151,27 @@ fn settings_identity_ignores_force_rebuild() {
     );
 }
 
+/// The identity of the default settings, as the outputs of the players on the defaults hold it:
+/// a change of it makes their next start a "settings changed" (W459).
+const DEFAULT_SETTINGS_IDENTITY: &str = "04c04d43433208a176e3085d0de25844b78acc25f13dca26df7645bf6c5d3927";
+
+#[test]
+fn the_identity_of_the_default_settings_is_kept() {
+    let identity = blake3::Hash::from(fingerprint_settings(&GenerationSettings::default()));
+    assert_eq!(identity.to_hex().as_str(), DEFAULT_SETTINGS_IDENTITY);
+}
+
+#[test]
+fn settings_identity_ignores_the_lights_and_the_found_overrides() {
+    let defaults = GenerationSettings::default();
+    let mut lights = defaults.clone();
+    lights.distant_lights = !defaults.distant_lights;
+    let mut found = defaults.clone();
+    found.discover_override_files = !defaults.discover_override_files;
+    assert_eq!(fingerprint_settings(&lights), fingerprint_settings(&defaults));
+    assert_eq!(fingerprint_settings(&found), fingerprint_settings(&defaults));
+}
+
 #[test]
 fn terrain_domain_digest_is_sensitive_and_deterministic() {
     let state = GenerationState {
