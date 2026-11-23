@@ -670,6 +670,8 @@ fn case_of(i: u32) -> vec4f {
             ("ext", 0.4),
             ("rain", 0.5),
             ("near_eye", 100.0),
+            ("fog", 0.75),
+            ("storm", 0.75),
         ];
         assert_eq!(have, want);
         assert_eq!(header.variables.len(), header.settings.len());

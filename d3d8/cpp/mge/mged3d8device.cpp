@@ -1533,6 +1533,31 @@ namespace Deviceless {
         sendToRenderer(EnvironmentId, &e, sizeof(e));
     }
 
+    // The weather of the game, for the post shaders: record 16 (WEATHER_ID in
+    // mgeHost64/src/renderer.rs), not kept. It goes with each environment record.
+    struct Weather {
+        UINT version;
+        // No flag yet: kept for later.
+        UINT flags;
+        // The weather now and the weather it changes to, as the game's index (0 clear to
+        // 9 blizzard). They are the same when the weather does not change.
+        UINT now;
+        UINT next;
+        // The ratio of the change, 0 to 1.
+        float ratio;
+    };
+    static_assert(sizeof(Weather) == 20, "record 16 has 20 bytes");
+    static const UINT WeatherId = 16;
+
+    static void sendWeather(MWBridge* mwBridge) {
+        Weather w = {};
+        w.version = 1;
+        w.now = mwBridge->GetCurrentWeather();
+        w.next = mwBridge->GetNextWeather();
+        w.ratio = mwBridge->GetWeatherRatio();
+        sendToRenderer(WeatherId, &w, sizeof(w));
+    }
+
     bool active() {
         return ready;
     }
@@ -2150,6 +2175,7 @@ namespace Deviceless {
             }
             if (!environmentSent) {
                 sendEnvironment(mwBridge);
+                sendWeather(mwBridge);
             }
             PostShaders::sendShaderStates();
         }
@@ -2210,6 +2236,7 @@ namespace Deviceless {
             // the helper one frame late.
             if (mwBridge->IsLoaded()) {
                 sendEnvironment(mwBridge);
+                sendWeather(mwBridge);
                 environmentSent = true;
             }
         }
