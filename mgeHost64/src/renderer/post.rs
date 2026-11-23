@@ -249,6 +249,7 @@ pub struct Variable {
 
 /// A variable of a shader as this program compiles it.
 #[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct VariableDef {
     name: String,
     slots: u32,
@@ -573,6 +574,7 @@ pub struct Shader {
 
 /// A shader of the chain as this program compiles it: from a WGSL file of a mod, or from
 /// the table of the ports.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct Definition {
     name: String,
     source: String,
@@ -971,6 +973,29 @@ fn port_for_file(definition: &mut Definition, file: &str) {
             );
         }
     }
+}
+
+/// The port of the chain name `name` for its effect file `effect` (none when the name
+/// resolves to no file): the port of the file's code key in `MOD_FILES`, else the port of
+/// that name, fitted to the file's numbers. None when no port has that name.
+fn keyed_definition(name: &str, effect: Option<&str>) -> Option<Definition> {
+    let port_name = effect
+        .map(code_key)
+        .and_then(|key| {
+            MOD_FILES
+                .iter()
+                .find(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key)
+        })
+        .map_or(name, |(_, _, port)| *port);
+    let port = ports().find(|shader| shader.name == port_name)?;
+    let mut definition = Definition::of_port(port);
+    definition.name = name.to_string();
+    // The port takes the numbers of the file, and the log says when the file is not the one
+    // the port was made from.
+    if let Some(effect) = effect {
+        port_for_file(&mut definition, effect);
+    }
+    Some(definition)
 }
 
 impl Definition {
@@ -5912,26 +5937,8 @@ impl Post {
                 // file of a mod with the name of another shader has a port of its own.
                 let effect =
                     read(&format!("shaders/XEshaders/{name}.fx")).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-                let port_name = effect
-                    .as_deref()
-                    .map(code_key)
-                    .and_then(|key| {
-                        MOD_FILES
-                            .iter()
-                            .find(|(mod_name, mod_key, _)| *mod_name == name && *mod_key == key)
-                    })
-                    .map_or(name, |(_, _, port)| *port);
-                match ports().find(|shader| shader.name == port_name) {
-                    Some(port) => {
-                        let mut definition = Definition::of_port(port);
-                        definition.name = name.to_string();
-                        // The port takes the numbers of the file, and the log says when
-                        // the file is not the one the port was made from.
-                        if let Some(effect) = effect.as_deref() {
-                            port_for_file(&mut definition, effect);
-                        }
-                        definition
-                    }
+                match keyed_definition(name, effect.as_deref()) {
+                    Some(definition) => definition,
                     None => {
                         // The key tells which file this is, for a report.
                         match effect.as_deref().map(code_key) {
@@ -6682,6 +6689,10 @@ mod shader_tests {
         check("post debug", DEBUG_BLIT_SHADER).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "post_export.rs"]
+mod export;
 
 #[cfg(test)]
 mod tests {

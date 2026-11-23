@@ -1,0 +1,3 @@
+# The packs' files (W609, D641) go into the installs as they are in the repo: LF line ends in
+# every checkout, so a file's text after its //! lines is the port's source, byte for byte.
+*.wgsl text eol=lf
