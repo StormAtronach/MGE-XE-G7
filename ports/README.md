@@ -17,6 +17,7 @@ reads the `.wgsl` file of the same name:
 | Enhanced Water Shader - wgpu shaders | Enhanced Water Shader 2.2 Green-Blue by Krokantor, updated for MGE XE 0.13.0 by Hrnchamd |
 | Ashfall - wgpu shaders | Ashfall (`ashfall.fx`) |
 | Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx` and `XE Mod Sky.fx`) |
+| Watch the Skies (older, Morrowind Refreshed) - wgpu shaders | the older Watch the Skies of Morrowind Refreshed (its `Sunshafts.fx` and `XE Mod Sky.fx`) |
 | Joy of Painting - wgpu shaders | Joy of Painting (its 23 `jop_*.fx` shaders) |
 | Magicka Expanded - wgpu shaders | Magicka Expanded (`oj_me_fog_box.fx`) |
 | Skoomaesthesia - wgpu shaders | Skoomaesthesia (`skoomaesthesia.fx`) |
@@ -32,6 +33,7 @@ reads the `.wgsl` file of the same name:
 | Inspect It - wgpu shaders | Inspect It (`InspectIt/Bokeh.fx`) |
 | Modern Lockpicking (MWSE) - wgpu shaders | Modern Lockpicking (MWSE) (`modern-lockpicking/Bokeh.fx`) |
 | Pixel Shader Style Water for MGE XE - wgpu shaders | Pixel Shader Style Water for MGE XE 1.0 by Hrnchamd (its `XE Mod Water.fx`, md5 7f40c5546d36b84cbdc83b2830def8ff, in Morrowind Refreshed and Morrowind Refreshed (260602)) |
+| CRT Shader - wgpu shaders | CRT Shader (`CRT.fx`, md5 6a8b5ea4e1f7bc11074aa8e4752abed7, and `CRT Zoomed Out.fx`, md5 0be439714569ad6176827e796595ae15, in Outlander) |
 | Darker Nights - wgpu shaders | `Darker Nights.fx`, md5 85d20186c83457f61cc449dcfa1544d3: a file of MGE XE v0.20.0 that MGE XE removed (d2ed258), in `mods/MGE XE G7 Fork` of Morrowind75 - Poison Song and in the game folder of Morrowind Refreshed (260602). Written by hand from the `.fx` |
 | True Water - Odai - wgpu shaders | `tw_foam.fx`, md5 10c758a2be9a6e447316c655798409eb, of the True Water showcase `True Water - Odai`. Written by hand from the `.fx` |
 | True Water - Flow Map - wgpu shaders | `tw_flowmap.fx`, md5 5439e388e2823c125485b09eebc912c4, of the True Water showcase `True Water - Flow Map`. Written by hand from the `.fx` |
@@ -40,15 +42,40 @@ Two packs give `shaders/core-mods/XE Mod Water.wgsl`: Enhanced Water Shader and 
 Style Water. Install one water pack at a time, the one of the water mod that is on. The test
 `each_water_file_of_the_packs_is_used` of `core_mods.rs` checks each water file of the packs.
 
+Three packs give `shaders/XEshaders/Sunshafts.wgsl`: Watch the Skies, the older Watch the Skies
+and STEP Shaders Compilation. Two packs give `shaders/core-mods/XE Mod Sky.wgsl`: Watch the Skies
+and the older Watch the Skies. Install one pack of a mod at a time, the pack of the version of
+the mod that is on.
+
 ## The written ports
 
-A core mod has no built-in port: its pack file is written by hand from the mod's `.fx`.
+A core mod has no built-in port, and some post shaders of mods have none: their pack files are
+written by hand from the mod's `.fx`.
 
 - `Watch the Skies - wgpu shaders/shaders/core-mods/XE Mod Sky.wgsl`: the `clouds_color` hook,
   from `CloudsPS` of `XE Mod Sky.fx`, md5 9ec82f14916051527a12be3577689c53, of
   `mods/Watch the Skies` in Outlander and Outlander-test and of
   `mods/Watch the Skies - Dynamic Weather and Sky Effects` in Morrowind Refreshed (260602). The
   `.fx` changes only `CloudsPS`, so the file has only that hook.
+- `Pixel Shader Style Water for MGE XE - wgpu shaders/shaders/core-mods/XE Mod Water.wgsl`: the
+  four water hooks, from `XE Mod Water.fx`, md5 7f40c5546d36b84cbdc83b2830def8ff, of
+  `mods/Pixel Shader Style Water for MGE XE` in Morrowind Refreshed and Morrowind Refreshed
+  (260602).
+- `CRT Shader - wgpu shaders/shaders/XEshaders/CRT.wgsl` and `CRT Zoomed Out.wgsl`: from
+  `CRT.fx` (md5 6a8b5ea4e1f7bc11074aa8e4752abed7) and `CRT Zoomed Out.fx` (md5
+  0be439714569ad6176827e796595ae15) of `mods/CRT Shader` in Outlander. The two files differ only
+  in their switches and the zoom of the curve; the switches are constants in the `.wgsl`.
+- `Watch the Skies (older, Morrowind Refreshed) - wgpu shaders/shaders/XEshaders/Sunshafts.wgsl`:
+  from `Sunshafts.fx`, md5 a0265743472e0aa94336b530a830c9d0, of
+  `mods/Watch the Skies - Dynamic Weather and Sky Effects` in Morrowind Refreshed. It is the stock
+  Sunshafts with other numbers, two of them in expressions, so the stock port does not take them:
+  the file is the stock port with all the numbers of the `.fx`. The test
+  `the_older_watch_the_skies_sunshafts_is_the_stock_port_with_its_numbers` of `post_export.rs`
+  checks it.
+- `Watch the Skies (older, Morrowind Refreshed) - wgpu shaders/shaders/core-mods/XE Mod Sky.wgsl`:
+  from `XE Mod Sky.fx`, md5 56b31f168d28ae2453e019552a53308e, of the same mod in Morrowind
+  Refreshed. It is the current Watch the Skies' `XE Mod Sky.fx` with 9 other numbers: the file is
+  the port of the pack "Watch the Skies - wgpu shaders" with these numbers.
 
 ## The exported packs
 
@@ -72,7 +99,7 @@ The `.fx` copies that each exported pack was made from. All copies of a pack giv
   `mods/Watch the Skies` in Outlander and Outlander-test and of
   `mods/Watch the Skies - Dynamic Weather and Sky Effects` in Morrowind Refreshed (260602). The
   older Watch the Skies of Morrowind Refreshed (md5 a0265743472e0aa94336b530a830c9d0) is
-  another shader and needs a pack of its own. `Sunshafts.wgsl` has the name of a stock shader,
+  another shader, with a pack of its own (above). `Sunshafts.wgsl` has the name of a stock shader,
   so the gate's game folder does not take it (D640 piece 2, addendum 2): a change of this file
   is not under the gate, and replays check it.
 - `Joy of Painting - wgpu shaders/shaders/XEshaders/jop_*.wgsl`, 23 files: the `jop_*.fx` of
