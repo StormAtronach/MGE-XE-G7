@@ -18,7 +18,11 @@ oj_me_fog_box (Magicka Expanded), tew_fogbox (Vapourmist), skoomaesthesia (Skoom
 Disorient (Kogoruhn Expanded), Invisibility (MM - Enhanced Invisibility), InspectIt/Bokeh
 (Inspect It), ashfall (Ashfall), Lens Effects and Cinematic Bokeh DoF (Outlander
 Configuration), film, deband_fogaware, Bloom Soft Sky and alternatebloom, gammavtdt (STEP
-Shaders Compilation), and the 23 shaders of Joy of Painting (`jop_*`). Files with the name
+Shaders Compilation), the 23 shaders of Joy of Painting (`jop_*`), and Ultra Bloom and
+XERO-lut (Ultra Bloom; XERO-lut reads the colour table `Textures/XERO-lut.tga` of the mod).
+On wgpu, Ultra Bloom takes its exposure from the night and the cell: 1 in the day, 2 at
+night, 1.5 in an interior. The mod's menu values Exposure, Interior exposure bonus and Night
+exposure bonus do not act on wgpu; its other values do. Files with the name
 of a stock shader and other code have a port of their own, found by the code of the file:
 Eye Adaptation (HDR), SSAO HQ and Sunshafts of the STEP Shaders Compilation, Sunshafts of
 Watch the Skies, Underwater Effects of Krokantor's Enhanced Water Shader.

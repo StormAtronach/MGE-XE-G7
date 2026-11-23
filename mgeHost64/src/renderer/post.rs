@@ -42,7 +42,9 @@ pub struct Variables {
     pub fognearcol: [f32; 4],
     /// `fognearstart`, `fognearrange`, and `rcpres`.
     pub fog_near: [f32; 4],
-    /// x: 1 with the exponential fog (the macro `USE_EXPFOG` of an effect file).
+    /// x: 1 with the exponential fog (the macro `USE_EXPFOG` of an effect file). y: the night,
+    /// 0 in the day and 1 at night (the environment's `night`), which no variable of MGE XE
+    /// has: a port reads it in place of a mod's Lua that set a variable by the hour.
     pub switches: [f32; 4],
 }
 
@@ -703,6 +705,9 @@ const MOD_FILES: &[(&str, u64, &str)] = &[
     ("jop_vignette", 0x20dfac92c2828d91, "jop_vignette"),
     ("jop_watercolor", 0x48a80762115e64eb, "jop_watercolor"),
     ("jop_window", 0xfd2c875d2b5577e4, "jop_window"),
+    // Ultra Bloom (the ports are in post_look.rs).
+    ("XERO-lut", 0xa9673036fce07524, "XERO-lut"),
+    ("Ultra Bloom", 0xa1cb2855ecbfb4f4, "Ultra Bloom"),
 ];
 
 /// A line of an effect file that gives a name one number: `#define NAME value`, or
@@ -4662,9 +4667,12 @@ fn color(coords: vec2f, blur: f32, desky: f32) -> vec3f {
 }
 ";
 
-/// Each port: those of this file, and those of the Joy of Painting.
+/// Each port: those of this file, those of the Joy of Painting, and the looks of W576.
 fn ports() -> impl Iterator<Item = &'static Shader> {
-    SHADERS.iter().chain(super::post_jop::SHADERS)
+    SHADERS
+        .iter()
+        .chain(super::post_jop::SHADERS)
+        .chain(super::post_look::SHADERS)
 }
 
 /// The shaders that this program has a port of.
