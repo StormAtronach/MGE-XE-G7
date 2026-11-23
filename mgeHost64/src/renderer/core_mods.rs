@@ -2641,6 +2641,31 @@ struct TestOut { @builtin(position) position: vec4f, @location(0) s0: vec3f, @lo
         super::super::water::plane_check(CoreMods::built_in().water_hooks()).unwrap();
     }
 
+    /// Each water file of the packs in `ports/` (`<pack>/shaders/core-mods/XE Mod Water.wgsl`)
+    /// passes the rules of a file and the check of the plane, so the renderer uses it.
+    #[test]
+    fn each_water_file_of_the_packs_is_used() {
+        let ports = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("ports");
+        let mut checked = Vec::new();
+        for pack in std::fs::read_dir(&ports).unwrap() {
+            let file = pack
+                .unwrap()
+                .path()
+                .join("shaders")
+                .join("core-mods")
+                .join("XE Mod Water.wgsl");
+            if !file.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap();
+            let mods = CoreMods::of_files(&[("Water.wgsl", &text)], &[], &PLANE_HOMES, &[]);
+            assert!(mods.uses(ModFile::Water), "{}: {:?}", file.display(), mods.report());
+            checked.push(file);
+        }
+        // Enhanced Water Shader and Pixel Shader Style Water at least.
+        assert!(checked.len() >= 2, "{checked:?}");
+    }
+
     #[test]
     fn a_water_vertex_can_call_the_functions_for_both_stages() {
         let file = vertex_file(
