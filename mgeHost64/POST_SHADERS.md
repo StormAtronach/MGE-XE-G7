@@ -222,8 +222,9 @@ Lua or a menu of a mod:
 ```
 
 MGE XE keeps their values between game sessions in the file `<name>.values.toml` beside the
-shader file (`Data Files/shaders/XEshaders`; under Mod Organizer 2, in its overwrite folder):
-one line `name = number` for each setting. It reads the file when the shader loads, and
+shader file (`Data Files/shaders/XEshaders`). Under Mod Organizer 2, a new values file goes
+into the overwrite folder, and a values file that is already in a mod's folder is changed
+there. The file has one line `name = number` for each setting. It reads the file when the shader loads, and
 writes it about 1 s after the last change from Lua, so a change in the last second before the
 game ends can be lost. A missing file gives the values of the line `variables`; a line of the
 file that is not valid is skipped, with a line in mgeXE.log.
