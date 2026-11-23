@@ -474,17 +474,22 @@ fn cull(@builtin(global_invocation_id) id: vec3u) {
         atomicAdd(&counts[c.counts.y + 3u], 1u);
         return;
     }
+    // The tests that a test leaves out (the tune `nocull`): 1 the bands, 2 the view.
+    let off = u32(c.limits.y);
+    let bands_off = (off & 1u) != 0u;
     let range = length(place.center - c.eye.xyz);
     let band_end = min(c.bands[place.tier], c.bands.w);
-    if range > band_end + place.radius || range + place.radius < c.limits.x {
+    if (!bands_off && range > band_end + place.radius) || range + place.radius < c.limits.x {
         atomicAdd(&counts[c.counts.y + 1u], 1u);
         return;
     }
-    for (var k = 0u; k < 6u; k++) {
-        let p = c.planes[k];
-        if dot(p.xyz, place.center) + p.w < -place.radius {
-            atomicAdd(&counts[c.counts.y + 2u], 1u);
-            return;
+    if (off & 2u) == 0u {
+        for (var k = 0u; k < 6u; k++) {
+            let p = c.planes[k];
+            if dot(p.xyz, place.center) + p.w < -place.radius {
+                atomicAdd(&counts[c.counts.y + 2u], 1u);
+                return;
+            }
         }
     }
     var faces = s.faces2;
@@ -492,6 +497,10 @@ fn cull(@builtin(global_invocation_id) id: vec3u) {
         faces = s.faces0;
     } else if range <= c.bands.y + place.radius {
         faces = s.faces1;
+    }
+    // Past its tier with the bands' test off: the finest level when this one has no triangles.
+    if bands_off && faces == 0u {
+        faces = s.faces0;
     }
     if faces != 0u {
         flags[i] = faces;
