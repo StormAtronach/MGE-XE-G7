@@ -13,7 +13,8 @@
 //! - `each_port_gives_its_definition_back`: every embedded port, exported and parsed with
 //!   [`Definition::of_file`], gives the same Definition.
 //! - `each_pack_file_is_its_port`: each file under `ports/` parses, and it is the port of a
-//!   `MOD_FILES` entry of its name, but for the numbers that a mod's file sets.
+//!   `MOD_FILES` entry of its name, but for the numbers that a mod's file sets. A file whose
+//!   name has no entry is a pack with no port, and is not compared.
 //! - `export_packs` (ignored): writes the files from the mods' `.fx` copies. The list file named
 //!   by `W609_PACKS` has one line for each copy: `<pack folder>\t<chain name>\t<.fx path>`.
 //!   Without `W609_PACKS` it writes nothing and passes (the merge step runs all ignored tests). All
@@ -204,6 +205,11 @@ fn each_pack_file_is_its_port() {
                 continue;
             }
             let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            // A pack with no port (Eternal Shine): its file is the shader. The test
+            // `each_post_file_of_the_packs_is_valid` of post.rs reads it.
+            if !MOD_FILES.iter().any(|(mod_name, _, _)| *mod_name == name) {
+                continue;
+            }
             let text = std::fs::read_to_string(&path).unwrap();
             let definition = of_pack_file(&name, &text).unwrap_or_else(|problem| panic!("{}: {problem}", path.display()));
             let matches: Vec<&str> = MOD_FILES

@@ -34,12 +34,31 @@ extern "C" std::uint32_t __cdecl mge_config_needs_creation(const MgeConfigDoc* d
 extern "C" MgeConfigStatus __cdecl mge_config_last_error(
     const MgeConfigDoc* document, char* output, std::size_t capacity);
 
-// The settings of the post shader ports and their values files (mge-config's post_values;
-// the Rust side of d3d8.dll, src/lib.rs, has the contract of each function).
-extern "C" std::uint32_t __cdecl mge_post_setting_count(const char* shader);
-extern "C" std::uint32_t __cdecl mge_post_setting(
-    const char* shader, std::uint32_t index, char* name, std::size_t capacity, float* defaultValue);
+// The header of a post shader file (the `//!` lines; mge-config's post_header, the parser
+// that the helper uses too) and the values files of its settings (mge-config's post_values).
+// The Rust side of d3d8.dll, src/lib.rs, has the contract of each function.
+struct MgePostHeader;
+
+struct MgePostHeaderFacts {
+    std::int64_t priorityAdjust;
+    std::uint32_t variableCount;
+    std::uint8_t requiresHDR;
+    std::uint8_t disableSunglare;
+};
+
+extern "C" std::uint32_t __cdecl mge_post_header_read(
+    const char* path, MgePostHeader** outHeader, char* error, std::size_t capacity);
+extern "C" void __cdecl mge_post_header_free(MgePostHeader* header);
+extern "C" void __cdecl mge_post_header_facts(const MgePostHeader* header, MgePostHeaderFacts* out);
+extern "C" std::uint32_t __cdecl mge_post_header_category(
+    const MgePostHeader* header, char* output, std::size_t capacity);
+extern "C" std::uint32_t __cdecl mge_post_header_variable(
+    const MgePostHeader* header, std::uint32_t index, char* name, std::size_t capacity, char* letter,
+    std::uint32_t* valueCount, std::uint8_t* setting);
+extern "C" std::uint32_t __cdecl mge_post_header_values(
+    const MgePostHeader* header, std::uint32_t index, float* values, std::uint32_t count);
 extern "C" std::uint32_t __cdecl mge_post_values_read(
-    const char* folder, const char* shader, float* values, std::uint8_t* given, std::uint32_t count);
+    const char* folder, const char* shader, const char* const* names, std::uint32_t count, float* values,
+    std::uint8_t* given);
 extern "C" std::uint32_t __cdecl mge_post_values_queue(
-    const char* folder, const char* shader, const float* values, std::uint32_t count);
+    const char* folder, const char* shader, const char* const* names, std::uint32_t count, const float* values);

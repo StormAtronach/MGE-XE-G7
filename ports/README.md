@@ -22,6 +22,7 @@ reads the `.wgsl` file of the same name:
 | MM - Enhanced Invisibility - wgpu shaders | MM - Enhanced Invisibility (`Invisibility.fx`) |
 | Heat Haze - wgpu shaders | Heat Haze - A MGE XE Shader Mod (`heathaze.fx`) |
 | Vapourmist - wgpu shaders | Vapourmist (`tew_fogbox.fx`) |
+| Eternal Shine - wgpu shaders | Eternal Shine |
 
 ## The exported packs
 

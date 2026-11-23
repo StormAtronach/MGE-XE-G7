@@ -1717,8 +1717,9 @@ struct GrassUniforms {
     look: [f32; 4],
 }
 
-/// The grass shader (`XE Mod Grass.fx`, with the looks of Remiros' Groundcover as options).
-const GRASS_SHADER: &str = include_str!("statics/grass.wgsl");
+/// The grass shader (`XE Mod Grass.fx`, with the looks of Remiros' Groundcover as options): the
+/// core file `Data Files/shaders/core/XE Mod Grass.wgsl` of the package, built in.
+const GRASS_SHADER: &str = include_str!("../../../assets/Data Files/shaders/core/XE Mod Grass.wgsl");
 
 /// The grass shader with the shadow hooks of the session (`core_mods.rs`).
 pub(super) fn grass_source(shadow_hooks: &str) -> String {
