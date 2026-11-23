@@ -1797,7 +1797,7 @@ fn particle_homes() -> [core_mods::Home; 1] {
 fn water_homes() -> [core_mods::Home; 1] {
     [core_mods::Home {
         name: "water plane",
-        check: |hooks| shader_check::check("water plane", &water::plane_source(hooks)).map(|_| ()),
+        check: water::plane_check,
     }]
 }
 
@@ -7023,7 +7023,7 @@ mod shader_tests {
     fn the_land_shader_names_no_hook() {
         let land = format!("{}{}{SHADER}{FOG_FUNCTION}", view::wgsl(), lamp_grid::light_wgsl());
         let hooks = core_mods::hook_names();
-        assert_eq!(hooks.len(), 6);
+        assert_eq!(hooks.len(), 7);
         for hook in hooks {
             assert!(!land.contains(hook), "the land's shader names the hook {hook}");
         }

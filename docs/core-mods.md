@@ -135,7 +135,10 @@ this way.
 
 ## The contract
 
-- An addition to the library keeps interface 1.
+- An addition to the library, or a new hook, keeps interface 1. A file that does not define
+  a new hook keeps its built-in. The additions so far: the hook `water_vertex`, the struct
+  `WaterVertex`, and the water library functions `wave_level_at`, `water_level`,
+  `water_near_fog` and `water_dynamic_waves` (W576).
 - A change to a hook's signature, a change to an interface struct, or the removal of a library
   function raises the interface number.
 - A file for interface 1 stops working when the number goes up. Its log line says so, and its
@@ -217,6 +220,7 @@ when this file is installed: Direct3D 9 has a core file of its own for the volum
 
 | Hook | Signature | What it gives | Direct3D 9 function |
 | --- | --- | --- | --- |
+| `water_vertex` | `fn water_vertex(start: vec3f) -> WaterVertex` | A vertex of the plane: where it is drawn, its wave coordinates, and where the reflection is read. `start` is the vertex at the water level. | `WaterVS` |
 | `water_normal` | `fn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f` | The normal of the water at a pixel, length 1, z up. `texcoords` are the two wave coordinates (far in xy, close in zw), `distance` the distance from the eye, `world_xy` the place in the world. | `getFinalWaterNormal` |
 | `water_color` | `fn water_color(p: WaterPixel) -> vec4f` | The colour of the water seen from above. | `WaterPS` |
 | `underwater_color` | `fn underwater_color(p: WaterPixel) -> vec4f` | The colour of the plane seen from under the water. | `UnderwaterPS` |
@@ -225,6 +229,24 @@ A hook may call the other hooks of its file, also a hook that the file leaves to
 So a `water_color` of a mod can call `water_normal`, the mod's or the built-in. The built-in
 `underwater_color` calls `water_normal` too, so a mod's `water_normal` also changes the colour
 of the plane seen from under the water.
+
+The built-in `water_vertex` moves the plane with the dynamic waves, and puts it 0.1 under the
+water level without them. As the other water hooks, its home is the plane only: the water
+volumes and the dry spaces keep the built-in. A mod's `water_vertex` runs in the vertex stage: it may call only
+the library functions that are marked "vertex too" below, and the values of the frame. The
+rule of the stage: the vertex entry of the plane reads only the values of the view, the values
+of the water, the wave texture and its sampler. A
+`water_vertex` that calls a function for the pixel only fails the check of the plane: the
+file is dropped with the log line `core mod: XE Mod Water.wgsl: the water plane fails with
+it: ...; the built-in water is used`.
+
+The struct `WaterVertex` is part of the interface:
+
+| Field | Type | What it holds |
+| --- | --- | --- |
+| `world` | `vec3f` | The place of the vertex in the world, where the plane is drawn. |
+| `texcoords` | `vec4f` | The two wave coordinates: far in xy, close in zw. They reach `WaterPixel.texcoords`. |
+| `lowered` | `f32` | How far under `world` the reflection is read (`screenposclamp` of Direct3D 9): with the dynamic waves, the point that is not above the plane. 0 reads it at `world`. |
 
 The struct `WaterPixel` is part of the interface:
 
@@ -241,20 +263,25 @@ The struct `WaterPixel` is part of the interface:
 
 The library of the water hooks. The functions:
 
-| Function | What it gives |
-| --- | --- |
-| `reflection_at(uv: vec2f, w: f32, stretch: f32) -> vec3f` | The reflection at a place of the picture, at the view depth `w`, with the blur that is sharp at the waterline. A `stretch` of 1 or more makes the blur taller. |
-| `fog_water(direction: vec3f, distance: f32) -> vec4f` | The fog over the water: rgb the colour that it adds, a what is left of the colour of the thing. |
-| `sun_glint(eye_vec: vec3f, normal: vec3f, fog_a: f32) -> vec3f` | The light of the sun that the water mirrors to the eye. |
-| `deep_color(fog: vec4f, tint: vec3f) -> vec3f` | The colour of deep water with the fog over it. A black `tint` gives the usual colour. |
-| `transmission(tint: vec3f, depth: f32) -> vec3f` | What is left of light through this much water of a colour. |
-| `sky_color(direction: vec3f) -> vec3f` | The colour of the sky in a direction. |
-| `picture_at(uv: vec2f) -> vec3f` | The picture behind the water (the refraction texture of Direct3D 9). |
-| `ground_distance_at(uv: vec2f) -> f32` | The view depth of the nearest thing at a place of the picture, the distant land too. |
-| `wave_at(coords: vec3f) -> vec4f` | The volume of the waves: x and y the place, z the time. |
-| `ripples_on(normal: vec2f, close: vec2f, world_xy: vec2f) -> vec2f` | `normal` with the ripples of the rain (at the close wave coordinates) and of the player (at the place) added. Without the dynamic waves, `normal` is unchanged. |
+| Function | Stage | What it gives |
+| --- | --- | --- |
+| `reflection_at(uv: vec2f, w: f32, stretch: f32) -> vec3f` | pixel only | The reflection at a place of the picture, at the view depth `w`, with the blur that is sharp at the waterline. A `stretch` of 1 or more makes the blur taller. |
+| `fog_water(direction: vec3f, distance: f32) -> vec4f` | vertex too | The fog over the water: rgb the colour that it adds, a what is left of the colour of the thing. |
+| `sun_glint(eye_vec: vec3f, normal: vec3f, fog_a: f32) -> vec3f` | vertex too | The light of the sun that the water mirrors to the eye. |
+| `deep_color(fog: vec4f, tint: vec3f) -> vec3f` | vertex too | The colour of deep water with the fog over it. A black `tint` gives the usual colour. |
+| `transmission(tint: vec3f, depth: f32) -> vec3f` | vertex too | What is left of light through this much water of a colour. |
+| `sky_color(direction: vec3f) -> vec3f` | vertex too | The colour of the sky in a direction. |
+| `picture_at(uv: vec2f) -> vec3f` | pixel only | The picture behind the water (the refraction texture of Direct3D 9). |
+| `ground_distance_at(uv: vec2f) -> f32` | pixel only | The view depth of the nearest thing at a place of the picture, the distant land too. |
+| `wave_at(coords: vec3f) -> vec4f` | pixel only | The volume of the waves: x and y the place, z the time. |
+| `ripples_on(normal: vec2f, close: vec2f, world_xy: vec2f) -> vec2f` | pixel only | `normal` with the ripples of the rain (at the close wave coordinates) and of the player (at the place) added. Without the dynamic waves, `normal` is unchanged. |
+| `wave_level_at(coords: vec3f) -> vec4f` | vertex too | The volume of the waves read with no derivatives (`tex3Dlod`): for `water_vertex`. |
+| `water_level() -> f32` | vertex too | The level of the water (`waterLevel`). The eye is under the water when `water_eye().z < water_level()`. |
+| `water_near_fog(distance: f32) -> f32` | vertex too | The linear fog of the game at a distance, 1 for none and 0 for all (`fogMWScalar`). |
+| `water_dynamic_waves() -> bool` | vertex too | True with the dynamic waves (`[distant_land.water] dynamic_ripples`; `DYNAMIC_RIPPLES` of Direct3D 9). |
 
-The values of the frame. Each one is the Direct3D 9 shader variable that it stands for:
+The values of the frame work in both stages. Each one is the Direct3D 9 shader variable that
+it stands for:
 
 | Function | Direct3D 9 variable | What it gives |
 | --- | --- | --- |
