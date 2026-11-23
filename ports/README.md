@@ -31,9 +31,14 @@ reads the `.wgsl` file of the same name:
 | Kogoruhn Expanded - wgpu shaders | Kogoruhn Expanded (`Disorient.fx`) |
 | Inspect It - wgpu shaders | Inspect It (`InspectIt/Bokeh.fx`) |
 | Modern Lockpicking (MWSE) - wgpu shaders | Modern Lockpicking (MWSE) (`modern-lockpicking/Bokeh.fx`) |
+| Pixel Shader Style Water for MGE XE - wgpu shaders | Pixel Shader Style Water for MGE XE 1.0 by Hrnchamd (its `XE Mod Water.fx`, md5 7f40c5546d36b84cbdc83b2830def8ff, in Morrowind Refreshed and Morrowind Refreshed (260602)) |
 | Darker Nights - wgpu shaders | `Darker Nights.fx`, md5 85d20186c83457f61cc449dcfa1544d3: a file of MGE XE v0.20.0 that MGE XE removed (d2ed258), in `mods/MGE XE G7 Fork` of Morrowind75 - Poison Song and in the game folder of Morrowind Refreshed (260602). Written by hand from the `.fx` |
 | True Water - Odai - wgpu shaders | `tw_foam.fx`, md5 10c758a2be9a6e447316c655798409eb, of the True Water showcase `True Water - Odai`. Written by hand from the `.fx` |
 | True Water - Flow Map - wgpu shaders | `tw_flowmap.fx`, md5 5439e388e2823c125485b09eebc912c4, of the True Water showcase `True Water - Flow Map`. Written by hand from the `.fx` |
+
+Two packs give `shaders/core-mods/XE Mod Water.wgsl`: Enhanced Water Shader and Pixel Shader
+Style Water. Install one water pack at a time, the one of the water mod that is on. The test
+`each_water_file_of_the_packs_is_used` of `core_mods.rs` checks each water file of the packs.
 
 ## The written ports
 
