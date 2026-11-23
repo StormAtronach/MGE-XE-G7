@@ -16,6 +16,7 @@ reads the `.wgsl` file of the same name:
 | Enhanced Water Shader - wgpu shaders | Enhanced Water Shader 2.2 Green-Blue by Krokantor, updated for MGE XE 0.13.0 by Hrnchamd |
 | Ashfall - wgpu shaders | Ashfall (`ashfall.fx`) |
 | Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx`) |
+| Eternal Shine - wgpu shaders | Eternal Shine |
 
 ## The exported packs
 

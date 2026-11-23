@@ -22,20 +22,21 @@ Shaders Compilation), the 23 shaders of Joy of Painting (`jop_*`), and Ultra Blo
 XERO-lut (Ultra Bloom; XERO-lut reads the colour table `Textures/XERO-lut.tga` of the mod).
 On wgpu, Ultra Bloom takes its exposure from the night and the cell: 1 in the day, 2 at
 night, 1.5 in an interior. The mod's menu values Exposure, Interior exposure bonus and Night
-exposure bonus do not act on wgpu; its other values do. Eternal Shine (Eternal Shine) gives a
-glow around each light from the lights of the frame, without the mod's Lua. Its menu does not
-act on wgpu; its values are variables of the shader with the Lua's defaults: `radmult` 0.3,
-`int` 0.25, `ext` 0.4, `rain` 0.5, and `near_eye` 100. A line of Lua sets one, for example
-`mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`. MGE XE keeps the values between
-game sessions in `Eternal Shine.values.toml` beside the effect file
-(`Data Files/shaders/XEshaders`; under Mod Organizer 2, in its overwrite folder). It writes the
-file about 1 s after the last change, so a change in the last second before the game ends can
-be lost. A missing file gives the defaults; a line that is not valid is skipped, with a line in
-mgeXE.log. A light gives a glow only when a draw that it lights is in view, and a light within
-`near_eye` units of the eye gives none (the torch of the player in first person). Files with the name
+exposure bonus do not act on wgpu; its other values do. Files with the name
 of a stock shader and other code have a port of their own, found by the code of the file:
 Eye Adaptation (HDR), SSAO HQ and Sunshafts of the STEP Shaders Compilation, Sunshafts of
 Watch the Skies, Underwater Effects of Krokantor's Enhanced Water Shader.
+
+Mods with a shader pack: a pack is a small mod `<Mod> - wgpu shaders` with the `.wgsl` files
+of the mod's shaders (the folders of `ports/` in the repository), installed after the mod.
+Eternal Shine has the pack "Eternal Shine - wgpu shaders", and runs on wgpu only with it: its
+`Eternal Shine.wgsl` gives a glow around each light from the lights of the frame, without the
+mod's Lua. The mod's menu does not act on wgpu; the values are the settings of the file (see
+"Settings"), with the Lua's defaults: `radmult` 0.3, `int` 0.25, `ext` 0.4, `rain` 0.5, and
+`near_eye` 100. A line of Lua sets one, for example
+`mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`. A light gives a glow only when a
+draw that it lights is in view, and a light within `near_eye` units of the eye gives none (the
+torch of the player in first person).
 
 ## A port and the effect file of a mod
 
@@ -96,6 +97,10 @@ has in its annotations. The rest of the file is WGSL.
 | `disable_sunglare` | no | `true` takes the sun glare of the game out of the frame, when the shader is in the chain at the start of the game (as MGE XE on Direct3D 9: a shader that a mod loads later does not change the sun glare) |
 | `texture` | no | up to ten files under `Data Files/textures`, with commas, bound as `tex1` to `tex10` in their order: DDS files, or TGA files (true colour, 24 or 32 bits). A file that is not found reads black |
 | `variables` | no | the variables that a mod sets from Lua: see "A shader that a mod drives from Lua" |
+| `settings` | no | the variables that a player adjusts and that MGE XE keeps between game sessions, with commas: see "Settings" |
+
+MGE XE on the game side (d3d8.dll) reads these lines with the same parser as the renderer
+(mge-config's `post_header`): a file that one of them refuses, the other refuses too.
 
 ## What a shader has
 
@@ -150,14 +155,16 @@ shader.intensity = 0.5
 shader.enabled = true
 ```
 
-This works with the wgpu renderer too. MGE XE reads the variables of the effect file
-`my_shader.fx` (its names and types are what the Lua object has, as on Direct3D 9), keeps
-what the mod sets, and sends it to the renderer. A shader with only `my_shader.wgsl` works
-too: then the Lua object has the variables of the line `variables` (`f32` is a number,
-`f32[N]` a list of N numbers, `vec2` to `vec4` a vector, and `vecK[N]` a list of N
+This works with the wgpu renderer too. MGE XE reads the variables of the file that the
+renderer runs, keeps what the mod sets, and sends it to the renderer. With
+`my_shader.wgsl`, the Lua object has the variables of its line `variables` (`f32` is a
+number, `f32[N]` a list of N numbers, `vec2` to `vec4` a vector, and `vecK[N]` a list of N
 vectors), with the values after `=` before a mod sets them, and `mgeflags` when the header
 has it; the category, `priority_adjust`, `requires_hdr` and `disable_sunglare` come from
-the header too. When both files are there, the effect file gives the Lua object. The renderer loads the shader of that name
+the header too. Without a `.wgsl` file, the Lua object has the variables of the effect file
+`my_shader.fx` (its names and types, as on Direct3D 9). When both files are there, the
+`.wgsl` file gives the Lua object, as the renderer runs it; a mod's set of a variable that
+only the effect file has does nothing. The renderer loads the shader of that name
 when a mod loads it: the file `my_shader.wgsl`, or its port. A shader that a mod loaded is
 on until the mod turns it off, and has its place in the chain by its category, as on
 Direct3D 9.
@@ -203,6 +210,29 @@ is read with `_` after its name: `distance_()`.
 - A variable of a built-in port with one value takes the number of the effect file as its
   value before a mod sets it, when the file is a copy of the file of the port with other
   numbers (as the port takes the other numbers of such a file).
+
+## Settings
+
+The line `settings` names the variables that a player adjusts, for example from a line of
+Lua or a menu of a mod:
+
+```wgsl
+//! variables: radius f32 = 0.3, strength f32 = 0.5, flicker f32 = 0
+//! settings: radius, strength
+```
+
+MGE XE keeps their values between game sessions in the file `<name>.values.toml` beside the
+shader file (`Data Files/shaders/XEshaders`). Under Mod Organizer 2, a new values file goes
+into the overwrite folder, and a values file that is already in a mod's folder is changed
+there. The file has one line `name = number` for each setting. It reads the file when the shader loads, and
+writes it about 1 s after the last change from Lua, so a change in the last second before the
+game ends can be lost. A missing file gives the values of the line `variables`; a line of the
+file that is not valid is skipped, with a line in mgeXE.log.
+
+- Each setting is a variable of the line `variables` of type `f32` (one number), named once.
+  Another name drops the file, with its reason in the log.
+- A variable that is not a setting is not kept: a mod that sets a variable in each frame
+  makes no write of the file.
 
 ## From HLSL to WGSL
 
