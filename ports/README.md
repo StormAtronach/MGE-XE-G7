@@ -30,6 +30,7 @@ reads the `.wgsl` file of the same name:
 | Kogoruhn Expanded - wgpu shaders | Kogoruhn Expanded (`Disorient.fx`) |
 | Inspect It - wgpu shaders | Inspect It (`InspectIt/Bokeh.fx`) |
 | Modern Lockpicking (MWSE) - wgpu shaders | Modern Lockpicking (MWSE) (`modern-lockpicking/Bokeh.fx`) |
+| Darker Nights - wgpu shaders | `Darker Nights.fx`, md5 85d20186c83457f61cc449dcfa1544d3: a file of MGE XE v0.20.0 that MGE XE removed (d2ed258), in `mods/MGE XE G7 Fork` of Morrowind75 - Poison Song and in the game folder of Morrowind Refreshed (260602). Written by hand from the `.fx` |
 
 ## The written ports
 
