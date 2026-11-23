@@ -7,9 +7,13 @@
 //! The inputs that a mod's Lua gave the shader on Direct3D 9 come from the helper here.
 //!
 //! Eternal Shine takes the lights of the frame from the renderer (`frame_lights` of the common
-//! part of `post.rs`) in place of the mod's Lua, with the Lua's defaults: the glow word of a
-//! light is 0.3 of its radius (at most 1000), and the air is 0.25 in an interior, 0.5 in rain,
-//! thunder and snow, else 0.4. The differences from the mod on Direct3D 9:
+//! part of `post.rs`) in place of the mod's Lua. Its values are variables of the shader with the
+//! Lua's defaults: the glow word of a light is `radmult` (0.3) of its radius (at most 1000), and
+//! the air is `int` (0.25) in an interior, `rain` (0.5) in rain, thunder and snow, else `ext`
+//! (0.4). A shader-state record that names one sets it. A Lua set does not reach the port yet:
+//! d3d8.dll lists only the variables of the effect file, and MWSE sets only listed variables
+//! (W576 part 4 adds the names and a file that keeps the values). The differences from the
+//! mod on Direct3D 9:
 //! - The lights are those of the lit draws of the world in the frame. A light with no lit draw
 //!   in view gives no glow; the Lua took every light of the active cells.
 //! - Fog, ash, blight and blizzard get 0.4 or 0.5: the helper does not know these weathers
@@ -17,11 +21,11 @@
 //! - The colour of a light holds its dimmer, so the glow takes the dimmer squared; the Lua took
 //!   it once.
 //! - No fade-in of 3 seconds after a light comes, and no skip of the lights of value 40000.
-//! - A light within 100 units of the eye gives no glow: the player's own light in first person,
-//!   which would put the eye inside its glow. The Lua left out the player's light in every view;
-//!   here the player's light in a far third-person view glows as the others (the owner's choice,
-//!   2026-11-23).
-//! - The mod's menu does not act on wgpu.
+//! - A light within `near_eye` (100) units of the eye gives no glow: the player's own light in
+//!   first person, which would put the eye inside its glow. The Lua left out the player's light
+//!   in every view; here the player's light in a far third-person view glows as the others (the
+//!   owner's choice, 2026-11-23).
+//! - The mod's menu does not act on wgpu: its values are the variables above.
 
 use super::post::{Shader, Variable, full};
 
@@ -229,19 +233,20 @@ fn glow_density(o: vec3f, d: vec3f, far: f32) -> f32 {
     return 0.75 * (h2 * (u2 - u1) - (u2 * u2 * u2 - u1 * u1 * u1) / 3.0);
 }
 
-// The glow word of a light of the game's radius `radius`, and the radius of its sphere, which
-// grows faster than the word.
-fn glow_word(radius: f32) -> f32 {
-    return min(radius, 1000.0) * 0.3;
+// The glow word of a light of the game's radius `radius` (`mult` of it, the radius at most
+// 1000), and the radius of its sphere, which grows faster than the word.
+fn glow_word(radius: f32, mult: f32) -> f32 {
+    return min(radius, 1000.0) * mult;
 }
 fn glow_sphere(word: f32) -> f32 {
     return pow(word / 256.0, 1.0 / 0.6) * 2500.0;
 }
 
 // The glow of one light along the eye ray: `centre` relative to the eye, `dir` of length 1,
-// `far` the distance to the surface of the pixel, `air` the strength of the air.
-fn glow_light(colour: vec3f, radius: f32, centre: vec3f, dir: vec3f, far: f32, air: f32) -> vec3f {
-    let word = glow_word(radius);
+// `far` the distance to the surface of the pixel, `air` the strength of the air, `mult` the
+// multiplier of the radius.
+fn glow_light(colour: vec3f, radius: f32, mult: f32, centre: vec3f, dir: vec3f, far: f32, air: f32) -> vec3f {
+    let word = glow_word(radius, mult);
     if word <= 0.0 {
         return vec3f(0.0);
     }
@@ -257,13 +262,14 @@ const ETERNAL_SHINE: &str = concat!(
     glow_math!(),
     "
 // The strength of the air: thin in an interior, thick in rain, thunder and snow, and none in
-// the light of a bright day (the sun's red).
+// the light of a bright day (the sun's red). The variables `int`, `rain` and `ext` hold the
+// three strengths.
 fn glow_air() -> f32 {
-    var air = 0.4;
+    var air = ext();
     if u.sunamb.w > 0.5 {
-        air = 0.25;
+        air = int();
     } else if u.switches.z > 0.0 {
-        air = 0.5;
+        air = rain();
     }
     return air * saturate(1.0 - u.suncol.r);
 }
@@ -285,9 +291,6 @@ fn dither(pixel: vec2f) -> f32 {
 }
 
 const GLOW_SKY: f32 = 1.0e7;
-// A light nearer to the eye than this gives no glow: the light that the player holds in first
-// person.
-const GLOW_NEAR_EYE: f32 = 100.0;
 
 // The glows of all the lights of the frame, added to the picture in linear light. The sum
 // stops at 1, as the 8-bit passes of the mod cut it.
@@ -307,22 +310,38 @@ const GLOW_NEAR_EYE: f32 = 100.0;
     let dir = ray / along;
     let far = min(textureSampleLevel(depthframe, point_clamp, in.tex, 0.0).r, GLOW_SKY) * along;
     let offset = frame_light_info.offset.xyz;
+    let mult = radmult();
+    // A light nearer to the eye than this gives no glow: the light that the player holds in
+    // first person.
+    let near = near_eye();
     var glow = vec3f(0.0);
     for (var i = 0u; i < count; i += 1u) {
         if frame_lights[i].position.w > 2.5 || frame_lights[i].cone.z <= 0.0 {
             continue;
         }
         let centre = frame_lights[i].position.xyz + offset;
-        if dot(centre, centre) < GLOW_NEAR_EYE * GLOW_NEAR_EYE {
+        if dot(centre, centre) < near * near {
             continue;
         }
-        glow += glow_light(frame_lights[i].diffuse.rgb, frame_lights[i].cone.z, centre, dir, far, air);
+        glow += glow_light(frame_lights[i].diffuse.rgb, frame_lights[i].cone.z, mult, centre, dir, far, air);
     }
     let lit = pow(pow(picture.rgb, vec3f(2.2)) + min(glow, vec3f(1.0)), vec3f(1.0 / 2.2));
     return vec4f(saturate3(lit + dither(in.position.xy)), picture.a);
 }
 "
 );
+
+/// The values of Eternal Shine that a player or a mod can set from Lua, with the defaults of
+/// the mod's Lua (its names; `near_eye` is ours): the multiplier of a light's radius, the
+/// strength of the air in an interior, outside, and in rain, thunder and snow, and the
+/// distance from the eye within which a light gives no glow.
+const ETERNAL_SHINE_VALUES: &[Variable] = &[
+    value("radmult", &[0.3]),
+    value("int", &[0.25]),
+    value("ext", &[0.4]),
+    value("rain", &[0.5]),
+    value("near_eye", &[100.0]),
+];
 
 /// The ports of this file, after those of `post.rs` and `post_jop.rs`.
 pub const SHADERS: &[Shader] = &[
@@ -368,7 +387,7 @@ pub const SHADERS: &[Shader] = &[
         priority: SCENE,
         textures: &[],
         requires_hdr: false,
-        variables: &[],
+        variables: ETERNAL_SHINE_VALUES,
     },
 ];
 
@@ -758,12 +777,12 @@ fn case_of(i: u32) -> vec4f {
     let centre = vec3f(2000.0, 6000.0, 0.0);
     let dir = vec3f(0.0, 1.0, 0.0);
     if i == 0u {
-        return vec4f(glow_light(colour, 1000.0, centre, dir, 1.0e7, 1.0), glow_sphere(glow_word(1000.0)));
+        return vec4f(glow_light(colour, 1000.0, 0.3, centre, dir, 1.0e7, 1.0), glow_sphere(glow_word(1000.0, 0.3)));
     }
     if i == 1u {
-        return vec4f(glow_light(colour, 1000.0, vec3f(4000.0, 6000.0, 0.0), dir, 1.0e7, 1.0), 0.0);
+        return vec4f(glow_light(colour, 1000.0, 0.3, vec3f(4000.0, 6000.0, 0.0), dir, 1.0e7, 1.0), 0.0);
     }
-    return vec4f(glow_light(colour, 1000.0, centre, dir, 500.0, 1.0), 0.0);
+    return vec4f(glow_light(colour, 1000.0, 0.3, centre, dir, 500.0, 1.0), 0.0);
 }
 ";
         let results = glow_cases(cases, 3);
@@ -787,5 +806,25 @@ fn case_of(i: u32) -> vec4f {
     fn the_glow_port_reads_the_lights_and_has_the_terms() {
         assert!(ETERNAL_SHINE.starts_with(glow_math!()));
         assert!(ETERNAL_SHINE.contains("frame_lights"));
+    }
+
+    /// The values that a player sets from Lua start at the defaults of the mod's Lua
+    /// (`mwse.loadConfig` of its main.lua: radmult 0.3, int 0.25, ext 0.4, rain 0.5) and the
+    /// owner's 100 units from the eye, and the port reads each one.
+    #[test]
+    fn the_glow_values_start_at_the_defaults_of_the_lua() {
+        let want = [
+            ("radmult", 0.3),
+            ("int", 0.25),
+            ("ext", 0.4),
+            ("rain", 0.5),
+            ("near_eye", 100.0),
+        ];
+        let port = SHADERS.iter().find(|s| s.name == "Eternal Shine").expect("the port");
+        let have: Vec<(&str, f32)> = port.variables.iter().map(|v| (v.name, v.default[0])).collect();
+        assert_eq!(have, want);
+        for (name, _) in want {
+            assert!(ETERNAL_SHINE.contains(&format!("{name}()")), "the port reads {name}");
+        }
     }
 }

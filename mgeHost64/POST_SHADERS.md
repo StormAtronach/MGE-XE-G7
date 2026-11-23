@@ -23,10 +23,11 @@ XERO-lut (Ultra Bloom; XERO-lut reads the colour table `Textures/XERO-lut.tga` o
 On wgpu, Ultra Bloom takes its exposure from the night and the cell: 1 in the day, 2 at
 night, 1.5 in an interior. The mod's menu values Exposure, Interior exposure bonus and Night
 exposure bonus do not act on wgpu; its other values do. Eternal Shine (Eternal Shine) gives a
-glow around each light from the lights of the frame, without the mod's Lua, with the Lua's
-default values; its menu does not act on wgpu. A light gives a glow only when a draw that it
-lights is in view, and a light within 100 units of the eye gives none (the torch of the player in
-first person). Files with the name
+glow around each light from the lights of the frame, without the mod's Lua. Its menu does not
+act on wgpu; its values are variables of the shader with the Lua's defaults: `radmult` 0.3,
+`int` 0.25, `ext` 0.4, `rain` 0.5, and `near_eye` 100. A set of these from Lua does not reach
+the renderer yet. A light gives a glow only when a draw that it lights is in view, and a light within
+`near_eye` units of the eye gives none (the torch of the player in first person). Files with the name
 of a stock shader and other code have a port of their own, found by the code of the file:
 Eye Adaptation (HDR), SSAO HQ and Sunshafts of the STEP Shaders Compilation, Sunshafts of
 Watch the Skies, Underwater Effects of Krokantor's Enhanced Water Shader.
