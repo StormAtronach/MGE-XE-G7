@@ -67,6 +67,15 @@ Direct3D 9 did not allow: `Bloom S_A` (a chain of half-size levels, after Jimene
 chain names them like any other; MGE XE on Direct3D 9 has no file of these names and skips
 them.
 
+MGE XE's package has these files in `Data Files/shaders/XEshaders`:
+- the three shaders above, `Bloom S_A.wgsl`, `SSAO S_A.wgsl` and `Depth of Field S_A.wgsl`;
+- five stock shaders, beside their `.fx`: `Bloom Fine.wgsl`, `Bloom Soft.wgsl`,
+  `Depth of Field.wgsl`, `SSAO Fast.wgsl` and `Underwater Interior Effects.wgsl`.
+
+The renderer runs these files; it has no other copy of them, so a missing file skips its
+shader. The four other stock shaders (`Eye Adaptation (HDR)`, `SSAO HQ`, `Sunshafts`,
+`Underwater Effects`) are built in: mods ship files of these names.
+
 So a mod can ship a `.wgsl` file beside its `.fx` file, with the same name: MGE XE on
 Direct3D 9 uses the `.fx`, the wgpu renderer uses the `.wgsl`.
 
