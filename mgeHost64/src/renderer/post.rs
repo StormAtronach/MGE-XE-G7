@@ -222,15 +222,6 @@ pub(super) const fn full(entry: &'static str) -> Pass {
     }
 }
 
-/// A pass into a texture of the picture size over `scale`, with 16-bit floats.
-const fn scaled(entry: &'static str, scale: u32) -> Pass {
-    Pass {
-        entry,
-        scale,
-        half_float: true,
-    }
-}
-
 /// The places of the variables of a shader in the uniform `modv`: 256 vectors of 4 floats.
 const MOD_SLOTS: usize = 256;
 
