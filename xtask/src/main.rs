@@ -3,6 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
+/// The commit of the tree, as the build scripts of the helper read it.
+#[allow(dead_code)]
+#[path = "../../build_support/build_id.rs"]
+mod build_id;
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let command = args.first().map(|s| s.as_str()).unwrap_or("help");
@@ -339,6 +344,7 @@ fn cmd_build(root: &Path, mode: BuildMode) {
     // bin\MSVC-* doubles as the shareable archive, so it carries the asset tree
     // next to the binaries. mirror_dir only rewrites files that actually changed.
     mirror_dir(&root.join("assets"), &out_dir);
+    stamp_core_files(root, &out_dir, &helper_build_id());
     copy_readme(root, &out_dir);
     // The nirender plugin, when its release build is there (dist builds it).
     if collect_plugin(root, &out_dir, false) {
@@ -484,6 +490,16 @@ fn cmd_dist(root: &Path, mode: BuildMode) {
         fs::copy(&src, staging.join(name)).unwrap();
     }
     mirror_dir(&root.join("assets"), &staging);
+    // The core files carry the build line of the helper of the archive, and the release
+    // check proves that each is the repo's file and that numidium.exe has that build id.
+    let id = helper_build_id();
+    stamp_core_files(root, &staging, &id);
+    if let Err(problem) =
+        check_core_files(root, &staging, &id).and_then(|()| check_build_id_in(&staging.join("numidium.exe"), &id))
+    {
+        eprintln!("error: the core files of the release: {problem}");
+        process::exit(1);
+    }
     // The d3d9.dll of the assets is the DXVK build for the Direct3D 9 path. The wgpu
     // renderer does not use it, and a file with this name in an archive replaces the
     // d3d9.dll that a user has. The Direct3D 9 path runs with the d3d9.dll of Windows.
@@ -569,6 +585,7 @@ fn cmd_deploy(root: &Path, mode: BuildMode, morrowind_dir: Option<PathBuf>) {
     }
 
     mirror_dir(&root.join("assets"), &morrowind);
+    stamp_core_files(root, &morrowind, &helper_build_id());
     copy_readme(root, &morrowind);
 
     println!("Deployed to {}", morrowind.display());
@@ -590,6 +607,101 @@ fn resolve_from_local_toml(root: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// The folder of the core shader files below a folder that the assets are mirrored into.
+const CORE_FOLDER: &str = "Data Files/shaders/core";
+
+/// The start of the build line, the first line of each core file of the package (D652): the
+/// helper uses a core file of its own build only.
+const BUILD_LINE: &str = "//! core: ";
+
+/// The build id of the helper of this tree, as `numidium.exe` has it (`build_id()` of
+/// `mgeHost64/src/renderer.rs`). The version is the workspace's, as xtask's own is.
+fn helper_build_id() -> String {
+    format!("numidium v{} {}", env!("CARGO_PKG_VERSION"), build_id::commit())
+}
+
+/// The `.wgsl` files of `folder`, sorted by name. Empty when the folder is not there.
+fn wgsl_files(folder: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|extension| extension == "wgsl"))
+        .collect();
+    files.sort();
+    files
+}
+
+/// `text` with LF line ends.
+fn lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// Writes each core file of the repo into the core folder of `dest`, with the build line of
+/// `id` first and LF line ends. The mirror of the assets copied the files without the line.
+fn stamp_core_files(root: &Path, dest: &Path, id: &str) {
+    let folder = dest.join(CORE_FOLDER);
+    fs::create_dir_all(&folder).unwrap();
+    for source in wgsl_files(&root.join("assets").join(CORE_FOLDER)) {
+        let text = fs::read_to_string(&source).unwrap_or_else(|e| panic!("failed to read {}: {e}", source.display()));
+        let target = folder.join(source.file_name().unwrap());
+        fs::write(&target, format!("{BUILD_LINE}{id}\n{}", lf(&text)))
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", target.display()));
+    }
+}
+
+/// The release check of the core files in `dest`: each core file of the repo is there, with the
+/// build line of `id` first and then the text of the repo's file (LF on both sides), and the
+/// folder has no other `.wgsl` file.
+fn check_core_files(root: &Path, dest: &Path, id: &str) -> Result<(), String> {
+    let sources = wgsl_files(&root.join("assets").join(CORE_FOLDER));
+    let folder = dest.join(CORE_FOLDER);
+    let first_line = format!("{BUILD_LINE}{id}\n");
+    for source in &sources {
+        let packaged = folder.join(source.file_name().unwrap());
+        let text = fs::read_to_string(&packaged).map_err(|e| format!("{}: {e}", packaged.display()))?;
+        let text = lf(&text);
+        let Some(rest) = text.strip_prefix(&first_line) else {
+            return Err(format!("{}: the first line is not `{BUILD_LINE}{id}`", packaged.display()));
+        };
+        let repo = lf(&fs::read_to_string(source).map_err(|e| format!("{}: {e}", source.display()))?);
+        if rest != repo {
+            return Err(format!(
+                "{}: the text after the build line is not the text of {}",
+                packaged.display(),
+                source.display()
+            ));
+        }
+    }
+    for packaged in wgsl_files(&folder) {
+        if !sources.iter().any(|source| source.file_name() == packaged.file_name()) {
+            return Err(format!("{}: no core file of the repo has this name", packaged.display()));
+        }
+    }
+    Ok(())
+}
+
+/// The release check of the build line against the helper of the package: `exe` must hold the
+/// build id `id` as text, as `build_id()` puts it in the program. The program of a tree with
+/// changes has the id with `-dirty`: a clean `id` does not match it.
+///
+/// The build script of the helper reads the commit at a commit or a checkout only: after an
+/// edit in a clean tree the program keeps the clean id, and this check refuses the release.
+fn check_build_id_in(exe: &Path, id: &str) -> Result<(), String> {
+    let bytes = fs::read(exe).map_err(|e| format!("{}: {e}", exe.display()))?;
+    let has = |text: &str| bytes.windows(text.len()).any(|window| window == text.as_bytes());
+    if has(id) && (id.ends_with("-dirty") || !has(&format!("{id}-dirty"))) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} does not have the build id `{id}` of the core files: commit the changes, \
+             then build again",
+            exe.display()
+        ))
+    }
 }
 
 /// Ship the repo root README next to the binaries, renamed: the destination is a
@@ -680,6 +792,61 @@ fn should_copy(src: &Path, dest: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A clean stamp of the repo's core files passes the release check; a changed byte, a
+    /// build line of another build, a missing file and a file that the repo does not have
+    /// stop it.
+    #[test]
+    fn the_release_check_finds_a_change_of_a_stamped_core_file() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let dest = env::temp_dir().join(format!("xtask-core-stamp-{}", process::id()));
+        if dest.exists() {
+            fs::remove_dir_all(&dest).unwrap();
+        }
+        let id = "numidium v0.0.0 0123abc";
+        stamp_core_files(root, &dest, id);
+        let folder = dest.join(CORE_FOLDER);
+        let stamped = wgsl_files(&folder);
+        assert!(
+            !stamped.is_empty(),
+            "no core file in {}",
+            root.join("assets").join(CORE_FOLDER).display()
+        );
+        assert_eq!(check_core_files(root, &dest, id), Ok(()));
+        // A stamp of another build.
+        assert!(check_core_files(root, &dest, "numidium v0.0.0 4567def").is_err());
+
+        let first = &stamped[0];
+        let text = fs::read(first).unwrap();
+        let mut changed = text.clone();
+        let last = changed.len() - 2;
+        changed[last] ^= 0x01;
+        fs::write(first, &changed).unwrap();
+        let problem = check_core_files(root, &dest, id).unwrap_err();
+        assert!(problem.contains(&first.display().to_string()), "{problem}");
+
+        fs::remove_file(first).unwrap();
+        assert!(check_core_files(root, &dest, id).is_err());
+        fs::write(first, &text).unwrap();
+        fs::write(folder.join("XE Other.wgsl"), "fn other() {}\n").unwrap();
+        assert!(check_core_files(root, &dest, id).is_err());
+        fs::remove_dir_all(&dest).unwrap();
+    }
+
+    /// The build id must be in the program as it is: a program of a tree with changes does
+    /// not pass for the clean id.
+    #[test]
+    fn the_build_id_is_found_in_the_program() {
+        let exe = env::temp_dir().join(format!("xtask-build-id-{}.bin", process::id()));
+        fs::write(&exe, b"\0\0numidium v0.21.0 36a3ba4\0\0").unwrap();
+        assert_eq!(check_build_id_in(&exe, "numidium v0.21.0 36a3ba4"), Ok(()));
+        assert!(check_build_id_in(&exe, "numidium v0.21.0 36a3ba4-dirty").is_err());
+        assert!(check_build_id_in(&exe, "numidium v0.21.1 36a3ba4").is_err());
+        fs::write(&exe, b"\0\0numidium v0.21.0 36a3ba4-dirty\0\0").unwrap();
+        assert!(check_build_id_in(&exe, "numidium v0.21.0 36a3ba4").is_err());
+        assert_eq!(check_build_id_in(&exe, "numidium v0.21.0 36a3ba4-dirty"), Ok(()));
+        fs::remove_file(&exe).unwrap();
+    }
 
     #[test]
     fn the_files_that_main_lua_loads_are_found_and_shipped() {
