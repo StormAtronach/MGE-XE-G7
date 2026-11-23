@@ -1769,7 +1769,7 @@ fn shader_source() -> String {
         super::lamp_grid::light_wgsl(),
         set_wgsl(),
         STATICS.part("statics"),
-        super::FOG_FUNCTION
+        super::fog_function()
     )
 }
 
