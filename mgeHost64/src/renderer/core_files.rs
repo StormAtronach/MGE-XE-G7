@@ -70,9 +70,28 @@ pub(crate) static WATER: CoreFile = core_file!(
 /// The passes of the dynamic waves (`XE Water Shader Passes.fx`): the ripples.
 pub(crate) static WATER_PASSES: CoreFile = core_file!("XE Water Shader Passes.wgsl", &["ripples"]);
 
+/// The surfaces of the water volumes (`XE Mod Water Volume.fx`): the entry points of a surface,
+/// and the draws that mark the dry spaces.
+pub(crate) static WATER_VOLUME: CoreFile = core_file!("XE Mod Water Volume.wgsl", &["volume", "dry"]);
+
+/// The standard look of a water volume (`XE Mod Water Standard.fx`).
+pub(crate) static WATER_STANDARD: CoreFile = core_file!("XE Mod Water Standard.wgsl", &["standard"]);
+
+/// The caustics of the sea floor (`XE Mod Caustics.fx`).
+pub(crate) static CAUSTICS: CoreFile = core_file!("XE Mod Caustics.wgsl", &["caustics"]);
+
 /// Every core file.
 #[cfg(test)]
-static FILES: [&CoreFile; 5] = [&GRASS, &SHADOW, &SHADOWMAP, &WATER, &WATER_PASSES];
+static FILES: [&CoreFile; 8] = [
+    &GRASS,
+    &SHADOW,
+    &SHADOWMAP,
+    &WATER,
+    &WATER_PASSES,
+    &WATER_VOLUME,
+    &WATER_STANDARD,
+    &CAUSTICS,
+];
 
 impl CoreFile {
     /// The whole text, with LF line ends.
@@ -137,7 +156,9 @@ fn parts_of(text: &str) -> Result<Vec<(&str, &str)>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FILES, GRASS, SHADOW, SHADOWMAP, WATER, WATER_PASSES, lf, parts_of};
+    use super::{
+        CAUSTICS, FILES, GRASS, SHADOW, SHADOWMAP, WATER, WATER_PASSES, WATER_STANDARD, WATER_VOLUME, lf, parts_of,
+    };
 
     /// FNV-1a, 64 bits.
     fn fnv(text: &str) -> u64 {
@@ -175,6 +196,10 @@ mod tests {
         assert_eq!(fnv(WATER.part("plane")), 0xa3ad_fab8_e938_8210);
         assert_eq!(fnv(WATER.part("level")), 0xa891_3b38_8e63_f3aa);
         assert_eq!(fnv(WATER_PASSES.part("ripples")), 0xf92d_65d2_3f52_5c72);
+        assert_eq!(fnv(WATER_VOLUME.part("volume")), 0xf962_4a79_cafa_63f5);
+        assert_eq!(fnv(WATER_VOLUME.part("dry")), 0x9952_e2ec_0483_7dec);
+        assert_eq!(fnv(WATER_STANDARD.part("standard")), 0x383f_896b_efb8_a08b);
+        assert_eq!(fnv(CAUSTICS.part("caustics")), 0x1d4b_2843_824d_eade);
     }
 
     #[test]
