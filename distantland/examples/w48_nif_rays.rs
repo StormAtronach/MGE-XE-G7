@@ -11,6 +11,14 @@
 //! normals point along s, so a ray from below meets the back face, which a front-only pick
 //! skips.
 //!
+//! Each shape also gets the marks of the generator's walk (statics nif.rs
+//! `visible_geometries`), so that a hit on a shape that no distant static has is plain (W268):
+//! BILLBOARD (under a NiBillboardNode), PARTICLE (under a NiBSParticleNode), EFFECT (under a
+//! NiDynamicEffect), MARKER (an editor marker, under a root with "mrk" string data), NO-UV (no
+//! texture coordinates) and NO-TEXTURE (no base texture, or not .bmp, .dds or .tga). The
+//! generator leaves out each shape with a mark; it keeps a shape without a water mesh's rules,
+//! which this tool does not model.
+//!
 //! Run: `cargo run --release -p distantland --example w48_nif_rays -- <mesh.nif> --at x,y,z
 //! --rotation x,y,z [--scale s] [--sun x,y,z] [--point x,y,z]...`
 
@@ -57,6 +65,14 @@ struct State {
     hidden: bool,
     collision: bool,
     inactive: bool,
+    billboard: bool,
+    particle: bool,
+    effect: bool,
+    marker: bool,
+    no_uv: bool,
+    no_texture: bool,
+    /// The texturing property that the shape takes: its own, or the nearest parent's.
+    texturing: NiLink<NiTexturingProperty>,
 }
 
 struct Shape<'a> {
@@ -135,7 +151,45 @@ fn flags(state: &State) -> String {
     if state.inactive {
         text.push_str("  INACTIVE-CHILD");
     }
+    for (mark, name) in [
+        (state.billboard, "BILLBOARD"),
+        (state.particle, "PARTICLE"),
+        (state.effect, "EFFECT"),
+        (state.marker, "MARKER"),
+        (state.no_uv, "NO-UV"),
+        (state.no_texture, "NO-TEXTURE"),
+    ] {
+        if mark {
+            text.push_str("  ");
+            text.push_str(name);
+        }
+    }
     text
+}
+
+/// The generator's editor marker names (statics nif.rs `is_editor_marker`).
+fn is_editor_marker(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("editormarker") || name.starts_with("tri editormarker")
+}
+
+/// True when the texturing property gives a base map from a .bmp, .dds or .tga file (statics
+/// nif.rs `base_texture_path` and `is_valid_texture_format`).
+fn has_base_texture(stream: &NiStream, texturing: NiLink<NiTexturingProperty>) -> bool {
+    let Some(property) = stream.get(texturing) else {
+        return false;
+    };
+    let Some(Some(TextureMap::Map(map))) = property.texture_maps.first() else {
+        return false;
+    };
+    let Some(texture) = stream.get(map.texture) else {
+        return false;
+    };
+    let TextureSource::External(path) = &texture.source else {
+        return false;
+    };
+    let path = path.to_ascii_lowercase();
+    [".bmp", ".dds", ".tga"].iter().any(|suffix| path.ends_with(suffix))
 }
 
 fn parse_options() -> Result<Options> {
@@ -181,8 +235,10 @@ fn parse_vec3(text: &str) -> Result<Vec3> {
 }
 
 /// Every triangle shape of the stream with its world transform and the state of its path. Unlike
-/// the generator's walk, nothing is left out: hidden, collision and inactive shapes are marked.
+/// the generator's walk, nothing is left out: each shape that the generator leaves out is marked.
 fn all_shapes(stream: &NiStream, placement: Affine3A) -> Vec<Shape<'_>> {
+    // The engine only handles markers when the root has "mrk" string data.
+    let has_markers = stream.root_has_string_data_starting_with("mrk");
     let mut shapes = Vec::new();
     let mut stack: Vec<(NiKey, Affine3A, State)> = stream
         .roots
@@ -203,10 +259,21 @@ fn all_shapes(stream: &NiStream, placement: Affine3A) -> Vec<Shape<'_>> {
         state.path.push(object.name.to_string());
         state.hidden |= object.app_culled();
         state.collision |= this.is_instance_of::<RootCollisionNode>();
+        state.billboard |= this.is_instance_of::<NiBillboardNode>();
+        state.particle |= this.is_instance_of::<NiBSParticleNode>();
+        state.effect |= this.is_instance_of::<NiDynamicEffect>();
+        state.marker |= has_markers && is_editor_marker(&object.name);
+        for property in &object.properties {
+            if let Some(NiType::NiTexturingProperty(_)) = stream.objects.get(property.key) {
+                state.texturing = property.cast();
+            }
+        }
         let transform = transform * object.transform();
 
         if let Ok(shape) = <&NiTriShape>::try_from(this) {
             if let Some(data) = stream.get_as::<_, NiTriShapeData>(shape.geometry_data) {
+                state.no_uv = data.uv_sets.is_empty();
+                state.no_texture = !has_base_texture(stream, state.texturing);
                 shapes.push(Shape { state, transform, data });
             }
             continue;
