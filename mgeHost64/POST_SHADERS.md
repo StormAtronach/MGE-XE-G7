@@ -149,6 +149,18 @@ The renderer puts a common part before the file. A shader does not declare these
 | `rcpres` | `rcpres()` |
 
 - The helpers `saturate(x)` for a number and `saturate3(x)` for a `vec3f`.
+- The weather of the game, which no variable of MGE XE has (W622):
+  - `weather_known()`: false without the weather record (an older d3d8.dll or capture); the
+    functions below then give weather 0;
+  - `weather_now()` and `weather_next()`: the index of the weather now and of the weather it
+    changes to (the same when it does not change), 0 to 9;
+  - `weather_ratio()`: the ratio of the change, 0 to 1;
+  - `weather_mix(table)`: a table of 10 values (`array<f32, 10>`), one for each weather, gives
+    the value of the weather now, mixed with the value of the weather it changes to by the
+    ratio.
+
+  The indices are the game's: 0 Clear, 1 Cloudy, 2 Foggy, 3 Overcast, 4 Rain, 5 Thunder,
+  6 Ash, 7 Blight, 8 Snow, 9 Blizzard.
 
 Each pass draws the whole of its target. A pass that uses `discard` keeps what the texture
 held at that pixel. The output of the last pass is what the next shader gets, whatever its

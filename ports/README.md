@@ -24,7 +24,7 @@ reads the `.wgsl` file of the same name:
 | MM - Enhanced Invisibility - wgpu shaders | MM - Enhanced Invisibility (`Invisibility.fx`) |
 | Heat Haze - wgpu shaders | Heat Haze - A MGE XE Shader Mod (`heathaze.fx`) |
 | Vapourmist - wgpu shaders | Vapourmist (`tew_fogbox.fx`) |
-| Eternal Shine - wgpu shaders | Eternal Shine |
+| Eternal Shine - wgpu shaders | Eternal Shine (`Eternal Shine.fx`; the lights of the frame and the weather of the game, W622, in place of its Lua) |
 | Ultra Bloom - wgpu shaders | Ultra Bloom, the current version (`Ultra Bloom.fx`, `XERO-lut.fx`); no install has its `Ultra Bloom.fx` |
 | STEP Shaders Compilation - wgpu shaders | STEP Shaders Compilation (its 6 shaders) |
 | Morrowind Graphics Guide Shaders - wgpu shaders | Morrowind Graphics Guide Shaders (its 5 shaders that are not stock) |

@@ -47,6 +47,10 @@ pub struct Variables {
     /// 0 in the day and 1 at night (the environment's `night`), which no variable of MGE XE
     /// has: a port reads it in place of a mod's Lua that set a variable by the hour.
     pub switches: [f32; 4],
+    /// The weather of the game (record 16, W622): the index of the weather now, the index of
+    /// the weather it changes to, the ratio of the change, and 1 when the record came (all 0
+    /// without it). The `weather_*` functions of [`COMMON`] read it.
+    pub weather: [f32; 4],
 }
 
 /// The uniform of the lights of the frame, for a shader that reads them (`frame_lights` and
@@ -94,6 +98,7 @@ struct Variables {
     fognearcol: vec4f,
     fog_near: vec4f,
     switches: vec4f,
+    weather: vec4f,
 }
 // Group 0, the frame: the same for all shaders and passes of the frame.
 @group(0) @binding(0) var<uniform> u: Variables;
@@ -170,6 +175,29 @@ fn mproj(row: u32, col: u32) -> f32 {
 // The macro USE_EXPFOG of an effect file: the distant land has the exponential fog.
 fn use_expfog() -> bool {
     return u.switches.x > 0.5;
+}
+// The weather of the game, by its index: 0 clear, 1 cloudy, 2 foggy, 3 overcast, 4 rain,
+// 5 thunder, 6 ash, 7 blight, 8 snow, 9 blizzard. weather_known() is false without the weather
+// record (an older d3d8.dll or capture); the other functions then give weather 0.
+fn weather_known() -> bool {
+    return u.weather.w > 0.5;
+}
+// The weather now, and the weather it changes to (the same when it does not change), 0 to 9.
+fn weather_now() -> u32 {
+    return min(u32(max(u.weather.x, 0.0)), 9u);
+}
+fn weather_next() -> u32 {
+    return min(u32(max(u.weather.y, 0.0)), 9u);
+}
+// The ratio of the change, 0 to 1.
+fn weather_ratio() -> f32 {
+    return clamp(u.weather.z, 0.0, 1.0);
+}
+// A value for each weather, mixed from the weather now to the weather it changes to by the
+// ratio. The table has one value for each index.
+fn weather_mix(by_weather: array<f32, 10>) -> f32 {
+    var table = by_weather;
+    return mix(table[weather_now()], table[weather_next()], weather_ratio());
 }
 
 fn rcpres() -> vec2f {
@@ -6469,6 +6497,25 @@ mod tests {
             }
         }
         assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// The weather functions (W622) compile in a file that calls each of them: the table of
+    /// `weather_mix` is indexed by values that are not constants.
+    #[test]
+    fn a_file_that_calls_the_weather_functions_compiles() {
+        let text = "//! interface: mge-xe-wgsl 1\n//! passes: main\n\n\
+            @fragment fn main(in: Quad) -> @location(0) vec4f {\n\
+            \x20   var known = 0.0;\n\
+            \x20   if weather_known() {\n\
+            \x20       known = 1.0;\n\
+            \x20   }\n\
+            \x20   let index = f32(weather_now() + weather_next());\n\
+            \x20   let air = weather_mix(array<f32, 10>(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0));\n\
+            \x20   return vec4f(known, index, weather_ratio(), air);\n\
+            }\n";
+        let definition = Definition::of_file("weather", text).expect("the header");
+        let source = format!("{COMMON}\n{}\n{}", variables_wgsl(&definition.variables), definition.source);
+        crate::renderer::shader_check::check("weather", &source).expect("the file compiles");
     }
 
     /// Each post shader file of the packs in `ports/` (`<pack>/shaders/XEshaders/*.wgsl`) has
