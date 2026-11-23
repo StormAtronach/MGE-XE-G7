@@ -233,6 +233,11 @@ struct CullUniforms {
     counts: [u32; 4],
 }
 
+/// The shader of the glows: the view group and [`GLOW_SHADER`].
+pub(super) fn glow_source() -> String {
+    format!("{}{GLOW_SHADER}", super::view::wgsl())
+}
+
 /// Group 1 of the glows: `Glow` of [`GLOW_SHADER`].
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -645,7 +650,7 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
             ),
         ],
     });
-    let source = format!("{}{GLOW_SHADER}", super::view::wgsl());
+    let source = glow_source();
     let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant lights, glows"),
         source: wgpu::ShaderSource::Wgsl(source.into()),

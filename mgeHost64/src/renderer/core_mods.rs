@@ -309,6 +309,12 @@ fn clouds_color() -> &'static str {
     SKY.part("clouds_color")
 }
 
+/// The clouds hook with its built-in only: the world shader of a sky file that gives no
+/// function, for the check of an edited core file.
+pub(crate) fn built_in_sky_hooks() -> String {
+    hook_text(&SKY_HOOKS, &[], "")
+}
+
 /// The struct of the clouds hook and the texture read, part of the interface, as declarations
 /// for the check of a file alone. The world shader of `nirender_wgpu` defines both (a test
 /// compares them): `CloudPixel` has the coordinate of the clouds' texture (`IN.texcoords`), the
@@ -778,7 +784,6 @@ impl CoreMods {
 
     /// The water hooks for the plane of the water: the text joins the plane's source after its
     /// library and [`WATER_INTERFACE`].
-    #[cfg(test)]
     pub fn water_hooks(&self) -> &str {
         &self.water_hooks
     }

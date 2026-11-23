@@ -33,6 +33,11 @@ pub use dry::read_masks;
 pub(super) use shading::{caustic_strength, caustics, water_normal};
 pub use volume::{FarWater, Look, VolumeLight, VolumeLook, marked as volume_marked};
 
+/// The shader of the draws that mark the dry spaces.
+pub(super) fn dry_source() -> String {
+    dry::shader()
+}
+
 /// The shader of the surfaces of the water volumes with the standard look and `shadow_hooks`.
 pub(super) fn volume_source(shadow_hooks: &str) -> String {
     volume::standard_source(shadow_hooks)

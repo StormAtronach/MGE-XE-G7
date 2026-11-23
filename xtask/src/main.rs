@@ -500,6 +500,10 @@ fn cmd_dist(root: &Path, mode: BuildMode) {
         eprintln!("error: the core files of the release: {problem}");
         process::exit(1);
     }
+    println!(
+        "The core files of the release: {} with the build line of {id}, equal to the repo's; numidium.exe has the id",
+        wgsl_files(&staging.join(CORE_FOLDER)).len()
+    );
     // The d3d9.dll of the assets is the DXVK build for the Direct3D 9 path. The wgpu
     // renderer does not use it, and a file with this name in an archive replaces the
     // d3d9.dll that a user has. The Direct3D 9 path runs with the d3d9.dll of Windows.

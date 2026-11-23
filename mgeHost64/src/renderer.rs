@@ -690,6 +690,11 @@ pub fn run(mut arguments: Vec<String>) {
             eprintln!("debug view: {problem}");
             std::process::exit(2);
         });
+        // The core files before every pipeline, and before the core mods, whose checks take
+        // the texts chosen here.
+        core_files::use_files(&|name| core_file(Path::new("."), name), &build_id(), &|file, text| {
+            core_files::with_candidate(file, text, check_core_files)
+        });
         let mut land = DistantLand::start(Path::new("."), live);
         if let Some(line) = debug_view::retired_switches_line(|name| nirender_wgpu::switches::text(name).is_some()) {
             println!("{line}");
@@ -1535,6 +1540,63 @@ fn shown(path: &Path) -> String {
     text.strip_prefix(r"\\?\").map_or(text.clone(), str::to_owned)
 }
 
+/// The core file `name` (`Data Files/shaders/core`) at the first of the places of [`data_file`]
+/// that has it: its place for the log, and its bytes.
+fn core_file(root: &Path, name: &str) -> Option<core_files::Found> {
+    let place = data_places(root, &format!("{}/{name}", core_files::FOLDER))
+        .into_iter()
+        .find(|place| place.is_file())?;
+    Some((shown(&place), std::fs::read(&place).map_err(|error| error.to_string())))
+}
+
+/// Every shader that a core file is part of, by its name, as the device checks it, with the
+/// built-in hooks of the core mods: the check of an edited core file ([`check_core_files`]). A
+/// test of `core_files.rs` proves that each part of each core file is in one of them.
+fn core_file_compositions() -> [(&'static str, fn() -> Result<(), String>); 15] {
+    fn checked(label: &str, source: &str) -> Result<(), String> {
+        shader_check::check(label, source).map(drop)
+    }
+    fn built_in() -> core_mods::CoreMods {
+        core_mods::CoreMods::built_in()
+    }
+    [
+        ("the world shader", || check_world_source(built_in().shadow_hooks(), None)),
+        ("the world shader with the clouds hook", || {
+            check_world_source(built_in().shadow_hooks(), Some(&core_mods::built_in_sky_hooks()))
+        }),
+        ("distant land", || checked("distant land", &land_source())),
+        ("distant land shadow", || {
+            checked("distant land shadow", &land_shadow_source())
+        }),
+        ("distant statics", || checked("distant statics", &statics::shader_source())),
+        ("distant statics shadow", || {
+            checked("distant statics shadow", &statics::shadow_source())
+        }),
+        ("grass", || {
+            checked("grass", &statics::grass_source(built_in().shadow_hooks()))
+        }),
+        ("shadow blur", || checked("shadow blur", core_files::SHADOWMAP.part("blur"))),
+        ("water plane", || water::plane_check(built_in().water_hooks())),
+        ("water reflection level", || {
+            checked("water reflection level", core_files::WATER.part("level"))
+        }),
+        ("water volume", || {
+            checked("water volume", &water::volume_source(built_in().shadow_hooks()))
+        }),
+        ("dry spaces", || checked("dry spaces", &water::dry_source())),
+        ("caustics", || checked("caustics", &caustics::shader())),
+        ("ripples", || checked("ripples", core_files::WATER_PASSES.part("ripples"))),
+        ("distant lights, glows", || {
+            checked("distant lights, glows", &distant_lights::glow_source())
+        }),
+    ]
+}
+
+/// Checks the shaders of [`core_file_compositions`]: the first fault, by its shader.
+fn check_core_files() -> Result<(), String> {
+    core_file_compositions().into_iter().try_for_each(|(_, check)| check())
+}
+
 /// The core mods of the session: the files of `folder` (`MGE_XE_CORE_MODS_DIR`), else of the
 /// places of `Data Files` under `root`, checked with the homes of this helper. A file that a
 /// marker of `markers` names is not used.
@@ -1709,6 +1771,12 @@ fn land_source() -> String {
         core_files::LANDSCAPE.part("landscape"),
         fog_function()
     )
+}
+
+/// The casters of the shadow map of the land (`ShadowVS` and `ShadowPS` of `XE Shadowmap.fx`):
+/// the view group and the land's part of the shadow map.
+fn land_shadow_source() -> String {
+    format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"))
 }
 
 /// `fogColour` and `fogApply` of `XE Common.fx` for a shader of this module: the colour of a
@@ -2736,7 +2804,7 @@ fn make_gpu(scene: &SceneView, loaded: &Loaded, view_layout: &wgpu::BindGroupLay
     // The casters of the shadow map (`ShadowVS` and `ShadowPS` of `XE Shadowmap.fx`): the land
     // with the depth from the sun. The view group only (the matrix of the layer in
     // `view_projection`).
-    let shadow_source = format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"));
+    let shadow_source = land_shadow_source();
     let shadow_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant land shadow"),
         source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
@@ -6864,7 +6932,7 @@ mod shader_tests {
     fn the_land_shaders_are_valid() {
         let land = land_source();
         shader_check::check("distant land", &land).unwrap();
-        let shadow = format!("{}{}", view::wgsl(), core_files::SHADOWMAP.part("land"));
+        let shadow = land_shadow_source();
         shader_check::check("distant land shadow", &shadow).unwrap();
     }
 
