@@ -28,7 +28,6 @@
 //! - The mod's menu does not act on wgpu: its values are the variables above.
 
 use super::post::{Shader, Variable, full};
-use mge_config::post_values::{self, Setting};
 
 /// A variable that a mod sets from Lua: one value, with the value of the effect file.
 const fn value(name: &'static str, default: &'static [f32; 1]) -> Variable {
@@ -332,24 +331,14 @@ const GLOW_SKY: f32 = 1.0e7;
 "
 );
 
-/// A setting of a port as a variable of the shader: one value, with the setting's default.
-const fn setting(setting: &'static Setting) -> Variable {
-    Variable {
-        name: setting.name,
-        slots: 1,
-        per: 1,
-        default: setting.default,
-    }
-}
-
-/// The values of Eternal Shine that a player or a mod can set from Lua: the settings of the
-/// port in mge-config, in their order. A test checks that this list has all of them.
+/// The values of Eternal Shine that a player or a mod can set from Lua: the settings of its
+/// file in `ports/`, in their order. A test checks that this list has all of them.
 const ETERNAL_SHINE_VALUES: &[Variable] = &[
-    setting(&post_values::ETERNAL_SHINE[0]),
-    setting(&post_values::ETERNAL_SHINE[1]),
-    setting(&post_values::ETERNAL_SHINE[2]),
-    setting(&post_values::ETERNAL_SHINE[3]),
-    setting(&post_values::ETERNAL_SHINE[4]),
+    value("radmult", &[0.3]),
+    value("int", &[0.25]),
+    value("ext", &[0.4]),
+    value("rain", &[0.5]),
+    value("near_eye", &[100.0]),
 ];
 
 /// The ports of this file, after those of `post.rs` and `post_jop.rs`.
@@ -817,18 +806,38 @@ fn case_of(i: u32) -> vec4f {
         assert!(ETERNAL_SHINE.contains("frame_lights"));
     }
 
-    /// The variables of the port are all the settings of mge-config, in their order and with
-    /// their defaults (mge-config's own test checks those against the mod's Lua), and the port
-    /// reads each one.
+    /// The file of the pack "Eternal Shine - wgpu shaders".
+    const ETERNAL_SHINE_FILE: &str =
+        include_str!("../../../ports/Eternal Shine - wgpu shaders/shaders/XEshaders/Eternal Shine.wgsl");
+
+    /// The lines of a text that are not empty.
+    fn code_lines(text: &str) -> Vec<&str> {
+        text.lines().filter(|line| !line.trim().is_empty()).collect()
+    }
+
+    /// The WGSL of the file is that of the port, after its header: the pictures are equal by
+    /// construction.
     #[test]
-    fn the_glow_values_are_the_settings_of_the_port() {
+    fn the_file_has_the_wgsl_of_the_port() {
+        assert!(code_lines(ETERNAL_SHINE_FILE).ends_with(&code_lines(ETERNAL_SHINE)));
+    }
+
+    /// The variables of the port are the settings of its file in `ports/`, in their order and
+    /// with their defaults, and the port reads each one.
+    #[test]
+    fn the_glow_values_are_the_settings_of_the_file() {
+        let header = mge_config::post_header::parse(ETERNAL_SHINE_FILE).expect("the header");
         let port = SHADERS.iter().find(|s| s.name == "Eternal Shine").expect("the port");
         let have: Vec<(&str, &[f32])> = port.variables.iter().map(|v| (v.name, v.default)).collect();
-        let want: Vec<(&str, &[f32])> = post_values::settings_of("Eternal Shine")
+        let defaults = header.setting_defaults();
+        let want: Vec<(&str, &[f32])> = header
+            .settings
             .iter()
-            .map(|s| (s.name, s.default))
+            .zip(&defaults)
+            .map(|(name, default)| (name.as_str(), std::slice::from_ref(default)))
             .collect();
         assert_eq!(have, want);
+        assert_eq!(header.variables.len(), header.settings.len());
         for (name, _) in want {
             assert!(ETERNAL_SHINE.contains(&format!("{name}()")), "the port reads {name}");
         }

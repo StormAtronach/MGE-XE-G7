@@ -14,3 +14,4 @@ reads the `.wgsl` file of the same name:
 | Pack | Its mod |
 | --- | --- |
 | Enhanced Water Shader - wgpu shaders | Enhanced Water Shader 2.2 Green-Blue by Krokantor, updated for MGE XE 0.13.0 by Hrnchamd |
+| Eternal Shine - wgpu shaders | Eternal Shine |

@@ -26,8 +26,8 @@ struct ShaderVariable {
     // The mod set the variable. Only such a variable goes to the renderer: a variable
     // that no mod set keeps the default of the port.
     bool set;
-    // A setting of the port (mge-config's post_values): its value is kept in the values file
-    // of the shader between game sessions.
+    // A setting of the shader (the line `//! settings:` of its WGSL file): its value is kept
+    // in the values file of the shader between game sessions (mge-config's post_values).
     bool setting = false;
 };
 
@@ -53,31 +53,33 @@ struct ShaderValues {
     // a device (GetTechnique(0)).
     bool techniqueRead = false;
     // The shader and the folder of its values file, for the writes of the settings; empty
-    // for a shader whose port has no settings.
+    // for a shader that has no settings.
     std::string settingsShader;
     std::string settingsFolder;
 
     // Reads the variables of an effect file. A file that cannot be read gives none.
     static ShaderValues parse(const char* path);
     // Reads the `//!` lines at the start of a WGSL file of a shader (mgeHost64's
-    // POST_SHADERS.md, "The file"), for a shader that has no effect file: the category, the
-    // priority adjustment, `requires_hdr`, `disable_sunglare`, `mgeflags` as the variable
-    // `mgeflags`, and the variables of `variables` with their start values. Returns false,
-    // with the reason in `error`, for a file that cannot be read or a header that the
-    // renderer does not accept: then the renderer does not load the shader either.
+    // POST_SHADERS.md, "The file") with mge-config's parser, the one that the renderer uses:
+    // the category, the priority adjustment, `requires_hdr`, `disable_sunglare`, `mgeflags` as
+    // the variable `mgeflags`, the variables of `variables` with their start values, and the
+    // settings of `settings`. Returns false, with the reason in `error`, for a file that cannot
+    // be read or a header that the renderer does not accept: then the renderer does not load
+    // the shader either.
     static bool parseWgslHeader(const char* path, ShaderValues* out, std::string* error);
 
-    // Adds the settings of the port of `shader` that the file does not have, with their
-    // defaults, and marks every setting; then takes the values of the shader's values file
-    // `<shader>.values.toml` in `folder` as set. A missing or broken file leaves the defaults.
-    void addPortSettings(const char* folder, const char* shader);
+    // The names of the settings, in the order of the variables.
+    std::vector<const char*> settingNames() const;
+    // Takes the values of the shader's values file `<shader>.values.toml` in `folder` for its
+    // settings as set. A missing or broken file leaves the defaults.
+    void readSettings(const char* folder, const char* shader);
     // Some variable is set: the renderer must get the state.
     bool anySet() const;
 
     ShaderVariable* find(const char* name);
 
     // Sets a variable from `count` floats. Returns false for a name the file does not have.
-    // A set of a setting queues a write of the values file (see addPortSettings).
+    // A set of a setting queues a write of the values file (see readSettings).
     bool set(const char* name, const float* values, size_t count);
     // Copies the values of a variable into `out`, at most `count`. Returns the number of
     // values the variable has, 0 for a name the file does not have.

@@ -11,6 +11,7 @@
 //! `lastpass` the output of the pass before, and `pass0` to `pass7` the outputs of the first
 //! eight passes of the shader. The variables of MGE XE are one uniform.
 
+use mge_config::post_header;
 use nirender_wgpu::gpu::KeptGroup;
 use nirender_wgpu::objects::{Create, CreateView};
 use nirender_wgpu::{SceneView, wgpu};
@@ -229,9 +230,6 @@ const fn scaled(entry: &'static str, scale: u32) -> Pass {
         half_float: true,
     }
 }
-
-/// The textures that a shader can name: `tex1` to `tex10`.
-const TEXTURES: usize = 10;
 
 /// The places of the variables of a shader in the uniform `modv`: 256 vectors of 4 floats.
 const MOD_SLOTS: usize = 256;
@@ -550,53 +548,6 @@ fn variables_wgsl(variables: &[VariableDef]) -> String {
         slot += variable.slots;
     }
     out
-}
-
-/// A variable of the `variables` line of a file: `name type`, `name type[N]`, with
-/// `= number number ...` after it for the values before a mod sets it. The types are f32,
-/// vec2, vec3 and vec4.
-fn parse_variable(item: &str) -> Result<VariableDef, String> {
-    let (left, default) = item.split_once('=').unwrap_or((item, ""));
-    let mut words = left.split_whitespace();
-    let (Some(name), Some(kind), None) = (words.next(), words.next(), words.next()) else {
-        return Err(format!("the variable `{item}` is not `name type`"));
-    };
-    let (kind, slots) = match kind.split_once('[') {
-        Some((kind, count)) => (
-            kind,
-            count
-                .trim_end_matches(']')
-                .parse::<u32>()
-                .ok()
-                .filter(|n| *n >= 1)
-                .ok_or_else(|| format!("the size of the variable {name} is not [N]"))?,
-        ),
-        None => (kind, 1),
-    };
-    let per = match kind {
-        "f32" => 1,
-        "vec2" => 2,
-        "vec3" => 3,
-        "vec4" => 4,
-        other => {
-            return Err(format!(
-                "the type `{other}` of the variable {name} is not f32, vec2, vec3 or vec4"
-            ));
-        }
-    };
-    let default = default
-        .split_whitespace()
-        .map(|v| {
-            v.parse::<f32>()
-                .map_err(|_| format!("the value `{v}` of the variable {name} is not a number"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(VariableDef {
-        name: name.to_string(),
-        slots,
-        per,
-        default,
-    })
 }
 
 /// A shader of the chain: its name, its passes, and the environment flags that disable it
@@ -1023,30 +974,6 @@ fn port_for_file(definition: &mut Definition, file: &str) {
     }
 }
 
-/// A pass of the `passes` line of a file: `name`, `name /N` for a target of the picture size
-/// over N, `name f16` for 16-bit floats, or both.
-fn parse_pass(item: &str) -> Result<(String, u32, bool), String> {
-    let mut words = item.split_whitespace();
-    let Some(name) = words.next() else {
-        return Err("a pass without a name".to_string());
-    };
-    let (mut scale, mut half_float) = (1u32, false);
-    for word in words {
-        if let Some(number) = word.strip_prefix('/') {
-            scale = number
-                .parse()
-                .ok()
-                .filter(|n: &u32| *n >= 1)
-                .ok_or_else(|| format!("the scale `{word}` of the pass {name} is not /N with N 1 or more"))?;
-        } else if word == "f16" {
-            half_float = true;
-        } else {
-            return Err(format!("the word `{word}` of the pass {name} is not known (/N or f16)"));
-        }
-    }
-    Ok((name.to_string(), scale, half_float))
-}
-
 impl Definition {
     fn of_port(shader: &Shader) -> Definition {
         Definition {
@@ -1079,107 +1006,36 @@ impl Definition {
     /// with lines `//! key: value`, which have what the technique of an effect file of
     /// MGE XE has in its annotations; the rest is WGSL, compiled after the common part
     /// ([`COMMON`]: the variables `u`, the textures, the samplers, the vertex function `vs`
-    /// and the struct `Quad`). The keys:
-    ///
-    /// - `interface: mge-xe-wgsl 1` (needed)
-    /// - `passes: a, b /2 f16, c` (needed): the fragment functions, one for each pass, in
-    ///   their order; `/N` draws the pass into a target of the picture size over N, `f16`
-    ///   into 16-bit floats (8-bit colours without it)
-    /// - `category: scene | atmosphere | lens | sensor | tone | none | final` (`none`)
-    /// - `priority_adjust: N` (0)
-    /// - `mgeflags: N` (0): the shader does not run when a bit is set in the frame: 1
-    ///   interior, 2 exterior, 4 interior that behaves as an exterior, 8 under the water,
-    ///   16 above the water, 32 the sun is visible, 64 the sun is not visible
-    /// - `requires_hdr: true | false` (false)
-    /// - `disable_sunglare: true | false` (false)
-    /// - `texture: path under Data Files/textures` (none): bound as `tex1`
-    /// - `variables: a f32 = 1, b vec3, c f32[8]` (none): the variables that a mod sets from
-    ///   Lua, with their values before that; the WGSL reads them as `a()`, `b()`, `c(i)`
+    /// and the struct `Quad`). mge-config's `post_header` reads the lines and lists the keys;
+    /// d3d8.dll reads them with the same parser. The variables that a mod sets from Lua are
+    /// read in the WGSL as `a()`, `b()`, `c(i)`; the settings are variables that d3d8.dll
+    /// keeps between game sessions, so the helper uses only the variables.
     fn of_file(name: &str, text: &str) -> Result<Definition, String> {
-        let mut definition = Definition {
+        let header = post_header::parse(text)?;
+        Ok(Definition {
             name: name.to_string(),
             source: text.to_string(),
-            passes: Vec::new(),
-            disable_flags: 0,
-            no_sun_glare: false,
-            priority: 0,
-            textures: Vec::new(),
-            requires_hdr: false,
-            variables: Vec::new(),
-        };
-        let (mut category, mut adjust, mut interface) = (6_000_000i64, 0i64, false);
-        let flag = |value: &str| match value {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            other => Err(format!("`{other}` is not true or false")),
-        };
-        for line in text.lines() {
-            let Some(rest) = line.strip_prefix("//!") else { break };
-            let Some((key, value)) = rest.split_once(':') else {
-                return Err(format!("the line `{line}` has no `key: value`"));
-            };
-            let value = value.trim();
-            match key.trim() {
-                "interface" => interface = value == "mge-xe-wgsl 1",
-                "passes" => {
-                    definition.passes = value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|pass| !pass.is_empty())
-                        .map(parse_pass)
-                        .collect::<Result<_, _>>()?
-                }
-                "category" => {
-                    category = match value {
-                        "scene" => 1_000_000,
-                        "atmosphere" => 2_000_000,
-                        "lens" => 3_000_000,
-                        "sensor" => 4_000_000,
-                        "tone" => 5_000_000,
-                        "none" => 6_000_000,
-                        "final" => 9_000_000,
-                        other => return Err(format!("the category `{other}` is not known")),
-                    }
-                }
-                "priority_adjust" => {
-                    adjust = value
-                        .parse()
-                        .map_err(|_| format!("the priority adjust `{value}` is not a number"))?
-                }
-                "mgeflags" => {
-                    definition.disable_flags = value.parse().map_err(|_| format!("the flags `{value}` are not a number"))?
-                }
-                "requires_hdr" => definition.requires_hdr = flag(value)?,
-                "disable_sunglare" => definition.no_sun_glare = flag(value)?,
-                "texture" => {
-                    definition.textures = value
-                        .split(',')
-                        .map(|name| name.trim().to_string())
-                        .filter(|name| !name.is_empty())
-                        .collect();
-                    if definition.textures.len() > TEXTURES {
-                        return Err(format!("more than {TEXTURES} textures"));
-                    }
-                }
-                "variables" => {
-                    definition.variables = value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|v| !v.is_empty())
-                        .map(parse_variable)
-                        .collect::<Result<_, _>>()?
-                }
-                other => return Err(format!("the key `{other}` is not known")),
-            }
-        }
-        if !interface {
-            return Err("no line `//! interface: mge-xe-wgsl 1` at its start".to_string());
-        }
-        if definition.passes.is_empty() {
-            return Err("no line `//! passes: ...` with the fragment functions".to_string());
-        }
-        definition.priority = category + adjust;
-        Ok(definition)
+            passes: header
+                .passes
+                .iter()
+                .map(|pass| (pass.entry.clone(), pass.scale, pass.half_float))
+                .collect(),
+            disable_flags: header.mgeflags.unwrap_or(0),
+            no_sun_glare: header.disable_sunglare,
+            priority: header.priority(),
+            textures: header.textures,
+            requires_hdr: header.requires_hdr,
+            variables: header
+                .variables
+                .into_iter()
+                .map(|variable| VariableDef {
+                    name: variable.name,
+                    slots: variable.slots,
+                    per: variable.per,
+                    default: variable.default,
+                })
+                .collect(),
+        })
     }
 }
 
@@ -7295,24 +7151,6 @@ mod tests {
         assert!(functions.contains("fn tints(i: i32) -> vec3f { return modv.values[4 + clamp(i, 0, 1)].xyz; }"));
     }
 
-    #[test]
-    fn a_variable_line_of_a_file_is_read() {
-        let variable = parse_variable("tint vec3 = 1 0.5 0").unwrap();
-        assert_eq!(
-            (
-                variable.name.as_str(),
-                variable.slots,
-                variable.per,
-                variable.default.as_slice()
-            ),
-            ("tint", 1, 3, &[1.0, 0.5, 0.0][..])
-        );
-        let array = parse_variable("densities f32[8]").unwrap();
-        assert_eq!((array.slots, array.per, array.default.len()), (8, 1, 0));
-        assert!(parse_variable("x mat4").is_err());
-        assert!(parse_variable("x f32[0]").is_err());
-    }
-
     /// The WGSL of each port is valid, with the common part and the functions of its
     /// variables, and each pass is a fragment function of it.
     #[test]
@@ -7336,6 +7174,56 @@ mod tests {
                     .any(|entry| entry.name == pass.entry && entry.stage == naga::ShaderStage::Fragment)
                 {
                     problems.push(format!("{}: the pass {} is not a fragment function", shader.name, pass.entry));
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// Each post shader file of the packs in `ports/` (`<pack>/shaders/XEshaders/*.wgsl`) has
+    /// a header that the renderer takes, and its WGSL is valid with the common part and the
+    /// functions of its variables, with each pass a fragment function of it.
+    #[test]
+    fn each_post_file_of_the_packs_is_valid() {
+        use wgpu::naga;
+        let ports = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ports");
+        let mut files = Vec::new();
+        for pack in std::fs::read_dir(&ports).expect("the folder ports") {
+            let folder = pack.expect("a pack").path().join("shaders/XEshaders");
+            for file in std::fs::read_dir(&folder).into_iter().flatten() {
+                let path = file.expect("a file").path();
+                if path.extension().is_some_and(|extension| extension == "wgsl") {
+                    files.push(path);
+                }
+            }
+        }
+        assert!(!files.is_empty(), "no post shader file in {}", ports.display());
+        let mut problems = Vec::new();
+        for path in &files {
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(path).unwrap();
+            let definition = match Definition::of_file(&name, &text) {
+                Ok(definition) => definition,
+                Err(problem) => {
+                    problems.push(format!("{}: {problem}", path.display()));
+                    continue;
+                }
+            };
+            let source = format!("{COMMON}\n{}\n{}", variables_wgsl(&definition.variables), definition.source);
+            let module = match crate::renderer::shader_check::check(&name, &source) {
+                Ok(module) => module,
+                Err(problem) => {
+                    problems.push(problem);
+                    continue;
+                }
+            };
+            for (entry, _, _) in &definition.passes {
+                if !module
+                    .entry_points
+                    .iter()
+                    .any(|point| point.name == *entry && point.stage == naga::ShaderStage::Fragment)
+                {
+                    problems.push(format!("{name}: the pass {entry} is not a fragment function"));
                 }
             }
         }

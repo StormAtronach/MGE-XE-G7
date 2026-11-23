@@ -1,16 +1,14 @@
-//! The settings of the post shader ports that a player adjusts, and the file that keeps their
-//! values between game sessions (W576 part 4; the owner, 2026-11-23: "values should be saved
-//! between sessions, in the same folder as the shader is").
+//! The file that keeps the values of the settings of a post shader between game sessions
+//! (W576 part 4; the owner, 2026-11-23: "values should be saved between sessions, in the same
+//! folder as the shader is").
 //!
-//! A port of a mod's post shader can have settings that the mod's effect file does not have:
-//! on Direct3D 9 the mod's Lua computed them and gave the shader the result. [`PORTS`] lists
-//! them, with their defaults. This list is their one home:
-//! - the helper's port reads each one as a variable of the shader;
-//! - d3d8.dll lists them to the API of MGE XE, so a mod or a player sets them from Lua
-//!   (`mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`), and the value goes to
-//!   the helper in the shader-state record.
+//! The settings of a shader are the variables that the line `//! settings:` of its WGSL file
+//! names ([`crate::post_header`]), each a variable of one f32 with the default of the line
+//! `//! variables:`. A mod or a player sets them from Lua
+//! (`mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`), d3d8.dll lists them to the
+//! API of MGE XE, and the value goes to the helper in the shader-state record.
 //!
-//! d3d8.dll keeps the values in the file `<shader>.values.toml` beside the effect file
+//! d3d8.dll keeps the values in the file `<shader>.values.toml` beside the shader file
 //! ([`values_path`]): one line `name = number` for each setting. It reads the file when the
 //! shader loads ([`read_values`]). After a set from Lua it writes the file whole ([`Saver`]),
 //! about 1 s after the last change and on a thread of its own, never on the frame thread. A
@@ -24,69 +22,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// A setting of a port: one value.
-pub struct Setting {
-    pub name: &'static str,
-    /// The default, as one value; a slice, so that a port can use it as the default of a
-    /// variable of the shader.
-    pub default: &'static [f32],
-}
-
-/// The settings of the port of one shader, by the name of the shader in the chain.
-pub struct PortSettings {
-    pub shader: &'static str,
-    pub settings: &'static [Setting],
-}
-
-/// The settings of Eternal Shine, with the defaults of the mod's Lua (`mwse.loadConfig` of its
-/// main.lua, by its names). `near_eye` is not the Lua's: a light nearer to the eye gives no
-/// glow (the owner's choice, 2026-11-23).
-pub const ETERNAL_SHINE: &[Setting] = &[
-    // The multiplier of a light's radius for the glow.
-    Setting {
-        name: "radmult",
-        default: &[0.3],
-    },
-    // The strength of the air in an interior.
-    Setting {
-        name: "int",
-        default: &[0.25],
-    },
-    // The strength of the air outside.
-    Setting {
-        name: "ext",
-        default: &[0.4],
-    },
-    // The strength of the air in rain, thunder and snow.
-    Setting {
-        name: "rain",
-        default: &[0.5],
-    },
-    // The distance from the eye, in units of the game, within which a light gives no glow.
-    Setting {
-        name: "near_eye",
-        default: &[100.0],
-    },
-];
-
-/// The ports that have settings.
-pub const PORTS: &[PortSettings] = &[PortSettings {
-    shader: "Eternal Shine",
-    settings: ETERNAL_SHINE,
-}];
-
-/// The settings of the port of `shader`; none for a shader whose port has none.
-pub fn settings_of(shader: &str) -> &'static [Setting] {
-    PORTS
-        .iter()
-        .find(|port| port.shader == shader)
-        .map_or(&[], |port| port.settings)
-}
-
 /// The end of the name of a values file.
 pub const VALUES_SUFFIX: &str = ".values.toml";
 
-/// The values file of `shader` in the folder of its effect file.
+/// The values file of `shader` in the folder of its shader file.
 pub fn values_path(folder: &Path, shader: &str) -> PathBuf {
     folder.join(format!("{shader}{VALUES_SUFFIX}"))
 }
@@ -101,11 +40,11 @@ pub struct ReadValues {
     pub warnings: Vec<String>,
 }
 
-/// Reads the values file at `path` for `settings`. A missing file gives no values and no
-/// warning. A file that cannot be read, or that is not TOML, gives no values and a warning.
-/// A name that is not a setting, and a value that is not a finite number, give a warning;
-/// the other names of the file still apply.
-pub fn read_values(path: &Path, settings: &[Setting]) -> ReadValues {
+/// Reads the values file at `path` for the settings `settings` (their names). A missing file
+/// gives no values and no warning. A file that cannot be read, or that is not TOML, gives no
+/// values and a warning. A name that is not a setting, and a value that is not a finite
+/// number, give a warning; the other names of the file still apply.
+pub fn read_values(path: &Path, settings: &[&str]) -> ReadValues {
     let mut read = ReadValues {
         values: vec![None; settings.len()],
         warnings: Vec::new(),
@@ -129,7 +68,7 @@ pub fn read_values(path: &Path, settings: &[Setting]) -> ReadValues {
         }
     };
     for (name, item) in document.iter() {
-        let Some(index) = settings.iter().position(|setting| setting.name == name) else {
+        let Some(index) = settings.iter().position(|setting| *setting == name) else {
             read.warnings.push(format!(
                 "{}: `{name}` is not a setting of the shader; not used",
                 path.display()
@@ -153,9 +92,10 @@ pub fn read_values(path: &Path, settings: &[Setting]) -> ReadValues {
 }
 
 /// The text of a values file: a comment line, then one line `name = value` for each setting
-/// with a finite value. The value has the shortest form that reads back as the same f32 (0.3,
-/// not 0.30000001192092896), always with a decimal point, so that TOML reads a float.
-pub fn values_text(shader: &str, settings: &[Setting], values: &[f32]) -> String {
+/// (by its name in `settings`) with a finite value. The value has the shortest form that
+/// reads back as the same f32 (0.3, not 0.30000001192092896), always with a decimal point, so
+/// that TOML reads a float.
+pub fn values_text(shader: &str, settings: &[&str], values: &[f32]) -> String {
     let mut text = format!("# The values of the post shader {shader}, kept by MGE XE between game sessions.\n");
     for (setting, value) in settings.iter().zip(values) {
         if !value.is_finite() {
@@ -165,7 +105,7 @@ pub fn values_text(shader: &str, settings: &[Setting], values: &[f32]) -> String
         if !number.contains('.') {
             number.push_str(".0");
         }
-        text.push_str(&format!("{} = {number}\n", setting.name));
+        text.push_str(&format!("{setting} = {number}\n"));
     }
     text
 }
@@ -261,28 +201,14 @@ mod tests {
         root
     }
 
-    /// The defaults of Eternal Shine are those of the mod's Lua, and the owner's 100 units.
-    #[test]
-    fn the_settings_of_eternal_shine_have_the_defaults_of_the_lua() {
-        let have: Vec<(&str, &[f32])> = settings_of("Eternal Shine")
-            .iter()
-            .map(|setting| (setting.name, setting.default))
-            .collect();
-        let want: Vec<(&str, &[f32])> = vec![
-            ("radmult", &[0.3]),
-            ("int", &[0.25]),
-            ("ext", &[0.4]),
-            ("rain", &[0.5]),
-            ("near_eye", &[100.0]),
-        ];
-        assert_eq!(have, want);
-        assert!(settings_of("Ultra Bloom").is_empty());
-    }
+    /// The settings of the tests: those of Eternal Shine.
+    const SETTINGS: &[&str] = &["radmult", "int", "ext", "rain", "near_eye"];
+    const DEFAULTS: [f32; 5] = [0.3, 0.25, 0.4, 0.5, 100.0];
 
     #[test]
     fn a_missing_file_gives_no_values_and_no_warning() {
         let root = test_root("missing");
-        let read = read_values(&values_path(&root, "Eternal Shine"), ETERNAL_SHINE);
+        let read = read_values(&values_path(&root, "Eternal Shine"), SETTINGS);
         assert_eq!(read.values, vec![None; 5]);
         assert!(read.warnings.is_empty());
         fs::remove_dir_all(root).unwrap();
@@ -295,7 +221,7 @@ mod tests {
         let root = test_root("lines");
         let path = values_path(&root, "Eternal Shine");
         fs::write(&path, "radmult = 0.6\nrain = 1\nglow = 2.0\next = \"thick\"\nint = nan\n").unwrap();
-        let read = read_values(&path, ETERNAL_SHINE);
+        let read = read_values(&path, SETTINGS);
         assert_eq!(read.values, vec![Some(0.6), None, None, Some(1.0), None]);
         assert_eq!(read.warnings.len(), 3, "{:?}", read.warnings);
         assert!(read.warnings.iter().any(|warning| warning.contains("`glow`")));
@@ -309,7 +235,7 @@ mod tests {
         let root = test_root("broken");
         let path = values_path(&root, "Eternal Shine");
         fs::write(&path, "radmult = 0.6\nrain = [\n").unwrap();
-        let read = read_values(&path, ETERNAL_SHINE);
+        let read = read_values(&path, SETTINGS);
         assert_eq!(read.values, vec![None; 5]);
         assert_eq!(read.warnings.len(), 1);
         assert!(read.warnings[0].contains("not TOML"));
@@ -324,10 +250,10 @@ mod tests {
         let path = values_path(&root, "Eternal Shine");
         fs::write(&path, "radmult = 9.0\n").unwrap();
         let values = [0.3, 0.25, 0.45, 0.5, 120.0];
-        let text = values_text("Eternal Shine", ETERNAL_SHINE, &values);
+        let text = values_text("Eternal Shine", SETTINGS, &values);
         assert!(text.contains("radmult = 0.3\n"), "{text}");
         write_values(&path, &text).unwrap();
-        let read = read_values(&path, ETERNAL_SHINE);
+        let read = read_values(&path, SETTINGS);
         assert_eq!(read.values, values.map(Some).to_vec());
         assert!(read.warnings.is_empty(), "{:?}", read.warnings);
         let names: Vec<_> = fs::read_dir(&root)
@@ -345,9 +271,9 @@ mod tests {
         let path = values_path(&root, "Eternal Shine");
         let saver = Saver::new(Duration::from_millis(300), |line| panic!("{line}"));
         for value in [0.4f32, 0.5, 0.6] {
-            let mut values: Vec<f32> = ETERNAL_SHINE.iter().map(|setting| setting.default[0]).collect();
+            let mut values = DEFAULTS;
             values[0] = value;
-            saver.queue(path.clone(), values_text("Eternal Shine", ETERNAL_SHINE, &values));
+            saver.queue(path.clone(), values_text("Eternal Shine", SETTINGS, &values));
             thread::sleep(Duration::from_millis(50));
         }
         assert!(!path.exists(), "a write before the delay");
@@ -355,7 +281,7 @@ mod tests {
         while !path.exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(read_values(&path, ETERNAL_SHINE).values[0], Some(0.6));
+        assert_eq!(read_values(&path, SETTINGS).values[0], Some(0.6));
         fs::remove_dir_all(root).unwrap();
     }
 }
