@@ -96,6 +96,7 @@ use mge_config::{ConfigDocument, StaticsResidency};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
 
+use super::core_files::{GRASS, SHADOWMAP};
 use super::water::{FarWater, Look};
 use super::{CELL, dds_texture};
 
@@ -1717,13 +1718,10 @@ struct GrassUniforms {
     look: [f32; 4],
 }
 
-/// The grass shader (`XE Mod Grass.fx`, with the looks of Remiros' Groundcover as options): the
-/// core file `Data Files/shaders/core/XE Mod Grass.wgsl` of the package, built in.
-const GRASS_SHADER: &str = include_str!("../../../assets/Data Files/shaders/core/XE Mod Grass.wgsl");
-
-/// The grass shader with the shadow hooks of the session (`core_mods.rs`).
+/// The grass shader (`XE Mod Grass.fx`, with the looks of Remiros' Groundcover as options)
+/// with the shadow hooks of the session (`core_mods.rs`).
 pub(super) fn grass_source(shadow_hooks: &str) -> String {
-    format!("{}{GRASS_SHADER}{shadow_hooks}", super::view::wgsl())
+    format!("{}{}{shadow_hooks}", super::view::wgsl(), GRASS.text())
 }
 
 /// The values of a set (group 1 of the statics shaders), and the share of a subset that is in.
@@ -1743,60 +1741,6 @@ struct Set {
 // The view range of the game, for the fog (`fog_of`).
 fn fog_range() -> f32 {
     return set_values.range.x;
-}
-";
-
-/// The casters of the shadow map: `StaticShadowVS` and `StaticShadowPS` of `XE Shadowmap.fx`.
-/// After the view group and [`SET_WGSL`] (the matrix of the layer in `view_projection`).
-const SHADOW_SHADER: &str = "
-
-struct In {
-    @location(0) position: vec4f,
-    @location(1) normal: vec4f,
-    @location(2) color: vec4f,
-    @location(3) coordinate: vec2f,
-    @location(4) world0: vec4f,
-    @location(5) world1: vec4f,
-    @location(6) world2: vec4f,
-    @location(7) world3: vec4f,
-    @location(8) subset: vec4f,
-}
-
-struct Out {
-    @builtin(position) position: vec4f,
-    @location(0) coordinate: vec2f,
-    @location(1) depth: f32,
-    @location(2) @interpolate(flat) bounds: vec4f,
-    @location(3) @interpolate(flat) alpha_test: f32,
-}
-
-@vertex fn vs(in: In) -> Out {
-    var out: Out;
-    let world = in.position.x * in.world0.xyz + in.position.y * in.world1.xyz + in.position.z * in.world2.xyz + in.world3.xyz;
-    var clip = clip_of(world);
-    // What is nearer to the sun than the near plane stays, at the near plane.
-    clip.z = max(0.0, clip.z);
-    out.position = clip;
-    out.depth = clip.z / clip.w;
-    out.coordinate = in.coordinate;
-    if in.subset.z > 0.5 {
-        out.coordinate.y += fract(0.08 * set_values.handoff.x);
-    }
-    out.bounds = palettes[u32(in.subset.x) + u32(in.position.w)];
-    out.alpha_test = in.subset.y;
-    return out;
-}
-
-@fragment fn fs(in: Out) -> @location(0) vec4f {
-    if in.alpha_test > 0.5 {
-        let scale = in.bounds.yw - in.bounds.zx;
-        let atlas = in.bounds.zx + fract(in.coordinate) * scale;
-        let texel = textureSampleGrad(base_texture, base_sampler, atlas, dpdx(in.coordinate) * scale, dpdy(in.coordinate) * scale);
-        if texel.a < 180.0 / 255.0 {
-            discard;
-        }
-    }
-    return vec4f(32768.0 * in.depth, 0.0, 0.0, 1.0);
 }
 ";
 
@@ -4832,8 +4776,10 @@ fn make_gpu(
             wgpu::ColorWrites::ALL,
         )
     });
-    // The casters of the shadow map: the same vertices and places, the depth from the sun.
-    let shadow_source = format!("{}{SET_WGSL}{SHADOW_SHADER}", super::view::wgsl());
+    // The casters of the shadow map (`StaticShadowVS` and `StaticShadowPS` of `XE Shadowmap.fx`):
+    // the same vertices and places, the depth from the sun. After the view group and
+    // [`SET_WGSL`] (the matrix of the layer in `view_projection`).
+    let shadow_source = format!("{}{SET_WGSL}{}", super::view::wgsl(), SHADOWMAP.part("statics"));
     let shadow_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("distant statics shadow"),
         source: wgpu::ShaderSource::Wgsl(shadow_source.into()),
@@ -5297,7 +5243,8 @@ fn make_grass_group(
 
 #[cfg(test)]
 mod shader_tests {
-    use super::{SET_WGSL, SHADOW_SHADER};
+    use super::SET_WGSL;
+    use crate::renderer::core_files::SHADOWMAP;
 
     /// The shaders of the distant statics compile as the device checks them: the statics of
     /// a set, their caster of the shadow map, and the grass.
@@ -5306,7 +5253,11 @@ mod shader_tests {
         let check = crate::renderer::shader_check::check;
         let view = crate::renderer::view::wgsl();
         check("distant statics", &super::shader_source()).unwrap();
-        check("distant statics shadow", &format!("{view}{SET_WGSL}{SHADOW_SHADER}")).unwrap();
+        check(
+            "distant statics shadow",
+            &format!("{view}{SET_WGSL}{}", SHADOWMAP.part("statics")),
+        )
+        .unwrap();
         // The statics take no core mod (D498, test 7): no hook name, so the lamps' haze in
         // their fog stays as built.
         let statics = super::shader_source();
