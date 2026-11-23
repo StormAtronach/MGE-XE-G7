@@ -98,11 +98,10 @@ pub fn gpu_dedicated_video_memory_bytes() -> Option<u64> {
 }
 
 /// Largest square texture dimension the default display adapter can create, in
-/// texels, or `None` if it could not be queried. Queried through Direct3D 9,
-/// the API the injected renderer actually uses at runtime (wrapped from D3D8),
-/// rather than the GUI's own rendering backend, whose adapter and
-/// requested feature limits do not necessarily match what the game's D3D9
-/// device will report.
+/// texels, or `None` if it could not be queried. Queried through the Direct3D 9
+/// caps of the default adapter, not through the GUI's own rendering backend,
+/// whose adapter and requested feature limits can differ from those of the
+/// adapter that the game uses.
 pub fn max_texture_dimension() -> Option<u32> {
     // SAFETY: Direct3DCreate9 has no preconditions; d3d9.dll ships with Windows.
     let d3d9 = unsafe { Direct3DCreate9(D3D_SDK_VERSION) }?;

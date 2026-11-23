@@ -46,13 +46,16 @@ static HMODULE loadMwse(bool link) {
     return dll;
 }
 
-// Direct3D 9 (renderer_wgpu = false): the start as before the new renderer, a frozen path.
+#ifdef MGE_DIRECT3D9
+// Direct3D 9 (renderer_wgpu = false): the start as before the new renderer, a frozen path. In the
+// developer form only (the cargo feature `direct3d9`), for the runner's `--reference` (W326).
 static void startDirect3D9() {
     Session::choose(Session::Path::Direct3D9);
     // Early startup patches
     MWInitPatch::patch();
     loadMwse(!Configuration.OnlyProxyD3D8To9);
 }
+#endif
 
 // The new renderer. It needs the helper program, which draws, and MWSE with its native ABI
 // and the two events of the renderer. When one of them is not there, the session is the
@@ -137,6 +140,13 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
     if (GetModuleHandle("Morrowind.exe")) {
         LOG::open("mgeXE.log");
         LOG::logline(welcomeMessage);
+        // The form of the build (W326). Tools read this exact text: the release check and the
+        // runner's --reference check.
+#ifdef MGE_DIRECT3D9
+        LOG::logline("build: developer form, with Direct3D 9");
+#else
+        LOG::logline("build: player form");
+#endif
         CrashLog::install();
 
         setDPIScalingAware();
@@ -156,7 +166,14 @@ extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* lpvReserved
         } else if (Configuration.RendererWgpu) {
             startWgpu();
         } else {
+#ifdef MGE_DIRECT3D9
             startDirect3D9();
+#else
+            // A release has no Direct3D 9 (W326): the key of an older mgeXE.toml does not choose it.
+            LOG::logline("runtime.renderer_wgpu = false is ignored in this build: Direct3D 9 is in developer builds only");
+            Configuration.RendererWgpu = true;
+            startWgpu();
+#endif
         }
 
         CrashLog::installUnhandledFilter();

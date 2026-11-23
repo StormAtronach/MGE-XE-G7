@@ -63,8 +63,16 @@ fn main() {
         println!("cargo:rustc-link-arg=/LTCG");
     }
 
+    // The Direct3D 9 path of the start (main.cpp `startDirect3D9`) is in the developer form only,
+    // for the runner's `--reference` (W326). Without the feature, a release runs wgpu, or the
+    // plain game when wgpu cannot run, whatever `runtime.renderer_wgpu` says.
+    let direct3d9 = env::var_os("CARGO_FEATURE_DIRECT3D9").is_some();
+
     let mut build = base_build(&cpp_dir, &contract_dir, &dxsdk, is_release, whole_program);
     build.define("MGE_COMMIT", commit.as_str());
+    if direct3d9 {
+        build.define("MGE_DIRECT3D9", None);
+    }
     for source in &sources {
         build.file(source);
     }
@@ -72,6 +80,9 @@ fn main() {
 
     let mut entry_build = base_build(&cpp_dir, &contract_dir, &dxsdk, is_release, whole_program);
     entry_build.define("MGE_COMMIT", commit.as_str());
+    if direct3d9 {
+        entry_build.define("MGE_DIRECT3D9", None);
+    }
     for source in &entry_sources {
         entry_build.file(source);
     }

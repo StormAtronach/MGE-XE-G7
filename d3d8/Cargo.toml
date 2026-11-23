@@ -21,6 +21,10 @@ crate-type = ["cdylib"]
 # on only for `--max-perf`. Kept a feature because `PROFILE` resolves to
 # "release" for every release-inheriting profile and so cannot distinguish them.
 max-perf = []
+# The developer form: the Direct3D 9 path of the start (`renderer_wgpu = false`), for the runner's
+# `--reference`. A release has no Direct3D 9 (W326): the key is logged as ignored and wgpu runs.
+# `xtask` turns it on with `--direct3d9`; MGEXEgui has the feature of the same name.
+direct3d9 = []
 
 [dependencies]
 mge-config = { path = "../mge-config" }
