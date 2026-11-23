@@ -39,4 +39,6 @@ The `.fx` copies that each exported pack was made from. All copies of a pack giv
   `mods/Watch the Skies` in Outlander and Outlander-test and of
   `mods/Watch the Skies - Dynamic Weather and Sky Effects` in Morrowind Refreshed (260602). The
   older Watch the Skies of Morrowind Refreshed (md5 a0265743472e0aa94336b530a830c9d0) is
-  another shader and needs a pack of its own.
+  another shader and needs a pack of its own. `Sunshafts.wgsl` has the name of a stock shader,
+  so the gate's game folder does not take it (D640 piece 2, addendum 2): a change of this file
+  is not under the gate, and replays check it.

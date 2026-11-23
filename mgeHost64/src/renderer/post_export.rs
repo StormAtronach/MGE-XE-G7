@@ -192,9 +192,9 @@ fn is_port_with_file_numbers(file: &Definition, port: &Definition) -> bool {
 
 #[test]
 fn each_pack_file_is_its_port() {
-    let Ok(packs) = std::fs::read_dir(ports_folder()) else {
-        return;
-    };
+    let packs = std::fs::read_dir(ports_folder()).unwrap_or_else(|e| panic!("{}: {e}", ports_folder().display()));
+    // A pack with no post shader (only a core mod) has no XEshaders folder; the count shows that the walk found files.
+    let mut checked = 0;
     for pack in packs.flatten().filter(|entry| entry.path().is_dir()) {
         let folder = pack.path().join("shaders").join("XEshaders");
         for file in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
@@ -217,8 +217,14 @@ fn each_pack_file_is_its_port() {
                 .map(|port| port.name)
                 .collect();
             assert_eq!(matches.len(), 1, "{}: the ports that it is: {matches:?}", path.display());
+            checked += 1;
         }
     }
+    assert!(
+        checked >= 1,
+        "no .wgsl file in {}/*/shaders/XEshaders",
+        ports_folder().display()
+    );
 }
 
 /// The null of the test above: a changed line of code shows.
