@@ -16,6 +16,12 @@ reads the `.wgsl` file of the same name:
 | Enhanced Water Shader - wgpu shaders | Enhanced Water Shader 2.2 Green-Blue by Krokantor, updated for MGE XE 0.13.0 by Hrnchamd |
 | Ashfall - wgpu shaders | Ashfall (`ashfall.fx`) |
 | Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx`) |
+| Joy of Painting - wgpu shaders | Joy of Painting (its 23 `jop_*.fx` shaders) |
+| Magicka Expanded - wgpu shaders | Magicka Expanded (`oj_me_fog_box.fx`) |
+| Skoomaesthesia - wgpu shaders | Skoomaesthesia (`skoomaesthesia.fx`) |
+| MM - Enhanced Invisibility - wgpu shaders | MM - Enhanced Invisibility (`Invisibility.fx`) |
+| Heat Haze - wgpu shaders | Heat Haze - A MGE XE Shader Mod (`heathaze.fx`) |
+| Vapourmist - wgpu shaders | Vapourmist (`tew_fogbox.fx`) |
 
 ## The exported packs
 
@@ -42,3 +48,24 @@ The `.fx` copies that each exported pack was made from. All copies of a pack giv
   another shader and needs a pack of its own. `Sunshafts.wgsl` has the name of a stock shader,
   so the gate's game folder does not take it (D640 piece 2, addendum 2): a change of this file
   is not under the gate, and replays check it.
+- `Joy of Painting - wgpu shaders/shaders/XEshaders/jop_*.wgsl`, 23 files: the `jop_*.fx` of
+  `mods/Joy of Painting` in Morrowind Refreshed, Morrowind Refreshed (260602), Morrowind75 -
+  Poison Song, Morrowind75testing, Outlander and Outlander-test (138 copies; each file has one
+  md5 in all of them). The parts that the `.fx` files include (`jop_common.fx`, `jop_gaussian.fx`
+  and the colour lookup) are written into each file that uses them. The older Joy of Painting of
+  Morrowind100 and Morrowind75 is dropped (D654): its `jop_dof.fx` has `priorityAdjust = 67`, this
+  pack's `jop_dof.wgsl` has 2, so with this pack `jop_dof` takes another place in the chain there.
+- `Magicka Expanded - wgpu shaders/shaders/XEshaders/oj_me_fog_box.wgsl`: `oj_me_fog_box.fx`,
+  md5 4d98da2b68af03585773483f5c92c53c, of `mods/Magicka Expanded` in all 8 installs.
+- `Skoomaesthesia - wgpu shaders/shaders/XEshaders/skoomaesthesia.wgsl`: `skoomaesthesia.fx`,
+  md5 0cf040ab916b7d50e613c4a98c9a2244, of `mods/Skoomaesthesia` in all 8 installs.
+- `MM - Enhanced Invisibility - wgpu shaders/shaders/XEshaders/Invisibility.wgsl`:
+  `Invisibility.fx`, md5 144556a6e16db5931ef74b597b4486a6, of `mods/MM - Enhanced Invisibility`
+  in all installs but Morrowind75.
+- `Heat Haze - wgpu shaders/shaders/XEshaders/heathaze.wgsl`: `heathaze.fx`, md5
+  107c674f342c078c631c81eaf03023e4, of `mods/Heat Haze - A MGE XE Shader Mod` in Morrowind
+  Refreshed, Morrowind Refreshed (260602), Outlander and Outlander-test, and of our
+  `mods/Shader port tests` in Morrowind75testing.
+- `Vapourmist - wgpu shaders/shaders/XEshaders/tew_fogbox.wgsl`: `tew_fogbox.fx`, md5
+  2348d7e9db2854c4bc823fbad66ea1c6, of `mods/Vapourmist` in Outlander and Outlander-test and of
+  `mods/Vapourmist - A Cloud and Mist Mod` in Morrowind Refreshed (260602).
