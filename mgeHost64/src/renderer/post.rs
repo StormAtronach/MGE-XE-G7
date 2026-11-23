@@ -525,77 +525,6 @@ struct Definition {
     variables: Vec<VariableDef>,
 }
 
-/// A line of an effect file that gives a name one number: `#define NAME value`, or
-/// `static const float NAME = value;` (with `static`, `const` or `extern` before the type
-/// `float`, `int` or `bool`). A mod that ships a shader with other numbers changes such
-/// lines only.
-fn number_line(line: &str) -> Option<(&str, f64)> {
-    let line = line.split("//").next().unwrap_or("").trim();
-    let (name, value) = if let Some(rest) = line.strip_prefix("#define ") {
-        let mut words = rest.split_whitespace();
-        match (words.next(), words.next(), words.next()) {
-            (Some(name), Some(value), None) => (name, value),
-            _ => return None,
-        }
-    } else {
-        let mut rest = line;
-        while let Some(after) = ["static ", "const ", "extern "]
-            .iter()
-            .find_map(|word| rest.strip_prefix(word))
-        {
-            rest = after.trim_start();
-        }
-        if rest.len() == line.len() {
-            return None;
-        }
-        let (left, right) = rest.split_once('=')?;
-        let mut left = left.split_whitespace();
-        match (left.next(), left.next(), left.next()) {
-            (Some("float" | "int" | "bool"), Some(name), None) => (name, right.trim().trim_end_matches(';').trim()),
-            _ => return None,
-        }
-    };
-    let value = match value {
-        "true" => 1.0,
-        "false" => 0.0,
-        other => other.trim_end_matches(['f', 'F']).parse::<f64>().ok()?,
-    };
-    Some((name, value))
-}
-
-/// The key of the code of an effect file: FNV-1a 64 of its lines without the comments, the
-/// space and the values of its numbers. Two files with the same key are the same shader,
-/// with the same numbers or not.
-fn code_key(text: &str) -> u64 {
-    let mut key = 0xcbf2_9ce4_8422_2325u64;
-    let mut add = |bytes: &[u8]| {
-        for &byte in bytes {
-            key ^= byte as u64;
-            key = key.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    };
-    for line in text.lines() {
-        // The line of the technique has the annotations (the category and the like), which
-        // are not code: see `file_priority`.
-        if line.trim_start().starts_with("technique") {
-            add(b"technique\n");
-            continue;
-        }
-        match number_line(line) {
-            Some((name, _)) => add(name.as_bytes()),
-            None => {
-                let code = line.split("//").next().unwrap_or("");
-                for word in code.split_whitespace() {
-                    add(word.as_bytes());
-                    add(b" ");
-                }
-            }
-        }
-        add(b"\n");
-    }
-    key
-}
-
 impl Definition {
     /// A shader file of a mod: `Data Files/shaders/XEshaders/<name>.wgsl`. The file starts
     /// with lines `//! key: value`, which have what the technique of an effect file of
@@ -2549,22 +2478,6 @@ mod tests {
             "the later read gets the white of the copy: {}",
             run.luminance
         );
-    }
-
-    const FILE: &str = "// A shader.\n#define N 16 // samples\nstatic const float strength = 1.8; // more is more\nfloat fov;\nfloat4 pass(float2 t : TEXCOORD0) : COLOR0 { return strength * N; }\ntechnique T0 < string MGEinterface = \"MGE XE 0\"; string category = \"scene\"; int priorityAdjust = -10000; > { pass { PixelShader = compile ps_3_0 pass(); } }\n";
-
-    #[test]
-    fn the_code_key_ignores_numbers_comments_space_and_annotations() {
-        let other_numbers = FILE
-            .replace("#define N 16 // samples", "#define   N   32")
-            .replace("strength = 1.8; // more is more", "strength = 1.2;");
-        assert_eq!(code_key(FILE), code_key(&other_numbers));
-        let no_category = FILE.replace(" string category = \"scene\"; int priorityAdjust = -10000;", "");
-        assert_eq!(code_key(FILE), code_key(&no_category));
-        let windows = FILE.replace('\n', "\r\n");
-        assert_eq!(code_key(FILE), code_key(&windows));
-        let other_code = FILE.replace("return strength * N;", "return strength + N;");
-        assert_ne!(code_key(FILE), code_key(&other_code));
     }
 
     #[test]
