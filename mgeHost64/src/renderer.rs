@@ -3413,8 +3413,10 @@ fn extension_shade(in: VertexOut) -> vec4f {
     }
     var d = vec3f(0.0);
     var a = draw.scene_ambient.rgb;
-    // The lights of the world (`world_lights_here`): the point lights of the cluster of the
-    // pixel, in place of the draw's own; the draw keeps its directional lights.
+    // The lights of the world (`world_lights_here`): the point lights with an end of the
+    // cluster of the pixel, in place of the draw's own lights with an end. The draw keeps its
+    // directional lights and its point lights with no end (`cone.w` 0): the engine's own and
+    // the world's that meet its bound, which the host puts in its list (W587).
     let world = !no_lights && world_lights_here();
     // The lights of the draw, or of the cluster of the pixel when the frame has clusters.
     var first = draw.light_range.x;
@@ -3442,7 +3444,7 @@ fn extension_shade(in: VertexOut) -> vec4f {
             at = entry & 0xFFFFu;
         }
         let light = lights[at];
-        if world && light.position.w != 3.0 {
+        if world && light.position.w != 3.0 && light.cone.w > 0.0 {
             continue;
         }
         let terms = light_terms(light, normal, in.world_position);
@@ -7325,6 +7327,21 @@ fn clouds_color(p: CloudPixel) -> vec4f {
         let source = world_source(core_mods::CoreMods::built_in().shadow_hooks(), None);
         assert_eq!(source.matches(nirender_wgpu::spot::WGSL).count(), 1);
         assert_eq!(source.matches("fn spot_cone").count(), 1);
+    }
+
+    /// W587: in the mode `world` the draw's own list skips only its point lights with an end,
+    /// which come from the world's clusters; its point lights with no end (the engine's own and
+    /// the world's that meet its bound) stay. The null: the skip of every point light, the text
+    /// before W587, that lost the engine's lights with no end.
+    #[test]
+    fn the_world_mode_keeps_the_draws_lights_with_no_end() {
+        assert_eq!(
+            DRAW_SHADER
+                .matches("if world && light.position.w != 3.0 && light.cone.w > 0.0 {")
+                .count(),
+            1
+        );
+        assert!(!DRAW_SHADER.contains("if world && light.position.w != 3.0 {"));
     }
 
     /// The draw part reads the crate's bit of a draw with no lights by its number: the number
