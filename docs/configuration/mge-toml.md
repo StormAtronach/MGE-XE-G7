@@ -208,7 +208,7 @@ reads them.
   distance that a noise moves; the red of the vertex colour weights the sway (and chooses
   the parts that get the wrap light); the sun light wraps past the side of a blade, and
   0.4 of it comes through from the back. The shader is
-  `mgeHost64/src/renderer/statics/grass.wgsl`.
+  `assets/Data Files/shaders/core/XE Mod Grass.wgsl`.
 
 - `runtime.renderer_frame_latency` (default `2`, the range `1` to `3`): the frames of the wgpu
   renderer that may wait for the graphics card before the window shows them. With `1` the
