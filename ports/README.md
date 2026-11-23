@@ -9,7 +9,8 @@ A pack holds only `.wgsl` files. Direct3D 9 reads the mod's own `.fx` files; the
 reads the `.wgsl` file of the same name:
 
 - a post shader: `shaders/XEshaders/<name>.wgsl` (POST_SHADERS.md of mgeHost64);
-- a core mod: `shaders/core-mods/XE Mod <name>.wgsl` (docs/core-mods.md).
+- a core mod: `shaders/core-mods/XE Mod <name>.wgsl` (docs/core-mods.md);
+- a water look: `shaders/water/<name>.wgsl`, the name of the look line's `shader=`.
 
 | Pack | Its mod |
 | --- | --- |
@@ -17,6 +18,8 @@ reads the `.wgsl` file of the same name:
 | Ashfall - wgpu shaders | Ashfall (`ashfall.fx`) |
 | Watch the Skies - wgpu shaders | Watch the Skies (its `Sunshafts.fx`) |
 | Eternal Shine - wgpu shaders | Eternal Shine |
+| True Water - Odai - wgpu shaders | `tw_foam.fx`, md5 10c758a2be9a6e447316c655798409eb, of the True Water showcase `True Water - Odai`. Written by hand from the `.fx` |
+| True Water - Flow Map - wgpu shaders | `tw_flowmap.fx`, md5 5439e388e2823c125485b09eebc912c4, of the True Water showcase `True Water - Flow Map`. Written by hand from the `.fx` |
 
 ## The exported packs
 
