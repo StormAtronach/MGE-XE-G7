@@ -2792,3 +2792,260 @@ mod tests {
         );
     }
 }
+
+/// The tests of the pack file of Eternal Shine (`ports/Eternal Shine - wgpu shaders`), which has no
+/// port: its glow terms run on the GPU against a sum along the ray, and its header has the settings of
+/// the mod. Moved from post_look.rs when the ports went (W609 step 5, verdict 734 4.1).
+#[cfg(test)]
+mod pack_tests {
+    use super::*;
+
+    /// The file of the pack "Eternal Shine - wgpu shaders".
+    const ETERNAL_SHINE_FILE: &str =
+        include_str!("../../../ports/Eternal Shine - wgpu shaders/shaders/XEshaders/Eternal Shine.wgsl");
+
+    /// The glow terms of the file: from its first function to the function `glow_air`. They
+    /// read nothing of the frame, so a test runs them alone.
+    fn glow_terms() -> &'static str {
+        let start = ETERNAL_SHINE_FILE.find("fn glow_density(").expect("glow_density in the file");
+        let end = ETERNAL_SHINE_FILE.find("fn glow_air(").expect("glow_air in the file");
+        &ETERNAL_SHINE_FILE[start..end]
+    }
+
+    /// Runs `cases`, WGSL with `fn case_of(i: u32) -> vec4f` after the glow terms, for `count`
+    /// cases (at most 16) on the GPU, and gives the results.
+    fn glow_cases(cases: &str, count: u32) -> Vec<[f32; 4]> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let target = device.counted_texture(&wgpu::TextureDescriptor {
+            label: Some("test glow"),
+            size: wgpu::Extent3d {
+                width: count,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let source = format!(
+            "{}{cases}
+@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {{
+    return vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0);
+}}
+@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {{
+    return case_of(u32(position.x));
+}}
+",
+            glow_terms()
+        );
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test glow"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("test glow"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::TextureFormat::Rgba32Float.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let readback = device.counted_buffer(&wgpu::BufferDescriptor {
+            label: Some("test glow"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let target_view = target.counted_view(&Default::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("test glow"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Default::default(),
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            target.size(),
+        );
+        queue.submit([encoder.finish()]);
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |result| result.expect("the map"));
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("the poll");
+        let bytes = readback.slice(..).get_mapped_range().expect("the mapped range");
+        let floats: &[f32] = bytemuck::cast_slice(&bytes);
+        floats
+            .chunks(4)
+            .take(count as usize)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect()
+    }
+
+    /// The density by a sum of small steps along the ray, in the units of the sphere.
+    fn density_by_steps(o: [f32; 3], d: [f32; 3], far: f32) -> f32 {
+        const STEPS: usize = 200_000;
+        let (o, d, far) = (o.map(f64::from), d.map(f64::from), f64::from(far));
+        let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let end = far.min(10.0);
+        let step = end / STEPS as f64;
+        let mut sum = 0.0;
+        for i in 0..STEPS {
+            let t = (i as f64 + 0.5) * step;
+            let p: Vec<f64> = (0..3).map(|a| o[a] + t * d[a] / length).collect();
+            sum += (1.0 - (p[0] * p[0] + p[1] * p[1] + p[2] * p[2])).max(0.0) * step;
+        }
+        (sum * 0.75) as f32
+    }
+
+    /// The density of the shader is the sum along the ray: through the centre, off the centre,
+    /// from inside the sphere, cut by a surface, behind the eye, and past the sphere.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_density_is_the_sum_along_the_ray() {
+        let cases: [([f32; 3], [f32; 3], f32); 6] = [
+            ([0.0, -3.0, 0.0], [0.0, 1.0, 0.0], 100.0),
+            ([0.4, -3.0, 0.2], [0.0, 1.0, 0.0], 100.0),
+            ([0.1, 0.2, -0.3], [0.6, 0.0, 0.8], 100.0),
+            ([0.0, -3.0, 0.0], [0.0, 1.0, 0.0], 2.7),
+            ([0.0, 3.0, 0.0], [0.0, 1.0, 0.0], 100.0),
+            ([1.5, -3.0, 0.0], [0.0, 1.0, 0.0], 100.0),
+        ];
+        let list = cases
+            .iter()
+            .map(|(o, d, far)| {
+                format!(
+                    "glow_density(vec3f({:?}, {:?}, {:?}), vec3f({:?}, {:?}, {:?}), {far:?})",
+                    o[0], o[1], o[2], d[0], d[1], d[2]
+                )
+            })
+            .collect::<Vec<_>>();
+        let body = list
+            .iter()
+            .enumerate()
+            .map(|(i, call)| format!("    if i == {i}u {{ return vec4f({call}); }}\n"))
+            .collect::<String>();
+        let results = glow_cases(
+            &format!("fn case_of(i: u32) -> vec4f {{\n{body}    return vec4f(0.0);\n}}\n"),
+            6,
+        );
+        for ((o, d, far), result) in cases.iter().zip(&results) {
+            let want = density_by_steps(*o, *d, *far);
+            assert!(
+                (want - result[0]).abs() < 1e-3,
+                "the ray from {o:?} along {d:?} to {far}: the shader gave {}, the sum {want}",
+                result[0]
+            );
+        }
+        // The ray through the centre gathers 1, and the ray past the sphere none.
+        assert!((results[0][0] - 1.0).abs() < 1e-4);
+        assert_eq!(results[5][0], 0.0);
+    }
+
+    /// A light of radius 1000 reaches 1000 units, and its glow sphere is about 3256: a ray that
+    /// passes 2000 units from it, out of its reach, gets the glow. A ray past the sphere, and a
+    /// pixel whose surface is before the sphere, get none.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_pixel_in_the_glow_and_out_of_the_reach_gets_the_glow() {
+        let cases = "
+fn case_of(i: u32) -> vec4f {
+    let colour = vec3f(1.0, 0.8, 0.5);
+    let centre = vec3f(2000.0, 6000.0, 0.0);
+    let dir = vec3f(0.0, 1.0, 0.0);
+    if i == 0u {
+        return vec4f(glow_light(colour, 1000.0, 0.3, centre, dir, 1.0e7, 1.0), glow_sphere(glow_word(1000.0, 0.3)));
+    }
+    if i == 1u {
+        return vec4f(glow_light(colour, 1000.0, 0.3, vec3f(4000.0, 6000.0, 0.0), dir, 1.0e7, 1.0), 0.0);
+    }
+    return vec4f(glow_light(colour, 1000.0, 0.3, centre, dir, 500.0, 1.0), 0.0);
+}
+";
+        let results = glow_cases(cases, 3);
+        let sphere = results[0][3];
+        assert!(
+            (sphere - 3256.0).abs() < 5.0,
+            "the sphere of a light of radius 1000: {sphere}"
+        );
+        assert!(
+            results[0][0] > 0.0 && results[0][1] > 0.0,
+            "the glow out of the reach: {:?}",
+            results[0]
+        );
+        assert_eq!(results[1][..3], [0.0; 3], "a ray past the sphere");
+        assert_eq!(results[2][..3], [0.0; 3], "a surface before the sphere");
+    }
+
+    /// The file reads the lights of the frame (the chain then asks for them) and has the glow
+    /// terms of the tests.
+    #[test]
+    fn the_glow_file_reads_the_lights_and_has_the_terms() {
+        assert!(ETERNAL_SHINE_FILE.contains("frame_lights"));
+        for term in ["glow_density", "glow_word", "glow_sphere", "glow_light"] {
+            assert!(glow_terms().contains(&format!("fn {term}(")), "{term}");
+        }
+    }
+
+    /// The variables of the file are its settings, with the defaults of the mod's Lua
+    /// (`mwse.loadConfig` of its main.lua) and the owner's 100 units of `near_eye`, and the file
+    /// reads each one.
+    #[test]
+    fn the_glow_values_are_the_settings_of_the_file() {
+        let header = mge_config::post_header::parse(ETERNAL_SHINE_FILE).expect("the header");
+        let have: Vec<(&str, f32)> = header
+            .settings
+            .iter()
+            .map(String::as_str)
+            .zip(header.setting_defaults())
+            .collect();
+        let want = [
+            ("radmult", 0.3),
+            ("int", 0.25),
+            ("ext", 0.4),
+            ("rain", 0.5),
+            ("near_eye", 100.0),
+        ];
+        assert_eq!(have, want);
+        assert_eq!(header.variables.len(), header.settings.len());
+        for (name, _) in want {
+            assert!(ETERNAL_SHINE_FILE.contains(&format!("{name}()")), "the file reads {name}");
+        }
+    }
+}
