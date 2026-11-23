@@ -483,7 +483,10 @@ nothing and costs nothing.
     false when the limit dropped its shape, else true.
   - At most 65,536 segments in a frame: a line is 1, a box 12, a sphere 48. A shape that would
     pass the limit is dropped whole. A call of a later frame writes the count of the dropped
-    shapes to the log of the plugin, at most one line a second.
+    shapes to the log of the plugin, at most one line a second. The renderer keeps the same
+    limit over the shapes that it holds: while the shapes with seconds already hold 65,536
+    segments, it refuses a new shape. That call has returned true; only the overlay shows the
+    refusal.
   - The shapes are kept while the source is off; they show when it goes on. In a replay, the
     captured shapes show only with `--debug-lines lua`. A capture has the shapes of the calls
     after its start only: a shape with seconds from before the start is not in it.
