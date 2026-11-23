@@ -249,7 +249,9 @@ change. That start can take some minutes. With an older file, set it below
   grass, water, shadows and sky, and the post shader chain of `mgeXE.toml`.
 - Every stock post shader has a port; a mod can ship a WGSL shader (see
   `MGE XE Post Shaders Readme.md`). Three shaders of this build are new: `Bloom S_A`,
-  `SSAO S_A` and `Depth of Field S_A`; name them in the chain like the others.
+  `SSAO S_A` and `Depth of Field S_A`; name them in the chain like the others. These three
+  and five stock shaders are `.wgsl` files in `Data Files/shaders/XEshaders`, the renderer's
+  only copy of them.
 - Shader packs: a small mod `<Mod> - wgpu shaders` (the folders of `ports/` in this repo)
   holds the `.wgsl` files that port a mod's shaders. Install it after the mod that it ports.
   Eternal Shine runs on wgpu only from its pack, "Eternal Shine - wgpu shaders": a player who

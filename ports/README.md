@@ -104,6 +104,9 @@ The `.fx` copies that each exported pack was made from. All copies of a pack giv
   `Eye Adaptation (HDR)`, `SSAO HQ` and `Sunshafts` have the names of stock shaders, so the gate's
   game folder does not take them (D640 piece 2, addendum 2): a change of these files is not under
   the gate, and replays check it.
+
+  This pack and the Watch the Skies pack both have a `Sunshafts.wgsl`. Install the pack of the
+  mod whose `Sunshafts.fx` the install uses (the mod that is later in the order), not both.
 - `Morrowind Graphics Guide Shaders - wgpu shaders/shaders/XEshaders/`, 5 files, from
   `mods/Morrowind Graphics Guide Shaders` in Outlander and Outlander-test, the game folder of
   Outlander (`Stock Game Folder/Data Files`) and our `mods/Shader port tests` in
