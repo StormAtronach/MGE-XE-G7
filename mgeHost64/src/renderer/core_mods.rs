@@ -67,7 +67,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use nirender_wgpu::wgpu;
 use nirender_wgpu::wgpu::naga;
 
-use super::core_files::SHADOW;
+use super::core_files::{SHADOW, SKY};
 use super::shadow;
 
 /// The interface that the first line of a file names.
@@ -299,18 +299,15 @@ const SKY_HOOKS: [Hook; 1] = [Hook {
     name: "clouds_color",
     arguments: &["CloudPixel"],
     result: "vec4<f32>",
-    built_in: || CLOUDS_COLOR,
+    built_in: clouds_color,
 }];
 
 /// The built-in `clouds_color` (`CloudsPS` of `XE Mod Sky.fx`): the colour of the vertex times
 /// the clouds' texture. `cloud_texture` reads the largest level, and `CloudsPS` a smaller level
 /// where the texture is made smaller on the screen: the two are equal only where it is not.
-const CLOUDS_COLOR: &str = "
-// CloudsPS: the colour of a pixel of the clouds.
-fn clouds_color(p: CloudPixel) -> vec4f {
-    return p.color * cloud_texture(p.texcoords);
+fn clouds_color() -> &'static str {
+    SKY.part("clouds_color")
 }
-";
 
 /// The struct of the clouds hook and the texture read, part of the interface, as declarations
 /// for the check of a file alone. The world shader of `nirender_wgpu` defines both (a test

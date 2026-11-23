@@ -975,7 +975,7 @@ impl Environment {
         self.surface_level()
     }
 
-    /// The values of the sky of MGE XE ([`SKY_SHADER`] has their places), when the record has
+    /// The values of the sky of MGE XE ([`sky_shader`] has their places), when the record has
     /// the scattering (the flag 8). The record does not say if the cell is like an exterior
     /// (the scene says it): the caller checks that. `light` is the light of the scene: the sun
     /// colour and the ambient light of the clouds hook take `multipliers` (sun, ambient), the
@@ -3477,7 +3477,7 @@ fn sky_class(class: u32) -> bool {
 
 /// True when a draw with these facts takes the sun's shadow (`DrawData::extension` 5 and 7):
 /// it writes depth, it does not add to the picture, and it is not of the sky, whose values have
-/// those places ([`SKY_SHADER`]).
+/// those places ([`sky_shader`]).
 fn takes_sun_shadow(facts: &DrawFacts) -> bool {
     facts.depth_write && !(facts.blend_enable && facts.destination_blend == 2) && !sky_class(facts.class)
 }
@@ -3491,45 +3491,12 @@ fn takes_sun_shadow(facts: &DrawFacts) -> bool {
 /// `sunAmb` in w; 5 `inscatter`, and the blue of `sunAmb` in w; 6 the three numbers of the
 /// altitude of the sun; 7 `sunCol`, and `time` in w. `sunVis`, `sunAmb`, `sunCol` and `time`
 /// are for the clouds hook ([`SKY_LIBRARY_BODIES`]).
-const SKY_SHADER: &str = "
-// The dome of the game gets a height that puts its lower edge on the horizon.
-fn extension_sky_position(position: vec3f) -> vec3f {
-    return vec3f(position.xy, 50.0 * (position.z + 200.0));
+fn sky_shader() -> &'static str {
+    core_files::SKY.part("sky")
 }
-
-// fogColourSky: the colour of the fog of the sky in a direction from the eye. The far fog
-// colour at the horizon goes into the sky colour above it; with the scattering,
-// fogColourScatter with a fog distance of 1 and no fog.
-fn sky_fog_color(direction: vec3f) -> vec4f {
-    let e = draw.extension;
-    let up = 1.0 - pow(clamp(1.0 - 2.22 * clamp(direction.z - 0.075, 0.0, 1.0), 0.0, 1.0), 1.15);
-    var color = mix(e[0].rgb, e[1].rgb, up);
-    if e[1].w > 0.001 && e[2].w > 0.5 {
-        let sun_cos = dot(direction, e[3].xyz);
-        let mie = (1.58 / (1.24 - sun_cos)) * e[6].z;
-        let rayleigh = 1.0 - 0.09 * mie;
-        let air = 1.33 * exp(-2.0 * clamp(direction.z, 0.0, 1.0));
-        let sun_scatter = mix(e[5].rgb, e[4].rgb, 0.5 * (1.0 + sun_cos));
-        var lost = air * sun_scatter * (e[6].x + 0.7 * mie);
-        lost = (1.0 - exp(-lost)) / lost;
-        let scattered = (0.125 * mie + e[2].rgb * rayleigh) * lost * (1.17 * air + 0.89) * e[6].y;
-        color = mix(color, scattered, e[1].w);
-    }
-    // The alpha is the fog amount of fogColourScatter: 0 for the sky.
-    return vec4f(color, 0.0);
-}
-
-fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f {
-    let color = sky_fog_color(direction).rgb;
-    // ditherSky: an ordered dither against bands in the sky.
-    let dither = array<f32, 16>(0.001176, 0.001961, -0.001176, -0.001699, -0.000654, -0.000915, 0.000392, 0.000131, -0.000131, -0.001961, 0.000654, 0.000915, 0.001699, 0.001438, -0.000392, -0.001438);
-    let at = vec2u(pixel) % 4u;
-    return color + dither[at.x * 4u + at.y];
-}
-";
 
 /// The library of the clouds hook (`core_mods::SKY_LIBRARY`) without `sky_fog_color`, which
-/// [`SKY_SHADER`] has: the values of the frame from the sky's values. `cloud_texture` and
+/// [`sky_shader`] has: the values of the frame from the sky's values. `cloud_texture` and
 /// `CloudPixel` are the world shader's (`nirender_wgpu`).
 const SKY_LIBRARY_BODIES: &str = "
 fn sky_time() -> f32 { return draw.extension[7].w; }
@@ -3541,13 +3508,14 @@ fn sky_color_value() -> vec3f { return draw.extension[1].rgb; }
 fn sky_fog_far_color() -> vec3f { return draw.extension[0].rgb; }
 ";
 
-/// The sky part of the world shader: [`SKY_SHADER`], and with the clouds hook of a core mod
+/// The sky part of the world shader: [`sky_shader`], and with the clouds hook of a core mod
 /// (`core_mods.rs`) its library and `extension_clouds_color`, which calls the hook.
 fn sky_shader_text(sky_hooks: Option<&str>) -> String {
     match sky_hooks {
-        None => SKY_SHADER.to_string(),
+        None => sky_shader().to_string(),
         Some(hooks) => format!(
-            "{SKY_SHADER}{SKY_LIBRARY_BODIES}{hooks}\nfn extension_clouds_color(p: CloudPixel) -> vec4f {{ return clouds_color(p); }}\n"
+            "{}{SKY_LIBRARY_BODIES}{hooks}\nfn extension_clouds_color(p: CloudPixel) -> vec4f {{ return clouds_color(p); }}\n",
+            sky_shader()
         ),
     }
 }
