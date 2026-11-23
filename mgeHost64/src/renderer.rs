@@ -932,16 +932,16 @@ impl Environment {
     /// The values of the sky of MGE XE ([`SKY_SHADER`] has their places), when the record has
     /// the scattering (the flag 8). The record does not say if the cell is like an exterior
     /// (the scene says it): the caller checks that. `light` is the light of the scene: the sun
-    /// colour and the ambient light of the clouds hook take the weather's multipliers, as
-    /// those of the water do.
-    fn sky(&self, light: &SceneLight) -> Option<[[f32; 4]; 8]> {
+    /// colour and the ambient light of the clouds hook take `multipliers` (sun, ambient), the
+    /// renderer's `light_multipliers`, as those of the land and the water do.
+    fn sky(&self, light: &SceneLight, multipliers: (f32, f32)) -> Option<[[f32; 4]; 8]> {
         if self.flags & 8 == 0 {
             return None;
         }
         let far = self.sky_scatter_far;
         let sky: [f32; 3] = core::array::from_fn(|i| self.sky_col[i] + (far[i] - self.sky_col[i]) * far[3]);
         let altitude = (1.0 + self.sun_pos[2]).powi(10);
-        let (sun_color, ambient) = light.land(self.light_sun_mult, self.light_amb_mult);
+        let (sun_color, ambient) = light.land(multipliers.0, multipliers.1);
         Some([
             [self.fog_col_far[0], self.fog_col_far[1], self.fog_col_far[2], self.sun_vis],
             [self.sky_col[0], self.sky_col[1], self.sky_col[2], self.nice_weather],
@@ -6072,19 +6072,18 @@ impl DistantLand {
         // The fog: from the game with this frame, or the linear fog of the settings.
         // A plain interior cell has the linear fog of the game on the statics
         // (`StaticInteriorVS`), not the exponential curve.
-        let (fog, exponential, sun_mult, ambient_mult) = match self.environment {
+        let (fog, exponential) = match self.environment {
             Some(e) => (
                 {
                     let ranges = self.fog_ranges(&e, scene);
                     [ranges.exp_start, ranges.exp_divisor, ranges.near_start, ranges.near_end]
                 },
                 e.flags & 1 != 0 && e.flags & 2 == 0 && self.facts.like_exterior,
-                e.light_sun_mult,
-                e.light_amb_mult,
             ),
-            None => ([0.0, 1.0, self.settings_fog.0, self.settings_fog.1], false, 1.0, 1.0),
+            None => ([0.0, 1.0, self.settings_fog.0, self.settings_fog.1], false),
         };
         let sun = scene.sun_direction.unwrap_or([0.0, 0.0, -1.0]);
+        let (sun_mult, ambient_mult) = self.light_multipliers();
         let (sun_color, ambient) = SceneLight::of(scene).land(sun_mult, ambient_mult);
         // The far fog colour is that of the weather. The fog colour of the game is the near
         // one: MGE XE changes it for the scattering.
@@ -6194,7 +6193,7 @@ impl DistantLand {
             time: e.time,
             sun_pos,
             sun_vis: e.sun_vis,
-            sun_color: scene.sun_color.map(|c| c * e.light_sun_mult),
+            sun_color: scene.sun_color.map(|c| c * self.light_multipliers().0),
             sky_color: e.sky_col,
             fog_color_far: e.fog_col_far,
             nice_weather: e.nice_weather,
@@ -6222,7 +6221,8 @@ impl DistantLand {
         if !(self.facts.distant() && self.facts.like_exterior) {
             return None;
         }
-        self.environment.as_ref()?.sky(&SceneLight::of(scene))
+        let multipliers = self.light_multipliers();
+        self.environment.as_ref()?.sky(&SceneLight::of(scene), multipliers)
     }
 
     /// The light for each pixel, by the setting `distant_land.per_pixel_lighting` and its
@@ -6632,11 +6632,8 @@ impl DistantLand {
     fn grass_frame(&self, scene: &SceneView) -> statics::GrassFrame {
         let eye = scene.eye.map(|v| v as f32);
         let environment = self.environment;
-        // The multipliers of the weather for the light reach the distant land only with the
-        // light for each pixel on, as `DistantLand::setView` of the Direct3D 9 path applies
-        // them to SunCol and SunAmb only when it is; the shadow of the ground (`shadow_sun`)
-        // takes the same sun.
-        let (sun_mult, ambient_mult) = self.shade.map_or((1.0, 1.0), |p| (p.sun, p.ambient));
+        // The shadow of the ground (`shadow_sun`) takes the same sun.
+        let (sun_mult, ambient_mult) = self.light_multipliers();
         let ambient = SceneLight::of(scene).ambient(ambient_mult);
         statics::GrassFrame {
             // The view range of the game is the end of the grass. Without it from the game,
@@ -6756,6 +6753,14 @@ impl DistantLand {
         let [r, g, b, _] = main_view.sun_color;
         let [ar, ag, ab, _] = main_view.ambient;
         lamp_grid::darkness_gate([r, g, b], sun_vis, [ar, ag, ab]) * self.tunables.get(tunables::LAMP_STRENGTH)
+    }
+
+    /// The weather's multipliers of the sun and the ambient light for the land, the distant
+    /// statics, the grass, the sky's clouds and the water: those of [`Self::per_pixel`] while
+    /// the light for each pixel is on in the cell, else 1 and 1. Direct3D 9 puts them into
+    /// SunCol and SunAmb only `if (isPPLActive)` (`DistantLand::setupCommonEffect`).
+    fn light_multipliers(&self) -> (f32, f32) {
+        self.per_pixel().map_or((1.0, 1.0), |p| (p.sun, p.ambient))
     }
 
     fn per_pixel(&self) -> Option<PerPixel> {
@@ -7473,16 +7478,16 @@ mod environment_tests {
             sun_ambient: [0.25, 0.375, 0.5],
             ambient: [0.25, 0.125, 0.0],
         };
-        let sky = e.sky(&light).expect("a sky with the scattering");
+        let sky = e.sky(&light, (1.0, 1.0)).expect("a sky with the scattering");
         assert_eq!(sky[0], [0.5, 0.6, 0.7, 0.0]);
         e.flags = 0;
-        assert!(e.sky(&light).is_none(), "no sky without the scattering");
+        assert!(e.sky(&light, (1.0, 1.0)).is_none(), "no sky without the scattering");
     }
 
     /// The values of the clouds hook in the free places of the sky's values: the sun colour
     /// and the time in slot 7, the sun's visibility in w of slot 0, the ambient light in w of
-    /// slots 3 to 5, with the weather's multipliers (binary fractions: exact in f32). The
-    /// dome's values keep their places.
+    /// slots 3 to 5, with the multipliers that the caller gives (binary fractions: exact in
+    /// f32). The dome's values keep their places.
     #[test]
     fn the_sky_values_carry_the_clouds_values() {
         let mut e: Environment = bytemuck::Zeroable::zeroed();
@@ -7493,15 +7498,13 @@ mod environment_tests {
         e.inscatter = [0.5, 0.625, 0.75];
         e.time = 12.5;
         e.sun_vis = 0.75;
-        e.light_sun_mult = 2.0;
-        e.light_amb_mult = 0.5;
         let light = SceneLight {
             sun_direction: Some([0.0, 0.6, -0.8]),
             sun_color: [0.75, 0.625, 0.5],
             sun_ambient: [0.25, 0.375, 0.5],
             ambient: [0.25, 0.125, 0.0],
         };
-        let sky = e.sky(&light).unwrap();
+        let sky = e.sky(&light, (2.0, 0.5)).unwrap();
         assert_eq!(sky[7], [1.5, 1.25, 1.0, 12.5]);
         assert_eq!(sky[0][3], 0.75);
         assert_eq!([sky[3][3], sky[4][3], sky[5][3]], [0.25, 0.25, 0.25]);
@@ -8650,6 +8653,74 @@ mod frame_value_tests {
         let parameters = land.frame(&scene);
         assert!(parameters.post && !parameters.blend, "the menu frame shows the kept picture");
         assert!(!before_world(&mut land, &scene), "under a menu: no land");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// W319: the weather's multipliers (sun 2, ambient 1/2) reach the land and the view's
+    /// ambient light (`frame_view`), the clouds values of the sky (`sky`), the sun of the water
+    /// (`water_frame_of`) and the grass only while the light for each pixel is on in the cell, as
+    /// `isPPLActive` of Direct3D 9 gates them. With it off, and with "interiors only" in an
+    /// exterior, they are 1 and 1. Binary fractions: exact in f32.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_weather_multipliers_need_the_light_for_each_pixel() {
+        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gpu = TestDevice::new();
+        let mut scene = gpu.scene();
+        scene.like_exterior = true;
+        scene.projection = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, -1.0, 0.0,
+        ];
+        scene.sun_direction = Some([0.0, 0.6, -0.8]);
+        scene.sun_color = [0.75, 0.625, 0.5];
+        scene.sun_ambient = [0.25, 0.375, 0.5];
+        scene.ambient = [0.25, 0.125, 0.0];
+        let (mut land, root) = super::set_free_tests::land_with_no_data("w319-multipliers");
+        let mut environment: Environment = bytemuck::Zeroable::zeroed();
+        environment.version = Environment::VERSION;
+        environment.flags = 8;
+        environment.light_sun_mult = 2.0;
+        environment.light_amb_mult = 0.5;
+        land.environment = Some(environment);
+        land.interior = false;
+        land.facts = DistantFacts {
+            on: true,
+            cell: true,
+            terrain: true,
+            like_exterior: true,
+        };
+
+        // The sun colour and the ambient light (red, green, blue) of each part. The water has
+        // no ambient light of its own.
+        let parts = |land: &mut DistantLand| {
+            let view = land.frame_view(&scene, &scene.projection);
+            let sky = land.sky(&scene).expect("a sky with the scattering");
+            let water = land.water_frame_of(&scene, None).expect("a water frame");
+            let grass = land.grass_frame(&scene);
+            let rgb = |v: [f32; 4]| [v[0], v[1], v[2]];
+            [
+                ("land", rgb(view.sun_color), Some(rgb(view.ambient))),
+                ("sky", rgb(sky[7]), Some([sky[3][3], sky[4][3], sky[5][3]])),
+                ("water", water.sun_color, None),
+                ("grass", rgb(grass.sun_color), Some(rgb(grass.ambient))),
+            ]
+        };
+        let without = ([0.75, 0.625, 0.5], [0.5, 0.5, 0.5]);
+        let with = ([1.5, 1.25, 1.0], [0.25, 0.25, 0.25]);
+        let cases = [
+            ("per-pixel light off", (false, false), without),
+            ("per-pixel light in interiors only, in an exterior", (true, true), without),
+            ("per-pixel light on", (true, false), with),
+        ];
+        for (case, (on, interiors_only), (sun, ambient)) in cases {
+            land.per_pixel = (on, interiors_only, 0.0, false);
+            for (part, part_sun, part_ambient) in parts(&mut land) {
+                assert_eq!(part_sun, sun, "{case}: the sun of the {part}");
+                if let Some(part_ambient) = part_ambient {
+                    assert_eq!(part_ambient, ambient, "{case}: the ambient light of the {part}");
+                }
+            }
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 }
