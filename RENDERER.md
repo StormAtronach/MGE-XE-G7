@@ -454,7 +454,8 @@ The line sources: `lights`, `shadow-boxes`, `bounds`, `lua`.
 | Line source | What it draws |
 | --- | --- |
 | `shadow-boxes` | the box of each layer of the shadow map in this frame, from the matrix that the shadow pass used (with its snap to whole texels): the near layer red, the far layer green, over everything. A frame with no shadow pass draws none, and the overlay says so |
-| `lights`, `bounds`, `lua` | not drawn yet |
+| `lights` | a sphere for each light of the world that is on, at its place, with the reach that the draws use: a light with an end (the extension's fade) in yellow, with its reach in the clusters; a light with no end in cyan, with the radius by which it reaches the bound of a draw. The overlay gives the number of each kind |
+| `bounds`, `lua` | not drawn yet |
 
 The line pass draws after the post chain and before the interface of the game. A picture file
 then shows the lines, and the post chain does not blur or tint them. (The design,
