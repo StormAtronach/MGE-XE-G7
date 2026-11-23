@@ -15,7 +15,8 @@
 //! - `each_pack_file_is_its_port`: each file under `ports/` parses, and it is the port of a
 //!   `MOD_FILES` entry of its name, but for the numbers that a mod's file sets.
 //! - `export_packs` (ignored): writes the files from the mods' `.fx` copies. The list file named
-//!   by `W609_PACKS` has one line for each copy: `<pack folder>\t<chain name>\t<.fx path>`. All
+//!   by `W609_PACKS` has one line for each copy: `<pack folder>\t<chain name>\t<.fx path>`.
+//!   Without `W609_PACKS` it writes nothing and passes (the merge step runs all ignored tests). All
 //!   copies of a name in a pack must give one Definition, else the test names them and fails.
 //!   `cargo test -p mgeHost64 --release export_packs -- --ignored --nocapture`
 
@@ -241,7 +242,11 @@ fn a_changed_line_is_not_the_port() {
 #[test]
 #[ignore = "writes the packs from the mods' files: W609_PACKS names the list"]
 fn export_packs() {
-    let list = std::env::var("W609_PACKS").expect("W609_PACKS: the list file");
+    // The merge step runs every ignored test: without the list, this is no export, and it passes.
+    let Ok(list) = std::env::var("W609_PACKS") else {
+        println!("export_packs: W609_PACKS is not set, so no pack is written");
+        return;
+    };
     let text = std::fs::read_to_string(&list).expect("the list file");
     // (pack, name) -> [(path, Definition)], in the order of the list.
     let mut groups: Vec<((String, String), Vec<(String, Definition)>)> = Vec::new();
