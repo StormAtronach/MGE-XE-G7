@@ -81,8 +81,8 @@ pub(super) fn shader() -> String {
         "{}{}{}{}{}",
         super::super::view::wgsl(),
         nirender_wgpu::depth::wgsl(),
-        shading::COMMON,
-        shading::WATER_NORMAL,
+        shading::common(),
+        shading::water_normal(),
         DRY
     )
 }
