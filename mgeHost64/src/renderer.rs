@@ -1440,7 +1440,7 @@ pub struct DistantLand {
     anisotropy: u16,
     /// The smaller levels of a texture that has only one (`graphics.mipmaps_for_one_level`, W632).
     mipmaps_for_one_level: bool,
-    /// The sky's draws filter between the levels of their textures (`graphics.sky_mip_filter`, W632).
+    /// The sky's bilinear maps (the moons, the glare) filter between their levels (`graphics.sky_mip_filter`, W632).
     sky_mip_filter: bool,
     /// The samples for each pixel of the frame (`graphics.anti_aliasing`): 1 is none. The
     /// renderer draws the pass of the game into multisampled targets with more.

@@ -398,7 +398,7 @@ pub struct GraphicsSettings {
     pub anisotropy: Anisotropy,
     /// The wgpu renderer makes the smaller levels of a texture that has only one (W632).
     pub mipmaps_for_one_level: bool,
-    /// The wgpu renderer filters between the levels of the sky's textures (W632).
+    /// The wgpu renderer filters between the levels of the sky's bilinear maps: the moons, the glare (W632).
     pub sky_mip_filter: bool,
     pub transparency_antialiasing: bool,
 }

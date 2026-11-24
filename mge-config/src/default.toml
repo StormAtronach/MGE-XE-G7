@@ -20,7 +20,7 @@ borderless = true
 anisotropy = "x8"
 # Make the smaller levels of a texture that has only one: true or false.
 mipmaps_for_one_level = true
-# Filter between the levels of the sky's textures (moons, sun, stars, clouds): true or false.
+# Filter between the levels of the moons' and the sun glare's textures: true or false.
 sky_mip_filter = false
 # Enable alpha-tested edge multisampling where supported.
 transparency_antialiasing = true

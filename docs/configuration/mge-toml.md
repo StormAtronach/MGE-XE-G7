@@ -220,10 +220,11 @@ reads them.
   `--mipmaps-for-one-level on|off` over it.
 
 - `graphics.sky_mip_filter` (default `false`): the wgpu renderer filters between the levels of
-  the textures of the sky's draws (the dome, the stars, the clouds, the sun and the moons; not
-  the sun's glare), whatever filter the game names (W632). The game gives these textures no
-  filter between levels, so a large texture drawn small, such as a 2048 moon, reads only its
-  largest level and shimmers when the camera turns. The draws of the sky are known by the
+  the sky's maps that the game gives a bilinear filter with no filter between levels (W632):
+  the maps of the moons, their shadow shapes and the sun's glare. So a large texture drawn
+  small, such as a 2048 moon, reads a level near its size on the screen and does not shimmer
+  when the camera turns. The stars and the clouds come from NIF files whose maps filter
+  between levels already, and they do not change. The draws of the sky are known by the
   object of the draw (the weather's sky nodes), not by the texture's name. A texture of one
   level filters between levels only when `graphics.mipmaps_for_one_level` made its levels.
   Every other draw keeps the game's filter. Read by numidium.exe when it starts; a replay takes
