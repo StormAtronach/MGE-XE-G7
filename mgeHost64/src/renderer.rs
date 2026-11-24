@@ -36,6 +36,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod arrival;
 mod blend;
 mod caustics;
 mod core_files;
@@ -119,8 +120,8 @@ mod part {
 }
 use nirender_wgpu::debug_lines::{LineGroup, LineList, LineSources};
 use nirender_wgpu::{
-    Additions, DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay,
-    SceneView, ShaderText, Status, TableShade,
+    Additions, DrawData, DrawFacts, Extension, FrameParameters, HostReadiness, LightData, PictureRequest, ReadingCall,
+    Reads, Replay, SceneView, ShaderText, Status, TableShade,
 };
 use post::{Post, Variables};
 use shadow::Shadow;
@@ -260,8 +261,9 @@ const STATUS_ID: u32 = 9;
 const MESSAGE_DISTANT_LAND: u32 = 1;
 const LOADED: u32 = 1;
 const ARRIVED: u32 = 2;
-/// The longest wait for the statics after a game load or a teleport, from the end of the load
-/// of the data: then [`ARRIVED`] goes anyway, as the bootstrap of Direct3D 9 gives up.
+/// The longest wait for the statics and the host's readiness after a game load or a teleport
+/// ([`arrival`]), from the end of the load of the data: then [`ARRIVED`] goes anyway, as the
+/// bootstrap of Direct3D 9 gives up.
 const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The place of the player after a teleport, or of a wait of a game load
 /// (`Deviceless::prefetchDistantLand`; a teleport comes from MWSE's native event 5 and holds
@@ -1509,6 +1511,10 @@ pub struct DistantLand {
     /// last ARRIVED.
     arrival_watch: Option<load_watch::ArrivalWatch>,
     watch_until: Option<Instant>,
+    /// What the host still makes, from its last `host_readiness`: ARRIVED waits for it (W640 part 3).
+    readiness: HostReadiness,
+    /// The times of the conditions of the wait that runs, for the line of its ARRIVED.
+    arrival_times: arrival::Times,
     /// The last frame that ended: the `frame` of the scene of the last `after_frame`.
     ended_frame: u64,
     /// While the window of the load watch is open: the frame of the lines now (the host's
@@ -2128,6 +2134,8 @@ impl DistantLand {
             load_watch: nirender_wgpu::switches::on("MGE_XE_LOAD_WATCH") == Some(true),
             arrival_watch: None,
             watch_until: None,
+            readiness: HostReadiness::default(),
+            arrival_times: arrival::Times::default(),
             ended_frame: 0,
             watch_now: None,
             volume_reflect_cells: settings.water.volume_reflection_cells,
@@ -4167,10 +4175,17 @@ impl Extension for DistantLand {
         Some(world_shader_text(&self.core_mods.world_hooks(), "of the core mods now"))
     }
 
+    /// What the host still makes, before `after_frame` and `messages` of the same frame: ARRIVED
+    /// waits for it (W640 part 3).
+    fn host_readiness(&mut self, ready: &HostReadiness) {
+        self.readiness = *ready;
+    }
+
     /// The events of the distant land for MGE XE (`distantLandReady` of its Lua), at the end
     /// of a frame: [`LOADED`] one time when the data of the session is loaded; [`ARRIVED`] after a
-    /// game load or a jump when the statics near the camera are there. A wait needs two world
-    /// frames: the first one asks for the statics of the new place.
+    /// game load or a jump when the statics near the camera are there and the host has made its
+    /// list of stage pipelines and its mip chains ([`arrival`]). A wait needs two world frames: the
+    /// first one asks for the statics of the new place.
     fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
         let loading = self.loading();
         if let Some(seconds) = self.slow_step.as_mut().and_then(|slow| slow.due(loading)) {
@@ -4195,32 +4210,29 @@ impl Extension for DistantLand {
             println!("distant land: ready (loaded)");
             self.messages_out.push(say(LOADED, 0));
         }
-        if let (Some((_, frames)), Some(watch)) = (self.arrival, self.arrival_watch.as_mut()) {
-            let settled = self.statics.as_ref().is_none_or(|statics| statics.settled());
-            watch.note(
-                Instant::now(),
-                self.ended_frame,
-                self.loading.is_none() && statics_loaded,
-                frames,
-                settled,
-            );
+        // The facts of the wait at the end of this frame (W640 part 3: the host's readiness too).
+        let facts = self.arrival.map(|(_, frames)| arrival::Facts {
+            loaded: self.loading.is_none() && statics_loaded,
+            frames,
+            settled: self.statics.as_ref().is_none_or(|statics| statics.settled()),
+            ready: self.readiness,
+        });
+        if let (Some(facts), Some(watch)) = (facts, self.arrival_watch.as_mut()) {
+            watch.note(Instant::now(), self.ended_frame, &facts);
         }
-        if let Some((since, frames)) = self.arrival {
-            if self.loading.is_some() || !statics_loaded {
+        if let (Some((since, frames)), Some(facts)) = (self.arrival, facts) {
+            let now = Instant::now();
+            self.arrival_times.note(now, &facts);
+            if !facts.loaded {
                 // The wait counts from the end of the load of the data.
-                self.arrival = Some((Instant::now(), frames));
-            } else if frames >= 2
-                && (self.statics.as_ref().is_none_or(|statics| statics.settled()) || since.elapsed() >= ARRIVAL_TIMEOUT)
+                self.arrival = Some((now, frames));
+            } else if let decision @ (arrival::Decision::Arrived | arrival::Decision::AtTheLimit) =
+                arrival::decide(&facts, since.elapsed(), ARRIVAL_TIMEOUT)
             {
                 self.arrival = None;
                 println!(
-                    "distant land: ready (arrived) in {:.2} s{}",
-                    since.elapsed().as_secs_f32(),
-                    if self.arrival_serial != 0 {
-                        format!(", wait {}", self.arrival_serial)
-                    } else {
-                        String::new()
-                    }
+                    "{}",
+                    self.arrival_times.line(since, now, self.arrival_serial, decision, &facts)
                 );
                 if let Some(wait) = self.statics.as_mut().and_then(|statics| statics.take_wait()) {
                     println!("distant land: the wait: {wait}");
@@ -5590,6 +5602,7 @@ impl DistantLand {
         let now = Instant::now();
         self.arrival = Some((now, 0));
         self.arrival_serial = serial;
+        self.arrival_times = arrival::Times::default();
         if self.load_watch {
             self.arrival_watch = Some(load_watch::ArrivalWatch::new(now, self.ended_frame + 1));
         }

@@ -78,7 +78,7 @@ reads it at each frame end and calls `MGE_StreamMessage(id, data, length)` of `d
 
 | Id | Message | Sent |
 | --- | --- | --- |
-| 1 | distant land: version 1, reason 1 loaded / 2 arrived, the serial of the wait it answers (0 none) | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` (or after 10 s) |
+| 1 | distant land: version 1, reason 1 loaded / 2 arrived, the serial of the wait it answers (0 none) | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` and the host's `HostReadiness` has no job of the list and of the mip chains left (`renderer/arrival.rs`; or after 10 s) |
 
 The wait of a game load (`Deviceless::waitForDistantLand`): the game sends record 10 and
 draws its loading bar until `ARRIVED` with that serial comes back (or 15 s). The frames of
