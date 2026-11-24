@@ -155,6 +155,26 @@ fn lamp_glows(stream: &NiStream, water: Option<MeshWater<'_>>) -> bool {
     visible_geometries(stream, water, Billboards::Read).any(|geometry| glows(&geometry, stream))
 }
 
+/// The radius of the drawn glowing parts of a lamp's model (its glass, its flame), in the
+/// model's units: the bound of those shapes. 0 when the model has none, when only a shape under
+/// a billboard glows, or when the model cannot be read.
+pub fn lamp_glow_radius(rel_path: &str, vfs: &Vfs) -> f32 {
+    let Some(bytes) = vfs.resolve_mesh(rel_path).and_then(|asset| vfs.read_asset_bytes(&asset).ok()) else {
+        return 0.0;
+    };
+    let Ok(mut stream) = NiStream::from_bytes(&bytes) else {
+        return 0.0;
+    };
+    stream.apply_skin_deforms();
+    clear_root_node_transforms(&mut stream);
+    let mut scratch = BoundingSphereScratch::new();
+    visible_geometries(&stream, None, Billboards::Skipped)
+        .filter(|geometry| glows(geometry, &stream))
+        .map(|geometry| geometry.place_bound(geometry.object_space_bounding_sphere(&mut scratch)))
+        .reduce(|acc, bound| acc.merged_with(bound))
+        .map_or(0.0, |bound| bound.radius)
+}
+
 #[derive(Default)]
 struct TriangleSanitization {
     triangles: Vec<[u16; 3]>,

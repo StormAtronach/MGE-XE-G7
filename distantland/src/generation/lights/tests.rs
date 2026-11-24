@@ -128,7 +128,7 @@ fn a_lamp_is_a_placed_light_that_lights_and_that_no_script_disables() {
         place(&mut usage, EXTERIOR_CELL, key as u32, reference);
     }
 
-    let lights = light_blocks(&usage, true, true);
+    let lights = light_blocks(&usage, true, true).lights;
     let block = exterior(&lights);
     let ids: Vec<String> = block.records.iter().map(|record| record.id.to_string()).collect();
     assert_eq!(ids, ["lamp", "target"]);
@@ -137,7 +137,7 @@ fn a_lamp_is_a_placed_light_that_lights_and_that_no_script_disables() {
     assert_eq!(places, [1.0, 11.0]);
 
     // Without the exclusion of disable targets, the persistent target is a lamp too.
-    let lights = light_blocks(&usage, true, false);
+    let lights = light_blocks(&usage, true, false).lights;
     assert_eq!(exterior(&lights).lamps.len(), 3);
 }
 
@@ -151,11 +151,11 @@ fn an_interior_that_behaves_like_an_exterior_is_a_block_by_its_lower_case_name()
     interior(&mut usage, "Arrille's Tradehouse", false);
     place(&mut usage, "Arrille's Tradehouse", 3, reference("lamp", 3.0));
 
-    let lights = light_blocks(&usage, true, true);
+    let lights = light_blocks(&usage, true, true).lights;
     let keys: Vec<String> = lights.blocks.iter().map(|block| block.key.to_string()).collect();
     assert_eq!(keys, ["", "mournhold, plaza brindisi dorom"]);
 
-    let lights = light_blocks(&usage, false, true);
+    let lights = light_blocks(&usage, false, true).lights;
     let keys: Vec<String> = lights.blocks.iter().map(|block| block.key.to_string()).collect();
     assert_eq!(keys, [""]);
 }
@@ -179,7 +179,7 @@ fn a_name_with_bytes_over_127_keeps_the_plugins_bytes() {
     };
     place(&mut usage, &cell, 1, placed);
 
-    let lights = light_blocks(&usage, true, true);
+    let lights = light_blocks(&usage, true, true).lights;
     let block = lights
         .block(&key(cell_bytes))
         .expect("the block of the cell, by the game's bytes");
@@ -218,7 +218,7 @@ fn a_name_in_two_cases_of_a_to_z_is_one_key() {
     place(&mut usage, "Sotha Sil", 1, reference("lamp", 1.0));
     place(&mut usage, "SOTHA SIL", 2, reference("LAMP", 2.0));
 
-    let lights = light_blocks(&usage, true, true);
+    let lights = light_blocks(&usage, true, true).lights;
     assert_eq!(lights.blocks.len(), 1);
     let block = lights.block(&key(b"sotha sil")).unwrap();
     assert_eq!(block.records.len(), 1);
@@ -237,7 +237,7 @@ fn a_name_that_the_game_cannot_have_costs_only_itself() {
     interior(&mut usage, "Hall \u{4e2d}", true);
     place(&mut usage, "Hall \u{4e2d}", 3, reference("lamp", 3.0));
 
-    let lights = light_blocks(&usage, true, true);
+    let lights = light_blocks(&usage, true, true).lights;
     assert_eq!(lights.blocks.len(), 1);
     let block = exterior(&lights);
     assert_eq!(block.records.len(), 1);
@@ -261,7 +261,7 @@ fn smoke_rises_from_a_smoke_model_and_from_a_large_fire() {
         place(&mut usage, EXTERIOR_CELL, key as u32, reference(id, key as f32));
     }
 
-    let lights = light_blocks(&usage, true, true);
+    let lights = light_blocks(&usage, true, true).lights;
     let smoke: Vec<(f32, f32)> = exterior(&lights)
         .smoke
         .iter()
@@ -283,7 +283,7 @@ fn the_order_of_the_references_does_not_change_the_file() {
             let (id, x) = placed[index as usize];
             place(&mut usage, EXTERIOR_CELL, index, reference(id, x));
         }
-        light_blocks(&usage, true, true)
+        light_blocks(&usage, true, true).lights
     };
     let forward = make(&[0, 1, 2]);
     assert_eq!(forward.to_bytes(), make(&[2, 1, 0]).to_bytes());
@@ -303,7 +303,7 @@ fn the_renderers_reader_reads_what_this_writes() {
     place(&mut usage, EXTERIOR_CELL, 1, reference("lamp", 1.0));
     interior(&mut usage, "Sotha Sil", true);
     place(&mut usage, "Sotha Sil", 2, reference("lamp", 2.0));
-    let lights = light_blocks(&usage, true, true);
+    let lights = light_blocks(&usage, true, true).lights;
 
     let on = GenerationSettings {
         distant_lights: true,
@@ -318,4 +318,100 @@ fn the_renderers_reader_reads_what_this_writes() {
         ..Default::default()
     };
     assert!(build(&lights, &off).is_none());
+}
+
+/// A lamp model whose one shape glows: a right triangle with legs of `size`, with a texture and
+/// an emissive of 0.8.
+fn glowing_model(size: f32) -> Vec<u8> {
+    use tes3::nif::*;
+
+    let mut stream = NiStream::new();
+    let texture = stream.insert(NiSourceTexture {
+        source: TextureSource::External("l\\glass.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture;
+    let texturing = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+    let material = stream.insert(NiMaterialProperty {
+        emissive_color: Vec3::splat(0.8),
+        ..NiMaterialProperty::default()
+    });
+    let mut data = NiTriShapeData::default();
+    data.vertices = vec![Vec3::ZERO, Vec3::X * size, Vec3::Y * size];
+    data.normals = vec![Vec3::Z; 3];
+    data.uv_sets = vec![glam::Vec2::ZERO, glam::Vec2::X, glam::Vec2::Y];
+    data.triangles = vec![[0, 1, 2]];
+    data.update_center_radius();
+    let data = stream.insert(data);
+    let mut shape = NiTriShape::default();
+    shape.geometry_data = data.cast();
+    shape.properties.push(texturing.cast());
+    shape.properties.push(material.cast());
+    let shape = stream.insert(shape);
+    stream.roots.push(shape.cast());
+    stream.save_bytes().unwrap()
+}
+
+/// The glow radius of each record comes from its model, read one time for all its records, and
+/// goes through the file to the renderer's reader.
+#[test]
+fn the_glow_radius_of_a_record_is_read_from_its_model() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("meshes").join("l")).unwrap();
+    std::fs::write(temp.path().join("meshes").join("l").join("lamp.nif"), glowing_model(10.0)).unwrap();
+    let vfs = Vfs {
+        ini_path: temp.path().join("Morrowind.ini"),
+        data_dirs: vec![temp.path().to_path_buf()],
+        active_plugins: vec![],
+        archives: vec![],
+        maps: crate::vfs::directory_map::build_directory_map(&[temp.path().to_path_buf()]).unwrap(),
+    };
+
+    let mut usage = usage();
+    add_light(&mut usage, "lamp", light(450.0, [245, 140, 40], 0), "l\\lamp.nif");
+    add_light(&mut usage, "lamp_too", light(300.0, [245, 140, 40], 0), "l\\lamp.nif");
+    add_light(&mut usage, "absent", light(450.0, [245, 140, 40], 0), "l\\absent.nif");
+    let no_model = LightRecord {
+        has_mesh: false,
+        ..light(450.0, [245, 140, 40], 0)
+    };
+    add_light(&mut usage, "no_model", no_model, "l\\no_model.nif");
+    for (key, id) in ["lamp", "lamp_too", "absent", "no_model"].into_iter().enumerate() {
+        place(&mut usage, EXTERIOR_CELL, key as u32, reference(id, key as f32));
+    }
+
+    let mut parts = light_blocks(&usage, true, true);
+    let models: Vec<(String, &str)> = parts
+        .models
+        .iter()
+        .map(|(id, model)| (id.to_string(), model.as_str()))
+        .collect();
+    assert_eq!(
+        models,
+        [
+            ("absent".to_string(), "l\\absent.nif"),
+            ("lamp".to_string(), "l\\lamp.nif"),
+            ("lamp_too".to_string(), "l\\lamp.nif"),
+        ]
+    );
+    assert_eq!(fill_glow_radii(&mut parts, &vfs), 2);
+
+    let radii: Vec<(String, f32)> = exterior(&parts.lights)
+        .records
+        .iter()
+        .map(|record| (record.id.to_string(), record.glow_radius))
+        .collect();
+    // The legs of 10 give a bound of half the long side.
+    let lamp = 50.0f32.sqrt();
+    assert_eq!(radii.len(), 4);
+    assert_eq!(radii[0], ("absent".to_string(), 0.0));
+    assert_eq!(radii[1].0, "lamp");
+    assert!((radii[1].1 - lamp).abs() < 0.1, "{radii:?}");
+    assert_eq!(radii[2].1, radii[1].1);
+    assert_eq!(radii[3], ("no_model".to_string(), 0.0));
+    assert_eq!(parse_lights(&parts.lights.to_bytes()).unwrap(), parts.lights);
 }

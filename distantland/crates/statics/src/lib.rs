@@ -73,7 +73,7 @@ pub mod atlas;
 pub use atlas::*;
 
 mod extract;
-pub use extract::{MeshConsumption, create_distant_statics_with_identities};
+pub use extract::{MeshConsumption, create_distant_statics_with_identities, lamp_glow_radius};
 
 pub mod merge;
 pub use merge::*;

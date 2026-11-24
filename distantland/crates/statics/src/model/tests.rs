@@ -481,6 +481,25 @@ fn a_lamp_mesh_with_a_glowing_part_passes_the_size_limit() {
     assert!(!large.kept_as_lamp);
 }
 
+/// The glow radius: the bound of the drawn glowing parts; 0 for a glow only under a billboard,
+/// for none, and for a model that is not there.
+#[test]
+fn the_glow_radius_is_the_bound_of_the_drawn_glowing_parts() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "lit.nif", &build_test_lamp_nif(Glass::Drawn));
+    write_test_static_asset(root, "billboard.nif", &build_test_lamp_nif(Glass::UnderBillboard));
+    write_test_static_asset(root, "dark.nif", &build_test_lamp_nif(Glass::None));
+    let vfs = make_test_vfs(root);
+
+    // The glass is a right triangle with legs of 1: its bound has a radius of half the long side.
+    let radius = crate::lamp_glow_radius("lit.nif", &vfs);
+    assert!((radius - 0.5f32.sqrt()).abs() < 0.01, "{radius}");
+    assert_eq!(crate::lamp_glow_radius("billboard.nif", &vfs), 0.0);
+    assert_eq!(crate::lamp_glow_radius("dark.nif", &vfs), 0.0);
+    assert_eq!(crate::lamp_glow_radius("absent.nif", &vfs), 0.0);
+}
+
 fn write_test_static_asset(root: &Path, mesh_name: &str, nif_bytes: &[u8]) {
     let mesh_path = root.join("meshes").join(mesh_name);
     let texture_path = root.join("textures").join("uv_anim").join("ghost.dds");
