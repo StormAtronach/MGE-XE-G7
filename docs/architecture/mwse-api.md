@@ -276,7 +276,8 @@ MGE XE triggers the MWSE event `distantLandReady` on both renderers (since 2026-
 event.register("distantLandReady", function(e)
     -- e.reason == "loaded": the distant land of the session is loaded (once).
     -- e.reason == "arrived": after a game load or a jump of the camera of more than 2 cells,
-    -- the distant statics around the camera are there, or the wait ended after 10 s.
+    -- the distant statics around the camera are there and the helper made its list of pipelines,
+    -- or the wait ended after 10 s.
 end)
 ```
 

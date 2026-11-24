@@ -349,7 +349,8 @@ change. That start can take some minutes. With an older file, set it below
   screen for the distant land" in the Distant Land page of the MGE XE GUI
   (`wait_on_load` under `[distant_land]`, on for a new mgeXE.toml since 2026-11-17; a file
   that has the key keeps its value). The loading screen then stays until the distant statics
-  around you are there, at most 15 s. Without it the world shows at once, and the distant
+  around you are there and the helper has made the pipelines of its list (W640 part 3), at most
+  15 s. Without it the world shows at once, and the distant
   statics appear as they arrive. A teleport waits only with an MWSE that has the event of the
   player's change of cell (its native event 5).
 - Three looks of the grass shader of Remiros' Groundcover are options in the Distant Land
@@ -658,7 +659,7 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_LOAD_WATCH=1` (the helper; W640): the log gets the `load watch:` lines of a wait after
   a game load or a teleport (`mgeHost64/src/renderer/load_watch.rs`). `load watch: arrived at frame
   N` gives the time and the frame of each condition of ARRIVED from the wait's start (the data
-  loaded, the second frame, the statics settled). From the wait's start to 20 s after ARRIVED,
+  loaded, the second frame, the statics settled, the list made, the chains made). From the wait's start to 20 s after ARRIVED,
   `load watch: statics at frame N` counts the subsets of distant statics that arrived in a part of
   a frame (the grass among them), and `load watch: the lamp grid of <block> at frame N` names a new
   grid of the distant lamps. The frame numbers are those of the plugin's `load watch: frame N`
