@@ -347,7 +347,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             &path,
-            "schema_version = 1\n\ngraphics = { anti_aliasing = \"x4\", z_buffer_format = \"d24s8\", vsync = \"one\", refresh_rate = 0, borderless = false, anisotropy = \"x2\", transparency_antialiasing = false }\n\n[gui]\nlanguage = \"auto\"\n",
+            "schema_version = 1\n\ngraphics = { anti_aliasing = \"x4\", z_buffer_format = \"d24s8\", vsync = \"one\", refresh_rate = 0, borderless = false, anisotropy = \"x2\", mipmaps_for_one_level = true, transparency_antialiasing = false }\n\n[gui]\nlanguage = \"auto\"\n",
         )
         .unwrap();
 

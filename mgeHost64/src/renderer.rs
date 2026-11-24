@@ -1438,6 +1438,8 @@ pub struct DistantLand {
     shadow_resolution: u32,
     /// The anisotropic filter of the settings (`graphics.anisotropy`): 1 is none.
     anisotropy: u16,
+    /// The smaller levels of a texture that has only one (`graphics.mipmaps_for_one_level`, W632).
+    mipmaps_for_one_level: bool,
     /// The samples for each pixel of the frame (`graphics.anti_aliasing`): 1 is none. The
     /// renderer draws the pass of the game into multisampled targets with more.
     samples: u32,
@@ -2070,6 +2072,7 @@ impl DistantLand {
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
             anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
+            mipmaps_for_one_level: document.settings().graphics.mipmaps_for_one_level,
             samples: (document.settings().graphics.anti_aliasing.runtime_value() as u32).max(1),
             texture_slots: document.settings().runtime.renderer_texture_slots,
             frame_latency: document.settings().runtime.renderer_frame_latency,
@@ -3674,6 +3677,10 @@ impl Extension for DistantLand {
 
     fn anisotropy(&self) -> u16 {
         self.anisotropy
+    }
+
+    fn mipmaps_for_one_level(&self) -> bool {
+        self.mipmaps_for_one_level
     }
 
     fn samples(&self) -> u32 {

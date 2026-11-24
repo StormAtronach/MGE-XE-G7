@@ -18,6 +18,8 @@ refresh_rate = 0
 borderless = true
 # Texture anisotropy: off, x2, x4, x8, or x16.
 anisotropy = "x8"
+# Make the smaller levels of a texture that has only one: true or false.
+mipmaps_for_one_level = true
 # Enable alpha-tested edge multisampling where supported.
 transparency_antialiasing = true
 

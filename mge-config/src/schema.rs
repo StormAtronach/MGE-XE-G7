@@ -396,6 +396,8 @@ pub struct GraphicsSettings {
     pub refresh_rate: u8,
     pub borderless: bool,
     pub anisotropy: Anisotropy,
+    /// The wgpu renderer makes the smaller levels of a texture that has only one (W632).
+    pub mipmaps_for_one_level: bool,
     pub transparency_antialiasing: bool,
 }
 
@@ -408,6 +410,7 @@ impl Default for GraphicsSettings {
             refresh_rate: 0,
             borderless: true,
             anisotropy: Anisotropy::X8,
+            mipmaps_for_one_level: true,
             transparency_antialiasing: true,
         }
     }

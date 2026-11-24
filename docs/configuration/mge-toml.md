@@ -91,6 +91,7 @@ the same mapping ten times.
 | (new, no INI key) | `runtime.renderer_backend` |
 | (new, no INI key) | `runtime.renderer_texture_slots` |
 | (new, no INI key) | `runtime.renderer_frame_latency` |
+| (new, no INI key) | `graphics.mipmaps_for_one_level` |
 | `[Misc] Skip Intro Movies` | `runtime.skip_intro` |
 | `[Misc] Use Menu Background Caching` | `runtime.menu_caching` |
 | `[Misc] Customize 3rd Person Camera` | `runtime.custom_camera` |
@@ -209,6 +210,13 @@ reads them.
   the parts that get the wrap light); the sun light wraps past the side of a blade, and
   0.4 of it comes through from the back. The shader is
   `assets/Data Files/shaders/core/XE Mod Grass.wgsl`.
+
+- `graphics.mipmaps_for_one_level` (default `true`): the wgpu renderer makes the smaller levels
+  of a texture file that has only one (W632), each level a 2 x 2 box filter of the level above
+  it, in the format of the file (DXT1, DXT3, DXT5, or 32-bit). Without them a texture drawn
+  small flickers when the camera moves, on the engine's own renderer too. `false` keeps the one
+  level, as the engine does. Read by numidium.exe when it starts; a replay takes
+  `--mipmaps-for-one-level on|off` over it.
 
 - `runtime.renderer_frame_latency` (default `2`, the range `1` to `3`): the frames of the wgpu
   renderer that may wait for the graphics card before the window shows them. With `1` the
