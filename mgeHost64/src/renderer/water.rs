@@ -807,8 +807,8 @@ impl Water {
     }
 
     /// Starts the pass of the reflection: cleared to the colour of the horizon. Returns the
-    /// pass and the mirrored view with the far projection. The caller draws the distant
-    /// land, then calls `reflect_sky`, then ends the pass and submits the encoder.
+    /// pass and the mirrored view with the far projection. The caller calls `reflect_sky`,
+    /// then draws the distant land and the statics, then ends the pass and submits the encoder.
     pub fn begin_reflection(
         &mut self,
         scene: &SceneView,
@@ -946,7 +946,11 @@ impl Water {
         self.reflected = true;
     }
 
-    /// The sky of the game in the reflection: its draws again, mirrored, above the water.
+    /// The sky of the game in the reflection: its draws again, mirrored about the camera's height
+    /// ([`Water::sky_mirror`]), above the water. The caller calls it first in the pass, on the
+    /// cleared depth: the sky writes no depth (the game's sky root tests the depth and does not
+    /// write it), so the land and the statics that follow are in front of it at any radius of
+    /// the dome, as with Direct3D 9's dome at infinity.
     pub fn reflect_sky(
         &self,
         scene: &SceneView,
@@ -979,6 +983,8 @@ impl Water {
                 ]),
                 opaque_only: false,
                 translucent_only: false,
+                // The sky is first on the cleared depth, so the test changes nothing here; it
+                // keeps each draw's write flag (no write for the sky).
                 force_depth_test: true,
                 classes: ReplayView::SKY,
             },

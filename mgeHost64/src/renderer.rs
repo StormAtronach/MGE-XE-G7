@@ -4896,8 +4896,8 @@ impl Extension for DistantLand {
             water.fill_reflection(scene, frame);
         }
 
-        // The reflection in the water: the land and the sky, mirrored, in a pass of their
-        // own that goes to the GPU before the frame.
+        // The reflection in the water: the sky, the land and the statics, mirrored, in a pass
+        // of their own that goes to the GPU before the frame.
         if let (Some(water), Ok(frame), Reflection::Mirror) = (self.water.as_mut(), water_frame.as_ref(), reflection) {
             let mut encoder = scene.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("water reflection"),
@@ -4918,6 +4918,13 @@ impl Extension for DistantLand {
             // the cut moves to the side that the mirror does not show.
             mirror_view.flags[2] = frame.mirror_level - mirror_view.flags[1] * 0.5 * frame.wave_height.unwrap_or(0.0);
             views.write(scene.queue, view::MIRROR, &mirror_view);
+            // W641: the sky first, on the cleared depth. It writes no depth, so the land and the
+            // statics below are in front of it at any radius of the dome (a sky at infinity).
+            if self.reflect_sky {
+                water.reflect_sky(scene, &mut mirror_pass, replay, frame);
+            } else {
+                pass_report::note_skipped(part::REFLECTED_SKY, "reflect_sky is off");
+            }
             let mirror_planes = Water::reflection_planes(&mirrored_view, &far_projection);
             // The land is in the reflection of an exterior (`IsExterior` of the Direct3D 9
             // path) with `reflect_land`; an interior cell reflects its statics only.
@@ -4964,11 +4971,6 @@ impl Extension for DistantLand {
                 pass_report::note_result(part::MIRROR_STATICS, drawn);
             } else {
                 pass_report::note_skipped(part::MIRROR_STATICS, NO_STATICS);
-            }
-            if self.reflect_sky {
-                water.reflect_sky(scene, &mut mirror_pass, replay, frame);
-            } else {
-                pass_report::note_skipped(part::REFLECTED_SKY, "reflect_sky is off");
             }
             drop(mirror_pass);
             water.finish_reflection(&mut encoder);
