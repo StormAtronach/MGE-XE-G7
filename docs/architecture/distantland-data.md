@@ -305,7 +305,10 @@ bytes after the last block. No name makes a file refused. If the read fails, the
 length and the BLAKE3 of the bytes made now, or when the distant lights are off and the state
 lists none. The generator writes it in place inside the writer's dirty session, with the rest of
 a publication or alone (`lights::publish_alone`: the state not valid, the one file written, the
-state valid again). The pruner removes the file when the state does not list it, so with
+state valid again). A change of what the generator puts into the lights raises
+`LIGHTS_RECIPE_VERSION` (foundation `units`), a number of the format text of the output's key,
+so that two builds that write other lights for one world do not share an output (W643). The
+pruner removes the file when the state does not list it, so with
 `distant_lights = false` there is no file. An inventory without the entry stays valid. The
 setting is on in a new job. The file holds no baked light, and the setting `bake_lights` is gone.
 

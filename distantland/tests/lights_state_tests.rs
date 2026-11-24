@@ -188,10 +188,11 @@ fn put_the_lights_of_an_older_build(paths: &OutputPaths, bytes: &[u8]) {
     state::write_durable(&paths.generation_state_path, &old).unwrap();
 }
 
-/// The lights file needs no version for a change of what the generator puts in it: the start's
-/// check makes the lights and compares their digest with the state's entry. An output whose
-/// lights an older build made is served, the check says that it is not current, and the start
-/// writes the lights alone. The start after it writes nothing.
+/// Inside one output key, the lights file needs no version for a change of what the generator
+/// puts in it: the start's check makes the lights and compares their digest with the state's
+/// entry. An output whose lights an older build made is served, the check says that it is not
+/// current, and the start writes the lights alone. The start after it writes nothing. (Between
+/// builds, `LIGHTS_RECIPE_VERSION` in the key's format text keeps the outputs apart: W643.)
 #[test]
 fn the_lights_of_an_older_build_are_written_again_alone_at_the_start() {
     let root = TempDir::new().unwrap();
