@@ -430,6 +430,11 @@ Differences from MGE XE on Direct3D 9 that are by design, not issues:
   sun's view from the world's origin, so the shadow's edges stay in place when the camera
   moves. A pixel takes the cascade of its distance along the view axis and blends with the
   next one over the last 10 % of the slice; the last cascade fades out to the draw distance.
+  The distant statics cast in the last cascade at their coarsest level of detail: its texels
+  are too large to show the finer ones. A static with no triangles at that level takes the
+  next finer one, never finer than the level of its distance. The parameter "Shadow: far
+  casters' detail" of the renderer's parameters window sets it: 2 (the coarsest, the start),
+  1, or 0 (the level of the distance, as the other cascades).
 - A skinned shape takes every authored influence. On Direct3D 9 a vertex has at most 4, so a
   picture differs on a triangle with over 4 bones across its vertices.
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that

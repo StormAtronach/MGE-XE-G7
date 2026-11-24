@@ -50,6 +50,9 @@ pub const STATICS_MARGIN: &str = "statics.margin";
 /// The shadow on the grass: 2 ends it as the shadow of the ground (the fade at the edge of
 /// the shadow map and in the fog), 1 as the Direct3D 9 path (no fade), 0 none.
 pub const GRASS_SHADOW: &str = "grass.shadow";
+/// The least level of detail of the distant statics that cast in the last cascade of the
+/// shadow map: 2 the coarsest, 0 the level of the distance only (W437 step 2).
+pub const SHADOW_FAR_LEVEL: &str = "shadow.far_level";
 /// The light of a particle: 1 each pixel, 0 the four corners of its quads. It starts from the
 /// setting `distant_land.per_pixel_particles` ([`Tunables::start_at`]).
 pub const PARTICLES: &str = "lights.particles";

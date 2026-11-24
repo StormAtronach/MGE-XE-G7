@@ -1809,6 +1809,9 @@ pub struct Statics {
     /// [`super::live_parts`]): [`super::live_parts::NOCULL_BANDS`] and
     /// [`super::live_parts::NOCULL_VIEW`]. The handoff goes with the eye of the set. 0 runs all.
     no_cull: u32,
+    /// The least level of detail of the casters of the last cascade of the shadow map (0, 1 or 2;
+    /// the tunable `shadow.far_level`, [`Statics::set_far_level`]).
+    far_level: u32,
     /// The core mods of the session: the shadow hooks of the grass shader at its first build
     /// (`core_mods.rs`).
     core_mods: super::core_mods::Shared,
@@ -2068,6 +2071,7 @@ impl Statics {
             alpha_to_coverage: document.settings().graphics.transparency_antialiasing,
             alpha_to_coverage_setting: document.settings().graphics.transparency_antialiasing,
             no_cull: 0,
+            far_level: 0,
             core_mods: super::core_mods::Shared::built_in(),
             loading: Some(receiver),
             catalog: None,
@@ -3347,6 +3351,12 @@ impl Statics {
         Ok(self.grass_draws.len())
     }
 
+    /// The least level of detail of the casters of the last cascade of the shadow map, from the
+    /// tunable `shadow.far_level` in each frame: 0 the level of the range, 2 the coarsest.
+    pub fn set_far_level(&mut self, level: u32) {
+        self.far_level = level.min(2);
+    }
+
     /// A wait for the statics is open: the merged subsets that arrive in it are counted apart
     /// from the arrivals in play.
     pub fn set_waiting(&mut self, waiting: bool) {
@@ -3677,6 +3687,7 @@ impl Statics {
                                     cull_set.eye,
                                     cull_set.fog_end,
                                     tests_off(cull_set.set, self.no_cull),
+                                    least_level(cull_set.set, self.far_level),
                                 );
                                 culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
                                 mark_prepared(&mut self.prepared, cull_set.set);
@@ -3742,6 +3753,7 @@ impl Statics {
                 cull_set.eye,
                 cull_set.fog_end,
                 tests_off(cull_set.set, self.no_cull),
+                least_level(cull_set.set, self.far_level),
             ),
         );
         scene.commands.stamps().end(&mut encoder, at);
@@ -4185,6 +4197,7 @@ impl Statics {
                         frame.eye,
                         frame.fog_end,
                         tests_off(set, self.no_cull),
+                        least_level(set, self.far_level),
                     ),
                 );
                 return Ok(Self::draw_chosen(
@@ -4200,6 +4213,7 @@ impl Statics {
 
         // The places chosen on the CPU.
         let off = tests_off(set, self.no_cull);
+        let least = least_level(set, self.far_level) as usize;
         let bands_off = off & super::live_parts::NOCULL_BANDS != 0;
         let view_off = off & super::live_parts::NOCULL_VIEW != 0;
         let gone_before = frame.eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL;
@@ -4245,17 +4259,19 @@ impl Statics {
                         stats.frustum += 1;
                         continue;
                     }
-                    // The level of detail by the distance; past its tier with the bands' test off,
-                    // the finest when that level has no triangles.
-                    let faces = match if range <= settings.band_ends[0] + instance.radius {
-                        resident.faces[0]
+                    // The level of detail by the distance, raised to the set's least level
+                    // ([`raised_faces`]); past its tier with the bands' test off, the finest when
+                    // that level has no triangles.
+                    let level = if range <= settings.band_ends[0] + instance.radius {
+                        0
                     } else if range <= settings.band_ends[1] + instance.radius {
-                        resident.faces[1]
+                        1
                     } else {
-                        resident.faces[2]
-                    } {
+                        2
+                    };
+                    let faces = match resident.faces[level] {
                         0 if bands_off => resident.faces[0],
-                        faces => faces,
+                        _ => raised_faces(resident.faces, level, least),
                     };
                     if faces != 0 {
                         self.draws.push((subset.texture, instance.subset, *index, faces));
@@ -4340,19 +4356,26 @@ fn world_places(catalog: &Catalog, world: &World) -> Vec<(u32, u32)> {
 
 /// The values of the culling of a set: the planes, the eye with the view range of the game in
 /// w, the ends of the tiers and of the fog, the handoff, and the tests that a test leaves out
-/// (`tests_off`, [`tests_off`]; in `limits.y`, 0 for none).
+/// (`tests_off`, [`tests_off`]; in `limits.y`, 0 for none), and the least level of detail of the
+/// set's places (`least_level`, [`least_level`]; in `limits.z`).
 fn cull_values(
     settings: &Settings,
     planes: [[f32; 4]; 6],
     eye: [f32; 4],
     fog_end: f32,
     tests_off: u32,
+    least_level: u32,
 ) -> cull::CullUniforms {
     cull::CullUniforms {
         planes,
         eye: [eye[0], eye[1], eye[2], 0.0],
         bands: [settings.band_ends[0], settings.band_ends[1], settings.band_ends[2], fog_end],
-        limits: [eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL, tests_off as f32, 0.0, 0.0],
+        limits: [
+            eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL,
+            tests_off as f32,
+            least_level as f32,
+            0.0,
+        ],
         counts: [0; 4],
     }
 }
@@ -4362,6 +4385,32 @@ fn cull_values(
 /// view's set 0, none for the other sets.
 fn tests_off(set: usize, no_cull: u32) -> u32 {
     if set == 0 { no_cull } else { 0 }
+}
+
+/// The least level of detail of the places of `set`: `far_level` for the casters of the last
+/// cascade of the shadow map, whose texels are too large to show the finer levels (W437 step 2),
+/// 0 (the level of the range) for every other set.
+fn least_level(set: usize, far_level: u32) -> u32 {
+    if set == SHADOW_SETS[super::shadow::CASCADES - 1] {
+        far_level
+    } else {
+        0
+    }
+}
+
+/// The triangles of a place whose range gives `level`, raised to the set's least level `least`:
+/// the triangles of `least`, or of the next finer level when it has none, never finer than
+/// `level`. A place with no triangles at `level` stays without. The shader of the cull does the
+/// same (`fn cull` of `cull.rs`).
+fn raised_faces(faces: [u32; 3], level: usize, least: usize) -> u32 {
+    if faces[level] == 0 || least <= level {
+        return faces[level];
+    }
+    (level..=least.min(2))
+        .rev()
+        .map(|at| faces[at])
+        .find(|&count| count != 0)
+        .unwrap_or(0)
 }
 
 /// The values of the draws of a set (group 1).
@@ -5194,7 +5243,9 @@ mod shader_tests {
 #[cfg(test)]
 mod cull_value_tests {
     use super::super::live_parts::{NOCULL_BANDS, NOCULL_VIEW};
-    use super::{HANDOFF, HANDOFF_BAND, HANDOFF_CULL, Settings, cull_values, tests_off};
+    use super::{
+        HANDOFF, HANDOFF_BAND, HANDOFF_CULL, SHADOW_SETS, Settings, cull_values, least_level, raised_faces, tests_off,
+    };
 
     fn settings() -> Settings {
         Settings {
@@ -5211,7 +5262,14 @@ mod cull_value_tests {
     /// eye, as before.
     #[test]
     fn without_the_tune_every_test_runs() {
-        let values = cull_values(&settings(), [[0.0; 4]; 6], [1.0, 2.0, 3.0, 7168.0], 50000.0, tests_off(0, 0));
+        let values = cull_values(
+            &settings(),
+            [[0.0; 4]; 6],
+            [1.0, 2.0, 3.0, 7168.0],
+            50000.0,
+            tests_off(0, 0),
+            0,
+        );
         assert_eq!(values.limits, [7168.0 - HANDOFF - HANDOFF_BAND - HANDOFF_CULL, 0.0, 0.0, 0.0]);
         assert_eq!(values.eye, [1.0, 2.0, 3.0, 0.0]);
     }
@@ -5230,11 +5288,48 @@ mod cull_value_tests {
             [0.0, 0.0, 0.0, 7168.0],
             50000.0,
             tests_off(0, off),
+            0,
         );
         assert_eq!(values.limits[1], 3.0);
         assert_eq!(values.limits[0], 7168.0 - HANDOFF - HANDOFF_BAND - HANDOFF_CULL);
         // The null: a set of the shadow map with the tune's bits would draw out of its view.
-        assert_ne!(cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, off).limits[1], 0.0);
+        assert_ne!(
+            cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, off, 0).limits[1],
+            0.0
+        );
+    }
+
+    /// W437 step 2: the least level goes into limits.z for the last cascade's set only; the
+    /// main view, the mirror and cascades 0 to 2 keep the level of the range.
+    #[test]
+    fn the_least_level_goes_to_the_last_cascade_only() {
+        let last = SHADOW_SETS[3];
+        assert_eq!(least_level(last, 2), 2);
+        for set in [0, 1, SHADOW_SETS[0], SHADOW_SETS[1], SHADOW_SETS[2], 9] {
+            assert_eq!(least_level(set, 2), 0, "set {set}");
+        }
+        let values = cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, 0, least_level(last, 2));
+        assert_eq!(values.limits[2], 2.0);
+        let main = cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, 0, least_level(0, 2));
+        assert_eq!(main.limits[2], 0.0);
+    }
+
+    /// The rule of the CPU walk, as the shader's: raised to the least level, a level with no
+    /// triangles keeps the next finer one, never finer than the level of the range, and a place
+    /// with no triangles at that level stays without.
+    #[test]
+    fn the_raised_level_falls_back_to_finer_ones_only_down_to_the_range() {
+        assert_eq!(raised_faces([100, 40, 10], 0, 0), 100);
+        assert_eq!(raised_faces([100, 40, 10], 0, 2), 10);
+        assert_eq!(raised_faces([100, 40, 0], 0, 2), 40);
+        assert_eq!(raised_faces([100, 0, 0], 0, 2), 100);
+        assert_eq!(raised_faces([100, 0, 10], 0, 1), 100);
+        assert_eq!(raised_faces([100, 40, 0], 1, 2), 40);
+        // A far place with no faces2 draws nothing, also with a least level.
+        assert_eq!(raised_faces([100, 40, 0], 2, 2), 0);
+        assert_eq!(raised_faces([100, 40, 0], 2, 0), 0);
+        // A least level finer than the range changes nothing.
+        assert_eq!(raised_faces([100, 40, 10], 2, 1), 10);
     }
 }
 

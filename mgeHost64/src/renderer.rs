@@ -4796,6 +4796,7 @@ impl Extension for DistantLand {
                 });
             }
             statics.set_waiting(self.arrival.is_some());
+            statics.set_far_level(self.tunables.get(tunables::SHADOW_FAR_LEVEL).round().max(0.0) as u32);
             pass_report::note_result(part::STATICS_CULL, statics.prepare(scene, &sets));
         } else {
             pass_report::note_skipped(part::STATICS_CULL, "no distant statics");
