@@ -2,79 +2,57 @@
 
 The wgpu renderer of MGE XE runs the shader chain of `mgeXE.toml` (`[shaders] chain`) with
 shaders written in WGSL. An effect file of Direct3D 9 (`.fx`, HLSL) does not run there. For
-each name of the chain the renderer takes, in this order:
+each name of the chain the renderer takes the file `Data Files/shaders/XEshaders/<name>.wgsl`.
+A name with no such file is skipped, also when a file `<name>.fx` is there: the log has the
+line `post: no file <name>.wgsl; skipped`, and `mgeXE-shaders.txt` has "The wgpu renderer has
+no file <name>.wgsl." The renderer has no copy of a shader of its own.
 
-1. the file `Data Files/shaders/XEshaders/<name>.wgsl`, when there is one;
-2. its own port of the stock shader with that name;
-3. nothing: the log says that the shader was skipped.
+MGE XE's package has these files in `Data Files/shaders/XEshaders`, beside the `.fx` files of
+the same names:
+- the nine stock shaders: `Bloom Fine.wgsl`, `Bloom Soft.wgsl`, `Depth of Field.wgsl`,
+  `Eye Adaptation (HDR).wgsl`, `SSAO Fast.wgsl`, `SSAO HQ.wgsl`, `Sunshafts.wgsl`,
+  `Underwater Effects.wgsl` and `Underwater Interior Effects.wgsl`. Each has the switches and
+  the numbers of its `.fx` as it ships (for example the quality 3 of Bloom Soft);
+- three shaders of the renderer, with methods that the pass model of Direct3D 9 did not
+  allow: `Bloom S_A.wgsl` (a chain of half-size levels, after Jimenez 2014), `SSAO S_A.wgsl`
+  (ground-truth ambient occlusion at half size, after Jimenez 2016) and
+  `Depth of Field S_A.wgsl` (a thin lens with the near and the far field apart, at half size).
+  A chain names them like any other; MGE XE on Direct3D 9 has no file of these names and
+  skips them.
 
-The stock shaders with a port: SSAO Fast, SSAO HQ, Sunshafts, Depth of Field, Bloom Fine,
-Bloom Soft, Eye Adaptation (HDR), Underwater Effects, Underwater Interior Effects. A port has
-the switches of the file as it ships (for example the quality 3 of Bloom Soft).
+The shaders of mods come in shader packs. A pack is a small mod `<Mod> - wgpu shaders` with the
+`.wgsl` files of the mod's shaders (the folders of `ports/` in the repository), installed after
+the mod. A mod without its pack runs no shader on wgpu: the log names each one that is skipped.
+A mod's file with the name of a stock shader (the Sunshafts of the STEP Shaders Compilation and
+of Watch the Skies, the Eye Adaptation (HDR) and SSAO HQ of STEP, Krokantor's Underwater
+Effects) has a `.wgsl` file of that name in the mod's pack: the pack must be after MGE XE in the
+mod order, as the mod's `.fx` is, so that its file wins. Without the pack, the stock shader of
+our package runs.
 
-Shaders of mods with a port: MGG SSAO and MGG darker interiors (Morrowind Graphics Guide
-Shaders), ColorMood (STEP Shaders Compilation), heathaze (Heat Haze), Special Process,
-oj_me_fog_box (Magicka Expanded), tew_fogbox (Vapourmist), skoomaesthesia (Skoomaesthesia),
-Disorient (Kogoruhn Expanded), Invisibility (MM - Enhanced Invisibility), InspectIt/Bokeh
-(Inspect It), ashfall (Ashfall), Lens Effects and Cinematic Bokeh DoF (Outlander
-Configuration), film, deband_fogaware, Bloom Soft Sky and alternatebloom, gammavtdt (STEP
-Shaders Compilation), the 23 shaders of Joy of Painting (`jop_*`), and Ultra Bloom and
-XERO-lut (Ultra Bloom; XERO-lut reads the colour table `Textures/XERO-lut.tga` of the mod).
-On wgpu, Ultra Bloom takes its exposure from the night and the cell: 1 in the day, 2 at
-night, 1.5 in an interior. The mod's menu values Exposure, Interior exposure bonus and Night
-exposure bonus do not act on wgpu; its other values do. Files with the name
-of a stock shader and other code have a port of their own, found by the code of the file:
-Eye Adaptation (HDR), SSAO HQ and Sunshafts of the STEP Shaders Compilation, Sunshafts of
-Watch the Skies, Underwater Effects of Krokantor's Enhanced Water Shader.
+The packs: Morrowind Graphics Guide Shaders (MGG SSAO, MGG darker interiors, film,
+deband_fogaware, Bloom Soft Sky), STEP Shaders Compilation (ColorMood, gammavtdt,
+alternatebloom, and its files with the names of stock shaders), Heat Haze (heathaze),
+Outlander Configuration (Special Process, Lens Effects, Cinematic Bokeh DoF), Magicka Expanded
+(oj_me_fog_box), Vapourmist (tew_fogbox), Skoomaesthesia (skoomaesthesia), Kogoruhn Expanded
+(Disorient), MM - Enhanced Invisibility (Invisibility), Inspect It (InspectIt/Bokeh), Modern
+Lockpicking, Ashfall (ashfall), Joy of Painting (the 23 shaders `jop_*`), Ultra Bloom (Ultra
+Bloom and XERO-lut; XERO-lut reads the colour table `Textures/XERO-lut.tga` of the mod), CRT
+Shader (CRT, CRT Zoomed Out), Darker Nights, Watch the Skies (the current and the older
+version), Krokantor's Enhanced Water Shader, and Eternal Shine. `ports/README.md` lists them
+with their mods. On wgpu, Ultra Bloom takes its exposure from the night and the cell: 1 in the
+day, 2 at night, 1.5 in an interior. The mod's menu values Exposure, Interior exposure bonus and
+Night exposure bonus do not act on wgpu; its other values do.
 
-Mods with a shader pack: a pack is a small mod `<Mod> - wgpu shaders` with the `.wgsl` files
-of the mod's shaders (the folders of `ports/` in the repository), installed after the mod.
-Eternal Shine has the pack "Eternal Shine - wgpu shaders", and runs on wgpu only with it: its
-`Eternal Shine.wgsl` gives a glow around each light from the lights of the frame, without the
-mod's Lua. The mod's menu does not act on wgpu; the values are the settings of the file (see
-"Settings"), with the Lua's defaults: `radmult` 0.3, `int` 0.25, `ext` 0.4, `rain` 0.5, and
-`near_eye` 100. A line of Lua sets one, for example
-`mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`. A light gives a glow only when a
-draw that it lights is in view, and a light within `near_eye` units of the eye gives none (the
-torch of the player in first person).
+Eternal Shine runs on wgpu only with its pack: its `Eternal Shine.wgsl` gives a glow around
+each light from the lights of the frame, without the mod's Lua. The mod's menu does not act on
+wgpu; the values are the settings of the file (see "Settings"), with the Lua's defaults:
+`radmult` 0.3, `int` 0.25, `ext` 0.4, `rain` 0.5, and `near_eye` 100. A line of Lua sets one,
+for example `mge.shaders.find({ name = "Eternal Shine" }).radmult = 0.4`. A light gives a glow
+only when a draw that it lights is in view, and a light within `near_eye` units of the eye gives
+none (the torch of the player in first person).
 
-## A port and the effect file of a mod
-
-A mod does not have to change for its Direct3D 9 shader to run. For a name of the chain the
-renderer reads the file `Data Files/shaders/XEshaders/<name>.fx` that MGE XE on Direct3D 9
-would load (the file of MGE XE, or the file of a mod that replaces it), and compares its
-code with the code of the file that the port was made from. The comments, the space, the
-values of the numbers and the annotations of the technique do not count as code.
-
-- The same code, the same numbers: the port runs.
-- The same code, other numbers (a line `#define NAME value`, or `static const float NAME =
-  value;`): the port takes the numbers of the file, and the log names them. A number that
-  the port cannot take (a sample count that a table of the port goes with) is named too.
-- The same code, another category in the technique (an older copy of a stock file has
-  none): the port takes the place of the file in the chain.
-- Other code: the port of that name runs as it is, and the log says that the file needs a
-  port of its own. A file with the name of a stock shader and other code (an older version,
-  a rewrite) is this case.
-- No port of the name: the shader is skipped, and the log says so.
-
-The log lines start with `post:`. A shader without a category stays where the chain has
-it, as on Direct3D 9: it takes the place of the shader with a category before it.
-
-The renderer also has three shaders of its own, with methods that the pass model of
-Direct3D 9 did not allow: `Bloom S_A` (a chain of half-size levels, after Jimenez 2014),
-`SSAO S_A` (ground-truth ambient occlusion at half size, after Jimenez 2016) and
-`Depth of Field S_A` (a thin lens with the near and the far field apart, at half size). A
-chain names them like any other; MGE XE on Direct3D 9 has no file of these names and skips
-them.
-
-MGE XE's package has these files in `Data Files/shaders/XEshaders`:
-- the three shaders above, `Bloom S_A.wgsl`, `SSAO S_A.wgsl` and `Depth of Field S_A.wgsl`;
-- five stock shaders, beside their `.fx`: `Bloom Fine.wgsl`, `Bloom Soft.wgsl`,
-  `Depth of Field.wgsl`, `SSAO Fast.wgsl` and `Underwater Interior Effects.wgsl`.
-
-The renderer runs these files; it has no other copy of them, so a missing file skips its
-shader. The four other stock shaders (`Eye Adaptation (HDR)`, `SSAO HQ`, `Sunshafts`,
-`Underwater Effects`) are built in: mods ship files of these names.
+The log lines start with `post:`. A shader without a category stays where the chain has it, as
+on Direct3D 9: it takes the place of the shader with a category before it.
 
 So a mod can ship a `.wgsl` file beside its `.fx` file, with the same name: MGE XE on
 Direct3D 9 uses the `.fx`, the wgpu renderer uses the `.wgsl`.
@@ -186,7 +164,7 @@ the header too. Without a `.wgsl` file, the Lua object has the variables of the 
 `my_shader.fx` (its names and types, as on Direct3D 9). When both files are there, the
 `.wgsl` file gives the Lua object, as the renderer runs it; a mod's set of a variable that
 only the effect file has does nothing. The renderer loads the shader of that name
-when a mod loads it: the file `my_shader.wgsl`, or its port. A shader that a mod loaded is
+when a mod loads it: the file `my_shader.wgsl`. A shader that a mod loaded is
 on until the mod turns it off, and has its place in the chain by its category, as on
 Direct3D 9.
 
@@ -196,7 +174,7 @@ The shaders of the chain of the settings are there too: `mge.shaders.find` and
 shader of the chain runs as the settings have it until a mod changes it.
 
 `shader:reload()` works too: the renderer reads the files of the shader again (its WGSL
-file or its port, the numbers of its effect file, its textures), and the variables go back
+file and its textures), and the variables go back
 to the values of the file, as a reload on Direct3D 9 makes the effect again. A mod that
 writes a texture while the game runs (a canvas, a colour table, a mask) calls it to show
 the new texture; an author of a shader calls it after a change of the `.wgsl` file, and a
@@ -228,9 +206,6 @@ is read with `_` after its name: `distance_()`.
   3 numbers, set from Lua as one list) is `name vec3[N]`.
 - A shader has room for 256 values or vectors in all. A variable that the WGSL side does
   not name is not read; the log says so one time.
-- A variable of a built-in port with one value takes the number of the effect file as its
-  value before a mod sets it, when the file is a copy of the file of the port with other
-  numbers (as the port takes the other numbers of such a file).
 
 ## Settings
 

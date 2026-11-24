@@ -50,8 +50,6 @@ mod live_parts;
 mod lua_shapes;
 mod menu_keep;
 mod post;
-mod post_jop;
-mod post_look;
 mod ripples;
 mod shader_check;
 mod shadow;

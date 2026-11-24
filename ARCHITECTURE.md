@@ -555,7 +555,7 @@ Every doc in the repository. The runtime deep-dives are also linked from the top
 | --- | --- |
 | [`mod-metadata-guide.md`](docs/mod-metadata-guide.md) | Per-plugin `-metadata.toml` files that steer distant-land generation. |
 | [`water-shaders.md`](docs/water-shaders.md) | The WGSL interface of mod water shaders for the wgpu renderer. |
-| [`POST_SHADERS.md`](mgeHost64/POST_SHADERS.md) | Post shaders on the wgpu renderer: the WGSL ports and the interface for mod shaders. |
+| [`POST_SHADERS.md`](mgeHost64/POST_SHADERS.md) | Post shaders on the wgpu renderer: the `.wgsl` files, the packs and the interface for mod shaders. |
 
 ### Distant-land generator ([`distantland/`](distantland/))
 
