@@ -170,10 +170,10 @@ Recording order in the main encoder; the deferred buffers run before all of it.
 flowchart TD
     subgraph deferred["Deferred command buffers (run first, same submit)"]
         R["ripples: rain and player waves (Rgba16Float ping-pong)"]
-        C["distant statics, cull: compute per set (main, mirror, 2 shadow layers)"]
+        C["distant statics, cull: compute per set (main, mirror, 4 shadow cascades)"]
         L["distant lights, cull: compute"]
-        S["shadow map: land + statics into R16Float atlas, then 2 blur passes"]
-        W["water reflection: land, statics (mirror set), sky replay; mip levels"]
+        S["shadow map: for each of 4 cascades, land + statics into the cast texture, then 2 blur passes into its square of the R16Float atlas"]
+        W["water reflection: sky replay (no depth write), then land and statics (mirror set); mip levels"]
     end
     subgraph main["Main encoder"]
         P0["game pass: sky draws (back buffer + D24S8; multisampled targets resolved into the back buffer with graphics.anti_aliasing)"]
@@ -344,8 +344,8 @@ the frame, each with its own uniform buffer:
 | --- | --- | --- | --- |
 | main | 0 | the land's (far plane at the draw distance) | land, statics set 0, glows |
 | mirror | 1 | the mirror of the water | land and statics in the reflection |
-| shadow 0, shadow 1 | 2, 3 | the layers of the shadow map | land shadow, statics shadow |
-| game | 4 | the game's | grass, water plane, dry spaces, caustics, water volumes |
+| shadow 0 to shadow 3 | 2 to 5 | the cascades of the shadow map | land shadow, statics shadow |
+| game | 6 | the game's | grass, water plane, dry spaces, caustics, water volumes |
 
 | Binding | Holds | Stage |
 | --- | --- | --- |
@@ -383,7 +383,7 @@ Vertices: 20 bytes (`Float32x3`, `Unorm8x4`, `Unorm8x4`), indices `Uint32`.
 | 0 | view | as above | view (main or mirror) |
 | 1 | distant land | 0 uniform `Land` (VF), 1-5 textures atlas, material, flags, albedo, patterns, 6 sampler (F) | fixed |
 
-**"distant land shadow"**: the view group only (one per shadow layer). R16Float target.
+**"distant land shadow"**: the view group only (one per cascade). R16Float target.
 
 **"distant statics"** (back/front cull x fill/lines; `make_gpu` in `renderer/statics.rs`).
 Vertices: 20 bytes (`Float16x4` position and palette number, `Unorm8x4` normal, `Unorm8x4`
@@ -393,22 +393,24 @@ colour, `Float16x2` uv); instance 80 bytes (locations 4-8); indices `Uint16`. Dr
 | Group | Layout | Bindings | Rate |
 | --- | --- | --- | --- |
 | 0 | view | as above | set (the view of the same number) |
-| 1 | distant statics | 0 uniform `Set` (range, handoff) (VF), 1 storage palettes (V), 2 sampler (F) | set (main, mirror, shadow 0, shadow 1) |
+| 1 | distant statics | 0 uniform `Set` (range, handoff) (VF), 1 storage palettes (V), 2 sampler (F) | set (main, mirror, shadow 0 to shadow 3) |
 | 2 | distant statics, textures | 0 texture (F) | texture |
 
 A subset shows as soon as it is on the GPU: the fade-in of 2026-10-15 is gone (W53, the
 owner's D398). The instance data still has the subset number in `subset.w`.
 
-**"distant statics shadow"**: the same pipeline layout, with the view of its shadow layer.
-R16Float target.
+**"distant statics shadow"**: the same pipeline layout, with the view of its cascade.
+R16Float target. The casters of the last cascade take at least the level of detail of the
+tunable `shadow.far_level` (the `limits.z` of their cull).
 
 **"grass"** (fill, lines): group 0 the game view; group 1 "grass" (uniform `Grass`, sampler,
 the shadow atlas and its clamp sampler; frame); group 2 the statics texture layout (texture
 run). The grass reads the view projection, the eye, the sun direction and the linear fog
 (`u.fog.zw`) from the view. Its own uniform has the end of the grass, the fog colour of the
 near cells, its sun colour and ambient light (also in a frame without a sun direction, where
-the view has none), the wind, the player, the two world-to-layer matrices of the shadow map
-and the looks. The atlas is a 1 x 1 texture until the session has a shadow map. Instance 64
+the view has none), the wind, the player, the matrices from a position less the eye to the
+four cascades of the shadow map, the far ends of their slices, their depth ranges, the view
+axis, and the looks. The atlas is a 1 x 1 texture until the session has a shadow map. Instance 64
 bytes (locations 4-7; 7.x is the share of the subset that is in, computed on the CPU).
 
 **"distant statics, cull"** (compute, `renderer/statics/cull.rs`; entries `cull` and
@@ -432,7 +434,9 @@ or pulse (W449 step 4; the lamps' light moves).
 ### 4.3 Helper: shadows
 
 **"shadow blur"** and **"shadow debug"** (`renderer/shadow.rs`) share one layout: 0
-uniform (VF), 1 texture, 2 sampler (F). Blur: 2 groups, one per pass, R16Float. Debug: with
+uniform (VF), 1 texture, 2 sampler (F). Blur: 2 groups, one per pass (along x into the blur
+texture, along y into the cascade's square of the atlas), 2 passes for each cascade, R16Float.
+Debug: with
 the debug view `shadow-map`.
 
 ### 4.4 Helper: water
