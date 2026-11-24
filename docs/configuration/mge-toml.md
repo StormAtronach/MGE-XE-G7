@@ -224,7 +224,7 @@ reads them.
   moons, their shadow shapes and the sun's glare. `"engine"` reads level 0, as the engine
   does: sharp, but a large texture drawn small, such as a 2048 moon, changes at each small
   move of the camera. `"area"` gives each pixel the mean of the texels under it, from a level
-  that is still sharper than the pixel: as sharp, and steady. The stars and the clouds come
+  that is still sharper than the pixel: steady. The stars and the clouds come
   from NIF files whose maps filter between levels already, and they do not change. The draws
   of the sky are known by the object of the draw (the weather's sky nodes), not by the
   texture's name. With `"engine"`, a chain that `graphics.mipmaps_for_one_level` made for
