@@ -36,6 +36,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod arrival;
 mod blend;
 mod caustics;
 mod core_files;
@@ -88,6 +89,7 @@ mod part {
     pub const STATICS_CULL: &str = "distant statics: the GPU cull of all sets";
     pub const GLOW_CULL: &str = "distant lights: the glow cull";
     pub const GLOWS: &str = "distant lights";
+    pub const GLOWS_BLEND: &str = "distant lights: the points in the blend";
     pub const SHADOW_MAP: &str = "shadow map";
     pub const REFLECTION: &str = "water reflection";
     pub const REFLECTION_FILL: &str = "water reflection fill";
@@ -119,8 +121,8 @@ mod part {
 }
 use nirender_wgpu::debug_lines::{LineGroup, LineList, LineSources};
 use nirender_wgpu::{
-    Additions, DrawData, DrawFacts, Extension, FrameParameters, LightData, PictureRequest, ReadingCall, Reads, Replay,
-    SceneView, ShaderText, Status, TableShade,
+    Additions, DrawData, DrawFacts, Extension, FrameParameters, HostReadiness, LightData, PictureRequest, ReadingCall,
+    Reads, Replay, SceneView, ShaderText, Status, TableShade,
 };
 use post::{Post, Variables};
 use shadow::Shadow;
@@ -260,8 +262,9 @@ const STATUS_ID: u32 = 9;
 const MESSAGE_DISTANT_LAND: u32 = 1;
 const LOADED: u32 = 1;
 const ARRIVED: u32 = 2;
-/// The longest wait for the statics after a game load or a teleport, from the end of the load
-/// of the data: then [`ARRIVED`] goes anyway, as the bootstrap of Direct3D 9 gives up.
+/// The longest wait for the statics and the host's readiness after a game load or a teleport
+/// ([`arrival`]), from the end of the load of the data: then [`ARRIVED`] goes anyway, as the
+/// bootstrap of Direct3D 9 gives up.
 const ARRIVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The place of the player after a teleport, or of a wait of a game load
 /// (`Deviceless::prefetchDistantLand`; a teleport comes from MWSE's native event 5 and holds
@@ -1511,6 +1514,10 @@ pub struct DistantLand {
     /// last ARRIVED.
     arrival_watch: Option<load_watch::ArrivalWatch>,
     watch_until: Option<Instant>,
+    /// What the host still makes, from its last `host_readiness`: ARRIVED waits for it (W640 part 3).
+    readiness: HostReadiness,
+    /// The times of the conditions of the wait that runs, for the line of its ARRIVED.
+    arrival_times: arrival::Times,
     /// The last frame that ended: the `frame` of the scene of the last `after_frame`.
     ended_frame: u64,
     /// While the window of the load watch is open: the frame of the lines now (the host's
@@ -1544,6 +1551,9 @@ pub struct DistantLand {
     water_looks: std::collections::HashMap<u32, water::Look>,
     /// The water among the distant statics in view in this frame, from `before_world`.
     far_water: Vec<water::FarWater>,
+    /// `before_world` chose the main view's glows of this frame: `draw_held` draws those in the
+    /// game's blend ([`distant_lights::GlowPart::InTheBlend`]).
+    blend_glows: bool,
     /// The triangles of the dry spaces from the game, until the water takes them.
     water_masks: Option<Vec<[f32; 3]>>,
     /// The triangles that the water took last: a reload of the core mods makes the water again,
@@ -2134,6 +2144,8 @@ impl DistantLand {
             load_watch: nirender_wgpu::switches::on("MGE_XE_LOAD_WATCH") == Some(true),
             arrival_watch: None,
             watch_until: None,
+            readiness: HostReadiness::default(),
+            arrival_times: arrival::Times::default(),
             ended_frame: 0,
             watch_now: None,
             volume_reflect_cells: settings.water.volume_reflection_cells,
@@ -2153,6 +2165,7 @@ impl DistantLand {
             reflection_kept,
             water_looks: std::collections::HashMap::new(),
             far_water: Vec::new(),
+            blend_glows: false,
             water_masks: None,
             water_masks_given: None,
             reloads_seen: 0,
@@ -3749,6 +3762,8 @@ impl Extension for DistantLand {
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
         self.frames_seen += 1;
+        // `before_world` of this frame chooses the glows again.
+        self.blend_glows = false;
         // A scene in the frame has the count of the frames that ended before it.
         self.set_watch_frame(scene.frame + 1);
         self.stop_without_hello();
@@ -4177,10 +4192,17 @@ impl Extension for DistantLand {
         Some(world_shader_text(&self.core_mods.world_hooks(), "of the core mods now"))
     }
 
+    /// What the host still makes, before `after_frame` and `messages` of the same frame: ARRIVED
+    /// waits for it (W640 part 3).
+    fn host_readiness(&mut self, ready: &HostReadiness) {
+        self.readiness = *ready;
+    }
+
     /// The events of the distant land for MGE XE (`distantLandReady` of its Lua), at the end
     /// of a frame: [`LOADED`] one time when the data of the session is loaded; [`ARRIVED`] after a
-    /// game load or a jump when the statics near the camera are there. A wait needs two world
-    /// frames: the first one asks for the statics of the new place.
+    /// game load or a jump when the statics near the camera are there and the host has made its
+    /// list of stage pipelines and its mip chains ([`arrival`]). A wait needs two world frames: the
+    /// first one asks for the statics of the new place.
     fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
         let loading = self.loading();
         if let Some(seconds) = self.slow_step.as_mut().and_then(|slow| slow.due(loading)) {
@@ -4205,32 +4227,29 @@ impl Extension for DistantLand {
             println!("distant land: ready (loaded)");
             self.messages_out.push(say(LOADED, 0));
         }
-        if let (Some((_, frames)), Some(watch)) = (self.arrival, self.arrival_watch.as_mut()) {
-            let settled = self.statics.as_ref().is_none_or(|statics| statics.settled());
-            watch.note(
-                Instant::now(),
-                self.ended_frame,
-                self.loading.is_none() && statics_loaded,
-                frames,
-                settled,
-            );
+        // The facts of the wait at the end of this frame (W640 part 3: the host's readiness too).
+        let facts = self.arrival.map(|(_, frames)| arrival::Facts {
+            loaded: self.loading.is_none() && statics_loaded,
+            frames,
+            settled: self.statics.as_ref().is_none_or(|statics| statics.settled()),
+            ready: self.readiness,
+        });
+        if let (Some(facts), Some(watch)) = (facts, self.arrival_watch.as_mut()) {
+            watch.note(Instant::now(), self.ended_frame, &facts);
         }
-        if let Some((since, frames)) = self.arrival {
-            if self.loading.is_some() || !statics_loaded {
+        if let (Some((since, frames)), Some(facts)) = (self.arrival, facts) {
+            let now = Instant::now();
+            self.arrival_times.note(now, &facts);
+            if !facts.loaded {
                 // The wait counts from the end of the load of the data.
-                self.arrival = Some((Instant::now(), frames));
-            } else if frames >= 2
-                && (self.statics.as_ref().is_none_or(|statics| statics.settled()) || since.elapsed() >= ARRIVAL_TIMEOUT)
+                self.arrival = Some((now, frames));
+            } else if let decision @ (arrival::Decision::Arrived | arrival::Decision::AtTheLimit) =
+                arrival::decide(&facts, since.elapsed(), ARRIVAL_TIMEOUT)
             {
                 self.arrival = None;
                 println!(
-                    "distant land: ready (arrived) in {:.2} s{}",
-                    since.elapsed().as_secs_f32(),
-                    if self.arrival_serial != 0 {
-                        format!(", wait {}", self.arrival_serial)
-                    } else {
-                        String::new()
-                    }
+                    "{}",
+                    self.arrival_times.line(since, now, self.arrival_serial, decision, &facts)
                 );
                 if let Some(wait) = self.statics.as_mut().and_then(|statics| statics.take_wait()) {
                     println!("distant land: the wait: {wait}");
@@ -4775,7 +4794,8 @@ impl Extension for DistantLand {
         } else {
             pass_report::note_skipped(part::STATICS_CULL, "no distant statics");
         }
-        // The points of light of the distant lamps in the dark, past the handoff to the game.
+        // The points of light of the distant lamps in the dark, from the game's blend on: those
+        // in the blend draw after it (`draw_held`).
         let glows_skip = if self.debug_view.fog() {
             Some(debug_view::FOG_VIEW_OUT)
         } else {
@@ -4785,14 +4805,22 @@ impl Extension for DistantLand {
         if let Some(reason) = glows_skip {
             pass_report::note_skipped(part::GLOW_CULL, reason);
             pass_report::note_skipped(part::GLOWS, reason);
+            pass_report::note_skipped(part::GLOWS_BLEND, reason);
         } else {
             let frame = self.glow_frame(scene, eye_range, planes, &projection);
             match (self.lights.as_mut(), self.lit_block.as_ref()) {
                 (Some(lights), Some(block)) => {
                     pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, 0, block));
+                    self.blend_glows = true;
                 }
-                (None, _) => pass_report::note_skipped(part::GLOW_CULL, part::NO_LIGHTS),
-                (Some(_), None) => pass_report::note_skipped(part::GLOW_CULL, part::NO_LAMPS_HERE),
+                (None, _) => {
+                    pass_report::note_skipped(part::GLOW_CULL, part::NO_LIGHTS);
+                    pass_report::note_skipped(part::GLOWS_BLEND, part::NO_LIGHTS);
+                }
+                (Some(_), None) => {
+                    pass_report::note_skipped(part::GLOW_CULL, part::NO_LAMPS_HERE);
+                    pass_report::note_skipped(part::GLOWS_BLEND, part::NO_LAMPS_HERE);
+                }
             }
         }
 
@@ -4993,7 +5021,7 @@ impl Extension for DistantLand {
             match self.lights.as_mut() {
                 Some(lights) => {
                     pass.push_debug_group("distant lights");
-                    let drawn = lights.draw(pass, main_group, 0, scene.samples);
+                    let drawn = lights.draw(pass, main_group, 0, scene.samples, distant_lights::GlowPart::PastTheGame);
                     pass.pop_debug_group();
                     pass_report::note_result(part::GLOWS, drawn);
                 }
@@ -5153,7 +5181,7 @@ impl Extension for DistantLand {
             if let (Some(lights), Some(block)) = (self.lights.as_mut().filter(|lights| lights.has_glows()), block) {
                 pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, k + 1, block));
                 pass.push_debug_group("distant lights (view of its own)");
-                let glowed = lights.draw(pass, view_group, k + 1, scene.samples);
+                let glowed = lights.draw(pass, view_group, k + 1, scene.samples, distant_lights::GlowPart::All);
                 pass.pop_debug_group();
                 pass_report::note_result(part::GLOWS, glowed);
                 self.tier_views.glow_calls += 1;
@@ -5267,7 +5295,7 @@ impl Extension for DistantLand {
     }
 
     fn wants_held(&self) -> bool {
-        !self.far_water.is_empty() || self.sea_caustics().is_none()
+        !self.far_water.is_empty() || self.sea_caustics().is_none() || self.blend_glows
     }
 
     /// The grass, at the end of the world scene of the game: with the projection and the
@@ -5386,7 +5414,8 @@ impl Extension for DistantLand {
         water::volume_marked(facts.specular_power)
     }
 
-    /// The surfaces of water volumes that do not blend, and those that the engine did not
+    /// The points of light in the game's blend, after the blend and before the water. The
+    /// surfaces of water volumes that do not blend, and those that the engine did not
     /// queue, at the end of the world scene: they show what is under them. A surface that
     /// blends draws at its place in the engine's sorted queue (`held_sorted`).
     fn draw_held(
@@ -5396,6 +5425,9 @@ impl Extension for DistantLand {
         held: &[nirender_wgpu::HeldDraw],
         _replay: &mut dyn Replay,
     ) {
+        if self.blend_glows {
+            self.draw_blend_glows(scene, pass);
+        }
         pass_report::on_request(&[part::VOLUMES, part::SEA_CAUSTICS]);
         let frame = match self.volume_frame(scene) {
             Ok(frame) => frame,
@@ -5600,6 +5632,7 @@ impl DistantLand {
         let now = Instant::now();
         self.arrival = Some((now, 0));
         self.arrival_serial = serial;
+        self.arrival_times = arrival::Times::default();
         if self.load_watch {
             self.arrival_watch = Some(load_watch::ArrivalWatch::new(now, self.ended_frame + 1));
         }
@@ -6848,9 +6881,9 @@ impl DistantLand {
     }
 
     /// The values of the points of light for a view: `eye` has the view range of the game in w,
-    /// `planes` and `projection` are the view's (the land's projection). The points start at the
-    /// handoff to the game and are whole 512 units after it; their strength has the darkness of
-    /// the frame ([`lamp_grid::point_darkness`]).
+    /// `planes` and `projection` are the view's (the land's projection). The points fade in over
+    /// the game's blend ([`distant_lights::fade_band`]); their strength has the darkness of the
+    /// frame ([`lamp_grid::point_darkness`]).
     fn glow_frame(
         &self,
         scene: &SceneView,
@@ -6858,11 +6891,10 @@ impl DistantLand {
         planes: [[f32; 4]; 6],
         projection: &[f32; 16],
     ) -> distant_lights::GlowFrame {
-        let fade_end = eye[3] - 1800.0;
         distant_lights::GlowFrame {
             eye,
             planes,
-            fade: [fade_end - 512.0, fade_end],
+            fade: distant_lights::fade_band(eye[3]),
             draw_distance: self.draw_distance,
             screen: [
                 scene.target_size.0 as f32,
@@ -6876,6 +6908,24 @@ impl DistantLand {
                 self.tunables.get(tunables::POINT_GLASS),
             ],
         }
+    }
+
+    /// The points of light in the game's blend that `before_world` chose for the main view
+    /// ([`distant_lights::GlowPart::InTheBlend`]): with the game view and the depth of the game,
+    /// so that a point goes over the game's lamp as the blend takes the lamp away.
+    fn draw_blend_glows(&self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) {
+        let Some(lights) = self.lights.as_ref() else {
+            pass_report::note_skipped(part::GLOWS_BLEND, part::NO_LIGHTS);
+            return;
+        };
+        let Some(game_view) = self.view_binding.as_ref().and_then(|views| views.group(view::GAME)) else {
+            pass_report::note_skipped(part::GLOWS_BLEND, part::NOT_MADE);
+            return;
+        };
+        pass.push_debug_group("distant lights (in the blend)");
+        let drawn = lights.draw(pass, game_view, 0, scene.samples, distant_lights::GlowPart::InTheBlend);
+        pass.pop_debug_group();
+        pass_report::note_result(part::GLOWS_BLEND, drawn);
     }
 
     /// How much of the night there is: the environment record's night of the hour; before the

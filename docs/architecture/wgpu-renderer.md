@@ -78,7 +78,7 @@ reads it at each frame end and calls `MGE_StreamMessage(id, data, length)` of `d
 
 | Id | Message | Sent |
 | --- | --- | --- |
-| 1 | distant land: version 1, reason 1 loaded / 2 arrived, the serial of the wait it answers (0 none) | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` (or after 10 s) |
+| 1 | distant land: version 1, reason 1 loaded / 2 arrived, the serial of the wait it answers (0 none) | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` and the host's `HostReadiness` has no job of the list and of the mip chains left (`renderer/arrival.rs`; or after 10 s) |
 
 The wait of a game load (`Deviceless::waitForDistantLand`): the game sends record 10 and
 draws its loading bar until `ARRIVED` with that serial comes back (or 15 s). The frames of
@@ -168,13 +168,13 @@ flowchart TD
     end
     subgraph main["Main encoder"]
         P0["game pass: sky draws (back buffer + D24S8; multisampled targets resolved into the back buffer with graphics.anti_aliasing)"]
-        P1["before_world: distant land, statics set 0, glows"]
+        P1["before_world: distant land, statics set 0, glows past the far plane of the game"]
         P2["copies: picture before world, depth; game pass reopened, depth cleared"]
         P3["game world draws (game draw shader + extension frame group)"]
         P4["sorted blends of the table, where the engine flushes its queue in the world scene"]
         P5["after_world: grass; then the copy of the world depth for the post chain"]
         P6["blend pass: distant land under the game's picture"]
-        P7["draw_held: sea caustics, far water, water volumes"]
+        P7["draw_held: glows in the blend, sea caustics, far water, water volumes"]
         P8["water scene: class 10 replaced by the MGE water plane (dry-space stencil)"]
         P9["sorted blends of the table, at the end of the scene that flushes the queue"]
         P10["first-person draws"]
@@ -200,6 +200,7 @@ flowchart TD
     C -. indirect draws .-> W
     C -. indirect draws .-> S
     L -. glow list .-> P1
+    L -. glow list .-> P7
     P2 -. depth before the world .-> P7
     P2 -. depth before the world .-> P8
     P5 -. world depth .-> P7
@@ -225,11 +226,11 @@ they read the depth, the held draws get the copy of the world depth made for the
 | lights cull | `before_world` -> `DistantLights::prepare` | deferred compute | night, exterior, `lights.data` loaded |
 | shadow map | `before_world` | deferred ("shadow map", "shadow blur") | shadows on, distant cell |
 | water reflection | `before_world` | deferred ("water reflection", levels) | water in view |
-| land, statics, glows | `before_world` | game pass | distant cell |
+| land, statics, glows past the far plane | `before_world` | game pass | distant cell |
 | sorted blends (P4) | none: the host's table | game pass | the engine flushes its queue in the world scene |
 | grass | `after_world` | game pass | distant cell |
 | blend | `blend` | own pass, colour only | `before_world` drew |
-| caustics, far water, volumes | `draw_held` | game pass | held shapes or far water |
+| glows in the blend, caustics, far water, volumes | `draw_held` | game pass | held shapes, far water, or glows of `before_world` |
 | water plane | `draw_class` (class 10) | game pass | water cell |
 | sorted blends (P9) | none: the host's table | game pass | the queue open: at the end of the scene that flushes it |
 | volumes in place | `draw_held_in_place` | game pass | a surface with its own stencil, inside the sorted blends |
@@ -410,7 +411,11 @@ texture in a fixed order.
 **"distant lights, cull"** (compute, `renderer/distant_lights.rs`): group 0: uniform,
 sources, glow list, indirect arguments (atomics). **"distant lights, glows"**: group 0 the
 main view; group 1: uniform `Glow` (range, point, screen) (VF), glow list (V);
-`draw_indirect`, no vertex buffers, additive, no depth write. A glow is the point of light of
+`draw_indirect`, no vertex buffers, additive, no depth write. The vertex entry chooses the part
+(`GlowPart`): `vs_past` keeps the glows at and past the far plane of the game, drawn in
+`before_world` against the depth of the land; `vs_blend` keeps those before it, in the last
+512 units (the blend), drawn in `draw_held` with the game view and the depth of the game;
+`vs` keeps all, for a view of its own. A glow fades in over the blend. A glow is the point of light of
 W449 step 6: it shows only where the lamp's glowing part (the glow radius of its record) is
 under 2 pixels across. The glows are steady: the flags of a source give its glow no flicker
 or pulse (W449 step 4; the lamps' light moves).

@@ -4,10 +4,19 @@
 //! of its cell (`lamp_grid::lamp_block_key`), the glows and the lamps' light the same one (W630).
 //!
 //! - The points of light (the code's "glows"): a compute pass chooses the sources of the frame's
-//!   block with a mesh that are in the view, past the handoff to the game (where the game draws
-//!   the real light) and within the draw distance, and writes them into a list; one indirect
-//!   draw puts a small disc that faces the camera at each, added to the picture, with the
-//!   colour of the light and a paler core. A point stands in for a lamp's glass where the glass
+//!   block with a mesh that are in the view, from the start of the game's blend (512 units before
+//!   its far plane, `super::blend`) to the draw distance, and writes them into a list. Each
+//!   point is a small disc that faces the camera, added to the picture, with the colour of the
+//!   light and a paler core. A point fades in over the blend, as the game's lamp goes into the
+//!   distant land, and is whole from the far plane. The main view draws the list two times:
+//!   the points at and past the far plane before the world, against the depth of the land
+//!   ([`GlowPart::PastTheGame`]); the points in the blend after the blend, against the depth of
+//!   the game, over the game's lamp ([`GlowPart::InTheBlend`]). Two limits \[I\]: in the blend,
+//!   the depth of the game still holds what the blend fades out, so a point behind a wall that
+//!   is half faded is hidden whole; a view of its own draws all points before its world
+//!   ([`GlowPart::All`]), so the game's lamp covers those in the blend. The generator puts a
+//!   lamp at its light (the model's AttachLight node), as the engine does. A point stands in
+//!   for a lamp's glass where the glass
 //!   is too small to see: it shows only where the lamp's glowing part (the glow radius of its
 //!   record in the lights file) is under 2 pixels across, and it is whole from 1 pixel. A point
 //!   has a least size on the screen; it is dimmer then. It shows in the dark
@@ -172,8 +181,8 @@ const CULL_SHADER: &str = "
 struct Cull {
     planes: array<vec4f, 6>,
     eye: vec4f,
-    // x: where a glow starts (the handoff), y: where it is whole, z: the draw distance, w: not
-    // used.
+    // x: where a glow starts (the start of the game's blend), y: where it is whole (the game's
+    // far plane), z: the draw distance, w: not used.
     range: vec4f,
     // x: the sources of the cell's block, y: the first of them in `sources`.
     counts: vec4u,
@@ -255,12 +264,33 @@ fn fog_left(world: vec3f) -> f32 {
     return select(linear, exponential, u.flags.x > 0.5 && distance > g.range.x);
 }
 
+// All the points: a view of its own draws them before its world.
 @vertex fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Out {
+    return point(vertex, instance, 0.0);
+}
+
+// The points at and past the game's far plane: the main view draws them before the world,
+// against the depth of the land.
+@vertex fn vs_past(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Out {
+    return point(vertex, instance, 1.0);
+}
+
+// The points before the game's far plane, in its blend: the main view draws them after the
+// blend, against the depth of the game.
+@vertex fn vs_blend(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Out {
+    return point(vertex, instance, -1.0);
+}
+
+// The point of the glow `instance`. `side` is the side of the game's far plane (g.range.x) that
+// the draw keeps: 1 at and past it, -1 before it, 0 both.
+fn point(vertex: u32, instance: u32, side: f32) -> Out {
     let corners = array<vec2f, 6>(vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, 1.0));
-    // xyz: the lamp, w: the glow radius of its record; rgb: its colour, w: the fade in at the
-    // handoff.
+    // xyz: the lamp, w: the glow radius of its record; rgb: its colour, w: the fade in over the
+    // blend.
     let place = glows[instance * 2u];
     let look = glows[instance * 2u + 1u];
+    let past = length(place.xyz - u.eye.xyz) >= g.range.x;
+    let on_side = side == 0.0 || (side > 0.0) == past;
     // Drawn 48 units nearer to the eye than the lamp, so that the lamp's own mesh does not
     // hide it.
     let to_lamp = place.xyz - u.eye.xyz;
@@ -279,8 +309,8 @@ fn fog_left(world: vec3f) -> f32 {
     let wanted = g.point.x * pixels_of_a_unit;
     let pixels = max(wanted, g.point.z);
     shown *= wanted / pixels * look.w * g.point.y * fog_left(place.xyz);
-    // Nothing to show: the quad is collapsed.
-    let kept = select(0.0, 1.0, shown > 0.002);
+    // Nothing to show, or a point of the other draw: the quad is collapsed.
+    let kept = select(0.0, 1.0, shown > 0.002 && on_side);
     let corner = corners[vertex];
     var out: Out;
     out.position = vec4f(clip.xy + corner * kept * pixels / g.screen.xy * clip.w, clip.zw);
@@ -333,7 +363,7 @@ pub struct GlowFrame {
     /// The camera, and the view range of the game in w.
     pub eye: [f32; 4],
     pub planes: [[f32; 4]; 6],
-    /// Where a glow starts (the handoff to the game) and where it is whole.
+    /// Where a glow starts and where it is whole: [`fade_band`].
     pub fade: [f32; 2],
     pub draw_distance: f32,
     /// The size of the picture, and the pixels of one unit at a distance of one unit.
@@ -358,13 +388,30 @@ struct GlowSet {
     bytes: u64,
 }
 
+/// Which of the chosen points a draw puts in the picture. The game's far plane is the view range
+/// of the game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlowPart {
+    /// The points at and past the game's far plane: the main view, before the world.
+    PastTheGame,
+    /// The points before the game's far plane, in its blend: the main view, after the blend.
+    InTheBlend,
+    /// All points: a view of its own, before its world.
+    All,
+}
+
 struct Glows {
     cull: wgpu::ComputePipeline,
-    draw: wgpu::RenderPipeline,
-    /// The samples of `draw`. A pass with another count (a view of its own into a rendered
-    /// texture has one) takes `draw_picture`.
-    samples: u32,
+    /// The draws of the main view, in the pass of the game: [`GlowPart::PastTheGame`] and
+    /// [`GlowPart::InTheBlend`].
+    draw_past: wgpu::RenderPipeline,
+    draw_blend: wgpu::RenderPipeline,
+    /// [`GlowPart::All`] with the samples of the game's pass, and with one sample (a view of its
+    /// own into a rendered texture).
+    draw_all: wgpu::RenderPipeline,
     draw_picture: wgpu::RenderPipeline,
+    /// The samples of the game's pass.
+    samples: u32,
     /// The sources of every block, and the layouts that a set takes its groups from.
     source_buffer: wgpu::Buffer,
     cull_layout: wgpu::BindGroupLayout,
@@ -665,8 +712,9 @@ impl DistantLights {
         Ok(())
     }
 
-    /// Draws the glows chosen in `prepare` into the pass: after the land and the statics,
-    /// against their depth. `view` is the view group of the view that draws, `set` its set of
+    /// Draws the `part` of the glows chosen in `prepare` into the pass, against the depth of the
+    /// pass: before the world, the land and the statics; in the blend, the game. `view` is the
+    /// view group of the view that draws (for the blend, the game view), `set` its set of
     /// buffers and `samples` the samples of the pass.
     /// Answers why it drew nothing, as [`DistantLights::prepare`].
     pub fn draw(
@@ -675,13 +723,15 @@ impl DistantLights {
         view: &wgpu::BindGroup,
         set: usize,
         samples: u32,
+        part: GlowPart,
     ) -> Result<(), Skip> {
         let glows = self.glows.as_ref().ok_or(NO_GLOWS)?;
         let buffers = glows.sets.get(set).and_then(Option::as_ref).ok_or(NO_SET)?;
-        pass.set_pipeline(if samples == glows.samples {
-            &glows.draw
-        } else {
-            &glows.draw_picture
+        pass.set_pipeline(match part {
+            GlowPart::PastTheGame => &glows.draw_past,
+            GlowPart::InTheBlend => &glows.draw_blend,
+            GlowPart::All if samples == glows.samples => &glows.draw_all,
+            GlowPart::All => &glows.draw_picture,
         });
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, &buffers.draw_group, &[]);
@@ -768,14 +818,14 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
         operation: wgpu::BlendOperation::Add,
     };
     // The glows of the frame go into the pass of the game (its samples); a view of its own into
-    // a rendered texture has one sample.
-    let make_draw = |multisample: wgpu::MultisampleState| {
+    // a rendered texture has one sample. The vertex entry chooses the part ([`GlowPart`]).
+    let make_draw = |entry: &str, multisample: wgpu::MultisampleState| {
         device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("distant lights, glows"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &module,
-                entry_point: Some("vs"),
+                entry_point: Some(entry),
                 compilation_options: Default::default(),
                 buffers: &[],
             },
@@ -805,13 +855,13 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
             cache: None,
         })
     };
-    let draw = make_draw(scene.multisample(false));
-    let draw_picture = make_draw(Default::default());
     let mut glows = Glows {
         cull,
-        draw,
+        draw_past: make_draw("vs_past", scene.multisample(false)),
+        draw_blend: make_draw("vs_blend", scene.multisample(false)),
+        draw_all: make_draw("vs", scene.multisample(false)),
+        draw_picture: make_draw("vs", Default::default()),
         samples: scene.samples,
-        draw_picture,
         source_buffer,
         cull_layout,
         draw_layout,
@@ -822,6 +872,13 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
     let main = glows.make_set(device);
     glows.sets.push(Some(main));
     glows
+}
+
+/// Where a point starts and where it is whole, for the view range of the game (its far plane):
+/// the game's blend ([`super::blend::ZONE`]), in which the game's lamp goes into the distant
+/// land. The cull gives a point the strength `smoothstep` of its distance over these two.
+pub fn fade_band(view_range: f32) -> [f32; 2] {
+    [view_range - super::blend::ZONE, view_range]
 }
 
 /// How much of the night there is, from the colour of the sun of the frame: 1 at night, 0 in
@@ -934,6 +991,22 @@ mod tests {
             &format!("{}{GLOW_SHADER}", super::super::view::wgsl()),
         )
         .unwrap();
+    }
+
+    /// The band of the points is the game's blend: a point starts 512 units before the game's
+    /// far plane, is half there 256 units before it, and is whole at it and past it, so the two
+    /// draws meet with no step. The strength is the cull's `smoothstep` (WGSL's definition).
+    #[test]
+    fn a_point_fades_in_over_the_games_blend() {
+        let smoothstep = |edges: [f32; 2], x: f32| {
+            let t = ((x - edges[0]) / (edges[1] - edges[0])).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let far = 7168.0;
+        let band = fade_band(far);
+        assert_eq!(band, [6656.0, 7168.0]);
+        let strengths = [far - 600.0, far - 512.0, far - 256.0, far, far + 132.0].map(|d| smoothstep(band, d));
+        assert_eq!(strengths, [0.0, 0.0, 0.5, 1.0, 1.0]);
     }
 
     #[test]

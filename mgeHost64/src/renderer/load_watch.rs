@@ -5,7 +5,8 @@
 //!
 //! - `load watch: arrived at frame N`: when [`super::ARRIVED`] goes, the time of each of its
 //!   conditions from the start of the wait: the end of the load of the data, the second frame of
-//!   the wait, and the distant statics near the camera settled (or the timeout).
+//!   the wait, the distant statics near the camera settled, the host's list of stage pipelines
+//!   made, and the host's mip chains made (or the timeout; [`super::arrival`]).
 //! - `load watch: statics at frame N`: in the window, each part of a frame in which subsets of the
 //!   distant statics arrived: their count, the grass subsets among them, their bytes, and the
 //!   subsets asked for that did not arrive yet.
@@ -17,6 +18,8 @@
 //! module comes before the host's line of its frame in the log.
 
 use std::time::{Duration, Instant};
+
+use super::arrival::Facts;
 
 /// The time that the window stays open after an ARRIVED: as the host's window after the last
 /// frame with no world.
@@ -37,6 +40,8 @@ pub struct ArrivalWatch {
     loaded: Option<Met>,
     two_frames: Option<Met>,
     settled: Option<Met>,
+    list: Option<Met>,
+    chains: Option<Met>,
 }
 
 impl ArrivalWatch {
@@ -48,19 +53,21 @@ impl ArrivalWatch {
             loaded: None,
             two_frames: None,
             settled: None,
+            list: None,
+            chains: None,
         }
     }
 
-    /// The conditions at the end of a frame of the wait: `loaded`, the load of the data has
-    /// ended; `frames`, the frames of the wait; `settled`, the statics near the camera are there.
-    /// Each condition keeps the frame at which it became true; a condition that is false again
-    /// loses it.
-    pub fn note(&mut self, now: Instant, frame: u64, loaded: bool, frames: u32, settled: bool) {
+    /// The conditions at the end of a frame of the wait ([`Facts`]). Each condition keeps the
+    /// frame at which it became true; a condition that is false again loses it.
+    pub fn note(&mut self, now: Instant, frame: u64, facts: &Facts) {
         let met = Met { at: now, frame };
         for (condition, true_now) in [
-            (&mut self.loaded, loaded),
-            (&mut self.two_frames, frames >= 2),
-            (&mut self.settled, settled),
+            (&mut self.loaded, facts.loaded),
+            (&mut self.two_frames, facts.frames >= 2),
+            (&mut self.settled, facts.settled),
+            (&mut self.list, facts.list_made()),
+            (&mut self.chains, facts.chains_made()),
         ] {
             match true_now {
                 true => {
@@ -84,12 +91,14 @@ impl ArrivalWatch {
             serial => format!("wait {serial}"),
         };
         format!(
-            "load watch: arrived at frame {frame}, {wait}, {:.2} s after its start at frame {}; {}, {}, {}",
+            "load watch: arrived at frame {frame}, {wait}, {:.2} s after its start at frame {}; {}, {}, {}, {}, {}",
             seconds(now),
             self.start_frame,
             condition("the data loaded", self.loaded),
             condition("the second frame", self.two_frames),
             condition("the statics settled", self.settled),
+            condition("the list made", self.list),
+            condition("the chains made", self.chains),
         )
     }
 }
@@ -122,18 +131,32 @@ mod tests {
     use super::*;
 
     /// Each condition gives the time and the frame at which it became true and stayed true.
+    /// The facts of a frame of a wait: `list_jobs` of the host's list left.
+    fn facts(loaded: bool, frames: u32, settled: bool, list_jobs: usize) -> Facts {
+        Facts {
+            loaded,
+            frames,
+            settled,
+            ready: nirender_wgpu::HostReadiness {
+                list_jobs,
+                chain_jobs: 0,
+            },
+        }
+    }
+
     #[test]
     fn the_line_names_each_condition_with_its_time_and_frame() {
         let zero = Instant::now();
         let at = |ms: u64| zero + Duration::from_millis(ms);
         let mut watch = ArrivalWatch::new(zero, 10);
-        // The statics are settled before the first frame asks for the new place, then not.
-        watch.note(at(100), 11, false, 1, true);
-        watch.note(at(200), 12, true, 2, false);
-        watch.note(at(1500), 13, true, 3, true);
+        // The statics are settled before the first frame asks for the new place, then not; the
+        // host's list is made in the second frame.
+        watch.note(at(100), 11, &facts(false, 1, true, 3));
+        watch.note(at(200), 12, &facts(true, 2, false, 0));
+        watch.note(at(1500), 13, &facts(true, 3, true, 0));
         assert_eq!(
             watch.line(at(1500), 13, 7),
-            "load watch: arrived at frame 13, wait 7, 1.50 s after its start at frame 10; the data loaded at 0.20 s (frame 12), the second frame at 0.20 s (frame 12), the statics settled at 1.50 s (frame 13)"
+            "load watch: arrived at frame 13, wait 7, 1.50 s after its start at frame 10; the data loaded at 0.20 s (frame 12), the second frame at 0.20 s (frame 12), the statics settled at 1.50 s (frame 13), the list made at 0.20 s (frame 12), the chains made at 0.10 s (frame 11)"
         );
     }
 
@@ -142,13 +165,16 @@ mod tests {
     fn a_timeout_names_the_condition_not_met() {
         let zero = Instant::now();
         let mut watch = ArrivalWatch::new(zero, 1);
-        watch.note(zero, 2, true, 2, false);
+        watch.note(zero, 2, &facts(true, 2, false, 12));
         let line = watch.line(zero + Duration::from_secs(10), 300, 0);
         assert!(
             line.starts_with("load watch: arrived at frame 300, the wait of a game load, 10.00 s after"),
             "{line}"
         );
-        assert!(line.ends_with(", the statics settled: no"), "{line}");
+        assert!(
+            line.ends_with(", the statics settled: no, the list made: no, the chains made at 0.00 s (frame 2)"),
+            "{line}"
+        );
     }
 
     /// A part of a frame with no arrival gives no line.
