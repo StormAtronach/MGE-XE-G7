@@ -346,15 +346,16 @@ change. That start can take some minutes. With an older file, set it below
   asked for when the camera comes within the draw distance and two more cells (the parameter
   "Distant statics: request margin" of the renderer's parameters window), and it shows as
   soon as it is on the GPU, as on Direct3D 9.
-- The distant land is complete when a loaded game starts or after a teleport (a door, a
-  travel, Recall), as MGE XE on Direct3D 9 does at the first load: "Wait on the loading
+- The distant land is complete when a loaded game starts, as MGE XE on Direct3D 9 does at
+  the first load: "Wait on the loading
   screen for the distant land" in the Distant Land page of the MGE XE GUI
   (`wait_on_load` under `[distant_land]`, on for a new mgeXE.toml since 2026-11-17; a file
   that has the key keeps its value). The loading screen then stays until the distant statics
   around you are there and the helper has made the pipelines of its list (W640 part 3), at most
   15 s. Without it the world shows at once, and the distant
-  statics appear as they arrive. A teleport waits only with an MWSE that has the event of the
-  player's change of cell (its native event 5).
+  statics appear as they arrive. The wait needs an MWSE that has the event of the player's
+  change of cell (its native event 5). A move in play (a door, a travel, Recall, coc) does not
+  wait, as in MGE XE G7: its distant statics appear as they arrive (W648).
 - Three looks of the grass shader of Remiros' Groundcover are options in the Distant Land
   page of the MGE XE GUI (`[distant_land.grass]`, off at the start): `soft_end` (the grass
   sinks into the ground near the end of its range, so it ends without a line),
