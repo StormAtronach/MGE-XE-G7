@@ -92,7 +92,7 @@ the same mapping ten times.
 | (new, no INI key) | `runtime.renderer_texture_slots` |
 | (new, no INI key) | `runtime.renderer_frame_latency` |
 | (new, no INI key) | `graphics.mipmaps_for_one_level` |
-| (new, no INI key) | `graphics.sky_mip_filter` |
+| (new, no INI key) | `graphics.sky_map_filter` |
 | `[Misc] Skip Intro Movies` | `runtime.skip_intro` |
 | `[Misc] Use Menu Background Caching` | `runtime.menu_caching` |
 | `[Misc] Customize 3rd Person Camera` | `runtime.custom_camera` |
@@ -219,16 +219,18 @@ reads them.
   level, as the engine does. Read by numidium.exe when it starts; a replay takes
   `--mipmaps-for-one-level on|off` over it.
 
-- `graphics.sky_mip_filter` (default `false`): the wgpu renderer filters between the levels of
-  the sky's maps that the game gives a bilinear filter with no filter between levels (W632):
-  the maps of the moons, their shadow shapes and the sun's glare. So a large texture drawn
-  small, such as a 2048 moon, reads a level near its size on the screen and does not shimmer
-  when the camera turns. The stars and the clouds come from NIF files whose maps filter
-  between levels already, and they do not change. The draws of the sky are known by the
-  object of the draw (the weather's sky nodes), not by the texture's name. A texture of one
-  level filters between levels only when `graphics.mipmaps_for_one_level` made its levels.
-  Every other draw keeps the game's filter. Read by numidium.exe when it starts; a replay takes
-  `--sky-mip-filter on|off` over it.
+- `graphics.sky_map_filter` (default `"engine"`): how the wgpu renderer reads the sky's maps
+  that the game gives a bilinear filter with no filter between levels (W632): the maps of the
+  moons, their shadow shapes and the sun's glare. `"engine"` reads level 0, as the engine
+  does: sharp, but a large texture drawn small, such as a 2048 moon, changes at each small
+  move of the camera. `"area"` gives each pixel the mean of the texels under it, from a level
+  that is still sharper than the pixel: as sharp, and steady. The stars and the clouds come
+  from NIF files whose maps filter between levels already, and they do not change. The draws
+  of the sky are known by the object of the draw (the weather's sky nodes), not by the
+  texture's name. With `"engine"`, a chain that `graphics.mipmaps_for_one_level` made for
+  such a map is not read. Read by numidium.exe when it starts; a replay takes
+  `--sky-map-filter engine|trilinear|bias|area|area-tent` (and `--sky-lod-bias <b>` for
+  `bias`) over it: the arms other than `engine` and `area` are for the tests only.
 
 - `runtime.renderer_frame_latency` (default `2`, the range `1` to `3`): the frames of the wgpu
   renderer that may wait for the graphics card before the window shows them. With `1` the

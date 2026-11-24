@@ -1440,8 +1440,8 @@ pub struct DistantLand {
     anisotropy: u16,
     /// The smaller levels of a texture that has only one (`graphics.mipmaps_for_one_level`, W632).
     mipmaps_for_one_level: bool,
-    /// The sky's bilinear maps (the moons, the glare) filter between their levels (`graphics.sky_mip_filter`, W632).
-    sky_mip_filter: bool,
+    /// How the sky's bilinear maps (the moons, the glare) are read (`graphics.sky_map_filter`, W632).
+    sky_map_filter: nirender_wgpu::SkyMapFilter,
     /// The samples for each pixel of the frame (`graphics.anti_aliasing`): 1 is none. The
     /// renderer draws the pass of the game into multisampled targets with more.
     samples: u32,
@@ -2075,7 +2075,10 @@ impl DistantLand {
             shadow_resolution: settings.shadows.map_resolution,
             anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
             mipmaps_for_one_level: document.settings().graphics.mipmaps_for_one_level,
-            sky_mip_filter: document.settings().graphics.sky_mip_filter,
+            sky_map_filter: match document.settings().graphics.sky_map_filter {
+                mge_config::SkyMapFilter::Engine => nirender_wgpu::SkyMapFilter::Engine,
+                mge_config::SkyMapFilter::Area => nirender_wgpu::SkyMapFilter::Area,
+            },
             samples: (document.settings().graphics.anti_aliasing.runtime_value() as u32).max(1),
             texture_slots: document.settings().runtime.renderer_texture_slots,
             frame_latency: document.settings().runtime.renderer_frame_latency,
@@ -3686,8 +3689,8 @@ impl Extension for DistantLand {
         self.mipmaps_for_one_level
     }
 
-    fn sky_mip_filter(&self) -> bool {
-        self.sky_mip_filter
+    fn sky_map_filter(&self) -> nirender_wgpu::SkyMapFilter {
+        self.sky_map_filter
     }
 
     fn samples(&self) -> u32 {
