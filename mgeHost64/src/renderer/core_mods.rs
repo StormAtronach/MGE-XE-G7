@@ -19,16 +19,22 @@
 //!
 //! The hooks of interface 1 in this module:
 //!
-//! - `XE Mod Shadow`: `fn shadow_delta(s0: vec3f, s1: vec3f) -> f32` (`shadowDeltaZ`: the
-//!   depth of the shadow map less that of the pixel, from the pixel in the spaces of the two
-//!   layers; a positive number where the map has nothing nearer to the sun) and
-//!   `fn shadow_esm(dz: f32) -> f32` (`shadowESM`: the shadow amount, 0 to 1, of a negative
-//!   `dz`). Their homes: the draws of the game (the world shader), the grass, the surfaces of
-//!   the water volumes. Their library: `shadow_map_depth(layer: u32, uv: vec2f) -> f32` (the
-//!   map at level 0, layer 0 or 1, `uv` 0 to 1 over the layer), `shadow_texel() -> f32` (1
-//!   over the resolution of a layer), `shadow_esm_scale() -> f32` (the scale of the map's
-//!   depth) and `shadow_esm_values() -> vec2f` (`esm_c` and `esm_bias` of `XE Mod Shadow
-//!   Data`).
+//! - `XE Mod Shadow`: `fn shadow_esm(dz: f32) -> f32` (`shadowESM`: the shadow amount, 0 to
+//!   1, of a negative `dz`, in the unit of 16384 world units). Its homes: the draws of the game
+//!   (the world shader), the grass, the surfaces of the water volumes. Each home also gets the
+//!   shadow of the cascades (`cascades` of `XE Mod Shadow.wgsl`, not a hook), which chooses
+//!   the cascade of a pixel and calls `shadow_esm`. The library: `shadow_map_depth(cascade:
+//!   u32, uv: vec2f) -> f32` (the map at level 0, cascade 0 to 3, `uv` 0 to 1 over the
+//!   cascade), `shadow_texel() -> f32` (1 over the resolution of the atlas),
+//!   `shadow_esm_scale() -> f32` (the scale of the map's depth), `shadow_esm_values() ->
+//!   vec2f` (`esm_c` and `esm_bias` of `XE Mod Shadow Data`), `shadow_depth_range(cascade:
+//!   u32) -> f32` (the cascade's depth range / 16384), `shadow_slice_end(cascade: u32) -> f32`
+//!   (the far end of the cascade's slice along the view axis) and `shadow_place(cascade: u32,
+//!   p: vec4f) -> vec3f` (the home's point `p` in the cascade: x and y -1 to 1, the depth 0
+//!   to 1).
+//!   The hook `shadow_delta` of interface 1 (two layers) is not called by the cascades. A file
+//!   that defines it is dropped with its `XE Mod Shadow Data` file, and the log gives the
+//!   reason; the change to interface 2 gives its new form (W437 item 5).
 //! - `XE Mod Shadow Data`: no code, the line `//! values: shade = 0.4, shade_color = 1.0 0.97
 //!   0.81, esm_c = 60, esm_bias = 0.12` (each key may be left out). The scale of the map's depth
 //!   stays out: it matches the map's format. A value out of its range drops the file and the
@@ -100,24 +106,31 @@ struct Hook {
     built_in: fn() -> &'static str,
 }
 
-const SHADOW_HOOKS: [Hook; 2] = [
-    Hook {
-        name: "shadow_delta",
-        arguments: &["vec3<f32>", "vec3<f32>"],
-        result: "f32",
-        built_in: shadow_delta,
-    },
-    Hook {
-        name: "shadow_esm",
-        arguments: &["f32"],
-        result: "f32",
-        built_in: shadow_esm,
-    },
-];
+const SHADOW_HOOKS: [Hook; 1] = [Hook {
+    name: "shadow_esm",
+    arguments: &["f32"],
+    result: "f32",
+    built_in: shadow_esm,
+}];
 
-/// The built-in `shadow_delta` (`shadowDeltaZ`).
-fn shadow_delta() -> &'static str {
-    SHADOW.part("shadow_delta")
+/// The hook of interface 1 that the cascades do not call: a Shadow file that defines it is
+/// dropped ([`SHADOW_DELTA_DROPPED`]).
+const SHADOW_DELTA: &str = "shadow_delta";
+
+/// The reason in the log for a Shadow file that defines [`SHADOW_DELTA`].
+const SHADOW_DELTA_DROPPED: &str = "it defines `shadow_delta` of interface 1 (two layers): the cascades do not call it, and the change to interface 2 (W437 item 5) gives its new form";
+
+/// The shadow of the cascades that joins each home after the shadow hooks (not a hook).
+fn cascades() -> &'static str {
+    SHADOW.part("cascades")
+}
+
+/// The text of the shadow for the homes: the hooks (the built-ins of those that `defined` lacks,
+/// then `text`), and the shadow of the cascades.
+fn shadow_text(defined: &[&str], text: &str) -> String {
+    let mut joined = hook_text(&SHADOW_HOOKS, defined, text);
+    joined.push_str(cascades());
+    joined
 }
 
 /// The built-in `shadow_esm` (`shadowESM`).
@@ -128,14 +141,25 @@ fn shadow_esm() -> &'static str {
 /// The library of the shadow hooks as declarations, for the check of a file alone. Each home
 /// has its own bodies.
 pub(crate) const SHADOW_LIBRARY: &str = "
-fn shadow_map_depth(layer: u32, uv: vec2f) -> f32 { return 0.0; }
+fn shadow_map_depth(cascade: u32, uv: vec2f) -> f32 { return 0.0; }
 fn shadow_texel() -> f32 { return 0.0; }
 fn shadow_esm_scale() -> f32 { return 1.0; }
 fn shadow_esm_values() -> vec2f { return vec2f(0.0); }
+fn shadow_depth_range(cascade: u32) -> f32 { return 1.0; }
+fn shadow_slice_end(cascade: u32) -> f32 { return 0.0; }
+fn shadow_place(cascade: u32, p: vec4f) -> vec3f { return vec3f(0.0); }
 ";
 
 /// The names of the functions of [`SHADOW_LIBRARY`].
-const SHADOW_LIBRARY_NAMES: [&str; 4] = ["shadow_map_depth", "shadow_texel", "shadow_esm_scale", "shadow_esm_values"];
+const SHADOW_LIBRARY_NAMES: [&str; 7] = [
+    "shadow_map_depth",
+    "shadow_texel",
+    "shadow_esm_scale",
+    "shadow_esm_values",
+    "shadow_depth_range",
+    "shadow_slice_end",
+    "shadow_place",
+];
 
 const WATER_HOOKS: [Hook; 4] = [
     Hook {
@@ -541,7 +565,7 @@ impl CoreMods {
     /// The built-in hooks only.
     pub fn built_in() -> CoreMods {
         CoreMods {
-            shadow_hooks: hook_text(&SHADOW_HOOKS, &[], ""),
+            shadow_hooks: shadow_text(&[], ""),
             shadow_values: ShadowValues::default(),
             water_hooks: hook_text(&WATER_HOOKS, &[], ""),
             water_debug_hooks: hook_text(&WATER_HOOKS, &[], ""),
@@ -674,6 +698,7 @@ impl CoreMods {
                 &WATER_HOOKS,
                 &format!("{WATER_INTERFACE}{WATER_LIBRARY}"),
                 &WATER_LIBRARY_NAMES,
+                "",
                 water_homes,
             ) {
                 Ok((hooks, defined)) => {
@@ -708,6 +733,7 @@ impl CoreMods {
                 &SKY_HOOKS,
                 &format!("{SKY_INTERFACE}{SKY_LIBRARY}"),
                 &SKY_LIBRARY_NAMES,
+                "",
                 sky_homes,
             ) {
                 Ok((_, defined)) if defined.is_empty() => used.push("XE Mod Sky.wgsl (no hook)".to_string()),
@@ -727,6 +753,7 @@ impl CoreMods {
                 &PARTICLE_HOOKS,
                 &format!("{PARTICLE_INTERFACE}{PARTICLE_LIBRARY}"),
                 &PARTICLE_LIBRARY_NAMES,
+                "",
                 particle_homes,
             ) {
                 Ok((_, defined)) if defined.is_empty() => used.push("XE Mod Particles.wgsl (no hook)".to_string()),
@@ -759,7 +786,7 @@ impl CoreMods {
     /// The hooks of `file` join a home: the session uses the file.
     pub fn uses(&self, file: ModFile) -> bool {
         match file {
-            ModFile::Shadow => self.shadow_hooks != hook_text(&SHADOW_HOOKS, &[], ""),
+            ModFile::Shadow => self.shadow_hooks != shadow_text(&[], ""),
             ModFile::Water => self.water_hooks != hook_text(&WATER_HOOKS, &[], ""),
             ModFile::Sky => self.sky_hooks.is_some(),
             ModFile::Particles => self.particle_hooks.is_some(),
@@ -1493,13 +1520,16 @@ fn shadow_mod(
     }
     let Some(text) = shadow_file else {
         return Ok(ShadowMod {
-            hooks: hook_text(&SHADOW_HOOKS, &[], ""),
+            hooks: shadow_text(&[], ""),
             values,
             defined: Vec::new(),
             values_line,
         });
     };
-    let (hooks, defined) = hook_file(text, &SHADOW_HOOKS, SHADOW_LIBRARY, &SHADOW_LIBRARY_NAMES, homes)
+    if defines(text, SHADOW_DELTA) {
+        return Err(("Shadow", SHADOW_DELTA_DROPPED.to_string()));
+    }
+    let (hooks, defined) = hook_file(text, &SHADOW_HOOKS, SHADOW_LIBRARY, &SHADOW_LIBRARY_NAMES, cascades(), homes)
         .map_err(|problem| ("Shadow", problem))?;
     Ok(ShadowMod {
         hooks,
@@ -1510,17 +1540,20 @@ fn shadow_mod(
 }
 
 /// Checks a file of hooks with its header, its rules and each of its homes. Gives the hook text
-/// for the homes (the file's hooks and the built-ins of the others), and the hooks it defines.
+/// for the homes (the file's hooks and the built-ins of the others, then `tail`: the text that
+/// joins every home after the hooks), and the hooks it defines.
 fn hook_file(
     text: &str,
     hooks: &'static [Hook],
     library: &str,
     library_names: &[&str],
+    tail: &str,
     homes: &[Home],
 ) -> Result<(String, Vec<&'static str>), String> {
     header(text, &[])?;
     let defined = rules(text, hooks, library, library_names)?;
-    let joined = hook_text(hooks, &defined, text);
+    let mut joined = hook_text(hooks, &defined, text);
+    joined.push_str(tail);
     for home in homes {
         (home.check)(&joined).map_err(|problem| format!("the {} fails with it: {problem}", home.name))?;
     }
@@ -1824,19 +1857,23 @@ mod tests {
     use nirender_wgpu::objects::Create;
     use std::collections::HashMap;
 
-    /// A home with a library that reads a texture, and an entry point that calls both hooks.
+    /// A home with a library that reads a texture, and an entry point that calls the shadow of
+    /// the cascades (and so the hook).
     const TEST_HOME: &str = "
 @group(0) @binding(0) var map: texture_2d<f32>;
 @group(0) @binding(1) var map_sampler: sampler;
 @group(0) @binding(2) var<uniform> esm: vec4f;
-fn shadow_map_depth(layer: u32, uv: vec2f) -> f32 {
-    return textureSampleLevel(map, map_sampler, vec2f((f32(layer) + uv.x) * 0.5, uv.y), 0.0).r;
+fn shadow_map_depth(cascade: u32, uv: vec2f) -> f32 {
+    return textureSampleLevel(map, map_sampler, shadow_atlas_uv(cascade, uv), 0.0).r;
 }
 fn shadow_texel() -> f32 { return esm.w; }
 fn shadow_esm_scale() -> f32 { return esm.z; }
 fn shadow_esm_values() -> vec2f { return esm.xy; }
+fn shadow_depth_range(cascade: u32) -> f32 { return 1.0 + f32(cascade); }
+fn shadow_slice_end(cascade: u32) -> f32 { return 1000.0 * f32(cascade + 1u); }
+fn shadow_place(cascade: u32, p: vec4f) -> vec3f { return p.xyz; }
 @fragment fn fs(@location(0) s0: vec3f, @location(1) s1: vec3f) -> @location(0) vec4f {
-    return vec4f(shadow_esm(shadow_delta(s0, s1)));
+    return vec4f(shadow_of_cascades(s0.z, vec4f(s1, 1.0)));
 }
 ";
 
@@ -1889,26 +1926,24 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
 
     #[test]
     fn a_copy_of_the_built_ins_is_used_whole() {
-        let file = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
+        let file = format!("{}{}", header_line(), shadow_esm());
         let mods = mods_of(&[("Shadow.wgsl", &file)], &HOMES);
-        // Both hooks come from the file: no built-in is joined.
-        assert_eq!(mods.shadow_hooks(), file);
+        // The hook comes from the file: no built-in is joined, only the shadow of the cascades.
+        assert_eq!(mods.shadow_hooks(), format!("{file}{}", cascades()));
         assert_eq!(
             mods.report(),
-            [format!(
-                "core mods: XE Mod Shadow.wgsl (shadow_delta, shadow_esm) (interface {INTERFACE})"
-            )]
+            [format!("core mods: XE Mod Shadow.wgsl (shadow_esm) (interface {INTERFACE})")]
         );
     }
 
     #[test]
-    fn a_file_with_one_hook_keeps_the_built_in_of_the_other() {
+    fn a_file_with_a_helper_of_its_own_is_used() {
         let file = format!(
             "{}fn mod_half(x: f32) -> f32 {{ return 0.5 * x; }}\nfn shadow_esm(dz: f32) -> f32 {{ return mod_half(1.0); }}\n",
             header_line()
         );
         let mods = mods_of(&[("Shadow.wgsl", &file)], &HOMES);
-        assert_eq!(mods.shadow_hooks(), format!("{}{file}", shadow_delta()));
+        assert_eq!(mods.shadow_hooks(), format!("{file}{}", cascades()));
         assert!(
             mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)"),
             "{:?}",
@@ -1962,7 +1997,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
                     "{}fn shadow_delta(s0: vec3f, s1: vec3f) -> vec2f {{ return vec2f(0.0); }}\n",
                     header_line()
                 ),
-                "the hook `shadow_delta` takes (vec3<f32>, vec3<f32>) and gives vec2<f32>",
+                SHADOW_DELTA_DROPPED,
             ),
             (
                 format!("{}fn shadow_esm(dz: f32) -> f32 {{ return no_such(dz); }}\n", header_line()),
@@ -2020,6 +2055,40 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks());
         assert!(
             mods.report()[0].contains("XE Mod Shadow Data.wgsl (shade = 0.8, shade_color = 1 0.5 0.25)"),
+            "{:?}",
+            mods.report()
+        );
+    }
+
+    /// A Shadow file that defines `shadow_delta` of interface 1 is dropped with its Shadow Data
+    /// file, and the log gives the reason (W437 step 2: the cascades do not call it). A Shadow
+    /// file with only `shadow_esm` loads with its Shadow Data file.
+    #[test]
+    fn a_shadow_file_with_shadow_delta_is_dropped_with_its_data_file() {
+        let data = format!("{}//! values: shade = 0.5\n", header_line());
+        let delta = format!(
+            "{}fn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {{ return 1.0; }}\n{}",
+            header_line(),
+            shadow_esm()
+        );
+        let mods = mods_of(&[("Shadow.wgsl", &delta), ("Shadow Data.wgsl", &data)], &HOMES);
+        assert_eq!(mods.shadow_values, ShadowValues::default());
+        assert_eq!(mods.shadow_hooks(), CoreMods::built_in().shadow_hooks());
+        assert_eq!(
+            mods.report()[0],
+            format!(
+                "core mod: XE Mod Shadow.wgsl: {SHADOW_DELTA_DROPPED}; the built-in shadow is used; XE Mod Shadow Data.wgsl is dropped with it"
+            )
+        );
+        assert!(mods.report()[1].starts_with("core mods: none used"), "{:?}", mods.report());
+        // The null: the same files without `shadow_delta` load.
+        let esm_only = format!("{}{}", header_line(), shadow_esm());
+        let mods = mods_of(&[("Shadow.wgsl", &esm_only), ("Shadow Data.wgsl", &data)], &HOMES);
+        assert_eq!(mods.shadow_values.shade, 0.5);
+        assert_eq!(mods.shadow_hooks(), format!("{esm_only}{}", cascades()));
+        assert!(
+            mods.report()[0].contains("XE Mod Shadow.wgsl (shadow_esm)")
+                && mods.report()[0].contains("XE Mod Shadow Data.wgsl (shade = 0.5)"),
             "{:?}",
             mods.report()
         );
@@ -2281,7 +2350,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         );
         assert_eq!(
             declaration(&SHADOW_HOOKS[0]),
-            "fn shadow_delta(a0: vec3<f32>, a1: vec3<f32>) -> f32 { return f32(); }\n"
+            "fn shadow_esm(a0: f32) -> f32 { return f32(); }\n"
         );
     }
 
@@ -2341,9 +2410,9 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         assert!(other.take_world_changed());
 
         // The file fixed: its hooks, and no problem.
-        let file = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
+        let file = format!("{}{}", header_line(), shadow_esm());
         shared.reload(mods_of(&[("Shadow.wgsl", &file)], &HOMES));
-        assert_eq!(other.shadow_hooks(), file);
+        assert_eq!(other.shadow_hooks(), format!("{file}{}", cascades()));
         assert!(other.problems().is_empty());
         assert!(other.take_world_changed());
         assert!(shared.plant_keeps(GRASS_HOME));
@@ -2372,7 +2441,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     /// with the file has the plant.
     #[test]
     fn the_world_without_the_planted_file_has_no_plant() {
-        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
+        let shadow = format!("{}{}", header_line(), shadow_esm());
         let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow)].into();
         let shared = Shared::new(
             mods_with_markers(files, &HOMES, &BuildMarkers::default()),
@@ -2399,7 +2468,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         );
         assert_eq!(Plant::of_env(), None);
 
-        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
+        let shadow = format!("{}{}", header_line(), shadow_esm());
         let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
         let shared = Shared::new(
             mods_with_markers(files, &HOMES, &BuildMarkers::default()),
@@ -2410,7 +2479,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
             shared.world_hooks().shadow,
             shared.world_hooks_without(&[ModFile::Shadow]).shadow,
         ];
-        assert_eq!(texts[0], shadow);
+        assert_eq!(texts[0], format!("{shadow}{}", cascades()));
         for text in texts {
             assert!(!text.contains(nirender_wgpu::CORE_MOD_FAULT_PLANT));
         }
@@ -2423,7 +2492,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
         let folder = std::env::temp_dir().join(format!("core-mod-markers-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let markers = BuildMarkers::in_folder(&folder);
-        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
+        let shadow = format!("{}{}", header_line(), shadow_esm());
         markers.write(WATER_PLANE_HOME, &[(ModFile::Water, "water".to_string())]);
         markers.write(
             WORLD_HOME,
@@ -2486,7 +2555,7 @@ fn shadow_esm_values() -> vec2f { return esm.xy; }
     fn the_world_marker_holds_its_file_over_the_start_that_obeys_it() {
         let folder = std::env::temp_dir().join(format!("core-mod-world-marker-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
-        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
+        let shadow = format!("{}{}", header_line(), shadow_esm());
         let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
         BuildMarkers::in_folder(&folder).write(WORLD_HOME, &[(ModFile::Shadow, shadow.clone())]);
 
@@ -2535,7 +2604,7 @@ struct TestOut { @builtin(position) position: vec4f, @location(0) s0: vec3f, @lo
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
         let folder = std::env::temp_dir().join(format!("core-mod-first-build-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
-        let shadow = format!("{}{}{}", header_line(), shadow_delta(), shadow_esm());
+        let shadow = format!("{}{}", header_line(), shadow_esm());
         let files: HashMap<String, String> = [(format!("{FOLDER}/XE Mod Shadow.wgsl"), shadow.clone())].into();
         let build = |plant: &str| {
             let markers = BuildMarkers::in_folder(&folder);
@@ -2594,12 +2663,13 @@ struct TestOut { @builtin(position) position: vec4f, @location(0) s0: vec3f, @lo
 
         let (shared, texts) = build("Shadow@grass:keep");
         assert_eq!(texts.len(), 1);
-        assert_eq!(shared.shadow_hooks(), shadow);
+        assert_eq!(shared.shadow_hooks(), format!("{shadow}{}", cascades()));
         assert!(shared.problems().is_empty());
 
         let (shared, texts) = build("Sky");
-        assert_eq!(texts, [shadow.as_str()]);
-        assert_eq!(shared.shadow_hooks(), shadow);
+        let joined = format!("{shadow}{}", cascades());
+        assert_eq!(texts, [joined.as_str()]);
+        assert_eq!(shared.shadow_hooks(), joined);
         std::fs::remove_dir(&folder).unwrap();
     }
 

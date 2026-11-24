@@ -1,6 +1,6 @@
 //! The view group: group 0 of the pipelines of MGE XE, with one layout for all of them and one
-//! group for each view of the frame (the main view, the mirror of the water, the two layers of
-//! the shadow map, the game view). It has the values of the view ([`View`], the uniform `u` of a
+//! group for each view of the frame (the main view, the mirror of the water, the four cascades
+//! of the shadow map, the game view). It has the values of the view ([`View`], the uniform `u` of a
 //! shader) and the distant lamps (`lamps` and their grid, from [`LampBinding`]). The
 //! values of one pipeline only (the terrain of the land, the view range of a handoff, the
 //! light of the frame on the water volumes) are in its group 1. The pipelines that draw into
@@ -24,8 +24,8 @@ use super::lamp_grid::{self, LampBinding};
 /// projection of the game, for the draws at the end of the world scene of the game.
 pub const MAIN: usize = 0;
 pub const MIRROR: usize = 1;
-pub const SHADOW: [usize; 2] = [2, 3];
-pub const GAME: usize = 4;
+pub const SHADOW: [usize; 4] = [2, 3, 4, 5];
+pub const GAME: usize = 6;
 
 /// The most places that the helper takes: one for each view slot of the host. A place is held
 /// by a view slot, so a frame cannot use more (D82 caps, design B). The player's setting
@@ -40,7 +40,7 @@ pub const MAX_PLACES: usize = nirender_wgpu::stream_format::VIEW_SLOTS;
 /// projection of the game for the grass at the end of the world (D82 section 3.4f, slice 2).
 /// The numbers are arithmetic with no upper bound; a group is made at the first call that
 /// needs it ([`ViewBinding::ensure_set`]) and freed with its set.
-pub const TIER_FIRST: usize = 5;
+pub const TIER_FIRST: usize = 7;
 
 /// The group with the projection of the land of the set `set`.
 pub const fn tier(set: usize) -> usize {
@@ -53,8 +53,8 @@ pub const fn tier_game(set: usize) -> usize {
     TIER_FIRST + 2 * set + 1
 }
 
-/// The group of a set of the statics. The sets 0 to 3 have the groups of the same numbers (the
-/// game view between them has no set); the sets from 4 on are the views of their own, in the
+/// The group of a set of the statics. The sets 0 to 5 have the groups of the same numbers (the
+/// game view after them has no set); the sets from 6 on are the views of their own, in the
 /// groups from [`TIER_FIRST`].
 pub const fn group_of_set(set: usize) -> usize {
     if set < GAME { set } else { tier(set - GAME) }
@@ -1010,28 +1010,30 @@ mod tests {
         }
     }
 
-    /// The sets of the statics take the groups of their views: the four fixed ones by their own
+    /// The sets of the statics take the groups of their views: the six fixed ones by their own
     /// numbers, the views of their own after the game view, and no two sets share a group.
     #[test]
     fn each_set_of_the_statics_has_a_group_of_its_own() {
+        // The fixed sets: the main view, the mirror and the four cascades of the shadow map.
+        const FIXED: usize = 6;
         // The places and the spares of a session with the most places, and many spares.
-        let sets = 4 + MAX_PLACES + 200;
+        let sets = FIXED + MAX_PLACES + 200;
         let groups: Vec<usize> = (0..sets).map(group_of_set).collect();
-        assert_eq!(&groups[..4], &[MAIN, MIRROR, SHADOW[0], SHADOW[1]]);
+        assert_eq!(&groups[..FIXED], &[MAIN, MIRROR, SHADOW[0], SHADOW[1], SHADOW[2], SHADOW[3]]);
         assert!(!groups.contains(&GAME));
-        assert_eq!(groups[4], tier(0));
-        assert_eq!(*groups.last().unwrap(), tier(sets - 5));
+        assert_eq!(groups[FIXED], tier(0));
+        assert_eq!(*groups.last().unwrap(), tier(sets - FIXED - 1));
         // The groups of the land and of the game's projection, of every set: all different,
         // none of them a fixed view, and in the order of the sets.
-        let mut all: Vec<usize> = (0..sets - 4).flat_map(|set| [tier(set), tier_game(set)]).collect();
+        let mut all: Vec<usize> = (0..sets - FIXED).flat_map(|set| [tier(set), tier_game(set)]).collect();
         assert!(all.iter().all(|&group| group >= TIER_FIRST));
         assert!(all.windows(2).all(|pair| pair[0] < pair[1]));
-        all.extend(groups[..4].iter().copied().chain([GAME]));
+        all.extend(groups[..FIXED].iter().copied().chain([GAME]));
         all.sort_unstable();
         all.dedup();
-        assert_eq!(all.len(), 2 * (sets - 4) + 5);
+        assert_eq!(all.len(), 2 * (sets - FIXED) + FIXED + 1);
         // The groups of the sets are the land's, one for each set of the statics.
-        assert!((0..sets - 4).all(|set| group_of_set(4 + set) == tier(set)));
+        assert!((0..sets - FIXED).all(|set| group_of_set(FIXED + set) == tier(set)));
     }
 
     /// A call is keyed to the place of its view: the number it gets is the place, in any order of

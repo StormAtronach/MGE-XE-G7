@@ -250,9 +250,9 @@ pub fn retired_switches_line(is_set: impl Fn(&str) -> bool) -> Option<String> {
     })
 }
 
-/// The colours of the boxes of the two shadow layers (the line source `shadow-boxes`): those of
-/// the layers in the view `shadow-layers`, the near layer red and the far one green.
-pub const SHADOW_BOX_COLORS: [[u8; 4]; 2] = [[255, 0, 0, 255], [0, 255, 0, 255]];
+/// The colours of the boxes of the four cascades (the line source `shadow-boxes`): those of the
+/// cascades in the view `shadow-layers`, from the near one: red, green, blue and yellow.
+pub const SHADOW_BOX_COLORS: [[u8; 4]; 4] = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255]];
 
 /// The overlay line of the line source `shadow-boxes`, while it is on: what it draws in the
 /// frame, or why it draws nothing.
@@ -261,7 +261,7 @@ pub fn shadow_boxes_line(lines: LineSources, shadow_in_frame: bool) -> Option<St
         return None;
     }
     Some(if shadow_in_frame {
-        "debug lines: shadow boxes: the near layer red, the far layer green, on top".to_owned()
+        "debug lines: shadow boxes: the cascades from the near one red, green, blue and yellow, on top".to_owned()
     } else {
         "debug lines: shadow boxes: none, no shadow pass in this frame".to_owned()
     })
@@ -278,21 +278,28 @@ mod tests {
         assert_eq!(shadow_boxes_line(LineSources::NONE, true), None);
         assert_eq!(shadow_boxes_line(LineSources::LIGHTS, true), None);
         let with = shadow_boxes_line(LineSources::SHADOW_BOXES, true).unwrap();
-        assert!(with.contains("near layer red"), "{with}");
+        assert!(with.contains("near one red"), "{with}");
         let without = shadow_boxes_line(LineSources::SHADOW_BOXES, false).unwrap();
         assert!(without.contains("no shadow pass"), "{without}");
     }
 
-    /// The boxes take the colours of the layers in the view `shadow-layers` (the world shader's
-    /// VIEW_SHADOW_LAYERS branch: the first layer red, the second green).
+    /// The boxes take the colours of the cascades in the view `shadow-layers` (the world
+    /// shader's VIEW_SHADOW_LAYERS branch: red, green, blue and yellow from the near one).
     #[test]
     fn the_shadow_boxes_have_the_colours_of_the_layers_view() {
         let shader = include_str!("../renderer.rs").replace('\r', "");
-        assert!(shader.contains(
-            "c = vec3f(0.0, 1.0, 0.0);\n        } else if shadow_layer > 0.5 {\n            c = vec3f(1.0, 0.0, 0.0);"
-        ));
-        assert_eq!(SHADOW_BOX_COLORS[0][..3], [255, 0, 0]);
-        assert_eq!(SHADOW_BOX_COLORS[1][..3], [0, 255, 0]);
+        let colors: Vec<String> = SHADOW_BOX_COLORS
+            .iter()
+            .map(|c| {
+                let f = |v: u8| if v == 255 { "1.0" } else { "0.0" };
+                format!("vec3f({}, {}, {}),", f(c[0]), f(c[1]), f(c[2]))
+            })
+            .collect();
+        let list = format!(
+            "let colors = array<vec3f, 5>(\n            {}\n            vec3f(0.0),",
+            colors.join("\n            ")
+        );
+        assert!(shader.contains(&list), "{list}");
     }
 
     fn arguments(text: &str) -> Vec<String> {

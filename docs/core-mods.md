@@ -48,7 +48,7 @@ clouds hook and the particle hook.
 
 At its start the renderer writes one line for each event:
 
-- `core mods: XE Mod Shadow.wgsl (shadow_delta, shadow_esm) (interface mge-xe-core 1)`: the
+- `core mods: XE Mod Shadow.wgsl (shadow_esm) (interface mge-xe-core 1)`: the
   files in use, with the hooks that each file defines; a values file shows its values line, as
   in `XE Mod Shadow Data.wgsl (shade = 0.5)`;
 - `core mods: none used (Data Files/shaders/core-mods, interface mge-xe-core 1)`: no file is
@@ -149,23 +149,35 @@ this way.
 The homes of the shadow hooks: the draws of the game (the world shader), the grass, and the
 surfaces of the water volumes.
 
+The shadow map has four cascades (W437). A pixel takes the cascade of its distance along the
+view axis; over the last 10 % of a cascade's slice it blends with the next cascade, and the last
+cascade fades out to the draw distance. Each home gets this choice from the renderer (the part
+`cascades` of `shaders/core/XE Mod Shadow.wgsl`, not a hook). It gives the depth difference in
+the unit of 16384 world units, with one f16 step of the cascade added to the bias, and calls
+`shadow_esm`.
+
 | Hook | Signature | What it gives | Direct3D 9 function |
 | --- | --- | --- | --- |
-| `shadow_delta` | `fn shadow_delta(s0: vec3f, s1: vec3f) -> f32` | The depth of the shadow map less the depth of the pixel. `s0` and `s1` are the pixel in the spaces of the two shadow layers. A positive number where the map has nothing nearer to the sun. | `shadowDeltaZ` |
-| `shadow_esm` | `fn shadow_esm(dz: f32) -> f32` | The shadow amount, 0 to 1, for a negative `dz`. The renderer scales it by the sun's light and by the fade at the edge of the outer layer. | `shadowESM` |
+| `shadow_esm` | `fn shadow_esm(dz: f32) -> f32` | The shadow amount, 0 to 1, for a negative `dz` (in the unit of 16384 world units). The renderer scales it by the sun's light, and the blend and the fade of the cascades act on it. | `shadowESM` |
+
+The hook `shadow_delta` of the two layers (`shadowDeltaZ`) is not called by the cascades. A
+`XE Mod Shadow.wgsl` that defines it is dropped with its `XE Mod Shadow Data.wgsl`, and the log
+gives the reason. The change to the interface `mge-xe-core 2` (W437 item 5) gives its new form
+for one cascade. A `XE Mod Shadow.wgsl` with only `shadow_esm` loads.
 
 The library of the shadow hooks:
 
 | Function | What it gives |
 | --- | --- |
-| `shadow_map_depth(layer: u32, uv: vec2f) -> f32` | The shadow map at level 0. `layer` is 0 or 1; `uv` is 0 to 1 over the layer. |
-| `shadow_texel() -> f32` | 1 over the resolution of a layer. |
+| `shadow_map_depth(cascade: u32, uv: vec2f) -> f32` | The shadow map at level 0. `cascade` is 0 to 3; `uv` is 0 to 1 over the cascade. |
+| `shadow_texel() -> f32` | 1 over the resolution of a cascade. |
 | `shadow_esm_scale() -> f32` | The scale of the map's stored depth. |
 | `shadow_esm_values() -> vec2f` | `esm_c` and `esm_bias` of `XE Mod Shadow Data` (x and y). |
+| `shadow_depth_range(cascade: u32) -> f32` | The cascade's depth range / 16384. |
+| `shadow_slice_end(cascade: u32) -> f32` | The far end of the cascade's slice along the view axis, in world units. |
+| `shadow_place(cascade: u32, p: vec4f) -> vec3f` | The home's point `p` in the cascade: x and y -1 to 1 over the cascade, the depth 0 to 1 over its range. |
 
-The built-in `shadow_delta` uses the first layer when the pixel is inside it with a margin of
-8 texels, else the second layer, else it gives `1e-6`. The built-in `shadow_esm` gives
-`1 - clamp(exp(esm_c * dz + esm_bias), 0, 1)`.
+The built-in `shadow_esm` gives `1 - clamp(exp(esm_c * dz + esm_bias), 0, 1)`.
 
 An example file that gives the shadows a sharper edge (a larger exponent):
 
@@ -481,9 +493,9 @@ volumes seen from below, as these share the built-in under-water shading.
 
 - **A hook can hang the GPU,** as an `.fx` core mod can on Direct3D 9: for example a loop that
   never ends. The shader check cannot find this.
-- **The shadow layers view** (the debug view `shadow-layers`) colours each pixel by the layer that
-  the built-in margin picks. With a mod's `shadow_delta`, the view still shows the built-in
-  choice, not the mod's.
+- **The shadow layers view** (the debug view `shadow-layers`) colours each pixel by the cascade
+  that the renderer chooses (red, green, blue, yellow; a mix in a blend band; black past the
+  last).
 - **The water debug views** show the terms of the built-in colour only, on the surface of the
   mod (see "The water debug views").
 - **A particle hook runs for each pixel of each particle.** Where many particles cover the

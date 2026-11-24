@@ -7,7 +7,7 @@
 //!
 //! The places of a world space are in a list on the GPU, sorted by texture, subset and place:
 //! the order of the draws of the CPU. For each set of a frame (the main view, the mirror, the
-//! two layers of the shadow map) two compute passes choose the places:
+//! four cascades of the shadow map) two compute passes choose the places:
 //!
 //! - `cull`, one thread for each place: the vis group, the subset on the GPU, the band of its
 //!   tier and the end of the fog, the handoff to the game, the view, and the level of detail,
@@ -401,7 +401,8 @@ pub struct CullUniforms {
     pub eye: [f32; 4],
     /// The ends of the three tiers, and the end of the fog.
     pub bands: [f32; 4],
-    /// x: the distance before which a static is gone (the handoff).
+    /// x: the distance before which a static is gone (the handoff). z: the least level of detail
+    /// of the set's places (0, 1 or 2; [`super::raised_faces`]).
     pub limits: [f32; 4],
     /// x: the places in the list. y: the textures (the place of the counts of the work).
     pub counts: [u32; 4],
@@ -456,6 +457,16 @@ struct Draw {
 // The draws of each texture, then the counts of the work (`STATS`, from c.counts.y on).
 @group(0) @binding(8) var<storage, read_write> counts: array<atomic<u32>>;
 
+fn level_faces(s: Subset, level: u32) -> u32 {
+    if level == 0u {
+        return s.faces0;
+    }
+    if level == 1u {
+        return s.faces1;
+    }
+    return s.faces2;
+}
+
 @compute @workgroup_size(256)
 fn cull(@builtin(global_invocation_id) id: vec3u) {
     let i = id.x;
@@ -492,15 +503,27 @@ fn cull(@builtin(global_invocation_id) id: vec3u) {
             }
         }
     }
-    var faces = s.faces2;
+    var level = 2u;
     if range <= c.bands.x + place.radius {
-        faces = s.faces0;
+        level = 0u;
     } else if range <= c.bands.y + place.radius {
-        faces = s.faces1;
+        level = 1u;
     }
+    var faces = level_faces(s, level);
     // Past its tier with the bands' test off: the finest level when this one has no triangles.
     if bands_off && faces == 0u {
         faces = s.faces0;
+    }
+    // The set's least level (`raised_faces` of statics.rs): a place that draws takes at least
+    // that level; a level with no triangles keeps the next finer one, never finer than the
+    // level of the range.
+    let least = u32(c.limits.z);
+    if faces != 0u && least > level {
+        var raised = least;
+        while level_faces(s, raised) == 0u && raised > level {
+            raised -= 1u;
+        }
+        faces = level_faces(s, raised);
     }
     if faces != 0u {
         flags[i] = faces;
@@ -570,9 +593,9 @@ struct SetBuffers {
     bytes: u64,
 }
 
-/// The sets that a list has from the start: the main view, the mirror and the two layers of
-/// the shadow map. The sets of the views of their own come with [`Culling::ensure_set`].
-const FIXED_SETS: usize = 4;
+/// The sets that a list has from the start: the main view, the mirror and the four cascades
+/// of the shadow map. The sets of the views of their own come with [`Culling::ensure_set`].
+const FIXED_SETS: usize = super::FIXED_SETS;
 
 /// The bytes of the buffers of one set of a list of `length` places and `textures` textures:
 /// the flags and the draws have a slot for each place (24 bytes), and the counts have a word for
@@ -1031,7 +1054,7 @@ impl Culling {
 
 #[cfg(test)]
 mod tests {
-    use super::Ranges;
+    use super::{CullUniforms, Culling, Place, Ranges, Subset, wgpu};
 
     /// The compute shader of the cull compiles as the device checks it, with the 8 storage
     /// buffers of a stage that the limits allow.
@@ -1041,6 +1064,59 @@ mod tests {
         for entry in ["cull", "compact"] {
             assert!(module.entry_points.iter().any(|e| e.name == *entry), "no entry {entry}");
         }
+    }
+
+    /// W437 step 2: the least level of a set raises the level of the places that draw. A raised
+    /// level with no triangles keeps the next finer one, never finer than the level of the range,
+    /// and a place with no triangles at the level of its range draws nothing at any least level.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_least_level_raises_only_the_places_that_draw() {
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        // Three near places (the level of the range is 0) and one far place (level 2), all of tier 2.
+        let place = |x: f32, subset: u32| Place {
+            center: [x, 0.0, 0.0],
+            radius: 10.0,
+            subset,
+            tier: 2,
+            group: 0,
+            _pad: 0,
+        };
+        let places = [place(100.0, 0), place(100.0, 1), place(100.0, 2), place(10000.0, 1)];
+        let subsets = [[100, 40, 10], [100, 40, 0], [100, 0, 0]].map(|faces| Subset {
+            faces,
+            resident: 1,
+            ..Default::default()
+        });
+        let mut culling = Culling::new(&device, &places, subsets.len(), 1);
+        queue.write_buffer(&culling.subsets, 0, bytemuck::cast_slice(&subsets));
+        culling.set_world(&device, b"test", &[(0, 0), (0, 1), (0, 2), (0, 3)]);
+        let set = 2;
+        let drawn = |least: f32| {
+            let values = CullUniforms {
+                planes: [[0.0, 0.0, 0.0, 1.0]; 6],
+                eye: [0.0; 4],
+                bands: [1000.0, 5000.0, 1.0e6, 1.0e9],
+                limits: [-1.0, 0.0, least, 0.0],
+                counts: [0; 4],
+            };
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            culling.encode(&queue, &mut encoder, set, &values);
+            queue.submit([encoder.finish()]);
+            let counts = culling.take_stats(&device, &queue)[set];
+            (counts[4], counts[5])
+        };
+        // The level of the range: 100 + 100 + 100; the far place has no faces2.
+        assert_eq!(drawn(0.0), (3, 300));
+        // At least level 1: 40 + 40, and the third keeps its level 0 (no faces1).
+        assert_eq!(drawn(1.0), (3, 180));
+        // At least level 2: 10, then 40 (no faces2), then 100 (no faces2 or faces1).
+        assert_eq!(drawn(2.0), (3, 150));
     }
 
     #[test]

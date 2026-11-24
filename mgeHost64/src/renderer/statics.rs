@@ -1073,7 +1073,7 @@ struct GrassParts {
     draw_seconds: f64,
 }
 
-/// The work of the draws of one set (the main view, the mirror, the two layers of the shadow
+/// The work of the draws of one set (the main view, the mirror, the four cascades of the shadow
 /// map) since the last report (`statics report` of `nirender.tune`).
 #[derive(Default, Clone, Copy)]
 struct SetStats {
@@ -1112,10 +1112,14 @@ struct WaitStats {
     again: u32,
 }
 
-/// The sets of a frame that exist from the start: the main view, the mirror and the two layers
-/// of the shadow map. The sets of the views of their own ([`tier_set`]) follow, a list that
-/// grows with the places and the spares (D82 caps, design B).
-pub const FIXED_SETS: usize = 4;
+/// The sets of a frame that exist from the start: the main view, the mirror and the four
+/// cascades of the shadow map. The sets of the views of their own ([`tier_set`]) follow, a list
+/// that grows with the places and the spares (D82 caps, design B).
+pub const FIXED_SETS: usize = 6;
+
+/// The sets of the cascades of the shadow map: the numbers of their views
+/// ([`super::view::SHADOW`]).
+pub const SHADOW_SETS: [usize; super::shadow::CASCADES] = super::view::SHADOW;
 
 /// The set of the view of its own in the set `k` of the views of their own (a place, or a
 /// spare: [`super::view::TierViews`]).
@@ -1124,7 +1128,7 @@ pub const fn tier_set(k: usize) -> usize {
 }
 
 /// The names of the fixed sets, for the report.
-const SET_NAMES: [&str; FIXED_SETS] = ["view", "mirror", "shadow 1", "shadow 2"];
+const SET_NAMES: [&str; FIXED_SETS] = ["view", "mirror", "shadow 1", "shadow 2", "shadow 3", "shadow 4"];
 
 /// The view group of the set `set` of the statics, when it is made.
 fn group_of(view_groups: &[Option<wgpu::BindGroup>], set: usize) -> Option<&wgpu::BindGroup> {
@@ -1555,7 +1559,7 @@ struct Gpu {
     mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
     /// The depth from the sun into the shadow map.
     shadow_pipeline: wgpu::RenderPipeline,
-    /// The main view, the reflection, the two layers of the shadow map ([`FIXED_SETS`]), and the
+    /// The main view, the reflection, the four cascades of the shadow map ([`FIXED_SETS`]), and the
     /// views of their own, by the number of the set; `None` for a set not made yet or freed.
     sets: Vec<Option<BufferSet>>,
     /// What a set of the views of their own needs to make its uniforms and its group
@@ -1689,10 +1693,9 @@ pub struct GrassFrame {
 #[derive(Clone)]
 pub struct GrassShadow {
     pub atlas: std::rc::Rc<wgpu::TextureView>,
-    /// The matrices from a position less the eye to the two layers, with the layout of Direct3D
-    /// (made as `view::relative_of_product` makes them): the grass takes them with `clip_with`.
-    pub layers: [[f32; 16]; 2],
-    /// 1 over the resolution of a layer.
+    /// The values of the cascades for the grass, from a position less the eye.
+    pub cascades: super::shadow::Receiver,
+    /// 1 over the resolution of a cascade.
     pub rcp: f32,
     /// The visibility of the sun, for the light that `shadowSunEstimate` gives.
     pub sun_vis: f32,
@@ -1701,9 +1704,8 @@ pub struct GrassShadow {
     pub day: f32,
     /// The camera is above the sea: the fog weakens the shadow less below it.
     pub above_sea: bool,
-    /// The shadow of a blade ends as the shadow of the ground under it: the fade at the edge
-    /// of the outer layer and in the fog (tunable `grass.shadow`, 2). With 1, as the
-    /// Direct3D 9 path: no fade.
+    /// The shadow of a blade ends as the shadow of the ground under it: the fade in the fog
+    /// (tunable `grass.shadow`, 2). With 1, as the Direct3D 9 path: no fade.
     pub edge: bool,
 }
 
@@ -1717,9 +1719,13 @@ struct GrassUniforms {
     ambient: [f32; 4],
     wind: [f32; 4],
     foot: [f32; 4],
-    /// The matrices from the world to the two layers of the shadow map.
-    shadow_layers: [[f32; 16]; 2],
-    /// `ESM_c`, `ESM_bias`, `ESM_scale`, 1 over the resolution of a layer.
+    /// The matrices from a position less the eye to the four cascades of the shadow map, the
+    /// far ends of their slices, their depth ranges / 16384, and the view axis.
+    shadow_cascades: [[f32; 16]; 4],
+    cascade_ends: [f32; 4],
+    cascade_ranges: [f32; 4],
+    view_axis: [f32; 4],
+    /// `ESM_c`, `ESM_bias`, `ESM_scale`, 1 over the resolution of a cascade.
     esm: [f32; 4],
     /// `shadecolor`, and `shade` of `shadowSunEstimate`.
     shade: [f32; 4],
@@ -1817,6 +1823,9 @@ pub struct Statics {
     /// [`super::live_parts`]): [`super::live_parts::NOCULL_BANDS`] and
     /// [`super::live_parts::NOCULL_VIEW`]. The handoff goes with the eye of the set. 0 runs all.
     no_cull: u32,
+    /// The least level of detail of the casters of the last cascade of the shadow map (0, 1 or 2;
+    /// the tunable `shadow.far_level`, [`Statics::set_far_level`]).
+    far_level: u32,
     /// The core mods of the session: the shadow hooks of the grass shader at its first build
     /// (`core_mods.rs`).
     core_mods: super::core_mods::Shared,
@@ -2076,6 +2085,7 @@ impl Statics {
             alpha_to_coverage: document.settings().graphics.transparency_antialiasing,
             alpha_to_coverage_setting: document.settings().graphics.transparency_antialiasing,
             no_cull: 0,
+            far_level: 0,
             core_mods: super::core_mods::Shared::built_in(),
             loading: Some(receiver),
             catalog: None,
@@ -3315,7 +3325,13 @@ impl Statics {
             ambient: frame.ambient,
             wind: frame.wind,
             foot: frame.foot,
-            shadow_layers: frame.shadow.as_ref().map_or([[0.0; 16]; 2], |shadow| shadow.layers),
+            shadow_cascades: frame
+                .shadow
+                .as_ref()
+                .map_or([[0.0; 16]; 4], |shadow| shadow.cascades.matrices),
+            cascade_ends: frame.shadow.as_ref().map_or([0.0; 4], |shadow| shadow.cascades.ends),
+            cascade_ranges: frame.shadow.as_ref().map_or([0.0; 4], |shadow| shadow.cascades.ranges),
+            view_axis: frame.shadow.as_ref().map_or([0.0; 4], |shadow| shadow.cascades.axis),
             esm: frame
                 .shadow_values
                 .esm(frame.shadow.as_ref().map_or(0.0, |shadow| shadow.rcp)),
@@ -3377,6 +3393,12 @@ impl Statics {
             self.grass_drawn += self.grass_draws.len() as u64;
         }
         Ok(self.grass_draws.len())
+    }
+
+    /// The least level of detail of the casters of the last cascade of the shadow map, from the
+    /// tunable `shadow.far_level` in each frame: 0 the level of the range, 2 the coarsest.
+    pub fn set_far_level(&mut self, level: u32) {
+        self.far_level = level.min(2);
     }
 
     /// A wait for the statics is open: the merged subsets that arrive in it are counted apart
@@ -3709,6 +3731,7 @@ impl Statics {
                                     cull_set.eye,
                                     cull_set.fog_end,
                                     tests_off(cull_set.set, self.no_cull),
+                                    least_level(cull_set.set, self.far_level),
                                 );
                                 culling.encode(scene.queue, &mut encoder, cull_set.set, &values);
                                 mark_prepared(&mut self.prepared, cull_set.set);
@@ -3774,6 +3797,7 @@ impl Statics {
                 cull_set.eye,
                 cull_set.fog_end,
                 tests_off(cull_set.set, self.no_cull),
+                least_level(cull_set.set, self.far_level),
             ),
         );
         scene.commands.stamps().end(&mut encoder, at);
@@ -4129,7 +4153,7 @@ impl Statics {
             _ if own_samples => (&gpu.picture_pipeline, &None),
             _ => (&gpu.pipeline, &gpu.pipeline_lines),
         };
-        let shadow = matches!(set, 2 | 3);
+        let shadow = SHADOW_SETS.contains(&set);
         pass.set_pipeline(if shadow {
             &gpu.shadow_pipeline
         } else if scene.wireframe {
@@ -4217,6 +4241,7 @@ impl Statics {
                         frame.eye,
                         frame.fog_end,
                         tests_off(set, self.no_cull),
+                        least_level(set, self.far_level),
                     ),
                 );
                 return Ok(Self::draw_chosen(
@@ -4232,6 +4257,7 @@ impl Statics {
 
         // The places chosen on the CPU.
         let off = tests_off(set, self.no_cull);
+        let least = least_level(set, self.far_level) as usize;
         let bands_off = off & super::live_parts::NOCULL_BANDS != 0;
         let view_off = off & super::live_parts::NOCULL_VIEW != 0;
         let gone_before = frame.eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL;
@@ -4277,17 +4303,19 @@ impl Statics {
                         stats.frustum += 1;
                         continue;
                     }
-                    // The level of detail by the distance; past its tier with the bands' test off,
-                    // the finest when that level has no triangles.
-                    let faces = match if range <= settings.band_ends[0] + instance.radius {
-                        resident.faces[0]
+                    // The level of detail by the distance, raised to the set's least level
+                    // ([`raised_faces`]); past its tier with the bands' test off, the finest when
+                    // that level has no triangles.
+                    let level = if range <= settings.band_ends[0] + instance.radius {
+                        0
                     } else if range <= settings.band_ends[1] + instance.radius {
-                        resident.faces[1]
+                        1
                     } else {
-                        resident.faces[2]
-                    } {
+                        2
+                    };
+                    let faces = match resident.faces[level] {
                         0 if bands_off => resident.faces[0],
-                        faces => faces,
+                        _ => raised_faces(resident.faces, level, least),
                     };
                     if faces != 0 {
                         self.draws.push((subset.texture, instance.subset, *index, faces));
@@ -4372,19 +4400,26 @@ fn world_places(catalog: &Catalog, world: &World) -> Vec<(u32, u32)> {
 
 /// The values of the culling of a set: the planes, the eye with the view range of the game in
 /// w, the ends of the tiers and of the fog, the handoff, and the tests that a test leaves out
-/// (`tests_off`, [`tests_off`]; in `limits.y`, 0 for none).
+/// (`tests_off`, [`tests_off`]; in `limits.y`, 0 for none), and the least level of detail of the
+/// set's places (`least_level`, [`least_level`]; in `limits.z`).
 fn cull_values(
     settings: &Settings,
     planes: [[f32; 4]; 6],
     eye: [f32; 4],
     fog_end: f32,
     tests_off: u32,
+    least_level: u32,
 ) -> cull::CullUniforms {
     cull::CullUniforms {
         planes,
         eye: [eye[0], eye[1], eye[2], 0.0],
         bands: [settings.band_ends[0], settings.band_ends[1], settings.band_ends[2], fog_end],
-        limits: [eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL, tests_off as f32, 0.0, 0.0],
+        limits: [
+            eye[3] - HANDOFF - HANDOFF_BAND - HANDOFF_CULL,
+            tests_off as f32,
+            least_level as f32,
+            0.0,
+        ],
         counts: [0; 4],
     }
 }
@@ -4394,6 +4429,32 @@ fn cull_values(
 /// view's set 0, none for the other sets.
 fn tests_off(set: usize, no_cull: u32) -> u32 {
     if set == 0 { no_cull } else { 0 }
+}
+
+/// The least level of detail of the places of `set`: `far_level` for the casters of the last
+/// cascade of the shadow map, whose texels are too large to show the finer levels (W437 step 2),
+/// 0 (the level of the range) for every other set.
+fn least_level(set: usize, far_level: u32) -> u32 {
+    if set == SHADOW_SETS[super::shadow::CASCADES - 1] {
+        far_level
+    } else {
+        0
+    }
+}
+
+/// The triangles of a place whose range gives `level`, raised to the set's least level `least`:
+/// the triangles of `least`, or of the next finer level when it has none, never finer than
+/// `level`. A place with no triangles at `level` stays without. The shader of the cull does the
+/// same (`fn cull` of `cull.rs`).
+fn raised_faces(faces: [u32; 3], level: usize, least: usize) -> u32 {
+    if faces[level] == 0 || least <= level {
+        return faces[level];
+    }
+    (level..=least.min(2))
+        .rev()
+        .map(|at| faces[at])
+        .find(|&count| count != 0)
+        .unwrap_or(0)
 }
 
 /// The values of the draws of a set (group 1).
@@ -5226,7 +5287,9 @@ mod shader_tests {
 #[cfg(test)]
 mod cull_value_tests {
     use super::super::live_parts::{NOCULL_BANDS, NOCULL_VIEW};
-    use super::{HANDOFF, HANDOFF_BAND, HANDOFF_CULL, Settings, cull_values, tests_off};
+    use super::{
+        HANDOFF, HANDOFF_BAND, HANDOFF_CULL, SHADOW_SETS, Settings, cull_values, least_level, raised_faces, tests_off,
+    };
 
     fn settings() -> Settings {
         Settings {
@@ -5243,7 +5306,14 @@ mod cull_value_tests {
     /// eye, as before.
     #[test]
     fn without_the_tune_every_test_runs() {
-        let values = cull_values(&settings(), [[0.0; 4]; 6], [1.0, 2.0, 3.0, 7168.0], 50000.0, tests_off(0, 0));
+        let values = cull_values(
+            &settings(),
+            [[0.0; 4]; 6],
+            [1.0, 2.0, 3.0, 7168.0],
+            50000.0,
+            tests_off(0, 0),
+            0,
+        );
         assert_eq!(values.limits, [7168.0 - HANDOFF - HANDOFF_BAND - HANDOFF_CULL, 0.0, 0.0, 0.0]);
         assert_eq!(values.eye, [1.0, 2.0, 3.0, 0.0]);
     }
@@ -5262,11 +5332,48 @@ mod cull_value_tests {
             [0.0, 0.0, 0.0, 7168.0],
             50000.0,
             tests_off(0, off),
+            0,
         );
         assert_eq!(values.limits[1], 3.0);
         assert_eq!(values.limits[0], 7168.0 - HANDOFF - HANDOFF_BAND - HANDOFF_CULL);
         // The null: a set of the shadow map with the tune's bits would draw out of its view.
-        assert_ne!(cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, off).limits[1], 0.0);
+        assert_ne!(
+            cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, off, 0).limits[1],
+            0.0
+        );
+    }
+
+    /// W437 step 2: the least level goes into limits.z for the last cascade's set only; the
+    /// main view, the mirror and cascades 0 to 2 keep the level of the range.
+    #[test]
+    fn the_least_level_goes_to_the_last_cascade_only() {
+        let last = SHADOW_SETS[3];
+        assert_eq!(least_level(last, 2), 2);
+        for set in [0, 1, SHADOW_SETS[0], SHADOW_SETS[1], SHADOW_SETS[2], 9] {
+            assert_eq!(least_level(set, 2), 0, "set {set}");
+        }
+        let values = cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, 0, least_level(last, 2));
+        assert_eq!(values.limits[2], 2.0);
+        let main = cull_values(&settings(), [[0.0; 4]; 6], [0.0; 4], 1.0e9, 0, least_level(0, 2));
+        assert_eq!(main.limits[2], 0.0);
+    }
+
+    /// The rule of the CPU walk, as the shader's: raised to the least level, a level with no
+    /// triangles keeps the next finer one, never finer than the level of the range, and a place
+    /// with no triangles at that level stays without.
+    #[test]
+    fn the_raised_level_falls_back_to_finer_ones_only_down_to_the_range() {
+        assert_eq!(raised_faces([100, 40, 10], 0, 0), 100);
+        assert_eq!(raised_faces([100, 40, 10], 0, 2), 10);
+        assert_eq!(raised_faces([100, 40, 0], 0, 2), 40);
+        assert_eq!(raised_faces([100, 0, 0], 0, 2), 100);
+        assert_eq!(raised_faces([100, 0, 10], 0, 1), 100);
+        assert_eq!(raised_faces([100, 40, 0], 1, 2), 40);
+        // A far place with no faces2 draws nothing, also with a least level.
+        assert_eq!(raised_faces([100, 40, 0], 2, 2), 0);
+        assert_eq!(raised_faces([100, 40, 0], 2, 0), 0);
+        // A least level finer than the range changes nothing.
+        assert_eq!(raised_faces([100, 40, 10], 2, 1), 10);
     }
 }
 
@@ -5295,17 +5402,26 @@ mod tests {
         for set in [0, 2, 3] {
             count_culled(&mut culled, set);
         }
-        assert_eq!(culled_text(&culled, set_name), "view: 1, mirror: 0, shadow 1: 1, shadow 2: 1");
-        for set in [0, 1, 2, 3] {
+        assert_eq!(
+            culled_text(&culled, set_name),
+            "view: 1, mirror: 0, shadow 1: 1, shadow 2: 1, shadow 3: 0, shadow 4: 0"
+        );
+        for set in [0, 1, 2, 3, 4, 5] {
             count_culled(&mut culled, set);
         }
-        assert_eq!(culled_text(&culled, set_name), "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2");
+        assert_eq!(
+            culled_text(&culled, set_name),
+            "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2, shadow 3: 1, shadow 4: 1"
+        );
         count_culled(&mut culled, FIXED_SETS + 1);
         assert_eq!(
             culled_text(&culled, set_name),
-            "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2, view of its own 2: 1"
+            "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2, shadow 3: 1, shadow 4: 1, view of its own 2: 1"
         );
-        assert_eq!(culled_text(&[], set_name), "view: 0, mirror: 0, shadow 1: 0, shadow 2: 0");
+        assert_eq!(
+            culled_text(&[], set_name),
+            "view: 0, mirror: 0, shadow 1: 0, shadow 2: 0, shadow 3: 0, shadow 4: 0"
+        );
     }
 
     /// A record of 16 floats that starts at `first` and rises by one.
