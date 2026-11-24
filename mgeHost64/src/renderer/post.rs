@@ -98,8 +98,7 @@ fn mge_xe_dither(color: vec4f, position: vec4f) -> vec4f {
 
 /// The part of each shader module that every shader has: the variables, the textures, the
 /// samplers, the quad and the helpers of HLSL that WGSL does not have.
-const COMMON: &str = concat!(
-    "
+const COMMON: &str = "
 struct Variables {
     mview: mat4x4f,
     mproj: mat4x4f,
@@ -246,8 +245,7 @@ struct Quad {
     out.tex = vec2f(0.5 + 0.5 * x, 0.5 - 0.5 * y);
     return out;
 }
-",
-);
+";
 
 /// The prefix of the entry point that the renderer adds for the clamped last pass of a shader
 /// ([`last_pass`]).
