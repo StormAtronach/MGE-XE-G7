@@ -37,6 +37,7 @@ reads the `.wgsl` file of the same name:
 | Darker Nights - wgpu shaders | `Darker Nights.fx`, md5 85d20186c83457f61cc449dcfa1544d3: a file of MGE XE v0.20.0 that MGE XE removed (d2ed258), in `mods/MGE XE G7 Fork` of Morrowind75 - Poison Song and in the game folder of Morrowind Refreshed (260602). Written by hand from the `.fx` |
 | True Water - Odai - wgpu shaders | `tw_foam.fx`, md5 10c758a2be9a6e447316c655798409eb, of the True Water showcase `True Water - Odai`. Written by hand from the `.fx` |
 | True Water - Flow Map - wgpu shaders | `tw_flowmap.fx`, md5 5439e388e2823c125485b09eebc912c4, of the True Water showcase `True Water - Flow Map`. Written by hand from the `.fx` |
+| Underwater Dust - wgpu shaders | Underwater dust raymarching by vtastek v0.01a (`underwaterdust.fx`, md5 923d336015e7c56ff71c86df9096a43e). No install has its mod, so the pack has the name of the shader. Written by hand from the `.fx` |
 
 Two packs give `shaders/core-mods/XE Mod Water.wgsl`: Enhanced Water Shader and Pixel Shader
 Style Water. Install one water pack at a time, the one of the water mod that is on. The test
@@ -74,6 +75,11 @@ mods, and post shaders of mods that the renderer had no built-in port of.
   from `XE Mod Sky.fx`, md5 56b31f168d28ae2453e019552a53308e, of the same mod in Morrowind
   Refreshed. It is the current Watch the Skies' `XE Mod Sky.fx` with 9 other numbers: the file is
   the port of the pack "Watch the Skies - wgpu shaders" with these numbers.
+- `Underwater Dust - wgpu shaders/shaders/XEshaders/underwaterdust.wgsl`: from
+  `underwaterdust.fx` by vtastek, md5 923d336015e7c56ff71c86df9096a43e. The `.fx` reads
+  `depthframe` with a linear filter; the `.wgsl` reads it with `point_clamp`, the one filter that
+  `depthframe` takes. The functions that the `.fx` does not call (`erot`, `GetNormal`) and the
+  values of `GetDist` that it does not use are not in the `.wgsl`.
 
 ## The exported packs
 
