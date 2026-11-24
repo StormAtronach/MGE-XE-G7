@@ -2,6 +2,7 @@ local this = {}
 local autoSetDistances = true
 local shaderparams = require("MGE XE Options.shaderparams")
 local hotreload = require("MGE XE Options.hotreload")
+local debugviews = require("MGE XE Options.debugviews")
 
 -- Terrain horizon-culling tuning is exposed directly by d3d8.dll as plain C exports, because
 -- MWSE's `mge` bindings live in a separate repository and cannot surface new tunables without a
@@ -383,6 +384,83 @@ local function weatherLabel(weatherID)
 	return this.i18n(string.format("Weather%d", weatherID))
 end
 
+-- The page of the renderer's debug views (W642; the state and the calls are in debugviews.lua).
+-- It is made on the wgpu renderer only.
+local function createDebugPane(menu)
+	local i18n = this.i18n
+	local pane = createPane(menu, "PaneDebug")
+
+	-- The view: each click sets the next one; the text under it says what the view shows.
+	local section = createGroup(pane)
+	section:createLabel{text = i18n("DebugViewTitle")}
+	createSpacer(section)
+	local block = section:createBlock{}
+	block.widthProportional = 1.0
+	block.autoHeight = true
+	block.childAlignY = 0.5
+	block:createLabel{text = i18n("DebugView")}.minWidth = 250
+	local function viewText()
+		return i18n("DebugView_" .. debugviews.view())
+	end
+	local function helpText()
+		return i18n("DebugViewHelp_" .. debugviews.view())
+	end
+	local viewButton = createThinButton(block, viewText())
+	local help = section:createLabel{text = helpText()}
+	help.wrapText = true
+	help.borderTop = 4
+	viewButton:register("mouseClick", function(e)
+		debugviews.nextView()
+		viewButton.text = viewText()
+		help.text = helpText()
+		menu:updateLayout()
+	end)
+	block:registerBefore("update", function(e)
+		viewButton.text = viewText()
+		help.text = helpText()
+	end)
+
+	-- The terms of the views of the water and of the post chain.
+	createSpacer(section)
+	for _, name in ipairs({ "water", "post" }) do
+		local key = name == "water" and "DebugWaterTerm" or "DebugPostTerm"
+		createNumberEdit(section, nil, i18n(key),
+			function()
+				local term = debugviews.term(name)
+				return string.format("%d: %s", term, i18n(key .. term))
+			end,
+			function(delta) debugviews.changeTerm(name, delta) end,
+			1)
+	end
+
+	-- The line sources: each one on or off.
+	section = createGroup(pane)
+	section:createLabel{text = i18n("DebugLinesTitle")}
+	createSpacer(section)
+	for _, source in ipairs(debugviews.lineSources) do
+		local row = section:createBlock{}
+		row.widthProportional = 1.0
+		row.autoHeight = true
+		row.childAlignY = 0.5
+		row:createLabel{text = i18n("DebugLines_" .. source)}.minWidth = 250
+		local function stateText()
+			return debugviews.lineOn(source) and i18n("On") or i18n("Off")
+		end
+		local button = createThinButton(row, stateText())
+		button:register("mouseClick", function(e)
+			debugviews.switchLine(source)
+			button.text = stateText()
+			menu:updateLayout()
+		end)
+		row:registerBefore("update", function(e) button.text = stateText() end)
+	end
+
+	local note = pane:createLabel{text = i18n("DebugNotSaved")}
+	note.wrapText = true
+	note.borderLeft = 10
+	note.borderRight = 10
+end
+
 
 function this.run()
 	local i18n = this.i18n
@@ -394,12 +472,16 @@ function this.run()
 		return
 	end
 
+	-- The renderer's debug views: on the wgpu renderer only.
+	local debugPage = debugviews.available()
+
 	-- Create menu
 	menu = tes3ui.createMenu{id = "MenuMGE-XE", dragFrame = true, loadable = true}
 	menu.text = "MGE XE"
-	menu.width = 520
+	-- The tab "Debug" needs 524 px for the six tabs (484 px of tabs, 40 px of borders and frame).
+	menu.width = debugPage and 524 or 520
 	menu.height = 720
-	menu.minWidth = 480
+	menu.minWidth = debugPage and 524 or 480
 	menu.minHeight = 720
 
 	-- Right-align menu default position
@@ -429,6 +511,10 @@ function this.run()
 	element:register("mouseClick", function(e) showPane(menu, 4) end)
 	element = createThinButton(section, i18n("TabLighting"))
 	element:register("mouseClick", function(e) showPane(menu, 5) end)
+	if debugPage then
+		element = createThinButton(section, i18n("TabDebug"))
+		element:register("mouseClick", function(e) showPane(menu, 6) end)
+	end
 
 	-- Turn off widthProportional, because the layout does not stabilize when using it
 	for i, child in ipairs(section.children) do
@@ -777,6 +863,11 @@ function this.run()
 				mge.weather.setPerPixelLighting(ppl)
 			end,
 			0.05)
+	end
+
+	-- Debug pane
+	if debugPage then
+		createDebugPane(menu)
 	end
 
 	section = menu:createBlock()

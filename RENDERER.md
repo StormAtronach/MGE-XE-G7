@@ -473,6 +473,10 @@ of the game and of the distant land, unless its source draws it over everything.
 source is on, the overlay gives the number of segments. With no line source on, the pass makes
 nothing and costs nothing.
 
+- In a game, from the MGE XE window (the mod config menu, then "Open settings window"): the page
+  `Debug`, on wgpu only, chooses the view, the terms of `water` and `post`, and the line sources
+  (`MGE XE Options/debugviews.lua`). The page saves nothing: after a restart of the game each
+  view and each line source is off.
 - In a game, from Lua: `nirender.debug.view(name, term)` (`nirender.debug.view("off")` for
   none) and `nirender.debug.lines(name, on)`. Each sends a tune.
 - The tunes: `debug view <name> [term]`, `debug view off`, `debug lines <name> on|off`.
