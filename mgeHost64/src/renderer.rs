@@ -1445,6 +1445,8 @@ pub struct DistantLand {
     shadow_resolution: u32,
     /// The anisotropic filter of the settings (`graphics.anisotropy`): 1 is none.
     anisotropy: u16,
+    /// How the sky's bilinear maps (the moons, the glare) are read (`graphics.sky_map_filter`, W632).
+    sky_map_filter: nirender_wgpu::SkyMapFilter,
     /// The samples for each pixel of the frame (`graphics.anti_aliasing`): 1 is none. The
     /// renderer draws the pass of the game into multisampled targets with more.
     samples: u32,
@@ -2097,6 +2099,10 @@ impl DistantLand {
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
             anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
+            sky_map_filter: match document.settings().graphics.sky_map_filter {
+                mge_config::SkyMapFilter::Engine => nirender_wgpu::SkyMapFilter::Engine,
+                mge_config::SkyMapFilter::Area => nirender_wgpu::SkyMapFilter::Area,
+            },
             samples: (document.settings().graphics.anti_aliasing.runtime_value() as u32).max(1),
             texture_slots: document.settings().runtime.renderer_texture_slots,
             frame_latency: document.settings().runtime.renderer_frame_latency,
@@ -3715,6 +3721,10 @@ impl Extension for DistantLand {
 
     fn anisotropy(&self) -> u16 {
         self.anisotropy
+    }
+
+    fn sky_map_filter(&self) -> nirender_wgpu::SkyMapFilter {
+        self.sky_map_filter
     }
 
     fn samples(&self) -> u32 {
