@@ -38,7 +38,8 @@ Outlander Configuration (Special Process, Lens Effects, Cinematic Bokeh DoF), Ma
 Lockpicking, Ashfall (ashfall), Joy of Painting (the 23 shaders `jop_*`), Ultra Bloom (Ultra
 Bloom and XERO-lut; XERO-lut reads the colour table `Textures/XERO-lut.tga` of the mod), CRT
 Shader (CRT, CRT Zoomed Out), Darker Nights, Watch the Skies (the current and the older
-version), Krokantor's Enhanced Water Shader, and Eternal Shine. `ports/README.md` lists them
+version), Krokantor's Enhanced Water Shader, Eternal Shine, and vtastek's Underwater Dust
+(underwaterdust). `ports/README.md` lists them
 with their mods. On wgpu, Ultra Bloom takes its exposure from the night and the cell: 1 in the
 day, 2 at night, 1.5 in an interior. The mod's menu values Exposure, Interior exposure bonus and
 Night exposure bonus do not act on wgpu; its other values do.
