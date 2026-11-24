@@ -398,6 +398,8 @@ pub struct GraphicsSettings {
     pub anisotropy: Anisotropy,
     /// The wgpu renderer makes the smaller levels of a texture that has only one (W632).
     pub mipmaps_for_one_level: bool,
+    /// The wgpu renderer filters between the levels of the sky's textures (W632).
+    pub sky_mip_filter: bool,
     pub transparency_antialiasing: bool,
 }
 
@@ -411,6 +413,7 @@ impl Default for GraphicsSettings {
             borderless: true,
             anisotropy: Anisotropy::X8,
             mipmaps_for_one_level: true,
+            sky_mip_filter: false,
             transparency_antialiasing: true,
         }
     }

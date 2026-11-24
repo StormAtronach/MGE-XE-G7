@@ -92,6 +92,7 @@ the same mapping ten times.
 | (new, no INI key) | `runtime.renderer_texture_slots` |
 | (new, no INI key) | `runtime.renderer_frame_latency` |
 | (new, no INI key) | `graphics.mipmaps_for_one_level` |
+| (new, no INI key) | `graphics.sky_mip_filter` |
 | `[Misc] Skip Intro Movies` | `runtime.skip_intro` |
 | `[Misc] Use Menu Background Caching` | `runtime.menu_caching` |
 | `[Misc] Customize 3rd Person Camera` | `runtime.custom_camera` |
@@ -217,6 +218,16 @@ reads them.
   small flickers when the camera moves, on the engine's own renderer too. `false` keeps the one
   level, as the engine does. Read by numidium.exe when it starts; a replay takes
   `--mipmaps-for-one-level on|off` over it.
+
+- `graphics.sky_mip_filter` (default `false`): the wgpu renderer filters between the levels of
+  the textures of the sky's draws (the dome, the stars, the clouds, the sun and the moons; not
+  the sun's glare), whatever filter the game names (W632). The game gives these textures no
+  filter between levels, so a large texture drawn small, such as a 2048 moon, reads only its
+  largest level and shimmers when the camera turns. The draws of the sky are known by the
+  object of the draw (the weather's sky nodes), not by the texture's name. A texture of one
+  level filters between levels only when `graphics.mipmaps_for_one_level` made its levels.
+  Every other draw keeps the game's filter. Read by numidium.exe when it starts; a replay takes
+  `--sky-mip-filter on|off` over it.
 
 - `runtime.renderer_frame_latency` (default `2`, the range `1` to `3`): the frames of the wgpu
   renderer that may wait for the graphics card before the window shows them. With `1` the
