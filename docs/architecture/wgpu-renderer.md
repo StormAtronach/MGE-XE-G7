@@ -409,9 +409,11 @@ texture in a fixed order.
 
 **"distant lights, cull"** (compute, `renderer/distant_lights.rs`): group 0: uniform,
 sources, glow list, indirect arguments (atomics). **"distant lights, glows"**: group 0 the
-main view; group 1: uniform `Glow` (range, glow, screen) (VF), glow list (V);
-`draw_indirect`, no vertex buffers, additive, no depth write. The glows are steady: the
-flags of a source give its glow no flicker or pulse (W449 step 4; the lamps' light moves).
+main view; group 1: uniform `Glow` (range, point, screen) (VF), glow list (V);
+`draw_indirect`, no vertex buffers, additive, no depth write. A glow is the point of light of
+W449 step 6: it shows only where the lamp's glowing part (the glow radius of its record) is
+under 2 pixels across. The glows are steady: the flags of a source give its glow no flicker
+or pulse (W449 step 4; the lamps' light moves).
 
 ### 4.3 Helper: shadows
 

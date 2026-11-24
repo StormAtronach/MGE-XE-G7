@@ -54,6 +54,8 @@ const LEAST_RADIUS: f32 = 16.0;
 /// Worldspaces fork (`dlNight`, 0.75), as a gate (the page, section 2.8).
 const GATE_END: f32 = 0.75;
 const GATE_BAND: f32 = 0.05;
+/// The band of the points' darkness below [`GATE_END`]: the fork's (0.75 - 0.30).
+const POINT_BAND: f32 = 0.45;
 
 /// A lamp of the lights file, with the values that its light takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -676,11 +678,43 @@ pub fn gpu_lamps(source: &[SourceLamp], settings: &LightSettings, near: NearLigh
         .collect()
 }
 
+/// The darkness of a frame for the distant lamps, from one brightness of its sun and ambient
+/// light ([`light_luminance`]), so that the lamps' light and the points of light agree on what
+/// is dark (the page, section 2.8).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Darkness {
+    pub luminance: f32,
+    /// The strength of the lamps' light ([`darkness_gate`]).
+    pub gate: f32,
+    /// How much the points of light show ([`point_darkness`]).
+    pub points: f32,
+}
+
+impl Darkness {
+    /// The darkness of a frame from its sun's colour and visibility and its ambient light, the
+    /// colours of the land.
+    pub fn of(sun_color: [f32; 3], sun_vis: f32, ambient: [f32; 3]) -> Darkness {
+        let luminance = light_luminance(sun_color, sun_vis, ambient);
+        Darkness {
+            luminance,
+            gate: darkness_gate(luminance),
+            points: point_darkness(luminance),
+        }
+    }
+}
+
 /// The strength of the lamps' light in a frame: 1 while the brightness of the sun (its colour
 /// times its visibility) and the ambient light is under 0.70, 0 from 0.75 on. The brightness is
-/// that of `dlNight` of the Worldspaces fork. The colours are those of the land.
-pub fn darkness_gate(sun_color: [f32; 3], sun_vis: f32, ambient: [f32; 3]) -> f32 {
-    ((GATE_END - light_luminance(sun_color, sun_vis, ambient)) / GATE_BAND).clamp(0.0, 1.0)
+/// that of `dlNight` of the Worldspaces fork.
+pub fn darkness_gate(luminance: f32) -> f32 {
+    ((GATE_END - luminance) / GATE_BAND).clamp(0.0, 1.0)
+}
+
+/// How much the points of light show in a frame: `dlNight` of the Worldspaces fork, 1 at a
+/// brightness of 0.30 or less, 0 at 0.75 or more, and in a line between. A point stands in for a
+/// lamp's glass and has no near twin to differ from, so it keeps the fork's multiplier.
+pub fn point_darkness(luminance: f32) -> f32 {
+    ((GATE_END - luminance) / POINT_BAND).clamp(0.0, 1.0)
 }
 
 /// The number of a lamp from its place, from 0 to under 1: the place's hash of `dlAnimation` of
@@ -1934,15 +1968,32 @@ mod tests {
 
     #[test]
     fn the_lamps_light_at_night_and_come_in_below_three_quarters() {
+        let gate = |sun: [f32; 3], sun_vis: f32, ambient: [f32; 3]| Darkness::of(sun, sun_vis, ambient).gate;
         // A clear night at 23:00: the moonlight as the sun.
-        assert_eq!(darkness_gate([0.23, 0.38, 0.69], 1.0, [0.1, 0.1, 0.12]), 1.0);
+        assert_eq!(gate([0.23, 0.38, 0.69], 1.0, [0.1, 0.1, 0.12]), 1.0);
         // Noon: none.
-        assert_eq!(darkness_gate([1.0, 0.99, 0.93], 1.0, [0.3, 0.3, 0.3]), 0.0);
+        assert_eq!(gate([1.0, 0.99, 0.93], 1.0, [0.3, 0.3, 0.3]), 0.0);
         // A storm by day: the sun hidden, a dark ambient light.
-        assert_eq!(darkness_gate([1.0, 1.0, 1.0], 0.0, [0.4, 0.4, 0.4]), 1.0);
+        assert_eq!(gate([1.0, 1.0, 1.0], 0.0, [0.4, 0.4, 0.4]), 1.0);
         // In the band: a part.
-        let band = darkness_gate([0.0; 3], 0.0, [0.725; 3]);
+        let band = gate([0.0; 3], 0.0, [0.725; 3]);
         assert!(band > 0.0 && band < 1.0, "{band}");
+    }
+
+    /// The lamps' gate and the points' darkness read one brightness (the Architect's condition
+    /// on W449 step 6): at 0.30 both are whole, at 0.5 the gate is whole and the points are
+    /// 0.556, at 0.75 both are 0.
+    #[test]
+    fn the_gate_and_the_points_read_one_brightness() {
+        for (grey, gate, points) in [(0.30, 1.0, 1.0), (0.5, 1.0, 0.25 / 0.45), (0.75, 0.0, 0.0)] {
+            // With the sun hidden, the brightness is the grey of the ambient light.
+            let darkness = Darkness::of([1.0; 3], 0.0, [grey; 3]);
+            assert!((darkness.luminance - grey).abs() < 1e-6, "{darkness:?}");
+            assert!((darkness.gate - gate).abs() < 1e-5, "{darkness:?}");
+            assert!((darkness.points - points).abs() < 1e-5, "{darkness:?}");
+            assert_eq!(darkness.gate, darkness_gate(darkness.luminance));
+            assert_eq!(darkness.points, point_darkness(darkness.luminance));
+        }
     }
 
     /// The shaders of the land and the statics compile with the lamps' light, as the device
