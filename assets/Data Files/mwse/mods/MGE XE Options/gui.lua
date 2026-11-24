@@ -481,7 +481,7 @@ function this.run()
 	-- The tab "Debug" needs 524 px for the six tabs (484 px of tabs, 40 px of borders and frame).
 	menu.width = debugPage and 524 or 520
 	menu.height = 720
-	menu.minWidth = 480
+	menu.minWidth = debugPage and 524 or 480
 	menu.minHeight = 720
 
 	-- Right-align menu default position
