@@ -781,6 +781,22 @@ impl Water {
         m
     }
 
+    /// The world change of the sky's draws in the reflection (W641): the mirror in the plane
+    /// z = `eye_height`, the camera's height in the game's world. The game draws its sky dome at
+    /// the camera with a finite radius; a mirror in a plane through the camera keeps the dome at
+    /// the camera and turns each direction from it, so the water shows a sky at infinity, as the
+    /// Direct3D 9 path does (`renderReflectedSky`). The mirror in the water plane put the dome 2h
+    /// below the camera, and its rim showed as a step on the water.
+    pub fn sky_mirror(eye_height: f64) -> [f64; 16] {
+        let mut m = [0.0f64; 16];
+        m[0] = 1.0;
+        m[5] = 1.0;
+        m[10] = -1.0;
+        m[14] = 2.0 * eye_height;
+        m[15] = 1.0;
+        m
+    }
+
     /// The projection of the game with the far plane at the draw distance.
     pub fn far_projection(scene: &SceneView, draw_distance: f32) -> [f32; 16] {
         let mut projection = scene.projection;
@@ -791,8 +807,8 @@ impl Water {
     }
 
     /// Starts the pass of the reflection: cleared to the colour of the horizon. Returns the
-    /// pass and the mirrored view with the far projection. The caller draws the distant
-    /// land, then calls `reflect_sky`, then ends the pass and submits the encoder.
+    /// pass and the mirrored view with the far projection. The caller calls `reflect_sky`,
+    /// then draws the distant land and the statics, then ends the pass and submits the encoder.
     pub fn begin_reflection(
         &mut self,
         scene: &SceneView,
@@ -930,7 +946,11 @@ impl Water {
         self.reflected = true;
     }
 
-    /// The sky of the game in the reflection: its draws again, mirrored, above the water.
+    /// The sky of the game in the reflection: its draws again, mirrored about the camera's height
+    /// ([`Water::sky_mirror`]), above the water. The caller calls it first in the pass, on the
+    /// cleared depth: the sky writes no depth (the game's sky root tests the depth and does not
+    /// write it), so the land and the statics that follow are in front of it at any radius of
+    /// the dome, as with Direct3D 9's dome at infinity.
     pub fn reflect_sky(
         &self,
         scene: &SceneView,
@@ -943,7 +963,7 @@ impl Water {
             return;
         }
         nirender_wgpu::pass_report::note_ran(super::part::REFLECTED_SKY);
-        let mirror = Self::mirror(frame.mirror_level).map(|v| v as f64);
+        let mirror = Self::sky_mirror(scene.eye[2]);
         replay.replay(
             pass,
             &ReplayView {
@@ -963,6 +983,8 @@ impl Water {
                 ]),
                 opaque_only: false,
                 translucent_only: false,
+                // The sky is first on the cleared depth, so the test changes nothing here; it
+                // keeps each draw's write flag (no write for the sky).
                 force_depth_test: true,
                 classes: ReplayView::SKY,
             },
@@ -1439,6 +1461,27 @@ pub(super) fn fill_colour(horizon: bool, fog_color: [f32; 4], sun_color: [f32; 3
 mod tests {
     use super::*;
     use crate::renderer::core_mods::{self, CoreMods};
+
+    /// W641: the sky's world change for a camera at height e is the mirror about z = e: a point
+    /// at the camera's height stays, and a point 100 above it goes to 100 below it; x and y stay.
+    /// The null: the water's mirror at another level moves the point at the camera's height.
+    #[test]
+    fn the_sky_mirror_is_about_the_cameras_height() {
+        let e = 12_345.5f64;
+        let apply = |m: &[f64; 16], p: [f64; 3]| {
+            // Row vectors, as Direct3D: p' = p x m.
+            [
+                p[0] * m[0] + p[1] * m[4] + p[2] * m[8] + m[12],
+                p[0] * m[1] + p[1] * m[5] + p[2] * m[9] + m[13],
+                p[0] * m[2] + p[1] * m[6] + p[2] * m[10] + m[14],
+            ]
+        };
+        let sky = Water::sky_mirror(e);
+        assert_eq!(apply(&sky, [10.0, -20.0, e]), [10.0, -20.0, e]);
+        assert_eq!(apply(&sky, [10.0, -20.0, e + 100.0]), [10.0, -20.0, e - 100.0]);
+        let water = Water::mirror(0.0).map(f64::from);
+        assert_ne!(apply(&water, [10.0, -20.0, e]), [10.0, -20.0, e]);
+    }
 
     /// A view of Direct3D (row vectors) from `eye`, turned up from the horizon by `pitch`
     /// degrees, looking north; and a projection of 75 degrees up and down, 16:9.
