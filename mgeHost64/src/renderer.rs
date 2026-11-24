@@ -4266,11 +4266,19 @@ impl Extension for DistantLand {
     }
 
     /// In a frame with no world (the loading screen of a wait), the statics stream for the
-    /// place of the wait; each frame counts for the wait.
+    /// place of the wait; each frame counts for the wait. In a frame with no wait (the main
+    /// menu before the first game load), only the work that needs no place: the end of the
+    /// start check, which starts the statics and the distant lights, and the terrain's GPU
+    /// objects. Each of the two does its work one time. The statics' catalog is taken in the
+    /// wait, after [`DistantLand::poll_lights`] gave the statics their view layout (W648 (b)).
     fn after_frame(&mut self, scene: &SceneView) {
         self.ended_frame = scene.frame;
         self.set_watch_frame(scene.frame);
-        let Some((world, eye)) = self.prefetch.clone() else { return };
+        let Some((world, eye)) = self.prefetch.clone() else {
+            self.finish_generation();
+            self.finish_load(scene);
+            return;
+        };
         // At the first load of a session the data comes in a frame with no world: the loads
         // are finished here, as in `frame`.
         self.finish_generation();
@@ -9269,6 +9277,38 @@ mod frame_value_tests {
         let parameters = land.frame(&scene);
         assert!(parameters.post && !parameters.blend, "the menu frame shows the kept picture");
         assert!(!before_world(&mut land, &scene), "under a menu: no land");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// W648 (b) step 1: a frame with no world and no wait (the main menu) puts the terrain on
+    /// the GPU when the loader thread is done, one time. Before the end of the load it does
+    /// nothing. On the code before step 1, `after_frame` returns at once with no wait, and the
+    /// terrain stays off the GPU until a world frame or a wait: this test fails there.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_menu_frame_puts_the_terrain_on_the_gpu() {
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
+        let gpu = TestDevice::new();
+        let scene = gpu.scene();
+        let (mut land, root, sender) = land_with_a_load("menu-frame-load");
+        assert!(land.prefetch.is_none(), "no wait: a menu frame");
+
+        land.after_frame(&scene);
+        assert!(
+            land.loading.is_some() && land.gpu.is_none(),
+            "the load has not ended: nothing to do"
+        );
+
+        sender.send(Ok(loaded_terrain())).unwrap();
+        land.after_frame(&scene);
+        assert!(land.loading.is_none(), "the menu frame took the end of the load");
+        assert!(land.gpu.is_some(), "and made the terrain's GPU objects");
+
+        land.after_frame(&scene);
+        assert!(
+            land.loading.is_none() && land.gpu.is_some(),
+            "a later menu frame changes nothing"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

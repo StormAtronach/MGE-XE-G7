@@ -352,10 +352,11 @@ change. That start can take some minutes. With an older file, set it below
   (`wait_on_load` under `[distant_land]`, on for a new mgeXE.toml since 2026-11-17; a file
   that has the key keeps its value). The loading screen then stays until the distant statics
   around you are there and the helper has made the pipelines of its list (W640 part 3), at most
-  15 s. Without it the world shows at once, and the distant
-  statics appear as they arrive. The wait needs an MWSE that has the event of the player's
-  change of cell (its native event 5). A move in play (a door, a travel, Recall, coc) does not
-  wait, as in MGE XE G7: its distant statics appear as they arrive (W648).
+  5 s, as in MGE XE G7. The wait is in the game's own load, in the engine's loading bar, when the
+  game has read the save (MWSE's native event 3). Without it the world shows at once, and the
+  distant statics appear as they arrive. A move in play (a door, a travel, Recall, coc) does not
+  wait, as in MGE XE G7: its distant statics appear as they arrive (W648). In the main menu, the
+  helper already puts the distant terrain on the GPU and starts to read the distant statics.
 - Three looks of the grass shader of Remiros' Groundcover are options in the Distant Land
   page of the MGE XE GUI (`[distant_land.grass]`, off at the start): `soft_end` (the grass
   sinks into the ground near the end of its range, so it ends without a line),

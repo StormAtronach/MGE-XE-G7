@@ -822,6 +822,35 @@ bool MWBridge::tryGetPlayerPosition(float outPosition[3]) {
 
 //-----------------------------------------------------------------------------
 
+bool MWBridge::tryGetGameLoadPlace(float outPosition[3], const TES3::Cell*& outCell) {
+    if (!m_loaded) {
+        return false;
+    }
+
+    auto wc = worldController();
+    if (wc == nullptr || wc->startingCell == nullptr) {
+        return false;
+    }
+
+    const DWORD addr = PlayerPositionPointer();
+    if (addr == 0) {
+        return false;
+    }
+
+    const NI::Point3& position = *reinterpret_cast<const NI::Point3*>(addr);
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
+        return false;
+    }
+
+    outPosition[0] = position.x;
+    outPosition[1] = position.y;
+    outPosition[2] = position.z;
+    outCell = wc->startingCell;
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+
 // PlayerHeight - The player's collision height above the ground, in world units.
 float MWBridge::PlayerHeight() {
     auto player = getPlayerMobile();

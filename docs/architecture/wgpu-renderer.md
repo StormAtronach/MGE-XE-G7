@@ -54,7 +54,7 @@ Morrowind.exe (32-bit)                                 numidium.exe --live (64-b
 | 7 | water masks (dry spaces) | yes | on a change |
 | 8 | vis groups | yes | on a cell change or a load |
 | 9 | status text (`StatusOverlay::setStatus`): warning, ms to show, text | no | at Present after a new text |
-| 10 | the place of the player after a teleport, or of a wait of a game load (`distant_land.wait_on_load`): version, serial, position, interior name | no | at MWSE's native event 5: a game load (the move to the loaded place, after the engine's resolve), or a teleport across more than one cell or to or from an interior |
+| 10 | the place of the player after a teleport, or of a game load and its wait (`distant_land.wait_on_load`): version, serial, position, interior name | no | a game load: at MWSE's native event 3 (the engine's resolve), with the loaded place (the reference's position and `WorldController::startingCell`), and again at native event 5 only when the place differs; a teleport across more than one cell or to or from an interior: at native event 5 |
 | 11 | hello: version, `MGE_EXTENSION_FORMAT`, the build id of d3d8.dll (64 bytes) | yes | once, at the plugin's load |
 | 12 | light settings (`Deviceless::sendLightSettings`): version, the engine's nine `[LightAttenuation]` values, the light limit asked and in force | yes | once, when the game is loaded |
 | 13 | light records (`Deviceless::checkLightRecords`): version, the count, then for each of the game's light records its radius, colour, flags and id; from MWSE's native query 2 | yes | when MWSE's answer differs from its last answer; the check runs at a teleport, a door or the load of a game (MWSE's native event 5; a walk across the border of an exterior cell gives no such event), at the first frame after a load, and one time in each second of real time, in a menu too. Always at the load of a game. No check runs before the game resolved its ids for the first time (MWSE's native event 3: the load or the start of a game), where the first check runs: while the game reads its plugins it has only a part of its light records. So no record 13 goes at the main menu of a normal start |
@@ -80,15 +80,22 @@ reads it at each frame end and calls `MGE_StreamMessage(id, data, length)` of `d
 | --- | --- | --- |
 | 1 | distant land: version 1, reason 1 loaded / 2 arrived, the serial of the wait it answers (0 none) | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` and the host's `HostReadiness` has no job of the list left (`renderer/arrival.rs`; or after 10 s) |
 
-The wait of a game load (`Deviceless::prefetchDistantLand`): the game sends record 10 and
-draws its loading bar until `ARRIVED` with that serial comes back (or 15 s). A move in play
-(a door, a travel, Recall, coc) sends record 10 and does not wait, and opens no loading bar,
-as in MGE XE G7: the engine's loading menu hides and restores the whole interface, and a bar
-of ours in play crashed the engine (W648). The frames of the loading bar have no world: the
-crate calls `Extension::after_frame(scene)` at the end of each live frame, and there the
-helper finishes its loads and streams the statics near the place (`Statics::prefetch`). The
-game holds its load only with `distant_land.wait_on_load` (on for a new file since
-2026-11-17, the owner's D581). Without it the helper's wait is open in world frames:
+The wait of a game load (`Deviceless::sendGameLoadPlace`, W648 (b)): at MWSE's native event
+3, in the engine's load, the game sends record 10 with the loaded place. The engine has not
+moved the player yet, but the save's GAME record has set `WorldController::startingCell`
+(+0x32C), and the player's reference has its loaded position. The game then moves the
+engine's own loading bar (`Deviceless::waitInEngineBar`) until `ARRIVED` with that serial
+comes back, or 5 s (MGE XE G7's `kResidencyBootstrapTimeoutMs`). It never opens or closes a
+loading bar: the engine's loading menu hides and restores the whole interface, and a bar of
+ours in play crashed the engine (W648). At event 5 of the load the game sends record 10
+again, with no wait, only when the place is not the one of event 3. A move in play (a door,
+a travel, Recall, coc) sends record 10 and does not wait, as in MGE XE G7. The frames of the
+loading bar have no world: the crate calls `Extension::after_frame(scene)` at the end of each
+live frame, and there the helper finishes its loads and streams the statics near the place
+(`Statics::prefetch`). A frame with no place (the main menu) finishes only the start check
+and the terrain's load, so the terrain is on the GPU before the first game load. The game
+holds its load only with `distant_land.wait_on_load` (on for a new file since 2026-11-17, the
+owner's D581). Without it the helper's wait is open in world frames:
 `statics report` counts the subsets that arrive in it apart ("arrivals during a wait").
 
 `d3d8.dll` queues the reasons (`distantlandready.h`, also filled by the Direct3D 9 path); the
