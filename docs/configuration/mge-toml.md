@@ -91,7 +91,6 @@ the same mapping ten times.
 | (new, no INI key) | `runtime.renderer_backend` |
 | (new, no INI key) | `runtime.renderer_texture_slots` |
 | (new, no INI key) | `runtime.renderer_frame_latency` |
-| (new, no INI key) | `graphics.mipmaps_for_one_level` |
 | (new, no INI key) | `graphics.sky_map_filter` |
 | `[Misc] Skip Intro Movies` | `runtime.skip_intro` |
 | `[Misc] Use Menu Background Caching` | `runtime.menu_caching` |
@@ -212,13 +211,6 @@ reads them.
   0.4 of it comes through from the back. The shader is
   `assets/Data Files/shaders/core/XE Mod Grass.wgsl`.
 
-- `graphics.mipmaps_for_one_level` (default `true`): the wgpu renderer makes the smaller levels
-  of a texture file that has only one (W632), each level a 2 x 2 box filter of the level above
-  it, in the format of the file (DXT1, DXT3, DXT5, or 32-bit). Without them a texture drawn
-  small flickers when the camera moves, on the engine's own renderer too. `false` keeps the one
-  level, as the engine does. Read by numidium.exe when it starts; a replay takes
-  `--mipmaps-for-one-level on|off` over it.
-
 - `graphics.sky_map_filter` (default `"area"`): how the wgpu renderer reads the sky's maps
   that the game gives a bilinear filter with no filter between levels (W632): the maps of the
   moons, their shadow shapes and the sun's glare. `"engine"` reads level 0, as the engine
@@ -227,8 +219,7 @@ reads them.
   that is still sharper than the pixel: steady. The stars and the clouds come
   from NIF files whose maps filter between levels already, and they do not change. The draws
   of the sky are known by the object of the draw (the weather's sky nodes), not by the
-  texture's name. With `"engine"`, a chain that `graphics.mipmaps_for_one_level` made for
-  such a map is not read. Read by numidium.exe when it starts; a replay takes
+  texture's name. Read by numidium.exe when it starts; a replay takes
   `--sky-map-filter engine|trilinear|bias|area|area-tent` (and `--sky-lod-bias <b>` for
   `bias`) over it: the arms other than `engine` and `area` are for the tests only.
 

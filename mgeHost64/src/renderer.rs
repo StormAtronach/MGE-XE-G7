@@ -1438,8 +1438,6 @@ pub struct DistantLand {
     shadow_resolution: u32,
     /// The anisotropic filter of the settings (`graphics.anisotropy`): 1 is none.
     anisotropy: u16,
-    /// The smaller levels of a texture that has only one (`graphics.mipmaps_for_one_level`, W632).
-    mipmaps_for_one_level: bool,
     /// How the sky's bilinear maps (the moons, the glare) are read (`graphics.sky_map_filter`, W632).
     sky_map_filter: nirender_wgpu::SkyMapFilter,
     /// The samples for each pixel of the frame (`graphics.anti_aliasing`): 1 is none. The
@@ -2074,7 +2072,6 @@ impl DistantLand {
             shadows_enabled: settings.shadows.enabled,
             shadow_resolution: settings.shadows.map_resolution,
             anisotropy: document.settings().graphics.anisotropy.runtime_value() as u16,
-            mipmaps_for_one_level: document.settings().graphics.mipmaps_for_one_level,
             sky_map_filter: match document.settings().graphics.sky_map_filter {
                 mge_config::SkyMapFilter::Engine => nirender_wgpu::SkyMapFilter::Engine,
                 mge_config::SkyMapFilter::Area => nirender_wgpu::SkyMapFilter::Area,
@@ -3683,10 +3680,6 @@ impl Extension for DistantLand {
 
     fn anisotropy(&self) -> u16 {
         self.anisotropy
-    }
-
-    fn mipmaps_for_one_level(&self) -> bool {
-        self.mipmaps_for_one_level
     }
 
     fn sky_map_filter(&self) -> nirender_wgpu::SkyMapFilter {
