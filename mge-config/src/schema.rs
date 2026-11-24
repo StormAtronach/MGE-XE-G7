@@ -561,8 +561,8 @@ impl Default for RuntimeSettings {
 pub struct DistantLandSettings {
     pub enabled: bool,
     pub automatic_rebuild: bool,
-    /// The wgpu renderer: after a game load (MWSE's native event 5) the loading screen stays
-    /// until the distant statics around the player are there, or 15 s. A move in play does not
+    /// The wgpu renderer: in a game load (MWSE's native event 3) the loading screen stays
+    /// until the distant statics around the player are there, or 5 s. A move in play does not
     /// wait.
     pub wait_on_load: bool,
     pub native_depth_capture: bool,
