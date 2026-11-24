@@ -58,6 +58,7 @@ pub fn create_distant_statics_with_identities(
                     usage.door_meshes.contains(rel_path),
                     door_size_multiplier,
                     usage.forced_meshes.contains(rel_path),
+                    usage.lamp_meshes.contains(rel_path),
                     overrides,
                 );
                 (rel_path.to_string(), extraction)
@@ -137,6 +138,23 @@ fn average_emissive(material: &NiMaterialProperty) -> f32 {
     material.emissive_color.element_sum() / 3.0
 }
 
+/// The least average emissive of a lamp's glowing part (its glass or its flame): the value of
+/// the Worldspaces fork. Lamp meshes have 0.6 to 1 there; dark parts are near 0.
+pub const LAMP_GLOW_EMISSIVE: f32 = 0.3;
+
+/// Whether a shape is a glowing part of a lamp.
+fn glows(geometry: &Geometry<'_>, stream: &NiStream) -> bool {
+    geometry
+        .material_property(stream)
+        .is_some_and(|material| average_emissive(material) >= LAMP_GLOW_EMISSIVE)
+}
+
+/// Whether a lamp's mesh has a glowing part: a drawn shape, or a shape under a billboard. The
+/// billboard is only read here: the distant land does not draw it.
+fn lamp_glows(stream: &NiStream, water: Option<MeshWater<'_>>) -> bool {
+    visible_geometries(stream, water, Billboards::Read).any(|geometry| glows(&geometry, stream))
+}
+
 #[derive(Default)]
 struct TriangleSanitization {
     triangles: Vec<[u16; 3]>,
@@ -199,6 +217,7 @@ impl DistantStatic {
         is_door: bool,
         door_size_multiplier: f32,
         force_generate: bool,
+        is_lamp: bool,
         overrides: &StaticOverrides,
     ) -> NifExtraction {
         let identity_started = Instant::now();
@@ -241,6 +260,7 @@ impl DistantStatic {
             is_door,
             door_size_multiplier,
             force_generate,
+            is_lamp,
             overrides,
         );
 
@@ -263,6 +283,7 @@ impl DistantStatic {
         is_door: bool,
         door_size_multiplier: f32,
         force_generate: bool,
+        is_lamp: bool,
         overrides: &StaticOverrides,
     ) -> Option<DistantStatic> {
         let static_type = resolve_static_type(rel_path, force_generate, overrides)?;
@@ -288,7 +309,7 @@ impl DistantStatic {
         let registered_water_look = registered.and_then(|ovr| ovr.water_look.as_deref());
         let registered_dry_space = registered.and_then(|ovr| ovr.dry_space);
         let water = mesh_water(&stream, &overrides.water_names, registered_water, registered_dry_space);
-        let shapes: Vec<_> = visible_geometries(&stream, water).collect();
+        let shapes: Vec<_> = visible_geometries(&stream, water, Billboards::Skipped).collect();
         if shapes.is_empty() {
             return None;
         }
@@ -309,14 +330,18 @@ impl DistantStatic {
         })?;
 
         // Radius is multiplied by reference scale, so filter against the maximum observed scale.
-        if !passes_min_radius(
+        // A lamp's mesh with a glowing part is kept whatever its size, so a lamp far away is
+        // still a lamp with its glass lit. The glow is read only when the size does not pass.
+        let passes = passes_min_radius(
             bounding_sphere.radius,
             static_type,
             is_door,
             max_scale,
             min_radius,
             door_size_multiplier,
-        ) {
+        );
+        let kept_as_lamp = !passes && is_lamp && lamp_glows(&stream, water);
+        if !passes && !kept_as_lamp {
             return None;
         }
 
@@ -490,6 +515,7 @@ impl DistantStatic {
         this.static_type = static_type;
         this.max_scale = max_scale;
         this.is_door = is_door;
+        this.kept_as_lamp = kept_as_lamp;
         this.water_rules = water.is_some();
         this.subsets = subsets;
         this.update_bounds();

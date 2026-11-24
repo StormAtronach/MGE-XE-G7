@@ -295,6 +295,9 @@ pub struct UsageInfo<'a> {
     /// Meshes belonging to door (DOOR) records. Door statics get the configured door-size
     /// multiplier applied to their cull radius and written bucket radius.
     pub door_meshes: HashSet<&'a str>,
+    /// The meshes of the light records that light ([`LightRecord::lights`]) and that a reference
+    /// places: the lamps. A lamp's mesh with a glowing part passes the size limit.
+    pub lamp_meshes: HashSet<&'a str>,
     /// The maximum scale at which each mesh is found in the world.
     pub mesh_scale_maximums: HashMap<&'a str, f32>,
     /// Placed references mapped by their cell identifier. Exterior references are under `"\\0"`.
@@ -425,6 +428,7 @@ impl<'a> UsageInfo<'a> {
         drop(std::mem::take(&mut self.objects));
         drop(std::mem::take(&mut self.forced_meshes));
         drop(std::mem::take(&mut self.door_meshes));
+        drop(std::mem::take(&mut self.lamp_meshes));
         drop(std::mem::take(&mut self.mesh_scale_maximums));
         drop(std::mem::take(&mut self.interior_metadata));
         drop(std::mem::take(&mut self.disable_scripts));

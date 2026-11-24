@@ -65,6 +65,7 @@ fn release_post_fingerprint_fields_drops_metadata_and_preserves_world_cells() {
     let mut usage = make_usage_with_references("object", "object.nif", 1, |_| {});
     usage.forced_meshes.insert("forced.nif");
     usage.door_meshes.insert("door.nif");
+    usage.lamp_meshes.insert("lamp.nif");
     usage.mesh_scale_maximums.insert("object.nif", 1.0);
     usage
         .interior_metadata
@@ -90,6 +91,7 @@ fn release_post_fingerprint_fields_drops_metadata_and_preserves_world_cells() {
     assert_eq!(usage.objects.capacity(), 0);
     assert_eq!(usage.forced_meshes.capacity(), 0);
     assert_eq!(usage.door_meshes.capacity(), 0);
+    assert_eq!(usage.lamp_meshes.capacity(), 0);
     assert_eq!(usage.mesh_scale_maximums.capacity(), 0);
     assert_eq!(usage.interior_metadata.capacity(), 0);
     assert_eq!(usage.disable_scripts.capacity(), 0);
@@ -1307,6 +1309,102 @@ fn merge_combines_door_meshes() {
 
     assert!(a.door_meshes.contains("door_a.nif"));
     assert!(a.door_meshes.contains("door_b.nif"));
+}
+
+/// A light record with the values that light its place, and a mesh.
+fn lit_record() -> LightRecord {
+    LightRecord {
+        radius: 256.0,
+        color: [255, 200, 120],
+        flags: 0,
+        has_mesh: true,
+        smoky: false,
+    }
+}
+
+/// The usage of one plugin with light records, their objects of kind Misc, and one placed
+/// reference of each mesh in `placed` (as the remap leaves them: by the mesh's name).
+fn usage_with_lights(records: &[(&str, &'static str, LightRecord)], placed: &[&'static str]) -> UsageInfo<'static> {
+    let mut usage = UsageInfo::default();
+    for (id, mesh, record) in records {
+        usage.lights.insert((*id).to_string(), *record);
+        usage.objects.insert(
+            (*id).to_string(),
+            ObjectDefinition {
+                mesh,
+                ignore_by_default: false,
+                force_mesh_generation: false,
+                vis_index: 0,
+                kind: ObjectKind::Misc,
+                script_id: UString::new(""),
+                script_disabled: false,
+                disable_target: false,
+            },
+        );
+    }
+    let exterior = usage.exterior_references_mut();
+    for (index, mesh) in placed.iter().enumerate() {
+        let mut reference = make_reference("", Vec3::ZERO);
+        reference.id = Cow::Borrowed(*mesh);
+        exterior.insert(StableRefKey::test(index as u32 + 1), reference);
+    }
+    usage
+}
+
+#[test]
+fn a_lamp_mesh_is_the_placed_mesh_of_a_light_record_that_lights() {
+    let dark = LightRecord {
+        radius: 0.0,
+        ..lit_record()
+    };
+    let black = LightRecord {
+        color: [0; 3],
+        ..lit_record()
+    };
+    let negative = LightRecord {
+        flags: 0x4,
+        ..lit_record()
+    };
+    let off_by_default = LightRecord {
+        flags: 0x20,
+        ..lit_record()
+    };
+    let no_mesh = LightRecord {
+        has_mesh: false,
+        ..lit_record()
+    };
+    let mut usage = usage_with_lights(
+        &[
+            ("lamp", "lamp.nif", lit_record()),
+            ("dark", "dark.nif", dark),
+            ("black", "black.nif", black),
+            ("negative", "negative.nif", negative),
+            ("off", "off.nif", off_by_default),
+            ("no_mesh", "no_mesh.nif", no_mesh),
+            ("not_placed", "not_placed.nif", lit_record()),
+        ],
+        &["lamp.nif", "dark.nif", "black.nif", "negative.nif", "off.nif", "no_mesh.nif"],
+    );
+
+    usage.calc_mesh_scale_maximums();
+
+    assert_eq!(usage.lamp_meshes.iter().copied().sorted().collect_vec(), ["lamp.nif"]);
+}
+
+#[test]
+fn a_later_plugin_that_changes_a_light_record_decides_its_lamp_mesh() {
+    let dark = LightRecord {
+        radius: 0.0,
+        ..lit_record()
+    };
+    let placed = ["a.nif", "b.nif"];
+    let mut usage = usage_with_lights(&[("a", "a.nif", lit_record()), ("b", "b.nif", dark)], &placed);
+    let later = usage_with_lights(&[("a", "a.nif", dark), ("b", "b.nif", lit_record())], &[]);
+
+    usage.merge(later);
+    usage.calc_mesh_scale_maximums();
+
+    assert_eq!(usage.lamp_meshes.iter().copied().sorted().collect_vec(), ["b.nif"]);
 }
 
 #[test]
