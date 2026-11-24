@@ -22,8 +22,17 @@ fn nif_identity_survives_parse_failure() {
         maps: crate::vfs::directory_map::build_directory_map(&[temp.path().to_path_buf()]).unwrap(),
     };
 
-    let extraction =
-        DistantStatic::from_nif_with_identity("broken.nif", &vfs, 1.0, 0.0, false, 1.0, false, &StaticOverrides::default());
+    let extraction = DistantStatic::from_nif_with_identity(
+        "broken.nif",
+        &vfs,
+        1.0,
+        0.0,
+        false,
+        1.0,
+        false,
+        false,
+        &StaticOverrides::default(),
+    );
 
     assert!(extraction.distant_static.is_none());
     assert_eq!(extraction.identity, Some(ContentIdentity::from_bytes(bytes)));

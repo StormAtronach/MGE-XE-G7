@@ -215,10 +215,14 @@ impl<'a> UsageInfo<'a> {
     /// [`Self::finalize`], after the grass list has been merged, whereas `remap_references` runs
     /// before that merge and so cannot see grass references at all. Both fields are therefore
     /// derived from the same final reference set, and neither survives an earlier pass.
-    fn calc_mesh_scale_maximums(&mut self) {
+    ///
+    /// It also makes `lamp_meshes`, from the light records and the objects of the whole load
+    /// order, so a later plugin's change of a record counts.
+    pub(super) fn calc_mesh_scale_maximums(&mut self) {
         debug_assert!(!self.released, "mesh scale recalculation after post-fingerprint release");
         self.mesh_scale_maximums.clear();
         self.forced_meshes.clear();
+        self.lamp_meshes.clear();
         self.mesh_scale_maximums.reserve(self.objects.len());
         self.forced_meshes.reserve(self.objects.len());
 
@@ -233,6 +237,17 @@ impl<'a> UsageInfo<'a> {
         for object in self.objects.values() {
             if object.force_mesh_generation && self.mesh_scale_maximums.contains_key(object.mesh) {
                 self.forced_meshes.insert(object.mesh);
+            }
+        }
+
+        for (id, record) in &self.lights {
+            if !(record.lights() && record.has_mesh) {
+                continue;
+            }
+            if let Some(object) = self.objects.get(id)
+                && self.mesh_scale_maximums.contains_key(object.mesh)
+            {
+                self.lamp_meshes.insert(object.mesh);
             }
         }
     }

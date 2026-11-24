@@ -381,6 +381,125 @@ fn build_test_static_nif(has_controller: bool, has_scroll_tag: bool) -> Vec<u8> 
     stream.save_bytes().expect("serialize test nif")
 }
 
+/// Where a test lamp has its glowing part.
+#[derive(Clone, Copy)]
+enum Glass {
+    None,
+    Drawn,
+    UnderBillboard,
+}
+
+/// A lamp: a dark body, and its glass with an emissive of 0.8 where `glass` says. Each shape is
+/// one triangle of 1 unit, so the mesh is far under the size limit of the tests.
+fn build_test_lamp_nif(glass: Glass) -> Vec<u8> {
+    let mut stream = NiStream::new();
+    let texture = stream.insert(NiSourceTexture {
+        source: TextureSource::External("uv_anim\\ghost.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture;
+    let texturing = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+    let shape = |stream: &mut NiStream, emissive: f32, place: Vec3| -> NiLink<NiAVObject> {
+        let mut data = NiTriShapeData::default();
+        data.vertices = vec![place, place + Vec3::X, place + Vec3::Y];
+        data.normals = vec![Vec3::Z; 3];
+        data.uv_sets = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+        data.triangles = vec![[0, 1, 2]];
+        data.update_center_radius();
+        let data = stream.insert(data);
+        let material = stream.insert(NiMaterialProperty {
+            emissive_color: Vec3::splat(emissive),
+            ..NiMaterialProperty::default()
+        });
+        let mut shape = NiTriShape::default();
+        shape.geometry_data = data.cast();
+        shape.properties.push(texturing.cast());
+        shape.properties.push(material.cast());
+        stream.insert(shape).cast()
+    };
+
+    let mut root = NiNode::default();
+    root.children.push(shape(&mut stream, 0.0, Vec3::ZERO));
+    match glass {
+        Glass::None => {}
+        Glass::Drawn => root.children.push(shape(&mut stream, 0.8, Vec3::Z)),
+        Glass::UnderBillboard => {
+            let mut billboard = NiBillboardNode::default();
+            billboard.base.children.push(shape(&mut stream, 0.8, Vec3::Z));
+            root.children.push(stream.insert(billboard).cast());
+        }
+    }
+    let root = stream.insert(root);
+    stream.roots.push(root.cast());
+    stream.save_bytes().expect("serialize test nif")
+}
+
+/// The lamp rule: a lamp's mesh with a glowing part passes the size limit, a drawn part or one
+/// under a billboard; the billboard is not drawn. Nothing else changes.
+#[test]
+fn a_lamp_mesh_with_a_glowing_part_passes_the_size_limit() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "lit.nif", &build_test_lamp_nif(Glass::Drawn));
+    write_test_static_asset(root, "billboard.nif", &build_test_lamp_nif(Glass::UnderBillboard));
+    write_test_static_asset(root, "dark.nif", &build_test_lamp_nif(Glass::None));
+    let vfs = make_test_vfs(root);
+    let extract = |mesh: &str, min_radius: f32, is_lamp: bool| {
+        DistantStatic::from_nif_with_identity(
+            mesh,
+            &vfs,
+            1.0,
+            min_radius,
+            false,
+            1.0,
+            false,
+            is_lamp,
+            &StaticOverrides::default(),
+        )
+        .distant_static
+    };
+
+    let lit = extract("lit.nif", 150.0, true).expect("a lamp with its glass is kept");
+    assert!(lit.kept_as_lamp);
+    assert_eq!(lit.subsets.len(), 2);
+    assert!(passes_static_min_radius(&lit, 150.0, 1.0));
+
+    let billboard = extract("billboard.nif", 150.0, true).expect("a lamp with its glass under a billboard is kept");
+    assert!(billboard.kept_as_lamp);
+    assert_eq!(billboard.subsets.len(), 1, "the billboard is not drawn");
+    assert_eq!(billboard.subsets[0].emissive, 0.0);
+
+    assert!(extract("lit.nif", 150.0, false).is_none(), "not a lamp: the size limit");
+    assert!(extract("dark.nif", 150.0, true).is_none(), "a lamp with no glowing part");
+
+    // Over the size limit, the mesh is kept as before, not by the lamp rule.
+    let large = extract("lit.nif", 0.0, true).expect("over the size limit");
+    assert!(!large.kept_as_lamp);
+}
+
+/// The glow radius: the bound of the drawn glowing parts; 0 for a glow only under a billboard,
+/// for none, and for a model that is not there.
+#[test]
+fn the_glow_radius_is_the_bound_of_the_drawn_glowing_parts() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "lit.nif", &build_test_lamp_nif(Glass::Drawn));
+    write_test_static_asset(root, "billboard.nif", &build_test_lamp_nif(Glass::UnderBillboard));
+    write_test_static_asset(root, "dark.nif", &build_test_lamp_nif(Glass::None));
+    let vfs = make_test_vfs(root);
+
+    // The glass is a right triangle with legs of 1: its bound has a radius of half the long side.
+    let radius = crate::lamp_glow_radius("lit.nif", &vfs);
+    assert!((radius - 0.5f32.sqrt()).abs() < 0.01, "{radius}");
+    assert_eq!(crate::lamp_glow_radius("billboard.nif", &vfs), 0.0);
+    assert_eq!(crate::lamp_glow_radius("dark.nif", &vfs), 0.0);
+    assert_eq!(crate::lamp_glow_radius("absent.nif", &vfs), 0.0);
+}
+
 fn write_test_static_asset(root: &Path, mesh_name: &str, nif_bytes: &[u8]) {
     let mesh_path = root.join("meshes").join(mesh_name);
     let texture_path = root.join("textures").join("uv_anim").join("ghost.dds");
@@ -413,6 +532,7 @@ fn from_nif_marks_uv_animated_subsets_only_when_controller_and_tag_exist() {
         false,
         1.0,
         false,
+        false,
         &StaticOverrides::default(),
     )
     .distant_static
@@ -425,6 +545,7 @@ fn from_nif_marks_uv_animated_subsets_only_when_controller_and_tag_exist() {
         false,
         1.0,
         false,
+        false,
         &StaticOverrides::default(),
     )
     .distant_static
@@ -436,6 +557,7 @@ fn from_nif_marks_uv_animated_subsets_only_when_controller_and_tag_exist() {
         0.0,
         false,
         1.0,
+        false,
         false,
         &StaticOverrides::default(),
     )
@@ -464,6 +586,7 @@ fn from_nif_remaps_missing_static_texture_to_error_texture() {
         0.0,
         false,
         1.0,
+        false,
         false,
         &StaticOverrides::default(),
     )
@@ -1672,7 +1795,7 @@ fn from_nif_writes_the_color_of_water_into_its_vertices() {
 
 fn water_test_static(root: &Path, mesh: &str, overrides: &StaticOverrides) -> DistantStatic {
     let vfs = make_test_vfs(root);
-    DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, overrides)
+    DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, false, overrides)
         .distant_static
         .expect("water test static")
 }
@@ -1835,7 +1958,7 @@ fn from_nif_keeps_a_dry_space_as_a_subset_that_is_not_drawn() {
 
     // The boat stays an ordinary static. Its hull is as it is without the rules, and the dry
     // space is a subset of its own, whole, without a texture of the mesh.
-    let boat = DistantStatic::from_nif_with_identity("boat.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+    let boat = DistantStatic::from_nif_with_identity("boat.nif", &vfs, 1.0, 0.0, false, 1.0, false, false, &by_names)
         .distant_static
         .expect("boat static");
     assert_eq!(boat.static_type, StaticType::StaticAuto);
@@ -1983,7 +2106,7 @@ fn from_nif_keeps_a_water_subset_without_texture_and_uvs() {
     by_names.water_names = kit_water_names();
 
     // As water the surface is kept, with zero UVs and the error texture as its texture.
-    let water = DistantStatic::from_nif_with_identity("bare.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+    let water = DistantStatic::from_nif_with_identity("bare.nif", &vfs, 1.0, 0.0, false, 1.0, false, false, &by_names)
         .distant_static
         .expect("water static");
     assert_eq!(water.subsets.len(), 1);
@@ -2013,7 +2136,7 @@ fn from_nif_keeps_a_water_subset_without_texture_and_uvs() {
 
     // A mesh that keeps its own look is an ordinary static: the surface is left out as before,
     // and the body is left out as the body of water.
-    let plain = DistantStatic::from_nif_with_identity("bare_plain.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names);
+    let plain = DistantStatic::from_nif_with_identity("bare_plain.nif", &vfs, 1.0, 0.0, false, 1.0, false, false, &by_names);
     assert!(plain.distant_static.is_none());
 }
 
@@ -2088,7 +2211,7 @@ fn from_nif_gives_the_look_line_to_water_subsets_alone() {
     // The static_meshes file takes the look line, and gives it back.
     let mut packed = crate::PackedDistantStatics::default();
     for mesh in ["water.nif", "no_look.nif"] {
-        let water = DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+        let water = DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, false, &by_names)
             .distant_static
             .expect("water static");
         packed.insert(mesh.to_owned(), water.into_distant_static(&vfs, 1.0));
@@ -2284,7 +2407,7 @@ fn from_nif_writes_the_vertex_alpha_of_water_with_opacity_from_vertices() {
     // The static_meshes file takes the alpha, and gives it back.
     let mut packed = crate::PackedDistantStatics::default();
     for mesh in ["vertex.nif", "number.nif"] {
-        let water = DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+        let water = DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, false, &by_names)
             .distant_static
             .expect("water static");
         packed.insert(mesh.to_owned(), water.into_distant_static(&vfs, 1.0));

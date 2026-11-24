@@ -381,7 +381,7 @@ fn water_names_that_choose_another_shape_change_the_fingerprint_of_a_water_mesh(
         let mut overrides = crate::StaticOverrides::default();
         overrides.water_names.body = body_name.into_iter().map(str::to_owned).collect();
         let distant_static =
-            crate::DistantStatic::from_nif_with_identity("pools.nif", &vfs, 1.0, 0.0, false, 1.0, false, &overrides)
+            crate::DistantStatic::from_nif_with_identity("pools.nif", &vfs, 1.0, 0.0, false, 1.0, false, false, &overrides)
                 .distant_static
                 .expect("static of the mesh");
         let mut distant_statics: DistantStatics = Default::default();
@@ -467,7 +467,7 @@ fn the_dry_space_names_and_the_dry_space_key_change_the_fingerprint_of_a_mesh() 
             );
         }
         let distant_static =
-            crate::DistantStatic::from_nif_with_identity("pools.nif", &vfs, 1.0, 0.0, false, 1.0, false, &overrides)
+            crate::DistantStatic::from_nif_with_identity("pools.nif", &vfs, 1.0, 0.0, false, 1.0, false, false, &overrides)
                 .distant_static
                 .expect("static of the mesh");
         let mut distant_statics: DistantStatics = Default::default();
@@ -510,4 +510,53 @@ fn the_dry_space_names_and_the_dry_space_key_change_the_fingerprint_of_a_mesh() 
     assert!(!refused.stays_alone());
     assert_ne!(fingerprint_refused, fingerprint_with_b);
     assert_ne!(fingerprint_refused, fingerprint_ordinary);
+}
+
+/// The fingerprint of the mesh unit of `distant_static`, as the mesh `lamp.nif`.
+fn lamp_mesh_fingerprint(distant_static: &crate::DistantStatic) -> [u8; 32] {
+    let settings = GenerationSettings::default();
+    let usage = UsageInfo::default();
+    let overrides = crate::StaticOverrides::default();
+    let mut distant_statics: DistantStatics = Default::default();
+    distant_statics.insert("lamp.nif".to_owned(), distant_static.clone());
+    let temp = tempfile::tempdir().unwrap();
+    let vfs = Vfs {
+        ini_path: temp.path().join("Morrowind.ini"),
+        data_dirs: vec![temp.path().to_path_buf()],
+        active_plugins: vec![],
+        archives: vec![],
+        maps: crate::vfs::directory_map::build_directory_map(&[temp.path().to_path_buf()]).unwrap(),
+    };
+    let source_info = HashMap::new();
+    let state = build_static_state(
+        &settings,
+        &Projections::capture(&usage, &settings, &overrides),
+        &ContentIdentityCollector::default(),
+        &usage,
+        &distant_statics,
+        &vfs,
+        &AtlasTextureSet::default(),
+        &source_info,
+        &SizingPlan::baseline(TextureAxisCaps::uniform(1024), &source_info),
+    );
+    assert_eq!(state.units.mesh.entries.len(), 1);
+    state.units.mesh.entries[0].1
+}
+
+/// The fingerprint of a static that the lamp rule does not keep, as render-link 2797c7f made it
+/// before the rule: the rule changes no other mesh's fingerprint.
+const NOT_KEPT_AS_LAMP_FINGERPRINT: &str = "b9bbbd6b796a23a03b1b750ac85c7b932c6b2c4a6a45ef4c0290929f7896ac55";
+
+#[test]
+fn only_a_mesh_that_the_lamp_rule_keeps_has_a_new_fingerprint() {
+    let mut distant_static = crate::DistantStatic {
+        max_scale: 1.0,
+        ..Default::default()
+    };
+    let not_kept = lamp_mesh_fingerprint(&distant_static);
+    let hex: String = not_kept.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(hex, NOT_KEPT_AS_LAMP_FINGERPRINT);
+
+    distant_static.kept_as_lamp = true;
+    assert_ne!(lamp_mesh_fingerprint(&distant_static), not_kept);
 }

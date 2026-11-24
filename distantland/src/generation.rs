@@ -606,17 +606,23 @@ fn run_generation(
     metrics.usage.exterior_reference_count_after_parse = usage_info.exterior_references_count();
     metrics.usage.script_disable = usage_info.script_disable.clone();
 
-    // The bytes of the lights file, from the lamps and the smoke taken before the remap.
+    // The bytes of the lights file, from the lamps and the smoke taken before the remap, with
+    // the glow radius of each record from its model.
     let lights = {
         let span = info_span!(
             "stage.distant_lights",
             report = true,
             block_count = field::Empty,
             lamp_count = field::Empty,
-            smoke_count = field::Empty
+            smoke_count = field::Empty,
+            model_count = field::Empty
         );
         let _guard = span.enter();
-        let lights = lights::build(&light_blocks, &job.settings);
+        let mut light_blocks = light_blocks;
+        if job.settings.distant_lights {
+            record_usize(&span, "model_count", lights::fill_glow_radii(&mut light_blocks, &vfs));
+        }
+        let lights = lights::build(&light_blocks.lights, &job.settings);
         if let Some(lights) = lights.as_ref() {
             record_usize(&span, "block_count", lights.block_count);
             record_usize(&span, "lamp_count", lights.lamp_count);
@@ -656,6 +662,16 @@ fn run_generation(
             job.settings.min_static_size,
             job.settings.door_size_multiplier,
             &overrides,
+        );
+        let kept_as_lamps: Vec<&str> = distant_statics
+            .iter()
+            .filter(|(_, distant_static)| distant_static.kept_as_lamp)
+            .map(|(mesh, _)| mesh.as_str())
+            .collect();
+        crate::logging::info!(
+            "Distant lights: the lamp rule keeps {} lamp meshes under the size limit for their glowing parts: {}",
+            kept_as_lamps.len(),
+            kept_as_lamps.join(", ")
         );
         Ok((distant_statics, identities))
     })?;

@@ -100,6 +100,12 @@ pub(crate) fn build_static_state(
                 if distant_static.water_rules {
                     write_water_names(&mut writer, &projections.overrides.water_names);
                 }
+                // Written for a lamp that the lamp rule keeps alone, so that the fingerprint of
+                // every other mesh stays what it was. The bounds and the subsets above are of
+                // the kept mesh, so a mesh that the rule now keeps is made again.
+                if distant_static.kept_as_lamp {
+                    writer.write_str("kept_as_lamp");
+                }
             }
             None => writer.write_u8(absent_mesh_status(
                 identities.mesh_resolutions().contains_key(&key),

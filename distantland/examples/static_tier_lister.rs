@@ -153,7 +153,7 @@ fn print_meshes(options: &Options) -> Result<()> {
     );
     for mesh in &options.meshes {
         let key = mesh.to_ascii_lowercase().replace('/', "\\");
-        let extraction = DistantStatic::from_nif_with_identity(&key, &vfs, 1.0, 0.0, false, 1.0, true, &overrides);
+        let extraction = DistantStatic::from_nif_with_identity(&key, &vfs, 1.0, 0.0, false, 1.0, true, false, &overrides);
         match extraction.distant_static {
             Some(distant_static) => {
                 let kind = distant_static.static_type as u32;

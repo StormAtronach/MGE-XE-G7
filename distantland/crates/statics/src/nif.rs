@@ -33,7 +33,19 @@ pub struct Geometry<'a> {
     /// The shape is a dry space in water, or a part of one: it has a mask name, or it is
     /// under an object that has one.
     pub dry_space: bool,
+    /// The shape is under a billboard. Only a walk with [`Billboards::Read`] gives such a shape.
+    pub in_billboard: bool,
     properties: Properties,
+}
+
+/// Whether the walk of [`visible_geometries`] goes under a billboard.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Billboards {
+    /// The billboards are left out: the walk gives the shapes that the distant land draws.
+    Skipped,
+    /// The shapes under a billboard are given too, marked [`Geometry::in_billboard`], so that
+    /// their materials can be read. The distant land draws no billboard.
+    Read,
 }
 
 impl<'a> Geometry<'a> {
@@ -319,9 +331,12 @@ pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
 /// In a water mesh the body of the water is left out: the game hides it when it runs. A shape
 /// that is drawn as water is kept without a texture and without UVs: the water pass reads
 /// neither. So is the shape of a dry space, which no pass draws.
+///
+/// With [`Billboards::Read`] the walk also goes under each billboard, by the same rules.
 pub(crate) fn visible_geometries<'a>(
     stream: &'a NiStream,
     water: Option<MeshWater<'a>>,
+    billboards: Billboards,
 ) -> impl Iterator<Item = Geometry<'a>> {
     let root = stream.roots.first().copied().unwrap_or_default();
     let drawn_as_water = water.is_some_and(|water| water.surface.is_water());
@@ -329,20 +344,25 @@ pub(crate) fn visible_geometries<'a>(
     // The engine only handles markers when the root has "mrk" string data.
     let has_markers = stream.root_has_string_data_starting_with("mrk");
 
-    let mut stack = vec![(root.key, Affine3A::IDENTITY, Properties::default(), false)];
+    let mut stack = vec![(root.key, Affine3A::IDENTITY, Properties::default(), false, false)];
 
     std::iter::from_fn(move || {
-        while let Some((key, transform, properties, mut dry_space)) = stack.pop() {
+        while let Some((key, transform, properties, mut dry_space, mut in_billboard)) = stack.pop() {
             let Some(this) = stream.objects.get(key) else {
                 continue;
             };
 
             if this.is_instance_of::<NiDynamicEffect>()
-                || this.is_instance_of::<NiBillboardNode>()
                 || this.is_instance_of::<NiBSParticleNode>()
                 || this.is_instance_of::<RootCollisionNode>()
             {
                 continue;
+            }
+            if this.is_instance_of::<NiBillboardNode>() {
+                if billboards == Billboards::Skipped {
+                    continue;
+                }
+                in_billboard = true;
             }
 
             let properties = if let Ok(object) = <&NiAVObject>::try_from(this) {
@@ -369,7 +389,7 @@ pub(crate) fn visible_geometries<'a>(
                 let transform = transform * node.transform();
                 for (child, &[min, max]) in node.children.iter().zip(&node.lod_levels) {
                     if LOD_DIST >= min && LOD_DIST < max {
-                        stack.push((child.key, transform, properties, dry_space));
+                        stack.push((child.key, transform, properties, dry_space, in_billboard));
                         break;
                     }
                 }
@@ -379,7 +399,7 @@ pub(crate) fn visible_geometries<'a>(
             if let Ok(node) = <&NiSwitchNode>::try_from(this) {
                 let transform = transform * node.transform();
                 if let Some(child) = node.children.get(node.active_index) {
-                    stack.push((child.key, transform, properties, dry_space));
+                    stack.push((child.key, transform, properties, dry_space, in_billboard));
                 }
                 continue;
             }
@@ -387,7 +407,7 @@ pub(crate) fn visible_geometries<'a>(
             if let Ok(node) = <&NiNode>::try_from(this) {
                 let transform = transform * node.transform();
                 for child in node.children.iter().rev() {
-                    stack.push((child.key, transform, properties, dry_space));
+                    stack.push((child.key, transform, properties, dry_space, in_billboard));
                 }
                 continue;
             }
@@ -414,6 +434,7 @@ pub(crate) fn visible_geometries<'a>(
                 data,
                 transform,
                 dry_space,
+                in_billboard,
                 properties,
             };
 

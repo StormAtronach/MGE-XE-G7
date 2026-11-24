@@ -54,16 +54,18 @@ pub(crate) fn passes_min_radius(
     scaled_cutoff_radius(radius, static_type, is_door, scale, door_size_multiplier) >= min_radius
 }
 
-/// Returns whether a static's effective cutoff radius meets the configured minimum.
+/// Returns whether a static's effective cutoff radius meets the configured minimum. A lamp that
+/// the extraction kept for its glowing part passes whatever its size.
 pub fn passes_static_min_radius(distant_static: &DistantStatic, min_radius: f32, door_size_multiplier: f32) -> bool {
-    passes_min_radius(
-        distant_static.bounding_sphere.radius,
-        distant_static.static_type,
-        distant_static.is_door,
-        distant_static.max_scale,
-        min_radius,
-        door_size_multiplier,
-    )
+    distant_static.kept_as_lamp
+        || passes_min_radius(
+            distant_static.bounding_sphere.radius,
+            distant_static.static_type,
+            distant_static.is_door,
+            distant_static.max_scale,
+            min_radius,
+            door_size_multiplier,
+        )
 }
 
 /// UV bounds assigned after atlas packing for one vertex.
@@ -335,6 +337,9 @@ pub struct DistantStatic {
     pub max_scale: f32,
     /// Whether this static is a door (DOOR record), eligible for the door-size multiplier.
     pub is_door: bool,
+    /// The static is a lamp's mesh with a glowing part that is under the size limit: the lamp
+    /// rule keeps it.
+    pub kept_as_lamp: bool,
     /// Whether generated horizon footprints may be emitted for this synthetic static.
     pub horizon_footprint_eligible: bool,
     /// Whether the water rules chose the shapes of this static: the mesh is water by its names

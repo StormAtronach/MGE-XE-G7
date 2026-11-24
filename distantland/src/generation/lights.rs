@@ -30,16 +30,17 @@
 //! [`LightRecord::smokes`]: crate::LightRecord::smokes
 //! [`ObjectDefinition::script_disables`]: crate::ObjectDefinition::script_disables
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 
 use super::storage::authority::WriterSession;
 use super::storage::durable::SyncClass;
 use super::storage::state::{self, ArtifactKind, CommittedState, RequiredArtifact};
 use super::{GenerationSettings, OutputPaths, PublicationWrites};
-use crate::UsageInfo;
 use crate::mge_xe::lights::{EXTERIOR_KEY, Key, Lamp, LampRecord, LightBlock, Lights, SmokeSource, key};
+use crate::{UsageInfo, Vfs};
 
 /// The key of the exterior's references in [`UsageInfo::cells`].
 const EXTERIOR_CELL: &str = "\0";
@@ -136,11 +137,68 @@ fn is_smoke_model(mesh: &str) -> bool {
     mesh.contains("smoke") && !mesh.contains("nosmoke")
 }
 
+/// The scales of the placed lamps with a model. The glow radius is of the model, so a lamp at
+/// another scale than 1 has a glow radius of another size than its glowing parts.
+#[derive(Default)]
+struct LampScales {
+    lamps: usize,
+    scaled: usize,
+    least: f32,
+    most: f32,
+}
+
+impl LampScales {
+    fn count(&mut self, scale: f32) {
+        self.lamps += 1;
+        if scale != 1.0 {
+            if self.scaled == 0 {
+                (self.least, self.most) = (scale, scale);
+            }
+            self.scaled += 1;
+            self.least = self.least.min(scale);
+            self.most = self.most.max(scale);
+        }
+    }
+
+    fn log(&self) {
+        if self.scaled == 0 {
+            crate::logging::info!(
+                "Distant lights: all {} lamps with a model are placed at the scale 1",
+                self.lamps
+            );
+        } else {
+            crate::logging::info!(
+                "Distant lights: {} of {} lamps with a model are placed at another scale than 1, from {} to {}; their glow radius is that of the model",
+                self.scaled,
+                self.lamps,
+                self.least,
+                self.most
+            );
+        }
+    }
+}
+
+/// The lamps and the smoke of the blocks, and the model of each light record that a lamp is.
+#[derive(Default)]
+pub(crate) struct LightParts {
+    pub lights: Lights,
+    /// The model of each lamp's record that has one, by the record's key. The glow radius of
+    /// the record is read from it ([`fill_glow_radii`]).
+    pub models: BTreeMap<Key, String>,
+}
+
 /// The lamps and the smoke sources of each block, before the references are remapped to meshes
-/// (the remap drops the lights without a mesh). Blocks with neither are left out.
-pub(crate) fn light_blocks(usage: &UsageInfo, include_behaves_like_exterior: bool, exclude_disable_targets: bool) -> Lights {
+/// (the remap drops the lights without a mesh). Blocks with neither are left out. The glow radius
+/// of each record is 0 until [`fill_glow_radii`].
+pub(crate) fn light_blocks(
+    usage: &UsageInfo,
+    include_behaves_like_exterior: bool,
+    exclude_disable_targets: bool,
+) -> LightParts {
     let encoder = bytes_io::Writer::default();
     let mut parts: BTreeMap<Key, BlockParts> = BTreeMap::new();
+    let mut models: BTreeMap<Key, String> = BTreeMap::new();
+    let mut scales = LampScales::default();
     let mut lamps_without_key = 0usize;
     for (cell, references) in &usage.cells {
         let key = if cell == EXTERIOR_CELL {
@@ -187,6 +245,12 @@ pub(crate) fn light_blocks(usage: &UsageInfo, include_behaves_like_exterior: boo
                 lamps_without_key += 1;
                 continue;
             };
+            if record.has_mesh
+                && let Some(object) = object
+            {
+                models.entry(id.clone()).or_insert_with(|| object.mesh.to_owned());
+                scales.count(reference.scale);
+            }
             block.lamps.push(PlacedLamp {
                 id,
                 lamp: Lamp {
@@ -201,6 +265,7 @@ pub(crate) fn light_blocks(usage: &UsageInfo, include_behaves_like_exterior: boo
         }
     }
 
+    scales.log();
     if lamps_without_key != 0 {
         crate::logging::warn!(
             "Distant lights: {lamps_without_key} lamps have a record id that the game cannot have; they are left out"
@@ -212,7 +277,29 @@ pub(crate) fn light_blocks(usage: &UsageInfo, include_behaves_like_exterior: boo
         .filter(|(_, block)| !block.lamps.is_empty() || !block.smoke.is_empty())
         .map(|(key, block)| block.finish(key))
         .collect();
-    Lights { blocks }
+    LightParts {
+        lights: Lights { blocks },
+        models,
+    }
+}
+
+/// Sets the glow radius of each record of `parts` that has a model: the radius of the model's
+/// drawn glowing parts ([`crate::statics::lamp_glow_radius`]). Each model is read one time.
+/// Answers the number of models read.
+pub(crate) fn fill_glow_radii(parts: &mut LightParts, vfs: &Vfs) -> usize {
+    let unique: BTreeSet<&str> = parts.models.values().map(String::as_str).collect();
+    let radii: BTreeMap<&str, f32> = unique
+        .par_iter()
+        .map(|model| (*model, crate::statics::lamp_glow_radius(model, vfs)))
+        .collect();
+    for block in &mut parts.lights.blocks {
+        for record in &mut block.records {
+            if let Some(model) = parts.models.get(&record.id) {
+                record.glow_radius = radii[model.as_str()];
+            }
+        }
+    }
+    radii.len()
 }
 
 /// The bytes of `lights.data` for `lights` (from [`light_blocks`]), or `None` when the distant
