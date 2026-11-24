@@ -2527,6 +2527,7 @@ struct TestOut { @builtin(position) position: vec4f, @location(0) s0: vec3f, @lo
     #[test]
     #[ignore = "needs a GPU"]
     fn first_build_a_planted_fault_gives_way_to_the_built_in_hooks() {
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");

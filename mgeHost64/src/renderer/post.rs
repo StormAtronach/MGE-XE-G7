@@ -2344,10 +2344,9 @@ mod tests {
     /// `busy` before the copy and for about `busy_after_map` more from the call after the map. Nothing
     /// else polls the device. Stops at the first read, or at 40 calls.
     fn hdr_run_with_busy_gpu(busy: std::time::Duration, busy_after_map: std::time::Duration) -> HdrRun {
-        // One GPU test at a time: each makes a device, and `gpu::last_submission` is shared by the
-        // process (production has one device). A test that fails does not stop the next one.
-        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // One GPU test at a time in the crate: `gpu::last_submission` is shared by the process, and
+        // the busy GPU must be this test's only (W629).
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
@@ -2862,6 +2861,7 @@ mod pack_tests {
     /// Runs `cases`, WGSL with `fn case_of(i: u32) -> vec4f` after the glow terms, for `count`
     /// cases (at most 16) on the GPU, and gives the results.
     fn glow_cases(cases: &str, count: u32) -> Vec<[f32; 4]> {
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");

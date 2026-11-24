@@ -327,6 +327,17 @@ fn frame_change(record: Option<&'static str>, loading: bool, statics: Option<&'s
     record.or(loading.then_some("a load of distant land")).or(statics)
 }
 
+/// One GPU test at a time in the whole crate (W629): every test that makes a device holds this
+/// lock while it lives. The helper has one device, and the process has one
+/// `gpu::last_submission`: a test on another device at the same time changes the index that the
+/// HDR read waits for, and its work changes the busy GPU of the HDR timing tests. A lock in each
+/// module let the tests of two modules run at once. A test that fails does not stop the next one.
+#[cfg(test)]
+pub(crate) fn one_gpu_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod frame_change_tests {
     use super::*;
@@ -8541,8 +8552,7 @@ mod set_free_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn a_free_of_a_set_takes_its_glows_and_post_state_and_their_bytes() {
-        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
@@ -8689,8 +8699,7 @@ mod interior_start_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn an_interior_start_takes_a_late_catalog_and_becomes_a_distant_cell() {
-        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
@@ -8773,9 +8782,6 @@ mod interior_start_tests {
 #[cfg(test)]
 mod frame_value_tests {
     use super::*;
-
-    /// One GPU test at a time: each makes a device of its own.
-    static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A device with the helper's features and limits: the frame makes the post chain too.
     struct TestDevice {
@@ -8951,7 +8957,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn the_post_chain_gets_the_night() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let scene = gpu.scene();
         let (mut land, root) = super::set_free_tests::land_with_no_data("night");
@@ -8978,7 +8984,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn a_load_that_ends_after_the_frame_counts_from_the_next_frame() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let scene = gpu.scene();
         let (mut land, root, sender) = land_with_a_load("load-after-frame");
@@ -9005,7 +9011,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn distant_land_that_goes_off_after_the_frame_counts_from_the_next_frame() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let scene = gpu.scene();
         let (mut land, root, sender) = land_with_a_load("off-after-frame");
@@ -9035,7 +9041,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn a_frame_under_a_menu_after_a_world_frame_draws_no_land() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let scene = gpu.scene();
         let (mut land, root, sender) = land_with_a_load("menu-after-world");
@@ -9068,7 +9074,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn the_weather_multipliers_need_the_light_for_each_pixel() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let mut scene = gpu.scene();
         scene.like_exterior = true;
