@@ -81,11 +81,10 @@ impl FrameLightInfo {
     }
 }
 
-/// The dither of a picture that a pass stores into 8 bits (W660), as WGSL: interleaved gradient
-/// noise of the pixel (Jimenez 2014), less than half a level each way, the same in every frame, so
-/// that a replay of a capture stays exact. Alpha keeps its value. The GPU rounds a sum near half a
-/// level either way, so a few pixels of a flat colour move by one level; the copy of an 8-bit
-/// picture into the frame is therefore the plain copy.
+/// The dither of the copy of a 16-bit picture into the 8 bits of the frame (W660), as WGSL:
+/// interleaved gradient noise of the pixel (Jimenez 2014), less than half a level each way, the
+/// same in every frame, so that a replay of a capture stays exact. Alpha keeps its value. The GPU
+/// rounds a sum near half a level either way, so a few pixels of a flat colour move by one level.
 macro_rules! dither_wgsl {
     () => {
         "
@@ -98,8 +97,7 @@ fn mge_xe_dither(color: vec4f, position: vec4f) -> vec4f {
 }
 
 /// The part of each shader module that every shader has: the variables, the textures, the
-/// samplers, the quad, the helpers of HLSL that WGSL does not have, and the dither of the last
-/// pass (`dither_wgsl!`).
+/// samplers, the quad and the helpers of HLSL that WGSL does not have.
 const COMMON: &str = concat!(
     "
 struct Variables {
@@ -249,31 +247,45 @@ struct Quad {
     return out;
 }
 ",
-    dither_wgsl!()
 );
 
-/// The prefix of the entry point that the renderer adds for the dithered last pass of a shader
+/// The prefix of the entry point that the renderer adds for the clamped last pass of a shader
 /// ([`last_pass`]).
-const DITHERED_PREFIX: &str = "mge_xe_dithered_";
+const CLAMPED_PREFIX: &str = "mge_xe_clamped_";
 
 /// The last pass of a shader file, as the renderer compiles it (W660).
 #[cfg_attr(test, derive(Debug, PartialEq))]
 enum LastPass {
-    /// The file with the last pass dithered, and the entry point of each pass.
-    Dithered(String, Vec<String>),
-    /// The last pass draws into 16-bit floats: the next store dithers.
+    /// The file with the last pass clamped, and the entry point of each pass.
+    Clamped(String, Vec<String>),
+    /// The header asks for 16-bit floats on the last pass: the file as it is.
     HalfFloat,
     /// The last pass is not `@fragment fn <name>(in: Quad) -> @location(0) vec4f {` once in the
-    /// file, or its function is also an earlier pass: the file as it is, with no dither.
+    /// file, or its function is also an earlier pass: the file as it is, in 8 bits.
     OtherForm,
 }
 
-/// The last pass of the file `source` with the passes `passes`, with the dither of its store into 8
-/// bits: its function loses `@fragment` and the `@location(0)` of its return, and the entry point
-/// `mge_xe_dithered_<name>` returns its result with the dither (`dither_wgsl!`). Only the last
-/// pass: it is the picture that the next shader reads, and a pass before it can hold data in its 8
-/// bits (the depth that the SSAO shaders pack into two channels). The lines of the file keep their
-/// numbers: the new entry point comes after them.
+/// What the renderer does with the last pass of a shader file (W660).
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
+enum LastForm {
+    /// In 16-bit floats, clamped to 0..1.
+    Clamped,
+    /// In 16-bit floats by its header, not clamped.
+    HalfFloat,
+    /// Another form: as its header says.
+    Other,
+}
+
+/// The last pass of the file `source` with the passes `passes`, clamped to 0..1 for its store into
+/// 16-bit floats: its function loses `@fragment` and the `@location(0)` of its return, and the
+/// entry point `mge_xe_clamped_<name>` returns its result clamped. The renderer gives that pass a
+/// 16-bit target, so a soft gradient keeps its fine steps until the copy into the frame, which
+/// dithers once; the clamp keeps the range of the 8-bit store (0 to 1; a NaN gives 0 where min and
+/// max return the other operand, as on Direct3D). Only the last pass: it is the picture that the
+/// next shader reads, and a pass before it can hold data in its 8 bits (the depth that the SSAO
+/// shaders pack into two channels). The lines of the file keep their numbers: the new entry point
+/// comes after them.
 fn last_pass(source: &str, passes: &[(String, u32, bool)]) -> LastPass {
     let Some(((entry, _, half_float), earlier)) = passes.split_last() else {
         return LastPass::OtherForm;
@@ -287,11 +299,11 @@ fn last_pass(source: &str, passes: &[(String, u32, bool)]) -> LastPass {
     }
     let plain = source.replacen(&head, &format!("fn {entry}(in: Quad) -> vec4f {{"), 1);
     let text = format!(
-        "{plain}\n@fragment fn {DITHERED_PREFIX}{entry}(in: Quad) -> @location(0) vec4f {{\n    return mge_xe_dither({entry}(in), in.position);\n}}\n"
+        "{plain}\n@fragment fn {CLAMPED_PREFIX}{entry}(in: Quad) -> @location(0) vec4f {{\n    return clamp({entry}(in), vec4f(0.0), vec4f(1.0));\n}}\n"
     );
     let mut entries: Vec<String> = earlier.iter().map(|(name, _, _)| name.clone()).collect();
-    entries.push(format!("{DITHERED_PREFIX}{entry}"));
-    LastPass::Dithered(text, entries)
+    entries.push(format!("{CLAMPED_PREFIX}{entry}"));
+    LastPass::Clamped(text, entries)
 }
 
 /// The places of the variables of a shader in the uniform `modv`: 256 vectors of 4 floats.
@@ -654,14 +666,25 @@ impl Definition {
     }
 
     /// The WGSL of the file as the renderer compiles it after the common part, the entry point of
-    /// each pass, and false when its last pass has another form and is not dithered ([`last_pass`]).
-    fn compiled_text(&self) -> (String, Vec<String>, bool) {
+    /// each pass, and the form of its last pass ([`last_pass`]).
+    fn compiled_text(&self) -> (String, Vec<String>, LastForm) {
         let own = || self.passes.iter().map(|(entry, _, _)| entry.clone()).collect();
         match last_pass(&self.source, &self.passes) {
-            LastPass::Dithered(text, entries) => (text, entries, true),
-            LastPass::HalfFloat => (self.source.clone(), own(), true),
-            LastPass::OtherForm => (self.source.clone(), own(), false),
+            LastPass::Clamped(text, entries) => (text, entries, LastForm::Clamped),
+            LastPass::HalfFloat => (self.source.clone(), own(), LastForm::HalfFloat),
+            LastPass::OtherForm => (self.source.clone(), own(), LastForm::Other),
         }
+    }
+
+    /// For each pass, true when it draws into 16-bit floats: its header's `f16`, and the last pass
+    /// when the renderer clamps it (`form`).
+    fn half_floats(&self, form: LastForm) -> Vec<bool> {
+        let last = self.passes.len().saturating_sub(1);
+        self.passes
+            .iter()
+            .enumerate()
+            .map(|(index, (_, _, half_float))| *half_float || (index == last && form == LastForm::Clamped))
+            .collect()
     }
 
     /// The shader of the chain name `name`: the file `shaders/XEshaders/<name>.wgsl` that `read`
@@ -1019,9 +1042,8 @@ pub(super) const BLIT_SHADER: &str = concat!(
 );
 
 /// The copy of a 16-bit result of the chain into the picture of the frame, with the dither of a
-/// store into 8 bits (`dither_wgsl!`; W660). An 8-bit result has its dither from its last pass and
-/// goes through the plain copy ([`BLIT_SHADER`]): a dither of a whole level moves some pixels by one
-/// level on the GPU.
+/// store into 8 bits (`dither_wgsl!`; W660): the one dither of the chain. An 8-bit result (a last
+/// pass of another form) goes through the plain copy ([`BLIT_SHADER`]), as on Direct3D 9.
 const DITHERED_BLIT_SHADER: &str = concat!(
     blit_head!(),
     dither_wgsl!(),
@@ -1636,13 +1658,14 @@ impl Post {
             }
         };
         let functions = variables_wgsl(&shader.variables);
-        let (text, entries, dithered) = shader.compiled_text();
-        if !dithered {
+        let (text, entries, form) = shader.compiled_text();
+        if form == LastForm::Other {
             println!(
-                "post: the last pass of the shader {} is not `@fragment fn <name>(in: Quad) -> @location(0) vec4f {{` of its own; its picture is not dithered",
+                "post: the last pass of the shader {} is not `@fragment fn <name>(in: Quad) -> @location(0) vec4f {{` of its own; its picture stays in 8 bits",
                 shader.name
             );
         }
+        let half_floats = shader.half_floats(form);
         let source = format!("{COMMON}\n{functions}\n{text}");
         // An error of the WGSL of a file, or a pass that is not a function of it, comes
         // back from the scope and does not stop the program.
@@ -1655,7 +1678,8 @@ impl Post {
             .passes
             .iter()
             .zip(&entries)
-            .map(|((_, scale, half_float), entry)| {
+            .zip(&half_floats)
+            .map(|(((_, scale, _), entry), half_float)| {
                 let format = if *half_float {
                     wgpu::TextureFormat::Rgba16Float
                 } else {
@@ -2813,9 +2837,9 @@ mod tests {
                     continue;
                 }
             };
-            let (text, entries, dithered) = definition.compiled_text();
-            if !dithered {
-                problems.push(format!("{name}: the last pass has another form and is not dithered"));
+            let (text, entries, form) = definition.compiled_text();
+            if form == LastForm::Other {
+                problems.push(format!("{name}: the last pass has another form and stays in 8 bits"));
             }
             let source = format!("{COMMON}\n{}\n{text}", variables_wgsl(&definition.variables));
             let module = match crate::renderer::shader_check::check(name, &source) {
@@ -2919,7 +2943,7 @@ mod tests {
         assert_eq!(names, ["Sub/bad", "good", "none"]);
         assert_eq!(problems.len(), 3, "{problems:?}");
         assert!(
-            problems[0].contains("Sub/bad: the last pass has another form and is not dithered"),
+            problems[0].contains("Sub/bad: the last pass has another form and stays in 8 bits"),
             "{problems:?}"
         );
         assert!(
@@ -2967,12 +2991,13 @@ mod tests {
         );
     }
 
-    /// W660: the last pass of a file is dithered. Its function is no entry point any more, keeps
-    /// its line, and the new entry point returns it with the dither; the file compiles. The null: a
-    /// last pass in 16-bit floats, a last pass of another form, and a function that is two passes
-    /// keep the file as it is.
+    /// W660: the last pass of a file is clamped and draws into 16-bit floats. Its function is no
+    /// entry point any more, keeps its line, and the new entry point returns it clamped; the file
+    /// compiles; the passes before keep their format. The null: a last pass in 16-bit floats by its
+    /// header, a last pass of another form, and a function that is two passes keep the file as it
+    /// is, and the last pass of another form stays in 8 bits.
     #[test]
-    fn the_last_pass_is_dithered() {
+    fn the_last_pass_is_clamped_into_half_floats() {
         use wgpu::naga;
         let file = "//! interface: mge-xe-wgsl 1\n//! passes: first, last\n\n\
             @fragment fn first(in: Quad) -> @location(0) vec4f {\n\
@@ -2982,34 +3007,37 @@ mod tests {
             \x20   return textureSampleLevel(lastpass, linear_clamp, in.tex, 0.0);\n\
             }\n";
         let definition = Definition::of_file("two", file).unwrap();
-        let (text, entries, dithered) = definition.compiled_text();
-        assert!(dithered);
-        assert_eq!(entries, ["first", "mge_xe_dithered_last"]);
+        let (text, entries, form) = definition.compiled_text();
+        assert_eq!(form, LastForm::Clamped);
+        assert_eq!(definition.half_floats(form), [false, true]);
+        assert_eq!(entries, ["first", "mge_xe_clamped_last"]);
         assert!(
             text.contains("@fragment fn first(in: Quad) -> @location(0) vec4f {"),
             "{text}"
         );
         assert!(text.contains("\nfn last(in: Quad) -> vec4f {"), "{text}");
-        assert!(text.contains("return mge_xe_dither(last(in), in.position);"), "{text}");
+        assert!(text.contains("return clamp(last(in), vec4f(0.0), vec4f(1.0));"), "{text}");
         let line_of = |t: &str| t.lines().position(|line| line.contains("fn last("));
         assert_eq!(line_of(&text), line_of(file), "the function keeps its line");
         let source = format!("{COMMON}\n{}\n{text}", variables_wgsl(&definition.variables));
-        let module = crate::renderer::shader_check::check("two", &source).expect("the dithered file compiles");
+        let module = crate::renderer::shader_check::check("two", &source).expect("the clamped file compiles");
         let fragments: Vec<&str> = module
             .entry_points
             .iter()
             .filter(|point| point.stage == naga::ShaderStage::Fragment)
             .map(|point| point.name.as_str())
             .collect();
-        assert_eq!(fragments, ["first", "mge_xe_dithered_last"]);
+        assert_eq!(fragments, ["first", "mge_xe_clamped_last"]);
 
         let own = vec!["first".to_string(), "last".to_string()];
         let half = Definition::of_file("half", &file.replace("first, last", "first, last f16")).unwrap();
-        assert_eq!(half.compiled_text(), (half.source.clone(), own.clone(), true));
+        assert_eq!(half.compiled_text(), (half.source.clone(), own.clone(), LastForm::HalfFloat));
+        assert_eq!(half.half_floats(LastForm::HalfFloat), [false, true]);
         let other = Definition::of_file("other", &file.replace("fn last(in: Quad)", "fn last(q: Quad)")).unwrap();
-        assert_eq!(other.compiled_text(), (other.source.clone(), own, false));
+        assert_eq!(other.compiled_text(), (other.source.clone(), own, LastForm::Other));
+        assert_eq!(other.half_floats(LastForm::Other), [false, false]);
         let twice = Definition::of_file("twice", &file.replace("first, last", "last, last")).unwrap();
-        assert_eq!(twice.compiled_text().2, false);
+        assert_eq!(twice.compiled_text().2, LastForm::Other);
     }
 
     /// The files whose last pass, or a function that it calls, has a form that can pack data into
@@ -3080,11 +3108,11 @@ mod tests {
         all
     }
 
-    /// The last pass of a shader is a picture, which the renderer dithers (W660): no post shader
-    /// file of the packs and of our package has a form in its last pass, or in a function of the
-    /// file that the last pass calls, that can pack data, other than the files read and named in
-    /// [`LAST_PASS_FORMS_READ`]. A new file with such a form fails here until someone reads it and
-    /// names it.
+    /// The last pass of a shader is a picture, which the renderer stores in 16-bit floats (W660):
+    /// no post shader file of the packs and of our package has a form in its last pass, or in a
+    /// function of the file that the last pass calls, that can pack data, other than the files read
+    /// and named in [`LAST_PASS_FORMS_READ`]. A new file with such a form fails here until someone
+    /// reads it and names it.
     #[test]
     fn no_last_pass_packs_data() {
         let ports = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ports");
