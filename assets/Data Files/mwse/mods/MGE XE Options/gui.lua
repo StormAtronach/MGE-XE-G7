@@ -472,10 +472,14 @@ function this.run()
 		return
 	end
 
+	-- The renderer's debug views: on the wgpu renderer only.
+	local debugPage = debugviews.available()
+
 	-- Create menu
 	menu = tes3ui.createMenu{id = "MenuMGE-XE", dragFrame = true, loadable = true}
 	menu.text = "MGE XE"
-	menu.width = 520
+	-- The tab "Debug" needs 524 px for the six tabs (484 px of tabs, 40 px of borders and frame).
+	menu.width = debugPage and 524 or 520
 	menu.height = 720
 	menu.minWidth = 480
 	menu.minHeight = 720
@@ -507,8 +511,6 @@ function this.run()
 	element:register("mouseClick", function(e) showPane(menu, 4) end)
 	element = createThinButton(section, i18n("TabLighting"))
 	element:register("mouseClick", function(e) showPane(menu, 5) end)
-	-- The renderer's debug views: on the wgpu renderer only.
-	local debugPage = debugviews.available()
 	if debugPage then
 		element = createThinButton(section, i18n("TabDebug"))
 		element:register("mouseClick", function(e) showPane(menu, 6) end)
