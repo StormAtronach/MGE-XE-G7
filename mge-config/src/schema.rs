@@ -387,6 +387,18 @@ impl StaticsResidency {
     }
 }
 
+/// How the wgpu renderer reads the sky's bilinear maps (`graphics.sky_map_filter`, W632).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkyMapFilter {
+    /// Level 0 with a bilinear filter, as the engine reads them.
+    Engine,
+    /// The mean of the texels under each pixel, from a level that is still sharper than the pixel: the
+    /// default, by the owner's choice (W632).
+    #[default]
+    Area,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraphicsSettings {
@@ -396,6 +408,8 @@ pub struct GraphicsSettings {
     pub refresh_rate: u8,
     pub borderless: bool,
     pub anisotropy: Anisotropy,
+    /// How the wgpu renderer reads the sky's bilinear maps: the moons, the glare (W632).
+    pub sky_map_filter: SkyMapFilter,
     pub transparency_antialiasing: bool,
 }
 
@@ -408,6 +422,7 @@ impl Default for GraphicsSettings {
             refresh_rate: 0,
             borderless: true,
             anisotropy: Anisotropy::X8,
+            sky_map_filter: SkyMapFilter::Area,
             transparency_antialiasing: true,
         }
     }

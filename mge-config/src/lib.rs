@@ -347,7 +347,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             &path,
-            "schema_version = 1\n\ngraphics = { anti_aliasing = \"x4\", z_buffer_format = \"d24s8\", vsync = \"one\", refresh_rate = 0, borderless = false, anisotropy = \"x2\", transparency_antialiasing = false }\n\n[gui]\nlanguage = \"auto\"\n",
+            "schema_version = 1\n\ngraphics = { anti_aliasing = \"x4\", z_buffer_format = \"d24s8\", vsync = \"one\", refresh_rate = 0, borderless = false, anisotropy = \"x2\", sky_map_filter = \"area\", transparency_antialiasing = false }\n\n[gui]\nlanguage = \"auto\"\n",
         )
         .unwrap();
 
