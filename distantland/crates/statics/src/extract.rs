@@ -179,14 +179,27 @@ impl LampGlow {
     }
 }
 
-/// Reads the drawn glowing parts of a lamp's model (its glass, its flame): their bound, or the
-/// cause that there is none.
-pub fn lamp_glow(rel_path: &str, vfs: &Vfs) -> LampGlow {
+/// What the read of a lamp's model found: its glowing parts, and the place of its light.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LampModel {
+    pub glow: LampGlow,
+    /// The place of the light in the model, as the engine finds it ([`attach_light_offset`]);
+    /// `None` when the light is at the model's origin, and for a model that is not read.
+    pub light_offset: Option<Vec3>,
+}
+
+/// Reads a lamp's model: the drawn glowing parts (its glass, its flame) with their bound or
+/// the cause that there is none, and the place of its light.
+pub fn lamp_model(rel_path: &str, vfs: &Vfs) -> LampModel {
+    let not_read = LampModel {
+        glow: LampGlow::NotRead,
+        light_offset: None,
+    };
     let Some(bytes) = vfs.resolve_mesh(rel_path).and_then(|asset| vfs.read_asset_bytes(&asset).ok()) else {
-        return LampGlow::NotRead;
+        return not_read;
     };
     let Ok(mut stream) = NiStream::from_bytes(&bytes) else {
-        return LampGlow::NotRead;
+        return not_read;
     };
     stream.apply_skin_deforms();
     clear_root_node_transforms(&mut stream);
@@ -195,10 +208,14 @@ pub fn lamp_glow(rel_path: &str, vfs: &Vfs) -> LampGlow {
         .filter(|geometry| glows(geometry, &stream))
         .map(|geometry| geometry.place_bound(geometry.object_space_bounding_sphere(&mut scratch)))
         .reduce(|acc, bound| acc.merged_with(bound));
-    match drawn {
+    let glow = match drawn {
         Some(bound) => LampGlow::Drawn(bound.radius),
         None if lamp_glows(&stream, None) => LampGlow::UnderBillboard,
         None => LampGlow::NoGlowingPart,
+    };
+    LampModel {
+        glow,
+        light_offset: attach_light_offset(&stream),
     }
 }
 

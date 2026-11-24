@@ -271,7 +271,10 @@ the job includes those. The blocks are sorted by their keys, with no key two tim
 | | L x 32 bytes | the lamps |
 | | S x 16 bytes | the smoke sources: `f32[3]` position, `f32` strength (1 for a smoke effect, 0.5 for a fire) |
 
-A lamp is 32 bytes, the layout that the helper's shaders read: `f32[3]` position, `f32` radius,
+A lamp is 32 bytes, the layout that the helper's shaders read: `f32[3]` position (the place of
+its light: the first object named AttachLight in its model, with no difference of case, when
+that object is a node, through the reference's place, turn and scale, as the engine puts the
+light there; else the reference's place), `f32` radius,
 `u8[3]` colour, `u8` 255 when the record has a model (else 0), `u32` flags of the light record,
 `u32` the index of its record in the block, `u32` zero. A lamp is a placed reference of a light
 record that lights: a radius above 0, a colour that is not black, not negative (`0x04`) and not
@@ -302,7 +305,10 @@ bytes after the last block. No name makes a file refused. If the read fails, the
 length and the BLAKE3 of the bytes made now, or when the distant lights are off and the state
 lists none. The generator writes it in place inside the writer's dirty session, with the rest of
 a publication or alone (`lights::publish_alone`: the state not valid, the one file written, the
-state valid again). The pruner removes the file when the state does not list it, so with
+state valid again). A change of what the generator puts into the lights raises
+`LIGHTS_RECIPE_VERSION` (foundation `units`), a number of the format text of the output's key,
+so that two builds that write other lights for one world do not share an output (W643). The
+pruner removes the file when the state does not list it, so with
 `distant_lights = false` there is no file. An inventory without the entry stays valid. The
 setting is on in a new job. The file holds no baked light, and the setting `bake_lights` is gone.
 

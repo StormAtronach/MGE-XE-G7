@@ -493,10 +493,13 @@ fn the_glow_radius_is_the_bound_of_the_drawn_glowing_parts() {
     let vfs = make_test_vfs(root);
 
     // The glass is a right triangle with legs of 1: its bound has a radius of half the long side.
-    let radius = crate::lamp_glow("lit.nif", &vfs).radius();
+    let lit = crate::lamp_model("lit.nif", &vfs);
+    let radius = lit.glow.radius();
     assert!((radius - 0.5f32.sqrt()).abs() < 0.01, "{radius}");
     // Each other model gives the cause that its radius is 0.
-    let causes = ["billboard.nif", "dark.nif", "absent.nif"].map(|model| crate::lamp_glow(model, &vfs));
+    // The test lamp has no AttachLight: its light is at its origin.
+    assert_eq!(lit.light_offset, None);
+    let causes = ["billboard.nif", "dark.nif", "absent.nif"].map(|model| crate::lamp_model(model, &vfs).glow);
     assert_eq!(
         causes,
         [
@@ -506,6 +509,75 @@ fn the_glow_radius_is_the_bound_of_the_drawn_glowing_parts() {
         ]
     );
     assert!(causes.iter().all(|cause| cause.radius() == 0.0));
+}
+
+/// A node for the tests of the light's place: `name`, moved by `translation`, with `children`.
+fn light_test_node(
+    stream: &mut NiStream,
+    name: &str,
+    translation: Vec3,
+    children: Vec<NiLink<NiAVObject>>,
+) -> NiLink<NiAVObject> {
+    let mut node = NiNode::default();
+    node.name = name.into();
+    node.translation = translation;
+    node.children = children;
+    stream.insert(node).cast()
+}
+
+/// The place of the light in a model with the root `root`, as [`crate::lamp_model`] reads it.
+fn light_offset_of(mut stream: NiStream, root: NiLink<NiAVObject>) -> Option<Vec3> {
+    stream.roots.push(root.cast());
+    crate::nif::clear_root_node_transforms(&mut stream);
+    crate::nif::attach_light_offset(&stream)
+}
+
+/// The light is under the first AttachLight, depth first, each node before its children: one
+/// deep under the first child comes before one that is a later child. The transforms of the
+/// nodes down to it count; the root's own does not (the reference's place replaces it).
+#[test]
+fn the_light_is_at_the_first_attach_light_node_depth_first() {
+    let mut stream = NiStream::new();
+    let deep = light_test_node(&mut stream, "AttachLight", Vec3::new(10.0, 0.0, 0.0), vec![]);
+    let mut arm = NiNode::default();
+    arm.name = "Arm".into();
+    arm.translation = Vec3::new(5.0, 0.0, 0.0);
+    // A half turn about z: the same in each order of the matrix.
+    arm.rotation = glam::Mat3::from_rotation_z(std::f32::consts::PI);
+    arm.scale = 2.0;
+    arm.children = vec![deep];
+    let arm = stream.insert(arm).cast();
+    let later = light_test_node(&mut stream, "AttachLight", Vec3::new(0.0, 0.0, 99.0), vec![]);
+    let root = light_test_node(&mut stream, "Root", Vec3::new(1000.0, 0.0, 0.0), vec![arm, later]);
+
+    let offset = light_offset_of(stream, root).expect("the model has an AttachLight node");
+    // The arm is at 5 on x; the node 10 along x under it is turned to -x and doubled: -20.
+    assert!((offset - Vec3::new(-15.0, 0.0, 0.0)).length() < 1e-4, "{offset}");
+}
+
+/// The case of the name does not count, as for the engine's `_stricmp`. The first object with
+/// the name decides: when it is not a node, the light is at the root, also with a node of the
+/// name after it. A model without the name has its light at the root.
+#[test]
+fn the_light_name_has_no_case_and_the_first_one_must_be_a_node() {
+    let mut stream = NiStream::new();
+    let light = light_test_node(&mut stream, "attachlight", Vec3::new(0.0, 0.0, 7.0), vec![]);
+    let root = light_test_node(&mut stream, "Root", Vec3::ZERO, vec![light]);
+    assert_eq!(light_offset_of(stream, root), Some(Vec3::new(0.0, 0.0, 7.0)));
+
+    let mut stream = NiStream::new();
+    let mut shape = NiTriShape::default();
+    shape.name = "AttachLight".into();
+    shape.translation = Vec3::new(0.0, 0.0, 3.0);
+    let shape = stream.insert(shape).cast();
+    let node = light_test_node(&mut stream, "AttachLight", Vec3::new(0.0, 0.0, 7.0), vec![]);
+    let root = light_test_node(&mut stream, "Root", Vec3::ZERO, vec![shape, node]);
+    assert_eq!(light_offset_of(stream, root), None);
+
+    let mut stream = NiStream::new();
+    let other = light_test_node(&mut stream, "Glass", Vec3::new(0.0, 0.0, 7.0), vec![]);
+    let root = light_test_node(&mut stream, "Root", Vec3::ZERO, vec![other]);
+    assert_eq!(light_offset_of(stream, root), None);
 }
 
 fn write_test_static_asset(root: &Path, mesh_name: &str, nif_bytes: &[u8]) {

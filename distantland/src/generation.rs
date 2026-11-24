@@ -607,7 +607,7 @@ fn run_generation(
     metrics.usage.script_disable = usage_info.script_disable.clone();
 
     // The bytes of the lights file, from the lamps and the smoke taken before the remap, with
-    // the glow radius of each record from its model.
+    // the glow radius of each record and the place of each lamp's light from its model.
     let lights = {
         let span = info_span!(
             "stage.distant_lights",
@@ -620,7 +620,7 @@ fn run_generation(
         let _guard = span.enter();
         let mut light_blocks = light_blocks;
         if job.settings.distant_lights {
-            record_usize(&span, "model_count", lights::fill_glow_radii(&mut light_blocks, &vfs));
+            record_usize(&span, "model_count", lights::read_lamp_models(&mut light_blocks, &vfs));
         }
         let lights = lights::build(&light_blocks.lights, &job.settings);
         if let Some(lights) = lights.as_ref() {

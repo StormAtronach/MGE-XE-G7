@@ -1,7 +1,7 @@
 //! NIF geometry traversal and transform helpers.
 
 use bytemuck::must_cast_slice;
-use glam::Affine3A;
+use glam::{Affine3A, Vec3};
 use hashbrown::HashSet;
 use minsphere::{BoundingSphere, BoundingSphereScratch};
 use str_utils::*;
@@ -317,6 +317,47 @@ pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
             node.clear_transform();
         }
     }
+}
+
+/// The name of the object under which the engine puts the light of a lamp.
+const ATTACH_LIGHT: &str = "AttachLight";
+
+/// The place of a lamp's light in its model, as the engine finds it
+/// (`EntityLight::createLightOnReference`, 0x4D27E0). The engine takes the first object named
+/// `AttachLight` from the root, depth first, each node before its children, with no difference
+/// of case (`NiNode::GetObjectByName` 0x6CA0A0, `NiAVObject::GetObjectByName` 0x6EBAA0 with
+/// `_stricmp`). The light goes under that object when it is a node. When the object is not a
+/// node, or no object has the name, the light goes under the root: then the answer is `None`.
+///
+/// Call it after [`clear_root_node_transforms`]: the place of the reference replaces the
+/// root's own.
+pub(crate) fn attach_light_offset(stream: &NiStream) -> Option<Vec3> {
+    let root = stream.roots.first()?;
+    let mut stack = vec![(root.key, Affine3A::IDENTITY)];
+    // A malformed file can have a cycle. An object is looked at once.
+    let mut seen = HashSet::new();
+    while let Some((key, parent)) = stack.pop() {
+        let Some(this) = stream.objects.get(key) else {
+            continue;
+        };
+        let Ok(object) = <&NiAVObject>::try_from(this) else {
+            continue;
+        };
+        if !seen.insert(key) {
+            continue;
+        }
+        let transform = parent * object.transform();
+        let node = <&NiNode>::try_from(this).ok();
+        if object.name.eq_ignore_ascii_case(ATTACH_LIGHT) {
+            return node.map(|_| Vec3::from(transform.translation));
+        }
+        if let Some(node) = node {
+            for child in node.children.iter().rev() {
+                stack.push((child.key, transform));
+            }
+        }
+    }
+    None
 }
 
 /// Iterates visible triangle shapes with accumulated transforms and render properties.

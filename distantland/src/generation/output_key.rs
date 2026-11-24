@@ -17,12 +17,12 @@ use distantland_formats::terrain_occlusion::TERRAIN_OCCLUSION_VERSION;
 use distantland_foundation::output::MGE_DL_VERSION;
 use distantland_foundation::state_db::state_format_version;
 use distantland_foundation::storage::state::{ArtifactKind, COMMITTED_STATE_VERSION};
-use distantland_foundation::units::{STATICS_RECIPE_VERSION, TERRAIN_RECIPE_VERSION};
+use distantland_foundation::units::{LIGHTS_RECIPE_VERSION, STATICS_RECIPE_VERSION, TERRAIN_RECIPE_VERSION};
 use distantland_statics::atlas::atlas_cache_version;
 
 /// The numbers that decide whether a build reads another build's output, by name. A constant
 /// whose name ends in `VERSION` is in this list or in [`NOT_FORMAT`] (a test scans the sources).
-fn format_numbers() -> [(&'static str, u32); 10] {
+fn format_numbers() -> [(&'static str, u32); 11] {
     [
         ("MGE_DL_VERSION", u32::from(MGE_DL_VERSION)),
         ("STATE_FORMAT_VERSION", state_format_version()),
@@ -33,6 +33,7 @@ fn format_numbers() -> [(&'static str, u32); 10] {
         ("TERRAIN_OCCLUSION_VERSION", TERRAIN_OCCLUSION_VERSION),
         ("STATICS_RECIPE_VERSION", STATICS_RECIPE_VERSION),
         ("TERRAIN_RECIPE_VERSION", TERRAIN_RECIPE_VERSION),
+        ("LIGHTS_RECIPE_VERSION", LIGHTS_RECIPE_VERSION),
         ("ATLAS_CACHE_VERSION", atlas_cache_version()),
     ]
 }
@@ -175,6 +176,23 @@ mod tests {
             short_hash(&text),
             "a text without a number must have another name"
         );
+    }
+
+    // T-R1c (W643): the lights recipe is a part of the format, so a build that writes other lights
+    // has another key. The nulls: the text with the number before it, and the text of a build
+    // before the number, each have another name.
+    #[test]
+    fn the_lights_recipe_is_a_part_of_the_format() {
+        let text = output_format();
+        let part = format!("LIGHTS_RECIPE_VERSION={LIGHTS_RECIPE_VERSION}");
+        assert!(text.split(';').any(|each| each == part), "{text}");
+
+        let before = text.replace(&part, &format!("LIGHTS_RECIPE_VERSION={}", LIGHTS_RECIPE_VERSION - 1));
+        assert_ne!(before, text);
+        assert_ne!(short_hash(&before), short_hash(&text));
+
+        let without: Vec<&str> = text.split(';').filter(|each| *each != part).collect();
+        assert_ne!(short_hash(&without.join(";")), short_hash(&text));
     }
 
     // T-R1b: a key outside the generation settings leaves the identity as it is; a generation

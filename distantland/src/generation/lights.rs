@@ -30,9 +30,11 @@
 //! [`LightRecord::smokes`]: crate::LightRecord::smokes
 //! [`ObjectDefinition::script_disables`]: crate::ObjectDefinition::script_disables
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
+use glam::{Affine3A, Vec3};
 use rayon::prelude::*;
 
 use super::storage::authority::WriterSession;
@@ -40,7 +42,7 @@ use super::storage::durable::SyncClass;
 use super::storage::state::{self, ArtifactKind, CommittedState, RequiredArtifact};
 use super::{GenerationSettings, OutputPaths, PublicationWrites};
 use crate::mge_xe::lights::{EXTERIOR_KEY, Key, Lamp, LampRecord, LightBlock, Lights, SmokeSource, key};
-use crate::statics::LampGlow;
+use crate::statics::{LampGlow, LampModel};
 use crate::{UsageInfo, Vfs};
 
 /// The key of the exterior's references in [`UsageInfo::cells`].
@@ -65,6 +67,33 @@ pub(crate) struct LightsOutput {
 struct PlacedLamp {
     id: Key,
     lamp: Lamp,
+    /// The place, the turn and the scale of the reference: the light of a model is at a place
+    /// in the model ([`read_lamp_models`]).
+    frame: Affine3A,
+}
+
+/// The order of a block's lamps: by place (x, then y, then z), then by their values.
+/// `f32::total_cmp` is a total order, so the file does not depend on the order of the
+/// references.
+fn lamp_order(a: &Lamp, b: &Lamp) -> Ordering {
+    by_place(&a.position, &b.position)
+        .then(a.radius.total_cmp(&b.radius))
+        .then((a.color, a.flags, a.record).cmp(&(b.color, b.flags, b.record)))
+}
+
+fn by_place(a: &[f32; 3], b: &[f32; 3]) -> Ordering {
+    a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])).then(a[2].total_cmp(&b[2]))
+}
+
+/// The order of two references' transforms, for two lamps that are the same until their model
+/// moves them.
+fn frame_order(a: &Affine3A, b: &Affine3A) -> Ordering {
+    let (a, b) = (a.to_cols_array(), b.to_cols_array());
+    a.iter()
+        .zip(&b)
+        .map(|(a, b)| a.total_cmp(b))
+        .find(|order| order.is_ne())
+        .unwrap_or(Ordering::Equal)
 }
 
 /// The key of a name that the plugin reader gave. The reader decodes the bytes of a name as
@@ -91,8 +120,9 @@ struct BlockParts {
 
 impl BlockParts {
     /// The block, in an order that does not depend on the order of the references: the records
-    /// by their ids, the lamps and the smoke by their places.
-    fn finish(mut self, key: Key) -> LightBlock {
+    /// by their ids, the lamps and the smoke by their places. With the transform of each lamp's
+    /// reference, in the order of the lamps.
+    fn finish(mut self, key: Key) -> (LightBlock, Vec<Affine3A>) {
         let mut ids: Vec<&Key> = self.lamps.iter().map(|placed| &placed.id).collect();
         ids.sort_unstable();
         ids.dedup();
@@ -104,32 +134,26 @@ impl BlockParts {
             })
             .collect();
 
-        let mut lamps: Vec<Lamp> = self
+        let mut lamps: Vec<(Lamp, Affine3A)> = self
             .lamps
             .iter()
-            .map(|placed| Lamp {
-                record: ids.binary_search(&&placed.id).expect("the id of a lamp is a record") as u32,
-                ..placed.lamp
+            .map(|placed| {
+                let record = ids.binary_search(&&placed.id).expect("the id of a lamp is a record") as u32;
+                (Lamp { record, ..placed.lamp }, placed.frame)
             })
             .collect();
-        // By place: x, then y, then z. f32::total_cmp is a total order, so the file does not
-        // depend on the order of the references.
-        let by_place =
-            |a: &[f32; 3], b: &[f32; 3]| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])).then(a[2].total_cmp(&b[2]));
-        lamps.sort_by(|a, b| {
-            by_place(&a.position, &b.position)
-                .then(a.radius.total_cmp(&b.radius))
-                .then((a.color, a.flags, a.record).cmp(&(b.color, b.flags, b.record)))
-        });
+        lamps.sort_by(|a, b| lamp_order(&a.0, &b.0).then_with(|| frame_order(&a.1, &b.1)));
+        let (lamps, frames) = lamps.into_iter().unzip();
         self.smoke
             .sort_by(|a, b| by_place(&a.position, &b.position).then(a.strength.total_cmp(&b.strength)));
 
-        LightBlock {
+        let block = LightBlock {
             key,
             records,
             lamps,
             smoke: self.smoke,
-        }
+        };
+        (block, frames)
     }
 }
 
@@ -184,13 +208,17 @@ impl LampScales {
 pub(crate) struct LightParts {
     pub lights: Lights,
     /// The model of each lamp's record that has one, by the record's key. The glow radius of
-    /// the record is read from it ([`fill_glow_radii`]).
+    /// the record and the place of its light are read from it ([`read_lamp_models`]).
     pub models: BTreeMap<Key, String>,
+    /// The transform of each lamp's reference: one list for each block of `lights`, in the
+    /// order of the block's lamps until [`read_lamp_models`], which moves the lamps and sorts
+    /// them again; after it the lists are out of step and are not read.
+    pub frames: Vec<Vec<Affine3A>>,
 }
 
 /// The lamps and the smoke sources of each block, before the references are remapped to meshes
-/// (the remap drops the lights without a mesh). Blocks with neither are left out. The glow radius
-/// of each record is 0 until [`fill_glow_radii`].
+/// (the remap drops the lights without a mesh). Blocks with neither are left out. A lamp is at
+/// its reference's place, and the glow radius of each record is 0, until [`read_lamp_models`].
 pub(crate) fn light_blocks(
     usage: &UsageInfo,
     include_behaves_like_exterior: bool,
@@ -262,6 +290,7 @@ pub(crate) fn light_blocks(
                     flags: record.flags,
                     record: 0,
                 },
+                frame: reference.get_transform(),
             });
         }
     }
@@ -273,35 +302,59 @@ pub(crate) fn light_blocks(
         );
     }
 
-    let blocks = parts
+    let (blocks, frames) = parts
         .into_iter()
         .filter(|(_, block)| !block.lamps.is_empty() || !block.smoke.is_empty())
         .map(|(key, block)| block.finish(key))
-        .collect();
+        .unzip();
     LightParts {
         lights: Lights { blocks },
         models,
+        frames,
     }
 }
 
-/// Sets the glow radius of each record of `parts` that has a model: the radius of the model's
-/// drawn glowing parts ([`crate::statics::lamp_glow`]). Each model is read one time. Logs the
-/// models by the cause of a radius of 0. Answers the number of models read.
-pub(crate) fn fill_glow_radii(parts: &mut LightParts, vfs: &Vfs) -> usize {
+/// Reads the model of each record of `parts` that has one ([`crate::statics::lamp_model`]), one
+/// time for each model. The record gets the radius of the model's drawn glowing parts. Each
+/// lamp of a model with a light node moves to the place of its light: the node's place in the
+/// model, through the transform of the lamp's reference, as the engine puts the light there.
+/// The lamps of a block are then in the order of their places again. Logs the models by the
+/// cause of a radius of 0, and the models with a light node. Answers the number of models read.
+pub(crate) fn read_lamp_models(parts: &mut LightParts, vfs: &Vfs) -> usize {
     let unique: BTreeSet<&str> = parts.models.values().map(String::as_str).collect();
-    let glows: BTreeMap<&str, LampGlow> = unique
+    let models: BTreeMap<&str, LampModel> = unique
         .par_iter()
-        .map(|model| (*model, crate::statics::lamp_glow(model, vfs)))
+        .map(|model| (*model, crate::statics::lamp_model(model, vfs)))
         .collect();
-    for block in &mut parts.lights.blocks {
-        for record in &mut block.records {
-            if let Some(model) = parts.models.get(&record.id) {
-                record.glow_radius = glows[model.as_str()].radius();
+    let mut moved = 0usize;
+    for (block, frames) in parts.lights.blocks.iter_mut().zip(&parts.frames) {
+        let offsets: Vec<Option<Vec3>> = block
+            .records
+            .iter_mut()
+            .map(|record| {
+                let model = parts.models.get(&record.id).map(|model| models[model.as_str()]);
+                if let Some(model) = model {
+                    record.glow_radius = model.glow.radius();
+                }
+                model.and_then(|model| model.light_offset)
+            })
+            .collect();
+        for (lamp, frame) in block.lamps.iter_mut().zip(frames) {
+            if let Some(offset) = offsets[lamp.record as usize] {
+                lamp.position = frame.transform_point3(offset).to_array();
+                moved += 1;
             }
         }
+        block.lamps.sort_by(lamp_order);
     }
+    let glows: BTreeMap<&str, LampGlow> = models.iter().map(|(model, read)| (*model, read.glow)).collect();
     log_glow_causes(&glows);
-    glows.len()
+    let with_node = models.values().filter(|read| read.light_offset.is_some()).count();
+    crate::logging::info!(
+        "Distant lights: {with_node} of {} lamp models have a light node; {moved} lamps are at their light node",
+        models.len()
+    );
+    models.len()
 }
 
 /// The models by what their read found, so that a point of light over a lamp that shows as

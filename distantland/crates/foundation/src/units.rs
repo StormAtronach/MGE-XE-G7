@@ -16,6 +16,17 @@ pub const STATICS_RECIPE_VERSION: u32 = 5;
 /// See [`STATICS_RECIPE_VERSION`] for why this is one knob and not one per recipe.
 pub const TERRAIN_RECIPE_VERSION: u32 = 3;
 
+/// The knob of what the generator puts into the lights file: the lamps, their places and their
+/// values.
+///
+/// Bump when a change of the generator changes the lights that it writes for one world. The
+/// start's check makes the lights and compares their digest, so a stale file is written again
+/// without this number. The number is for the key of the output (the format text of
+/// `output_key`): two builds that write other lights for one world must not share an output, or
+/// each start of one build writes the lights of the other again (W643). 1: each lamp at its
+/// `AttachLight` node.
+pub const LIGHTS_RECIPE_VERSION: u32 = 1;
+
 /// Exterior-cell coordinate key for one merge unit.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct MergeUnitKey {
