@@ -47,6 +47,7 @@ mod gpu_time;
 mod lamp_grid;
 mod lamp_values;
 mod live_parts;
+mod load_watch;
 mod lua_shapes;
 mod menu_keep;
 mod post;
@@ -1498,6 +1499,18 @@ pub struct DistantLand {
     lose_device: bool,
     /// `MGE_XE_SLOW_STEP=<seconds>`: one slow step, the test of the long limits.
     slow_step: Option<SlowStep>,
+    /// `MGE_XE_LOAD_WATCH=1`, the host's switch: the `load watch:` lines of a wait
+    /// ([`load_watch`]).
+    load_watch: bool,
+    /// The conditions of the wait that runs, with the switch; and the end of the window after the
+    /// last ARRIVED.
+    arrival_watch: Option<load_watch::ArrivalWatch>,
+    watch_until: Option<Instant>,
+    /// The last frame that ended: the `frame` of the scene of the last `after_frame`.
+    ended_frame: u64,
+    /// While the window of the load watch is open: the frame of the lines now (the host's
+    /// `load watch: frame N`). [`Extension::frame`] and [`Extension::after_frame`] set it.
+    watch_now: Option<u64>,
     /// How far from the camera the surfaces of water volumes reflect what is in the picture,
     /// in cells (`distant_land.water.volume_reflection_cells`); 0 for the sky only.
     volume_reflect_cells: f32,
@@ -2108,6 +2121,11 @@ impl DistantLand {
                 seconds,
                 quiet_frames: 0,
             }),
+            load_watch: nirender_wgpu::switches::on("MGE_XE_LOAD_WATCH") == Some(true),
+            arrival_watch: None,
+            watch_until: None,
+            ended_frame: 0,
+            watch_now: None,
             volume_reflect_cells: settings.water.volume_reflection_cells,
             volume_shadows: settings.water.volume_shadows,
             grass_look: [
@@ -2323,6 +2341,12 @@ impl DistantLand {
                         "written into the buffers"
                     }
                 );
+                if let (Some(frame), Some(block)) = (self.watch_now, block.as_ref()) {
+                    println!(
+                        "load watch: the lamp grid of {} at frame {frame}{waited}",
+                        lamp_grid::block_name(block)
+                    );
+                }
                 self.lamp_rebuilds.counts.note(frame_ms, made.worker_ms(), delay);
             }
         }
@@ -3711,6 +3735,8 @@ impl Extension for DistantLand {
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
         self.frames_seen += 1;
+        // A scene in the frame has the count of the frames that ended before it.
+        self.set_watch_frame(scene.frame + 1);
         self.stop_without_hello();
         if std::mem::take(&mut self.reload_wanted) {
             self.reload_core_mods(scene);
@@ -4165,6 +4191,16 @@ impl Extension for DistantLand {
             println!("distant land: ready (loaded)");
             self.messages_out.push(say(LOADED, 0));
         }
+        if let (Some((_, frames)), Some(watch)) = (self.arrival, self.arrival_watch.as_mut()) {
+            let settled = self.statics.as_ref().is_none_or(|statics| statics.settled());
+            watch.note(
+                Instant::now(),
+                self.ended_frame,
+                self.loading.is_none() && statics_loaded,
+                frames,
+                settled,
+            );
+        }
         if let Some((since, frames)) = self.arrival {
             if self.loading.is_some() || !statics_loaded {
                 // The wait counts from the end of the load of the data.
@@ -4185,6 +4221,11 @@ impl Extension for DistantLand {
                 if let Some(wait) = self.statics.as_mut().and_then(|statics| statics.take_wait()) {
                     println!("distant land: the wait: {wait}");
                 }
+                if let Some(watch) = self.arrival_watch.take() {
+                    let now = Instant::now();
+                    println!("{}", watch.line(now, self.ended_frame, self.arrival_serial));
+                    self.watch_until = Some(now + load_watch::WINDOW_AFTER);
+                }
                 self.messages_out.push(say(ARRIVED, std::mem::take(&mut self.arrival_serial)));
             }
         }
@@ -4194,6 +4235,8 @@ impl Extension for DistantLand {
     /// In a frame with no world (the loading screen of a wait), the statics stream for the
     /// place of the wait; each frame counts for the wait.
     fn after_frame(&mut self, scene: &SceneView) {
+        self.ended_frame = scene.frame;
+        self.set_watch_frame(scene.frame);
         let Some((world, eye)) = self.prefetch.clone() else { return };
         // At the first load of a session the data comes in a frame with no world: the loads
         // are finished here, as in `frame`.
@@ -4466,8 +4509,7 @@ impl Extension for DistantLand {
                     String::from_utf8_lossy(&name)
                 );
                 self.prefetch = Some((name, eye));
-                self.arrival = Some((Instant::now(), 0));
-                self.arrival_serial = serial;
+                self.start_arrival(serial);
             }
             return;
         }
@@ -4520,8 +4562,7 @@ impl Extension for DistantLand {
             // A game was loaded (flag 256, in one record only): the wait for the statics
             // starts. The record can come in a loading screen, which has no world frame.
             if environment.flags & 256 != 0 && self.prefetch.is_none() {
-                self.arrival = Some((Instant::now(), 0));
-                self.arrival_serial = 0;
+                self.start_arrival(0);
             }
             if self.environment_watch.note(environment.time, environment.wind) {
                 println!(
@@ -5545,6 +5586,28 @@ impl DistantLand {
     /// d3d8 lets the flag go on again only after this message (W581).
     fn loaded_due(&self, on_gpu: bool, statics_loaded: bool) -> bool {
         !self.loaded_said && self.loading.is_none() && on_gpu && statics_loaded
+    }
+
+    /// The start of a wait for the statics (a game load or a teleport): with the load watch, its
+    /// conditions are noted from now. The record of the wait comes before the frame ends.
+    fn start_arrival(&mut self, serial: u32) {
+        let now = Instant::now();
+        self.arrival = Some((now, 0));
+        self.arrival_serial = serial;
+        if self.load_watch {
+            self.arrival_watch = Some(load_watch::ArrivalWatch::new(now, self.ended_frame + 1));
+        }
+    }
+
+    /// The frame `frame` of the load watch starts or ends: while the window is open, the lines
+    /// now name it, and the statics name it in their lines.
+    fn set_watch_frame(&mut self, frame: u64) {
+        let open = self.load_watch
+            && (self.arrival_watch.is_some() || self.watch_until.is_some_and(|until| Instant::now() <= until));
+        self.watch_now = open.then_some(frame);
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_watch_frame(self.watch_now);
+        }
     }
 
     /// A reload record with `count` calls (W426): a count above the last one asks for a reload of
