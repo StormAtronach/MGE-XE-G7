@@ -370,7 +370,8 @@ impl ShaderState {
                 .get(at..at + 64)
                 .map(|b| String::from_utf8_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(64)]).into_owned())
         };
-        if word(0)? != 1 {
+        const VERSION: u32 = super::version_of(super::SHADER_STATE_ID);
+        if word(0)? != VERSION {
             return None;
         }
         let flags = word(4)?;
