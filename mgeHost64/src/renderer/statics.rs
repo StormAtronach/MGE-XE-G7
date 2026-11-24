@@ -1919,6 +1919,9 @@ pub struct Statics {
     pub synchronous: bool,
     /// The name of the world space of the frame: empty for the exterior.
     world: Vec<u8>,
+    /// A frame set the world space (`set_world`) at least one time. Before it, `world` is not
+    /// the world space of a frame, and no subsets are asked for it.
+    world_set: bool,
     /// The state of the vis groups from MGE XE: a byte for each group, 0 for a hidden one.
     /// Empty while the record is not there or is not for the groups of the catalog.
     shown: Vec<u8>,
@@ -2128,6 +2131,7 @@ impl Statics {
             rejected: None,
             synchronous: false,
             world: Vec::new(),
+            world_set: false,
             shown: Vec::new(),
             groups_record: Vec::new(),
             hidden_skipped: 0,
@@ -2463,8 +2467,9 @@ impl Statics {
     /// cell with its name as the game has it. Returns true when the catalog has it; false
     /// before the catalog is read.
     pub fn set_world(&mut self, name: &[u8]) -> bool {
-        if self.world != name {
+        if self.world != name || !self.world_set {
             self.world = name.to_vec();
+            self.world_set = true;
             self.request_world();
             self.find_here();
         }
@@ -2492,7 +2497,13 @@ impl Statics {
 
     /// Asks the reader thread for the ordinary subsets of the places of the world space of
     /// the frame that are not on the GPU. A merged subset comes when the camera is near it.
+    /// Nothing before the first `set_world`: a catalog taken in a frame before its
+    /// `set_world` asked for the exterior's subsets in an interior, where no frame takes
+    /// their arrivals, and the wait for the statics did not end (W648 (b)).
     fn request_world(&mut self) {
+        if !self.world_set {
+            return;
+        }
         let Some(catalog) = self.catalog.clone() else { return };
         let Some(requests) = self.requests.as_ref() else { return };
         let Some(world) = catalog.worlds.get(&self.world) else {
@@ -6230,7 +6241,7 @@ mod reader_tests {
     use std::sync::Arc;
     use std::sync::mpsc::channel;
 
-    use super::{Catalog, Subset, read_whole, reader};
+    use super::{Catalog, Instance, Subset, World, read_whole, reader};
 
     /// A read past the end of the shard is a failure, not a zero-filled buffer.
     #[test]
@@ -6279,6 +6290,58 @@ mod reader_tests {
             ordinary_bytes: 0,
             merged_bytes: 0,
         }
+    }
+
+    /// W648 (b): the statics ask for the ordinary subsets of a world space only once a frame
+    /// set it. The take of the catalog before the first `set_world` asks for nothing; the first
+    /// `set_world` asks, also for the exterior, whose name is the empty first value. A
+    /// `set_world` before the catalog, and the take after it, ask as before. On the code
+    /// before the fix, the take with no world set asks for the exterior's subset: the first
+    /// assert fails there.
+    #[test]
+    fn the_statics_ask_for_a_world_space_only_once_a_frame_set_it() {
+        let catalog = || {
+            let mut catalog = catalog_of_a_missing_shard();
+            catalog.instances.push(Instance {
+                subset: 0,
+                world: [0.0; 16],
+                center: [0.0; 3],
+                radius: 1.0,
+                tier: 0,
+                group: 0,
+            });
+            let mut exterior = World::default();
+            exterior.cells.insert((0, 0), vec![0]);
+            catalog.worlds.insert(Vec::new(), exterior);
+            Arc::new(catalog)
+        };
+        let folder = std::env::temp_dir().join(format!("statics-world-set-{}", std::process::id()));
+        let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
+        let core_mods = crate::renderer::core_mods::Shared::built_in();
+
+        // The catalog comes first, as in the first world frame of a new game.
+        let mut statics = super::Statics::start(&document, folder.clone(), &core_mods);
+        let (requests, _reader) = channel();
+        statics.requests = Some(requests);
+        statics.catalog = Some(catalog());
+        statics.request_world();
+        assert!(statics.requested.is_empty(), "no world space set yet: nothing asked");
+        statics.set_world(b"Imperial Prison Ship");
+        assert!(statics.requested.is_empty(), "an interior with no statics: nothing asked");
+        statics.set_world(b"");
+        assert!(statics.requested.contains(&0), "the exterior: its ordinary subset asked");
+
+        // The world space comes first: the exterior, the empty name, before the catalog.
+        let mut statics = super::Statics::start(&document, folder, &core_mods);
+        assert!(!statics.set_world(b""), "no catalog yet");
+        let (requests, _reader) = channel();
+        statics.requests = Some(requests);
+        statics.catalog = Some(catalog());
+        statics.request_world();
+        assert!(
+            statics.requested.contains(&0),
+            "the take of the catalog asks for the exterior"
+        );
     }
 
     /// A request the reader cannot serve is answered, as unreadable: the renderer takes the
