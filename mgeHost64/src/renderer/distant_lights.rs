@@ -3,13 +3,18 @@
 //! the exterior and one for each interior that behaves like an exterior; a frame takes the block
 //! of its cell (`lamp_grid::lamp_block_key`), the glows and the lamps' light the same one (W630).
 //!
-//! - The glows: a compute pass chooses the sources with a mesh that are in the view, past the
-//!   handoff to the game (where the game draws the real light) and within the draw distance,
-//!   and writes them into a list; one indirect draw puts a quad that faces the camera at each,
-//!   added to the picture, with the colour of the light. A glow has a least size on the screen,
-//!   so that a far light stays a point; it is dimmer then. It goes away in the day, and the fog
-//!   takes it as it takes the land. A glow is steady; the light of a lamp that flickers or
-//!   pulses moves on the ground ([`super::lamp_grid`]).
+//! - The points of light (the code's "glows"): a compute pass chooses the sources of the frame's
+//!   block with a mesh that are in the view, past the handoff to the game (where the game draws
+//!   the real light) and within the draw distance, and writes them into a list; one indirect
+//!   draw puts a small disc that faces the camera at each, added to the picture, with the
+//!   colour of the light and a paler core. A point stands in for a lamp's glass where the glass
+//!   is too small to see: it shows only where the lamp's glowing part (the glow radius of its
+//!   record in the lights file) is under 2 pixels across, and it is whole from 1 pixel. A point
+//!   has a least size on the screen; it is dimmer then. It shows in the dark
+//!   ([`super::lamp_grid::point_darkness`]), not under water, and the fog takes it as it takes
+//!   the land. A point is steady; the light of a lamp that flickers or pulses moves on the
+//!   ground ([`super::lamp_grid`]). The rules and numbers are those of the Worldspaces fork
+//!   (the page `distant-lights-from-fork-2026-11-12.md`, section 2.6).
 //! - The lamps of each block go to [`super::lamp_grid`], which makes the list and the grid of the
 //!   light that the lamps give the distant land and statics.
 
@@ -23,7 +28,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
 use super::lamp_grid::{FileLamps, SourceLamp};
-use distantland::mge_xe::lights::{EXTERIOR_KEY, Key, parse_lights};
+use distantland::mge_xe::lights::{EXTERIOR_KEY, Key, LIGHT_LAMP_SIZE, LightBlock, parse_lights};
 use nirender_wgpu::SceneView;
 use nirender_wgpu::wgpu;
 
@@ -114,6 +119,21 @@ fn source_lamp(lamp: &distantland::mge_xe::lights::Lamp) -> SourceLamp {
     }
 }
 
+/// The sources of the points of light: the lamps in the file's layout (`LightBlock::lamp_bytes`),
+/// with the glow radius of each lamp's record in the last word, which the file leaves 0.
+fn point_sources(block: &LightBlock) -> Vec<u8> {
+    let mut bytes = block.lamp_bytes();
+    let (sources, _) = bytes.as_chunks_mut::<LIGHT_LAMP_SIZE>();
+    for (lamp, source) in block.lamps.iter().zip(sources) {
+        let glow_radius = block
+            .records
+            .get(lamp.record as usize)
+            .map_or(0.0, |record| record.glow_radius);
+        source[LIGHT_LAMP_SIZE - 4..].copy_from_slice(&glow_radius.to_le_bytes());
+    }
+    bytes
+}
+
 /// Reads `lights.data` through the formats crate, which checks each count and length against
 /// the file's end and gives the reason of a refusal. The glows and the lamps are those of every
 /// block, each in the coordinates of its world space: the exterior's, and those of each interior
@@ -126,7 +146,7 @@ fn read(path: &Path) -> Result<LightsFile, String> {
         lights
             .blocks
             .iter()
-            .map(|block| (block.key.clone(), block.lamp_bytes(), block.lamps.len() as u32)),
+            .map(|block| (block.key.clone(), point_sources(block), block.lamps.len() as u32)),
     );
     Ok(LightsFile {
         source_count: ranges.values().map(|range| range.count).sum(),
@@ -162,10 +182,11 @@ struct Source {
     position: vec3f,
     radius: f32,
     color: u32,
-    // The flags of the light record; the glow is steady and does not read them.
+    // The flags of the light record; the point is steady and does not read them.
     flags: u32,
-    pad0: u32,
-    pad1: u32,
+    record: u32,
+    // The radius of the glowing parts of the record's model; 0 when not known.
+    glow_radius: f32,
 }
 @group(0) @binding(0) var<uniform> c: Cull;
 @group(0) @binding(1) var<storage, read> sources: array<Source>;
@@ -194,22 +215,23 @@ fn cull(@builtin(global_invocation_id) id: vec3u) {
             return;
         }
     }
-    // The glow is steady: the lamp's light on the ground moves (the page, section 2.4).
+    // The point is steady: the lamp's light on the ground moves (the page, section 2.4).
     let strength = smoothstep(c.range.x, c.range.y, distance);
     let slot = atomicAdd(&args[1], 1u);
-    glows[slot * 2u] = vec4f(s.position, s.radius);
+    glows[slot * 2u] = vec4f(s.position, s.glow_radius);
     glows[slot * 2u + 1u] = vec4f(color.rgb, strength);
 }
 ";
 
-/// The glows in the main view: after the view group (`view::wgsl`).
+/// The points of light in a view: after the view group (`view::wgsl`). The rules and numbers
+/// are those of the Worldspaces fork's `XE Distant Lights.fx` (the page, section 2.6).
 const GLOW_SHADER: &str = "
 struct Glow {
     // x: the view range of the game.
     range: vec4f,
-    // x: the size as a part of the radius, y: the strength, z: the least size in pixels,
-    // w: the most size in pixels.
-    glow: vec4f,
+    // x: the size of a point across in units, y: the strength, z: the least size across in
+    // pixels, w: the size across in pixels of a lamp's glowing part from which no point shows.
+    point: vec4f,
     // x, y: the size of the picture; z: the pixels of one unit at a distance of one unit.
     screen: vec4f,
 }
@@ -220,6 +242,8 @@ struct Out {
     @builtin(position) position: vec4f,
     @location(0) corner: vec2f,
     @location(1) color: vec3f,
+    // How much the point shows: the brightness of white at its core.
+    @location(2) shown: f32,
 }
 
 // The fog of `fog_of` of the land, without the colour that the air adds: what is left of a
@@ -233,29 +257,50 @@ fn fog_left(world: vec3f) -> f32 {
 
 @vertex fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Out {
     let corners = array<vec2f, 6>(vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, 1.0));
+    // xyz: the lamp, w: the glow radius of its record; rgb: its colour, w: the fade in at the
+    // handoff.
     let place = glows[instance * 2u];
     let look = glows[instance * 2u + 1u];
-    var clip = clip_of(place.xyz);
-    let w = max(clip.w, 1.0);
-    let wanted = place.w * g.glow.x * g.screen.z / w;
-    let pixels = clamp(wanted, g.glow.z, g.glow.w);
-    // A glow drawn larger than it is gives the light of its size, not more.
-    let dim = clamp(wanted / pixels, 0.25, 1.0);
+    // Drawn 48 units nearer to the eye than the lamp, so that the lamp's own mesh does not
+    // hide it.
+    let to_lamp = place.xyz - u.eye.xyz;
+    let centre = place.xyz - to_lamp / max(length(to_lamp), 1.0) * 48.0;
+    var clip = clip_of(centre);
+    let pixels_of_a_unit = g.screen.z / max(clip.w, 1.0);
+    // Where the lamp's glowing part is large enough to see, the lamp shows as itself: no point
+    // from g.point.w pixels across, a whole point from half of it. A glow radius of 0 has a
+    // point at every distance.
+    var shown = 1.0;
+    if place.w > 0.0 {
+        let glass = 2.0 * place.w * pixels_of_a_unit;
+        shown = clamp(2.0 - 2.0 * glass / g.point.w, 0.0, 1.0);
+    }
+    // Never under the least size; a point drawn larger than it is gives the light of its size.
+    let wanted = g.point.x * pixels_of_a_unit;
+    let pixels = max(wanted, g.point.z);
+    shown *= wanted / pixels * look.w * g.point.y * fog_left(place.xyz);
+    // Nothing to show: the quad is collapsed.
+    let kept = select(0.0, 1.0, shown > 0.002);
     let corner = corners[vertex];
     var out: Out;
-    out.position = vec4f(clip.xy + corner * pixels * 2.0 / g.screen.xy * clip.w, clip.zw);
+    out.position = vec4f(clip.xy + corner * kept * pixels / g.screen.xy * clip.w, clip.zw);
     out.corner = corner;
-    out.color = look.rgb * look.w * dim * g.glow.y * fog_left(place.xyz);
+    out.color = look.rgb * shown;
+    out.shown = shown;
     return out;
 }
 
+// A small bright point, as lamp glass or a flame looks from far: a disc with a soft rim and a
+// paler core, no glow around it.
 @fragment fn fs(in: Out) -> @location(0) vec4f {
-    let r2 = dot(in.corner, in.corner);
-    if r2 >= 1.0 {
+    let r = length(in.corner);
+    if r >= 1.0 {
         discard;
     }
-    let falloff = (1.0 - r2) * (1.0 - r2) * exp(-3.0 * r2);
-    return vec4f(in.color * falloff, 1.0);
+    let disc = clamp((1.0 - r) * 4.0, 0.0, 1.0);
+    let core = clamp(1.0 - r * 2.2, 0.0, 1.0);
+    let color = in.color + (vec3f(in.shown) - in.color) * 0.6 * core;
+    return vec4f(color * disc * (0.75 + 0.5 * core), 1.0);
 }
 ";
 
@@ -278,7 +323,7 @@ pub(super) fn glow_source() -> String {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlowUniforms {
     range: [f32; 4],
-    glow: [f32; 4],
+    point: [f32; 4],
     screen: [f32; 4],
 }
 
@@ -293,9 +338,10 @@ pub struct GlowFrame {
     pub draw_distance: f32,
     /// The size of the picture, and the pixels of one unit at a distance of one unit.
     pub screen: [f32; 3],
-    /// The size as a part of the radius, the strength (with the night in it), the least size
-    /// in pixels.
-    pub glow: [f32; 3],
+    /// The point: its size across in world units, its strength (with the darkness in it), its
+    /// least size across in pixels, and the size across in pixels of a lamp's glowing part from
+    /// which no point shows.
+    pub point: [f32; 4],
 }
 
 /// The buffers of one choice of glows and its draw: the main view's, and one for each view of
@@ -593,7 +639,7 @@ impl DistantLights {
         scene.queue.write_buffer(&buffers.cull_uniforms, 0, bytemuck::bytes_of(&cull));
         let values = GlowUniforms {
             range: [frame.eye[3], 0.0, 0.0, 0.0],
-            glow: [frame.glow[0], frame.glow[1], frame.glow[2], 64.0],
+            point: frame.point,
             screen: [frame.screen[0], frame.screen[1], frame.screen[2], 0.0],
         };
         scene.queue.write_buffer(&buffers.values, 0, bytemuck::bytes_of(&values));
@@ -830,6 +876,51 @@ mod tests {
         assert_eq!(ranges.get(&EXTERIOR_KEY), Some(&SourceRange { first: 0, count: 2 }));
         assert_eq!(ranges.get(&interior), Some(&SourceRange { first: 2, count: 3 }));
         assert_eq!(ranges.get(&empty), None);
+    }
+
+    /// The sources of a block of an interior that behaves like an exterior carry the glow radius
+    /// of each lamp's record in their last word, as the exterior's do (W449 step 6 with W630):
+    /// the cull reads it for the glass rule of the point.
+    #[test]
+    fn the_sources_of_each_block_carry_the_glow_radius_of_their_record() {
+        use distantland::mge_xe::lights::{Lamp, LampRecord};
+        let lamp = |record: u32| Lamp {
+            position: [1.0, 2.0, 3.0],
+            radius: 256.0,
+            color: [255, 200, 100],
+            has_mesh: true,
+            flags: 0,
+            record,
+        };
+        let block = LightBlock {
+            key: distantland::mge_xe::lights::key(b"mournhold, plaza brindisi dorom"),
+            records: vec![
+                LampRecord {
+                    id: distantland::mge_xe::lights::key(b"light_de_lantern_01"),
+                    glow_radius: 12.5,
+                },
+                LampRecord {
+                    id: distantland::mge_xe::lights::key(b"light_fire_256"),
+                    glow_radius: 0.0,
+                },
+            ],
+            lamps: vec![lamp(0), lamp(1), lamp(0)],
+            smoke: Vec::new(),
+        };
+        let sources = point_sources(&block);
+        assert_eq!(sources.len(), 3 * LIGHT_LAMP_SIZE);
+        let (sources, _) = sources.as_chunks::<LIGHT_LAMP_SIZE>();
+        let last_words: Vec<f32> = sources
+            .iter()
+            .map(|source| f32::from_le_bytes(source[LIGHT_LAMP_SIZE - 4..].try_into().unwrap()))
+            .collect();
+        assert_eq!(last_words, [12.5, 0.0, 12.5]);
+        // The other words are the file's layout of each lamp.
+        let file = block.lamp_bytes();
+        let (file, _) = file.as_chunks::<LIGHT_LAMP_SIZE>();
+        for (source, lamp) in sources.iter().zip(file) {
+            assert_eq!(source[..LIGHT_LAMP_SIZE - 4], lamp[..LIGHT_LAMP_SIZE - 4]);
+        }
     }
 
     /// The shaders of the distant lights compile as the device checks them: the cull of the

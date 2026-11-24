@@ -25,12 +25,16 @@ pub const BLUR_STRETCH: &str = "water.blur.stretch";
 /// The light of a glow under water: how much faster it loses the colours that the water has
 /// less of (the power of the ratio of the colours of the fog).
 pub const WATER_LIGHT_COLOUR: &str = "water.light.colour";
-/// The distant lights: the size of a glow as a part of the radius of its light.
-pub const GLOW_SIZE: &str = "lights.glow.size";
-/// The same: how bright a glow is at night.
-pub const GLOW_STRENGTH: &str = "lights.glow.strength";
-/// The same: the least size of a glow on the screen, in pixels.
-pub const GLOW_PIXELS: &str = "lights.glow.pixels";
+/// The points of light of the distant lamps: the size of a point across, in world units.
+pub const POINT_SIZE: &str = "lights.point.size";
+/// The same: how bright a point is in the dark.
+pub const POINT_STRENGTH: &str = "lights.point.strength";
+/// The same: the least size of a point on the screen, across, in pixels; a point drawn larger
+/// than it is gets dimmer.
+pub const POINT_PIXELS: &str = "lights.point.pixels";
+/// The same: the size across, in pixels, of a lamp's glowing part from which no point shows.
+/// The point comes in from there to half of it.
+pub const POINT_GLASS: &str = "lights.point.glass";
 /// The light of the distant lamps on the land and the distant statics: a factor on the strength
 /// of the darkness gate; 0 has none.
 pub const LAMP_STRENGTH: &str = "lights.lamps.strength";
@@ -191,9 +195,10 @@ mod tests {
             BLUR_WIND,
             BLUR_STRETCH,
             WATER_LIGHT_COLOUR,
-            GLOW_SIZE,
-            GLOW_STRENGTH,
-            GLOW_PIXELS,
+            POINT_SIZE,
+            POINT_STRENGTH,
+            POINT_PIXELS,
+            POINT_GLASS,
             STATICS_MARGIN,
             GRASS_SHADOW,
             PARTICLES,
