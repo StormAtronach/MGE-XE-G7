@@ -392,9 +392,10 @@ impl StaticsResidency {
 #[serde(rename_all = "snake_case")]
 pub enum SkyMapFilter {
     /// Level 0 with a bilinear filter, as the engine reads them.
-    #[default]
     Engine,
-    /// The mean of the texels under each pixel, from a level that is still sharper than the pixel.
+    /// The mean of the texels under each pixel, from a level that is still sharper than the pixel: the
+    /// default, by the owner's choice (W632).
+    #[default]
     Area,
 }
 
@@ -424,7 +425,7 @@ impl Default for GraphicsSettings {
             borderless: true,
             anisotropy: Anisotropy::X8,
             mipmaps_for_one_level: true,
-            sky_map_filter: SkyMapFilter::Engine,
+            sky_map_filter: SkyMapFilter::Area,
             transparency_antialiasing: true,
         }
     }

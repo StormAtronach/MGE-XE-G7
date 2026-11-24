@@ -21,7 +21,7 @@ anisotropy = "x8"
 # Make the smaller levels of a texture that has only one: true or false.
 mipmaps_for_one_level = true
 # How the wgpu renderer reads the moons' and the sun glare's textures: "engine" or "area".
-sky_map_filter = "engine"
+sky_map_filter = "area"
 # Enable alpha-tested edge multisampling where supported.
 transparency_antialiasing = true
 

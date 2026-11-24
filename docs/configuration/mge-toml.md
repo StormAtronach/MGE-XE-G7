@@ -219,7 +219,7 @@ reads them.
   level, as the engine does. Read by numidium.exe when it starts; a replay takes
   `--mipmaps-for-one-level on|off` over it.
 
-- `graphics.sky_map_filter` (default `"engine"`): how the wgpu renderer reads the sky's maps
+- `graphics.sky_map_filter` (default `"area"`): how the wgpu renderer reads the sky's maps
   that the game gives a bilinear filter with no filter between levels (W632): the maps of the
   moons, their shadow shapes and the sun's glare. `"engine"` reads level 0, as the engine
   does: sharp, but a large texture drawn small, such as a 2048 moon, changes at each small
