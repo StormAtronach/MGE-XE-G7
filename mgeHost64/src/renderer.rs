@@ -107,6 +107,10 @@ mod part {
     pub const UNDER_MENU: &str = "the kept picture under a menu";
     pub const OUT_OF_VIEW: &str = "the water plane is out of view";
     pub const NO_LIGHTS: &str = "no distant lights";
+    /// The glows of a cell whose lamps do not light it: an interior that is not like an exterior,
+    /// one without a block in the lights' file, or the time from a change of the block until the
+    /// grid of the new block is in use (W630; the same answer as the lamps' light).
+    pub const NO_LAMPS_HERE: &str = "no lamps for the cell";
     pub const NOT_MADE: &str = "the bindings are not made yet";
     pub const NO_ENVIRONMENT: &str = "no environment record";
     /// The crate's name of the post chain's span (`Player::post_process`).
@@ -1386,8 +1390,10 @@ pub struct DistantLand {
     lamps_wait_told: bool,
     /// The frames of the session.
     frames_seen: u64,
-    /// The grid of the lamps in use is of the block of the cell: they may light it.
-    lamps_lit: bool,
+    /// The block of the cell while the grid of the lamps in use is of it: the lamps may light
+    /// it, and the glows are that block's (W630). [`None`] in a cell without lamps, and from a
+    /// change of the block until the grid of the new block is in use.
+    lit_block: Option<distantland::mge_xe::lights::Key>,
     /// The strength of the lamps' light in the last log line about it.
     lamp_strength_logged: f32,
     /// The log line of the lamps' haze (D498).
@@ -2024,7 +2030,7 @@ impl DistantLand {
             light_binding: None,
             lamp_rebuilds: lamp_grid::LampRebuilds::default(),
             frames_seen: 0,
-            lamps_lit: false,
+            lit_block: None,
             lamp_strength_logged: -1.0,
             haze_route: lamp_grid::HazeRoute::default(),
             flicker_route: lamp_grid::FlickerRoute::default(),
@@ -2291,7 +2297,7 @@ impl DistantLand {
                 self.lamp_rebuilds.counts.note(frame_ms, made.worker_ms(), delay);
             }
         }
-        self.lamps_lit = self.lamp_rebuilds.lit(block.as_ref());
+        self.lit_block = self.lamp_rebuilds.lit_block(block);
         if self.light_records_line_due {
             let file = self.lights.as_ref().and_then(distant_lights::DistantLights::file_records);
             if let (Some(records), Some(file)) = (self.light_records.as_deref(), file) {
@@ -4579,7 +4585,7 @@ impl Extension for DistantLand {
             println!(
                 "distant lamps: the strength {lamp_strength:.3} (lit {}): the brightness {:.3} of the sun [{r:.3}, {g:.3}, {b:.3}] \
                  x {sun_vis:.3} and the ambient [{ar:.3}, {ag:.3}, {ab:.3}]",
-                self.lamps_lit,
+                self.lit_block.is_some(),
                 lamp_grid::light_luminance([r, g, b], sun_vis, [ar, ag, ab])
             );
         }
@@ -4693,8 +4699,8 @@ impl Extension for DistantLand {
             Some("left out by MGE_XE_SKIP")
         } else if !is_night {
             Some("not night")
-        } else if scene.interior {
-            Some("an interior")
+        } else if self.lit_block.is_none() {
+            Some(part::NO_LAMPS_HERE)
         } else {
             None
         };
@@ -4704,11 +4710,12 @@ impl Extension for DistantLand {
             pass_report::note_skipped(part::GLOWS, reason);
         } else {
             let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
-            match self.lights.as_mut() {
-                Some(lights) => {
-                    pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, 0));
+            match (self.lights.as_mut(), self.lit_block.as_ref()) {
+                (Some(lights), Some(block)) => {
+                    pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, 0, block));
                 }
-                None => pass_report::note_skipped(part::GLOW_CULL, part::NO_LIGHTS),
+                (None, _) => pass_report::note_skipped(part::GLOW_CULL, part::NO_LIGHTS),
+                (Some(_), None) => pass_report::note_skipped(part::GLOW_CULL, part::NO_LAMPS_HERE),
             }
         }
 
@@ -5066,8 +5073,9 @@ impl Extension for DistantLand {
         // the call (set 0 is the main view's).
         if glows_ready {
             let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
-            if let Some(lights) = self.lights.as_mut().filter(|lights| lights.has_glows()) {
-                pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, k + 1));
+            let block = self.lit_block.as_ref();
+            if let (Some(lights), Some(block)) = (self.lights.as_mut().filter(|lights| lights.has_glows()), block) {
+                pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, k + 1, block));
                 pass.push_debug_group("distant lights (view of its own)");
                 let glowed = lights.draw(pass, view_group, k + 1, scene.samples);
                 pass.pop_debug_group();
@@ -5730,7 +5738,7 @@ impl DistantLand {
             if skipped("glows") {
                 Some("left out by MGE_XE_SKIP")
             } else if self.night(scene) > 0.0 {
-                scene.interior.then_some("an interior")
+                self.lit_block.is_none().then_some(part::NO_LAMPS_HERE)
             } else {
                 Some("not night")
             }
@@ -6905,7 +6913,7 @@ impl DistantLand {
     /// cell's block of the lights file ([`lamp_grid::lamp_block_key`]); else 0: in an interior
     /// without distant lamps, and from a change of the block until the grid of the new block.
     fn lamp_strength(&self, main_view: &view::View) -> f32 {
-        if !self.lamps_lit || skipped("lamps") {
+        if self.lit_block.is_none() || skipped("lamps") {
             return 0.0;
         }
         let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
