@@ -720,6 +720,20 @@ struct Settings {
     draw_distance: f32,
 }
 
+/// Every subset that a world space uses: of its places (merged ones too), of its water
+/// places and of its grass places. Empty for a world space that the catalog does not have.
+fn world_subsets(catalog: &Catalog, name: &[u8]) -> HashSet<u32> {
+    let Some(world) = catalog.worlds.get(name) else {
+        return HashSet::new();
+    };
+    let places = world.cells.values().chain(world.water_cells.values()).flatten();
+    let grass = world.grass_cells.values().flat_map(|cell| &cell.places).flat_map(|i| {
+        let place = &catalog.grass[*i as usize];
+        place.first_subset..place.first_subset + place.subset_count
+    });
+    places.map(|i| catalog.instances[*i as usize].subset).chain(grass).collect()
+}
+
 /// The tier of a model with this radius and this type of the generator: 1, 2 and 3 are fixed
 /// tiers, 6 is a building (its radius counts two times).
 fn tier_of(kind: u32, radius: f32, settings: &Settings) -> Option<u8> {
@@ -2468,12 +2482,42 @@ impl Statics {
     /// before the catalog is read.
     pub fn set_world(&mut self, name: &[u8]) -> bool {
         if self.world != name || !self.world_set {
+            let moved = self.world_set;
             self.world = name.to_vec();
             self.world_set = true;
+            if moved {
+                self.take_back_asks();
+            }
             self.request_world();
             self.find_here();
         }
         self.catalog.as_ref().is_some_and(|catalog| catalog.worlds.contains_key(name))
+    }
+
+    /// At a change of world space, the asks for subsets that the new world space does not use
+    /// are taken back: their arrivals are not taken, and a return asks for them again. So the
+    /// statics are settled by the asks of the frame's world space only, also in an interior
+    /// where no frame takes arrivals (W653). As MGE XE G7, which starts a new epoch of its
+    /// residency at each cell and drops the older reads. A read already in the reader's queue
+    /// is still made.
+    fn take_back_asks(&mut self) {
+        if self.requested.is_empty() {
+            return;
+        }
+        let used = self
+            .catalog
+            .as_ref()
+            .map(|catalog| world_subsets(catalog, &self.world))
+            .unwrap_or_default();
+        let before = self.requested.len();
+        self.requested.retain(|subset| used.contains(subset));
+        let taken_back = before - self.requested.len();
+        if taken_back > 0 {
+            println!(
+                "distant statics: {taken_back} asked subsets of the world space before taken back at the change to '{}'",
+                String::from_utf8_lossy(&self.world)
+            );
+        }
     }
 
     /// The merged subsets of the world space of the frame (`here`).
@@ -6341,6 +6385,59 @@ mod reader_tests {
         assert!(
             statics.requested.contains(&0),
             "the take of the catalog asks for the exterior"
+        );
+    }
+
+    /// W653: a change of world space takes back the asks that the new world space does not use,
+    /// and keeps the ones it uses; a return asks again. On the code before W653 the asks of the
+    /// exterior stay in an interior with no statics, and the statics are not settled there: the
+    /// first assert after the move fails there.
+    #[test]
+    fn a_change_of_world_space_takes_back_the_asks_it_does_not_use() {
+        let mut catalog = catalog_of_a_missing_shard();
+        catalog.subsets.push(catalog_of_a_missing_shard().subsets.remove(0));
+        for subset in [0, 1] {
+            catalog.instances.push(Instance {
+                subset,
+                world: [0.0; 16],
+                center: [0.0; 3],
+                radius: 1.0,
+                tier: 0,
+                group: 0,
+            });
+        }
+        // The exterior uses subsets 0 and 1; the interior "Inn" uses subset 1 only.
+        let mut exterior = World::default();
+        exterior.cells.insert((0, 0), vec![0, 1]);
+        catalog.worlds.insert(Vec::new(), exterior);
+        let mut inn = World::default();
+        inn.cells.insert((0, 0), vec![1]);
+        catalog.worlds.insert(b"Inn".to_vec(), inn);
+
+        let folder = std::env::temp_dir().join(format!("statics-take-back-{}", std::process::id()));
+        let document = mge_config::ConfigDocument::open(folder.join("absent.toml"));
+        let mut statics = super::Statics::start(&document, folder, &crate::renderer::core_mods::Shared::built_in());
+        let (requests, _reader) = channel();
+        statics.requests = Some(requests);
+        statics.catalog = Some(Arc::new(catalog));
+        // The catalog is taken: its load no longer counts.
+        statics.loading = None;
+        statics.set_world(b"");
+        assert_eq!(statics.requested.len(), 2, "the exterior asks for its two subsets");
+
+        statics.set_world(b"Imperial Prison Ship");
+        assert!(
+            statics.requested.is_empty(),
+            "an interior with no statics: the asks are taken back"
+        );
+        assert!(statics.settled(), "and the statics are settled there");
+
+        statics.set_world(b"");
+        assert_eq!(statics.requested.len(), 2, "the return asks again");
+        statics.set_world(b"Inn");
+        assert!(
+            statics.requested.contains(&1) && !statics.requested.contains(&0),
+            "the Inn keeps the ask of the subset that it uses"
         );
     }
 
