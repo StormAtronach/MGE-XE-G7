@@ -1379,8 +1379,7 @@ mod tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn the_groups_of_a_set_are_made_on_demand_and_freed_whole() {
-        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");

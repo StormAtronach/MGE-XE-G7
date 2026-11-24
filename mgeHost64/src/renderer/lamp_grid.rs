@@ -2184,6 +2184,7 @@ struct Case {{ flags: u32, phase: f32, time: f32, depth: f32 }}
 }}"
         );
 
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");

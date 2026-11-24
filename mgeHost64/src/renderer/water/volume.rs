@@ -1645,8 +1645,7 @@ mod tests {
     strengths[3] = light_strength(point, 100.0, vec3f(0.0, -1.0, 0.0));
 }
 ";
-        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
