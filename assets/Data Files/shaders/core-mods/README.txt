@@ -1,5 +1,13 @@
-This directory contains core shader mods, which are mods applied to the core rendering of MGE XE rendering.
+This folder holds core mods: files that change parts of the core shaders of the MGE XE renderer (wgpu).
 
-It is possible to copy shader files with names starting with "XE Mod" from the shaders/core directory to the shaders/core-mods directory, where you can edit and experiment with the shader files. They will be loaded as replacements for the corresponding core shader file.
+A core mod is a WGSL file with a name such as "XE Mod Shadow.wgsl", "XE Mod Water.wgsl", "XE Mod Sky.wgsl" or "XE Mod Particles.wgsl". Its first line is:
 
-Core mods that fail compilation due to version changes or mistakes will output an error into mgeXE.log. If any core mod fails to work, the game will continue with standard shaders.
+//! interface: mge-xe-core 1
+
+The file holds only hooks: the functions that the renderer names for that file, with their exact signatures. It can also hold helpers, constants and structs of its own whose names start with "mod_". It cannot hold a binding, an entry point or a variable outside a function. The renderer keeps all other parts of its shaders. "XE Mod Shadow Data.wgsl" holds no code, only a line of values ("//! values: shade = ..., esm_c = ..."). The list of the hooks, their signatures and the functions that each hook can call are in mgeHost64/src/renderer/core_mods.rs of the MGE XE source.
+
+The renderer reads these files one time, when the game starts. If a file breaks a rule, or the graphics device does not accept it, the renderer drops that file and uses its own built-in hooks for it. mgeXE.log names the file and the reason. "XE Mod Shadow" and "XE Mod Shadow Data" are dropped together.
+
+The old Direct3D 9 files do not work here. Do not copy "XE Mod" .fx files from shaders/core into this folder: the renderer does not run an .fx file. mgeXE.log names each such file that has no .wgsl of the same name.
+
+For post shaders (the effects in shaders/XEshaders), see "MGE XE Post Shaders Readme.md" in the Morrowind folder.
