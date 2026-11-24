@@ -155,24 +155,51 @@ fn lamp_glows(stream: &NiStream, water: Option<MeshWater<'_>>) -> bool {
     visible_geometries(stream, water, Billboards::Read).any(|geometry| glows(&geometry, stream))
 }
 
-/// The radius of the drawn glowing parts of a lamp's model (its glass, its flame), in the
-/// model's units: the bound of those shapes. 0 when the model has none, when only a shape under
-/// a billboard glows, or when the model cannot be read.
-pub fn lamp_glow_radius(rel_path: &str, vfs: &Vfs) -> f32 {
+/// What the read of a lamp's model found: the radius of its drawn glowing parts, or the cause
+/// that the lamp has no such radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LampGlow {
+    /// The bound of the drawn glowing parts (the glass, the flame), in the model's units.
+    Drawn(f32),
+    /// Only a shape under a billboard glows. The distant land does not draw a billboard.
+    UnderBillboard,
+    /// No shape of the model glows.
+    NoGlowingPart,
+    /// The model is not found or cannot be read.
+    NotRead,
+}
+
+impl LampGlow {
+    /// The glow radius of the lamp's record: 0 for each cause other than [`LampGlow::Drawn`].
+    pub fn radius(self) -> f32 {
+        match self {
+            LampGlow::Drawn(radius) => radius,
+            LampGlow::UnderBillboard | LampGlow::NoGlowingPart | LampGlow::NotRead => 0.0,
+        }
+    }
+}
+
+/// Reads the drawn glowing parts of a lamp's model (its glass, its flame): their bound, or the
+/// cause that there is none.
+pub fn lamp_glow(rel_path: &str, vfs: &Vfs) -> LampGlow {
     let Some(bytes) = vfs.resolve_mesh(rel_path).and_then(|asset| vfs.read_asset_bytes(&asset).ok()) else {
-        return 0.0;
+        return LampGlow::NotRead;
     };
     let Ok(mut stream) = NiStream::from_bytes(&bytes) else {
-        return 0.0;
+        return LampGlow::NotRead;
     };
     stream.apply_skin_deforms();
     clear_root_node_transforms(&mut stream);
     let mut scratch = BoundingSphereScratch::new();
-    visible_geometries(&stream, None, Billboards::Skipped)
+    let drawn = visible_geometries(&stream, None, Billboards::Skipped)
         .filter(|geometry| glows(geometry, &stream))
         .map(|geometry| geometry.place_bound(geometry.object_space_bounding_sphere(&mut scratch)))
-        .reduce(|acc, bound| acc.merged_with(bound))
-        .map_or(0.0, |bound| bound.radius)
+        .reduce(|acc, bound| acc.merged_with(bound));
+    match drawn {
+        Some(bound) => LampGlow::Drawn(bound.radius),
+        None if lamp_glows(&stream, None) => LampGlow::UnderBillboard,
+        None => LampGlow::NoGlowingPart,
+    }
 }
 
 #[derive(Default)]

@@ -493,11 +493,19 @@ fn the_glow_radius_is_the_bound_of_the_drawn_glowing_parts() {
     let vfs = make_test_vfs(root);
 
     // The glass is a right triangle with legs of 1: its bound has a radius of half the long side.
-    let radius = crate::lamp_glow_radius("lit.nif", &vfs);
+    let radius = crate::lamp_glow("lit.nif", &vfs).radius();
     assert!((radius - 0.5f32.sqrt()).abs() < 0.01, "{radius}");
-    assert_eq!(crate::lamp_glow_radius("billboard.nif", &vfs), 0.0);
-    assert_eq!(crate::lamp_glow_radius("dark.nif", &vfs), 0.0);
-    assert_eq!(crate::lamp_glow_radius("absent.nif", &vfs), 0.0);
+    // Each other model gives the cause that its radius is 0.
+    let causes = ["billboard.nif", "dark.nif", "absent.nif"].map(|model| crate::lamp_glow(model, &vfs));
+    assert_eq!(
+        causes,
+        [
+            crate::LampGlow::UnderBillboard,
+            crate::LampGlow::NoGlowingPart,
+            crate::LampGlow::NotRead
+        ]
+    );
+    assert!(causes.iter().all(|cause| cause.radius() == 0.0));
 }
 
 fn write_test_static_asset(root: &Path, mesh_name: &str, nif_bytes: &[u8]) {

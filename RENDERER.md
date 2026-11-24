@@ -296,8 +296,10 @@ change. That start can take some minutes. With an older file, set it below
   light pattern of ripples on what is under it.
 - The vis groups of the distant statics: a group of distant statics that the game hides is
   hidden, for example the Ghostfence after the end of the main quest.
-- Distant lights at night: each placed light of the exterior has a glow far away, in the
-  colour of its light, and the land and the distant statics get the light of the lamps near
+- Distant lights at night: a lamp far away is still a lamp, with its glass lit (the generator
+  keeps a lamp's mesh with a glowing part whatever its size). Where that glass is too small to
+  see, each placed light of the exterior with a model shows as a small point in the colour of
+  its light (the tunables `lights.point.*`), and the land and the distant statics get the light of the lamps near
   them when the sky is dark, as a near light of the same record lights an object. An interior
   that is like an exterior has the lamps of its own cell. They come from the file `distantland\lights.data`, which the generator of this build
   writes; distant land made by an earlier build is refused (see below), so generate it again.
@@ -473,6 +475,10 @@ of the game and of the distant land, unless its source draws it over everything.
 source is on, the overlay gives the number of segments. With no line source on, the pass makes
 nothing and costs nothing.
 
+- In a game, from the MGE XE window (the mod config menu, then "Open settings window"): the page
+  `Debug`, on wgpu only, chooses the view, the terms of `water` and `post`, and the line sources
+  (`MGE XE Options/debugviews.lua`). The page saves nothing: after a restart of the game each
+  view and each line source is off.
 - In a game, from Lua: `nirender.debug.view(name, term)` (`nirender.debug.view("off")` for
   none) and `nirender.debug.lines(name, on)`. Each sends a tune.
 - The tunes: `debug view <name> [term]`, `debug view off`, `debug lines <name> on|off`.
@@ -649,6 +655,14 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   long-step guard, then 600 ms more outside it in the same step, 300 frames after the loads ended,
   for a test of the long limits: 12 goes on, and 40 ends at the watchdog's 30 s with the exit code
   30. The log has its `step time:` line.
+- `MGE_XE_LOAD_WATCH=1` (the helper; W640): the log gets the `load watch:` lines of a wait after
+  a game load or a teleport (`mgeHost64/src/renderer/load_watch.rs`). `load watch: arrived at frame
+  N` gives the time and the frame of each condition of ARRIVED from the wait's start (the data
+  loaded, the second frame, the statics settled). From the wait's start to 20 s after ARRIVED,
+  `load watch: statics at frame N` counts the subsets of distant statics that arrived in a part of
+  a frame (the grass among them), and `load watch: the lamp grid of <block> at frame N` names a new
+  grid of the distant lamps. The frame numbers are those of the plugin's `load watch: frame N`
+  lines (its README). Off by default.
 - `MGE_XE_STALL_LOG=1` (d3d8.dll): a line in mgeXE.log for each scan of the vis groups with
   the time the cell worker stalled for it; without it, a line only when a scan or its waits
   take 2 ms or more.

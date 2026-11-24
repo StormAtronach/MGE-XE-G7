@@ -50,22 +50,40 @@ most = 8.0
 step = 0.1
 
 [[parameter]]
-name = "lights.glow.size"
-label = "Distant lights: glow size"
-about = "The size of the glow of a distant light, as a part of the radius of the light."
-start = 1.2
-least = 0.1
-most = 3.0
-step = 0.05
+name = "lights.point.size"
+label = "Distant lights: point size"
+about = "The size across of the point of light of a distant lamp, in world units."
+start = 28.0
+least = 4.0
+most = 128.0
+step = 1.0
 
 [[parameter]]
-name = "lights.glow.strength"
-label = "Distant lights: glow strength"
-about = "How bright the glow of a distant light is at night."
-start = 2.5
+name = "lights.point.strength"
+label = "Distant lights: point strength"
+about = "How bright the point of light of a distant lamp is in the dark. 0 has none."
+start = 1.0
 least = 0.0
 most = 6.0
 step = 0.1
+
+[[parameter]]
+name = "lights.point.pixels"
+label = "Distant lights: least point size"
+about = "The least size across of a point on the screen, in pixels: a far point stays this size and gets dimmer."
+start = 4.0
+least = 1.0
+most = 16.0
+step = 0.5
+
+[[parameter]]
+name = "lights.point.glass"
+label = "Distant lights: point hand-over"
+about = "The size across, in pixels, of a lamp's glass from which no point shows. The point comes in from there to half of it."
+start = 2.0
+least = 0.5
+most = 8.0
+step = 0.25
 
 [[parameter]]
 name = "lights.lamps.strength"
@@ -93,15 +111,6 @@ start = 0.4
 least = 0.0
 most = 1.0
 step = 0.05
-
-[[parameter]]
-name = "lights.glow.pixels"
-label = "Distant lights: least glow size"
-about = "The least size of a glow on the screen, in pixels: a far light stays a point."
-start = 3.0
-least = 1.0
-most = 8.0
-step = 0.25
 
 [[parameter]]
 name = "statics.margin"

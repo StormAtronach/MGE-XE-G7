@@ -47,6 +47,7 @@ mod gpu_time;
 mod lamp_grid;
 mod lamp_values;
 mod live_parts;
+mod load_watch;
 mod lua_shapes;
 mod menu_keep;
 mod post;
@@ -1423,6 +1424,9 @@ pub struct DistantLand {
     lit_block: Option<distantland::mge_xe::lights::Key>,
     /// The strength of the lamps' light in the last log line about it.
     lamp_strength_logged: f32,
+    /// The darkness of the main view of the frame, made one time in `before_world`: the lamps'
+    /// light and the points of light (the views of their own too) read it.
+    darkness: lamp_grid::Darkness,
     /// The log line of the lamps' haze (D498).
     haze_route: lamp_grid::HazeRoute,
     /// The log line of the lamps' flicker and pulse (W449 step 4).
@@ -1500,6 +1504,18 @@ pub struct DistantLand {
     lose_device: bool,
     /// `MGE_XE_SLOW_STEP=<seconds>`: one slow step, the test of the long limits.
     slow_step: Option<SlowStep>,
+    /// `MGE_XE_LOAD_WATCH=1`, the host's switch: the `load watch:` lines of a wait
+    /// ([`load_watch`]).
+    load_watch: bool,
+    /// The conditions of the wait that runs, with the switch; and the end of the window after the
+    /// last ARRIVED.
+    arrival_watch: Option<load_watch::ArrivalWatch>,
+    watch_until: Option<Instant>,
+    /// The last frame that ended: the `frame` of the scene of the last `after_frame`.
+    ended_frame: u64,
+    /// While the window of the load watch is open: the frame of the lines now (the host's
+    /// `load watch: frame N`). [`Extension::frame`] and [`Extension::after_frame`] set it.
+    watch_now: Option<u64>,
     /// How far from the camera the surfaces of water volumes reflect what is in the picture,
     /// in cells (`distant_land.water.volume_reflection_cells`); 0 for the sky only.
     volume_reflect_cells: f32,
@@ -2063,6 +2079,7 @@ impl DistantLand {
             frames_seen: 0,
             lit_block: None,
             lamp_strength_logged: -1.0,
+            darkness: lamp_grid::Darkness::default(),
             haze_route: lamp_grid::HazeRoute::default(),
             flicker_route: lamp_grid::FlickerRoute::default(),
             lamps_wait_told: false,
@@ -2114,6 +2131,11 @@ impl DistantLand {
                 seconds,
                 quiet_frames: 0,
             }),
+            load_watch: nirender_wgpu::switches::on("MGE_XE_LOAD_WATCH") == Some(true),
+            arrival_watch: None,
+            watch_until: None,
+            ended_frame: 0,
+            watch_now: None,
             volume_reflect_cells: settings.water.volume_reflection_cells,
             volume_shadows: settings.water.volume_shadows,
             grass_look: [
@@ -2329,6 +2351,12 @@ impl DistantLand {
                         "written into the buffers"
                     }
                 );
+                if let (Some(frame), Some(block)) = (self.watch_now, block.as_ref()) {
+                    println!(
+                        "load watch: the lamp grid of {} at frame {frame}{waited}",
+                        lamp_grid::block_name(block)
+                    );
+                }
                 self.lamp_rebuilds.counts.note(frame_ms, made.worker_ms(), delay);
             }
         }
@@ -3721,6 +3749,8 @@ impl Extension for DistantLand {
     /// the frame, the light for each pixel by its settings, the sky with the scattering.
     fn frame(&mut self, scene: &SceneView) -> FrameParameters {
         self.frames_seen += 1;
+        // A scene in the frame has the count of the frames that ended before it.
+        self.set_watch_frame(scene.frame + 1);
         self.stop_without_hello();
         if std::mem::take(&mut self.reload_wanted) {
             self.reload_core_mods(scene);
@@ -4175,6 +4205,16 @@ impl Extension for DistantLand {
             println!("distant land: ready (loaded)");
             self.messages_out.push(say(LOADED, 0));
         }
+        if let (Some((_, frames)), Some(watch)) = (self.arrival, self.arrival_watch.as_mut()) {
+            let settled = self.statics.as_ref().is_none_or(|statics| statics.settled());
+            watch.note(
+                Instant::now(),
+                self.ended_frame,
+                self.loading.is_none() && statics_loaded,
+                frames,
+                settled,
+            );
+        }
         if let Some((since, frames)) = self.arrival {
             if self.loading.is_some() || !statics_loaded {
                 // The wait counts from the end of the load of the data.
@@ -4195,6 +4235,11 @@ impl Extension for DistantLand {
                 if let Some(wait) = self.statics.as_mut().and_then(|statics| statics.take_wait()) {
                     println!("distant land: the wait: {wait}");
                 }
+                if let Some(watch) = self.arrival_watch.take() {
+                    let now = Instant::now();
+                    println!("{}", watch.line(now, self.ended_frame, self.arrival_serial));
+                    self.watch_until = Some(now + load_watch::WINDOW_AFTER);
+                }
                 self.messages_out.push(say(ARRIVED, std::mem::take(&mut self.arrival_serial)));
             }
         }
@@ -4204,6 +4249,8 @@ impl Extension for DistantLand {
     /// In a frame with no world (the loading screen of a wait), the statics stream for the
     /// place of the wait; each frame counts for the wait.
     fn after_frame(&mut self, scene: &SceneView) {
+        self.ended_frame = scene.frame;
+        self.set_watch_frame(scene.frame);
         let Some((world, eye)) = self.prefetch.clone() else { return };
         // At the first load of a session the data comes in a frame with no world: the loads
         // are finished here, as in `frame`.
@@ -4476,8 +4523,7 @@ impl Extension for DistantLand {
                     String::from_utf8_lossy(&name)
                 );
                 self.prefetch = Some((name, eye));
-                self.arrival = Some((Instant::now(), 0));
-                self.arrival_serial = serial;
+                self.start_arrival(serial);
             }
             return;
         }
@@ -4530,8 +4576,7 @@ impl Extension for DistantLand {
             // A game was loaded (flag 256, in one record only): the wait for the statics
             // starts. The record can come in a loading screen, which has no world frame.
             if environment.flags & 256 != 0 && self.prefetch.is_none() {
-                self.arrival = Some((Instant::now(), 0));
-                self.arrival_serial = 0;
+                self.start_arrival(0);
             }
             if self.environment_watch.note(environment.time, environment.wind) {
                 println!(
@@ -4612,10 +4657,9 @@ impl Extension for DistantLand {
             range,
         };
         scene.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&land));
-        // The night is the game's, from the hour against the weather's sunrise and sunset (the
-        // environment record); before the first record, the sun's colour serves.
-        let night = self.night(scene);
-        let lamp_strength = self.lamp_strength(&main_view);
+        // The darkness of the frame, one time for the lamps' light and the points of light.
+        self.darkness = self.frame_darkness(&main_view);
+        let lamp_strength = self.lamp_strength();
         if (lamp_strength - self.lamp_strength_logged).abs() > 0.01 {
             self.lamp_strength_logged = lamp_strength;
             let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
@@ -4623,9 +4667,10 @@ impl Extension for DistantLand {
             let [ar, ag, ab, _] = main_view.ambient;
             println!(
                 "distant lamps: the strength {lamp_strength:.3} (lit {}): the brightness {:.3} of the sun [{r:.3}, {g:.3}, {b:.3}] \
-                 x {sun_vis:.3} and the ambient [{ar:.3}, {ag:.3}, {ab:.3}]",
+                 x {sun_vis:.3} and the ambient [{ar:.3}, {ag:.3}, {ab:.3}]; the points {:.3}",
                 self.lit_block.is_some(),
-                lamp_grid::light_luminance([r, g, b], sun_vis, [ar, ag, ab])
+                self.darkness.luminance,
+                self.darkness.points
             );
         }
         let haze = lamp_grid::HazeFrame {
@@ -4730,25 +4775,18 @@ impl Extension for DistantLand {
         } else {
             pass_report::note_skipped(part::STATICS_CULL, "no distant statics");
         }
-        // The glows of the distant lights at night, past the handoff to the game.
-        let is_night = night > 0.0;
+        // The points of light of the distant lamps in the dark, past the handoff to the game.
         let glows_skip = if self.debug_view.fog() {
             Some(debug_view::FOG_VIEW_OUT)
-        } else if skipped("glows") {
-            Some("left out by MGE_XE_SKIP")
-        } else if !is_night {
-            Some("not night")
-        } else if self.lit_block.is_none() {
-            Some(part::NO_LAMPS_HERE)
         } else {
-            None
+            self.glows_skip()
         };
         let glows = glows_skip.is_none();
         if let Some(reason) = glows_skip {
             pass_report::note_skipped(part::GLOW_CULL, reason);
             pass_report::note_skipped(part::GLOWS, reason);
         } else {
-            let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
+            let frame = self.glow_frame(scene, eye_range, planes, &projection);
             match (self.lights.as_mut(), self.lit_block.as_ref()) {
                 (Some(lights), Some(block)) => {
                     pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, 0, block));
@@ -5023,7 +5061,6 @@ impl Extension for DistantLand {
         if let Some(reason) = statics_skip {
             pass_report::note_skipped(part::STATICS, reason);
         }
-        let night = self.night(scene);
         let glows_skip = plan.glows.or_else(|| self.ensure_glow_set(scene, k).err());
         let glows_ready = glows_skip.is_none();
         if let Some(reason) = glows_skip {
@@ -5111,7 +5148,7 @@ impl Extension for DistantLand {
         // The glows of the distant lights at night, as the main view has them, from the set of
         // the call (set 0 is the main view's).
         if glows_ready {
-            let frame = self.glow_frame(scene, eye_range, planes, &projection, night);
+            let frame = self.glow_frame(scene, eye_range, planes, &projection);
             let block = self.lit_block.as_ref();
             if let (Some(lights), Some(block)) = (self.lights.as_mut().filter(|lights| lights.has_glows()), block) {
                 pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, k + 1, block));
@@ -5557,6 +5594,28 @@ impl DistantLand {
         !self.loaded_said && self.loading.is_none() && on_gpu && statics_loaded
     }
 
+    /// The start of a wait for the statics (a game load or a teleport): with the load watch, its
+    /// conditions are noted from now. The record of the wait comes before the frame ends.
+    fn start_arrival(&mut self, serial: u32) {
+        let now = Instant::now();
+        self.arrival = Some((now, 0));
+        self.arrival_serial = serial;
+        if self.load_watch {
+            self.arrival_watch = Some(load_watch::ArrivalWatch::new(now, self.ended_frame + 1));
+        }
+    }
+
+    /// The frame `frame` of the load watch starts or ends: while the window is open, the lines
+    /// now name it, and the statics name it in their lines.
+    fn set_watch_frame(&mut self, frame: u64) {
+        let open = self.load_watch
+            && (self.arrival_watch.is_some() || self.watch_until.is_some_and(|until| Instant::now() <= until));
+        self.watch_now = open.then_some(frame);
+        if let Some(statics) = self.statics.as_mut() {
+            statics.set_watch_frame(self.watch_now);
+        }
+    }
+
     /// A reload record with `count` calls (W426): a count above the last one asks for a reload of
     /// the core mods at the start of the next frame. A replay ignores it: its frames stay those
     /// of the capture.
@@ -5773,15 +5832,7 @@ impl DistantLand {
         let of = |flag: Additions| (!parts.contains(flag)).then_some(NOT_IN_OPTIONS);
         let terrain = of(Additions::LAND).or_else(|| Self::terrain_skip(scene));
         let statics = of(Additions::STATICS).or_else(|| skipped("statics").then_some("left out by MGE_XE_SKIP"));
-        let glows = of(Additions::GLOWS).or_else(|| {
-            if skipped("glows") {
-                Some("left out by MGE_XE_SKIP")
-            } else if self.night(scene) > 0.0 {
-                self.lit_block.is_none().then_some(part::NO_LAMPS_HERE)
-            } else {
-                Some("not night")
-            }
-        });
+        let glows = of(Additions::GLOWS).or_else(|| self.glows_skip());
         let grass = world
             .or_else(|| of(Additions::GRASS))
             .or_else(|| skipped("grass").then_some("left out by MGE_XE_SKIP"))
@@ -6796,16 +6847,16 @@ impl DistantLand {
         }
     }
 
-    /// The values of the glows for a view: `eye` has the view range of the game in w, `planes` and
-    /// `projection` are the view's (the land's projection), `night` is how much of the night
-    /// there is. The glows start at the handoff to the game and are whole 512 units after it.
+    /// The values of the points of light for a view: `eye` has the view range of the game in w,
+    /// `planes` and `projection` are the view's (the land's projection). The points start at the
+    /// handoff to the game and are whole 512 units after it; their strength has the darkness of
+    /// the frame ([`lamp_grid::point_darkness`]).
     fn glow_frame(
         &self,
         scene: &SceneView,
         eye: [f32; 4],
         planes: [[f32; 4]; 6],
         projection: &[f32; 16],
-        night: f32,
     ) -> distant_lights::GlowFrame {
         let fade_end = eye[3] - 1800.0;
         distant_lights::GlowFrame {
@@ -6818,10 +6869,11 @@ impl DistantLand {
                 scene.target_size.1 as f32,
                 projection[5] * scene.target_size.1 as f32 * 0.5,
             ],
-            glow: [
-                self.tunables.get(tunables::GLOW_SIZE),
-                self.tunables.get(tunables::GLOW_STRENGTH) * night,
-                self.tunables.get(tunables::GLOW_PIXELS),
+            point: [
+                self.tunables.get(tunables::POINT_SIZE),
+                self.tunables.get(tunables::POINT_STRENGTH) * self.darkness.points,
+                self.tunables.get(tunables::POINT_PIXELS),
+                self.tunables.get(tunables::POINT_GLASS),
             ],
         }
     }
@@ -6947,18 +6999,40 @@ impl DistantLand {
         on && (interior || !interiors_only) && original
     }
 
-    /// The strength of the distant lamps' light in the frame of `main_view`: by the darkness of
-    /// its sun and ambient light ([`lamp_grid::darkness_gate`]) while the grid in use is of the
-    /// cell's block of the lights file ([`lamp_grid::lamp_block_key`]); else 0: in an interior
-    /// without distant lamps, and from a change of the block until the grid of the new block.
-    fn lamp_strength(&self, main_view: &view::View) -> f32 {
-        if self.lit_block.is_none() || skipped("lamps") {
-            return 0.0;
+    /// Why the points of light of the distant lamps draw nothing in a view: left out, not dark
+    /// ([`lamp_grid::point_darkness`] of the frame), no lamps for the cell (no block of the
+    /// lights file for it, or its grid not made yet), or under water (the page, section 6).
+    fn glows_skip(&self) -> Option<Skip> {
+        if skipped("glows") {
+            Some("left out by MGE_XE_SKIP")
+        } else if self.darkness.points <= 0.0 {
+            Some("not dark")
+        } else if self.lit_block.is_none() {
+            Some(part::NO_LAMPS_HERE)
+        } else if self.under_water() {
+            Some("under water")
+        } else {
+            None
         }
+    }
+
+    /// The darkness of the frame of `main_view`, from its sun and ambient light.
+    fn frame_darkness(&self, main_view: &view::View) -> lamp_grid::Darkness {
         let sun_vis = self.environment.map_or(1.0, |e| e.sun_vis);
         let [r, g, b, _] = main_view.sun_color;
         let [ar, ag, ab, _] = main_view.ambient;
-        lamp_grid::darkness_gate([r, g, b], sun_vis, [ar, ag, ab]) * self.tunables.get(tunables::LAMP_STRENGTH)
+        lamp_grid::Darkness::of([r, g, b], sun_vis, [ar, ag, ab])
+    }
+
+    /// The strength of the distant lamps' light in the frame: by the gate of the frame's
+    /// darkness ([`lamp_grid::darkness_gate`]) while the grid in use is of the cell's block of
+    /// the lights file ([`lamp_grid::lamp_block_key`]); else 0: in an interior without distant
+    /// lamps, and from a change of the block until the grid of the new block.
+    fn lamp_strength(&self) -> f32 {
+        if self.lit_block.is_none() || skipped("lamps") {
+            return 0.0;
+        }
+        self.darkness.gate * self.tunables.get(tunables::LAMP_STRENGTH)
     }
 
     /// The weather's multipliers of the sun and the ambient light for the land, the distant

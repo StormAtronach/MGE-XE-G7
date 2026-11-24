@@ -40,6 +40,7 @@ use super::storage::durable::SyncClass;
 use super::storage::state::{self, ArtifactKind, CommittedState, RequiredArtifact};
 use super::{GenerationSettings, OutputPaths, PublicationWrites};
 use crate::mge_xe::lights::{EXTERIOR_KEY, Key, Lamp, LampRecord, LightBlock, Lights, SmokeSource, key};
+use crate::statics::LampGlow;
 use crate::{UsageInfo, Vfs};
 
 /// The key of the exterior's references in [`UsageInfo::cells`].
@@ -284,22 +285,47 @@ pub(crate) fn light_blocks(
 }
 
 /// Sets the glow radius of each record of `parts` that has a model: the radius of the model's
-/// drawn glowing parts ([`crate::statics::lamp_glow_radius`]). Each model is read one time.
-/// Answers the number of models read.
+/// drawn glowing parts ([`crate::statics::lamp_glow`]). Each model is read one time. Logs the
+/// models by the cause of a radius of 0. Answers the number of models read.
 pub(crate) fn fill_glow_radii(parts: &mut LightParts, vfs: &Vfs) -> usize {
     let unique: BTreeSet<&str> = parts.models.values().map(String::as_str).collect();
-    let radii: BTreeMap<&str, f32> = unique
+    let glows: BTreeMap<&str, LampGlow> = unique
         .par_iter()
-        .map(|model| (*model, crate::statics::lamp_glow_radius(model, vfs)))
+        .map(|model| (*model, crate::statics::lamp_glow(model, vfs)))
         .collect();
     for block in &mut parts.lights.blocks {
         for record in &mut block.records {
             if let Some(model) = parts.models.get(&record.id) {
-                record.glow_radius = radii[model.as_str()];
+                record.glow_radius = glows[model.as_str()].radius();
             }
         }
     }
-    radii.len()
+    log_glow_causes(&glows);
+    glows.len()
+}
+
+/// The models by what their read found, so that a point of light over a lamp that shows as
+/// itself can be explained. The models that were not read are named.
+fn log_glow_causes(glows: &BTreeMap<&str, LampGlow>) {
+    let count = |cause: fn(&LampGlow) -> bool| glows.values().filter(|glow| cause(glow)).count();
+    let not_read: Vec<&str> = glows
+        .iter()
+        .filter(|(_, glow)| **glow == LampGlow::NotRead)
+        .map(|(model, _)| *model)
+        .collect();
+    crate::logging::info!(
+        "Distant lights: of {} lamp models, {} have a drawn glowing part, {} glow only under a billboard, {} have no glowing part and {} are not found or cannot be read{}",
+        glows.len(),
+        count(|glow| matches!(glow, LampGlow::Drawn(_))),
+        count(|glow| *glow == LampGlow::UnderBillboard),
+        count(|glow| *glow == LampGlow::NoGlowingPart),
+        not_read.len(),
+        if not_read.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", not_read.join(", "))
+        }
+    );
 }
 
 /// The bytes of `lights.data` for `lights` (from [`light_blocks`]), or `None` when the distant
