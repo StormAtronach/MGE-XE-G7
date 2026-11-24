@@ -323,6 +323,12 @@ fn the_renderers_reader_reads_what_this_writes() {
 /// A lamp model whose one shape glows: a right triangle with legs of `size`, with a texture and
 /// an emissive of 0.8.
 fn glowing_model(size: f32) -> Vec<u8> {
+    glowing_model_with_light(size, None)
+}
+
+/// [`glowing_model`], and with `light` a node named AttachLight at that place in the model: the
+/// shape and the node are under a root node.
+fn glowing_model_with_light(size: f32, light: Option<Vec3>) -> Vec<u8> {
     use tes3::nif::*;
 
     let mut stream = NiStream::new();
@@ -352,8 +358,84 @@ fn glowing_model(size: f32) -> Vec<u8> {
     shape.properties.push(texturing.cast());
     shape.properties.push(material.cast());
     let shape = stream.insert(shape);
-    stream.roots.push(shape.cast());
+    match light {
+        None => stream.roots.push(shape.cast()),
+        Some(place) => {
+            let mut node = NiNode::default();
+            node.name = "AttachLight".into();
+            node.translation = place;
+            let node = stream.insert(node);
+            let mut root = NiNode::default();
+            root.children = vec![shape.cast(), node.cast()];
+            let root = stream.insert(root);
+            stream.roots.push(root.cast());
+        }
+    }
     stream.save_bytes().unwrap()
+}
+
+/// A vfs with each model of `models` under `meshes`.
+fn vfs_with(temp: &std::path::Path, models: &[(&str, Vec<u8>)]) -> Vfs {
+    std::fs::create_dir_all(temp.join("meshes").join("l")).unwrap();
+    for (name, bytes) in models {
+        std::fs::write(temp.join("meshes").join("l").join(name), bytes).unwrap();
+    }
+    Vfs {
+        ini_path: temp.join("Morrowind.ini"),
+        data_dirs: vec![temp.to_path_buf()],
+        active_plugins: vec![],
+        archives: vec![],
+        maps: crate::vfs::directory_map::build_directory_map(&[temp.to_path_buf()]).unwrap(),
+    }
+}
+
+/// A lamp whose model has a light node is at its light: the node's place in the model through
+/// the reference's turn and scale (`DistantReference::get_transform`, as for the statics). A lamp
+/// whose model has none stays at its reference's place. The lamps are in the order of their
+/// places after the move, and the file carries the places to the renderer's reader.
+#[test]
+fn a_lamp_with_a_light_node_is_at_its_light() {
+    let temp = tempfile::tempdir().unwrap();
+    let vfs = vfs_with(
+        temp.path(),
+        &[
+            (
+                "street.nif",
+                glowing_model_with_light(10.0, Some(Vec3::new(10.0, 0.0, 180.0))),
+            ),
+            ("lamp.nif", glowing_model(10.0)),
+        ],
+    );
+    let mut usage = usage();
+    add_light(&mut usage, "street", light(450.0, [245, 140, 40], 0), "l\\street.nif");
+    add_light(&mut usage, "lamp", light(300.0, [245, 140, 40], 0), "l\\lamp.nif");
+    // A quarter turn about z and twice the size. The plain lamp is at y 0: after the street lamp
+    // at its reference's place (y 2), before it at its light (y -18), so the move changes the
+    // order.
+    let street = DistantReference {
+        rotation: Vec3::new(0.0, 0.0, std::f32::consts::FRAC_PI_2),
+        scale: 2.0,
+        ..reference("street", 100.0)
+    };
+    let plain = DistantReference {
+        translation: Vec3::new(100.0, 0.0, 3.0),
+        ..reference("lamp", 100.0)
+    };
+    place(&mut usage, EXTERIOR_CELL, 1, street.clone());
+    place(&mut usage, EXTERIOR_CELL, 2, plain);
+
+    let mut parts = light_blocks(&usage, true, true);
+    assert_eq!(read_lamp_models(&mut parts, &vfs), 2);
+    let block = exterior(&parts.lights);
+    let places: Vec<[f32; 3]> = block.lamps.iter().map(|lamp| lamp.position).collect();
+    let expected = street.get_transform().transform_point3(Vec3::new(10.0, 0.0, 180.0));
+    // The turn of `get_transform` takes +x to -y; the scale doubles the node's place.
+    assert!((expected - Vec3::new(100.0, -18.0, 363.0)).length() < 1e-3, "{expected}");
+    assert_eq!(places.len(), 2);
+    assert!((Vec3::from_array(places[0]) - expected).length() < 1e-3, "{places:?}");
+    assert_eq!(places[1], [100.0, 0.0, 3.0]);
+    assert!(block.lamps.is_sorted_by(|a, b| lamp_order(a, b).is_le()));
+    assert_eq!(parse_lights(&parts.lights.to_bytes()).unwrap(), parts.lights);
 }
 
 /// The glow radius of each record comes from its model, read one time for all its records, and
@@ -398,7 +480,7 @@ fn the_glow_radius_of_a_record_is_read_from_its_model() {
             ("lamp_too".to_string(), "l\\lamp.nif"),
         ]
     );
-    assert_eq!(fill_glow_radii(&mut parts, &vfs), 2);
+    assert_eq!(read_lamp_models(&mut parts, &vfs), 2);
 
     let radii: Vec<(String, f32)> = exterior(&parts.lights)
         .records
