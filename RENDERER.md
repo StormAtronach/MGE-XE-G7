@@ -299,7 +299,9 @@ change. That start can take some minutes. With an older file, set it below
 - Distant lights at night: a lamp far away is still a lamp, with its glass lit (the generator
   keeps a lamp's mesh with a glowing part whatever its size). Where that glass is too small to
   see, each placed light of the exterior with a model shows as a small point in the colour of
-  its light (the tunables `lights.point.*`), and the land and the distant statics get the light of the lamps near
+  its light (the tunables `lights.point.*`), at the place of its light in the model (its glass
+  or its flame). The point fades in over the last 512 units of the game's view range, where the
+  game's lamp goes into the distant land, and is whole past it. The land and the distant statics get the light of the lamps near
   them when the sky is dark, as a near light of the same record lights an object. An interior
   that is like an exterior has the lamps of its own cell. They come from the file `distantland\lights.data`, which the generator of this build
   writes; distant land made by an earlier build is refused (see below), so generate it again.
