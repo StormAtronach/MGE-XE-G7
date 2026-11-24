@@ -4201,7 +4201,7 @@ impl Extension for DistantLand {
     /// The events of the distant land for MGE XE (`distantLandReady` of its Lua), at the end
     /// of a frame: [`LOADED`] one time when the data of the session is loaded; [`ARRIVED`] after a
     /// game load or a jump when the statics near the camera are there and the host has made its
-    /// list of stage pipelines and its mip chains ([`arrival`]). A wait needs two world frames: the
+    /// list of stage pipelines ([`arrival`]). A wait needs two world frames: the
     /// first one asks for the statics of the new place.
     fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
         let loading = self.loading();
