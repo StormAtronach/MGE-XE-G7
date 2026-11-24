@@ -1,5 +1,7 @@
-//! The distant lights of the wgpu renderer: the light sources of the exterior beyond the cells
-//! that the game has loaded, from `distantland\lights.data` of the generator.
+//! The distant lights of the wgpu renderer: the light sources beyond the cells that the game has
+//! loaded, from `distantland\lights.data` of the generator. The file has a block of sources for
+//! the exterior and one for each interior that behaves like an exterior; a frame takes the block
+//! of its cell (`lamp_grid::lamp_block_key`), the glows and the lamps' light the same one (W630).
 //!
 //! - The glows: a compute pass chooses the sources with a mesh that are in the view, past the
 //!   handoff to the game (where the game draws the real light) and within the draw distance,
@@ -8,8 +10,8 @@
 //!   so that a far light stays a point; it is dimmer then. It goes away in the day, and the fog
 //!   takes it as it takes the land. A glow is steady; the light of a lamp that flickers or
 //!   pulses moves on the ground ([`super::lamp_grid`]).
-//! - The lamps of the file's exterior block go to [`super::lamp_grid`], which makes the list and
-//!   the grid of the light that the lamps give the distant land and statics.
+//! - The lamps of each block go to [`super::lamp_grid`], which makes the list and the grid of the
+//!   light that the lamps give the distant land and statics.
 
 use nirender_wgpu::objects::Create;
 use std::collections::BTreeMap;
@@ -30,9 +32,12 @@ const GLOW_WORDS: u64 = 8;
 
 /// What the file has.
 struct LightsFile {
-    /// The sources as the file has them, 32 bytes each: the layout of `Source` of the shader.
+    /// The sources of every block, one block after the other, as the file has them, 32 bytes
+    /// each: the layout of `Source` of the shader.
     sources: Vec<u8>,
     source_count: u32,
+    /// The place of each block's sources in `sources`, by the key of the block.
+    ranges: BTreeMap<Key, SourceRange>,
     /// The lamps of each block, for their light on the distant land and statics.
     lamps: BTreeMap<Key, Arc<FileLamps>>,
     /// The light records of the exterior's lamps, with the values that the file has for them.
@@ -74,6 +79,30 @@ fn file_records(block: &distantland::mge_xe::lights::LightBlock) -> Vec<FileLamp
     records.into_iter().flatten().collect()
 }
 
+/// The sources of one block in the buffer of every block's sources: the first and their number.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SourceRange {
+    pub first: u32,
+    pub count: u32,
+}
+
+/// The sources of the blocks, each block's bytes after the one before, and the place of each
+/// block. A block without a source has no place.
+fn join_sources(blocks: impl Iterator<Item = (Key, Vec<u8>, u32)>) -> (Vec<u8>, BTreeMap<Key, SourceRange>) {
+    let mut bytes = Vec::new();
+    let mut ranges = BTreeMap::new();
+    let mut first = 0;
+    for (key, block_bytes, count) in blocks {
+        if count == 0 {
+            continue;
+        }
+        bytes.extend_from_slice(&block_bytes);
+        ranges.insert(key, SourceRange { first, count });
+        first += count;
+    }
+    (bytes, ranges)
+}
+
 /// A lamp of the file with the values that its light takes.
 fn source_lamp(lamp: &distantland::mge_xe::lights::Lamp) -> SourceLamp {
     SourceLamp {
@@ -86,17 +115,23 @@ fn source_lamp(lamp: &distantland::mge_xe::lights::Lamp) -> SourceLamp {
 }
 
 /// Reads `lights.data` through the formats crate, which checks each count and length against
-/// the file's end and gives the reason of a refusal. The glows and the records of the log are
-/// those of the exterior's block; the lamps are those of every block, each in the coordinates of
-/// its world space.
+/// the file's end and gives the reason of a refusal. The glows and the lamps are those of every
+/// block, each in the coordinates of its world space: the exterior's, and those of each interior
+/// that behaves like an exterior (W630). The records of the log are those of the exterior's block.
 fn read(path: &Path) -> Result<LightsFile, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let lights = parse_lights(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
     let exterior = lights.block(&EXTERIOR_KEY);
-    let (sources, source_count) = exterior.map_or((Vec::new(), 0), |block| (block.lamp_bytes(), block.lamps.len() as u32));
+    let (sources, ranges) = join_sources(
+        lights
+            .blocks
+            .iter()
+            .map(|block| (block.key.clone(), block.lamp_bytes(), block.lamps.len() as u32)),
+    );
     Ok(LightsFile {
+        source_count: ranges.values().map(|range| range.count).sum(),
         sources,
-        source_count,
+        ranges,
         lamps: lights
             .blocks
             .iter()
@@ -120,7 +155,7 @@ struct Cull {
     // x: where a glow starts (the handoff), y: where it is whole, z: the draw distance, w: not
     // used.
     range: vec4f,
-    // x: the sources.
+    // x: the sources of the cell's block, y: the first of them in `sources`.
     counts: vec4u,
 }
 struct Source {
@@ -143,7 +178,7 @@ fn cull(@builtin(global_invocation_id) id: vec3u) {
     if i >= c.counts.x {
         return;
     }
-    let s = sources[i];
+    let s = sources[c.counts.y + i];
     let color = unpack4x8unorm(s.color);
     // A light without a mesh has nothing that glows.
     if color.w < 0.5 {
@@ -284,14 +319,17 @@ struct Glows {
     /// texture has one) takes `draw_picture`.
     samples: u32,
     draw_picture: wgpu::RenderPipeline,
-    /// The sources, and the layouts that a set takes its groups from.
+    /// The sources of every block, and the layouts that a set takes its groups from.
     source_buffer: wgpu::Buffer,
     cull_layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
     /// Set 0 is the main view's; the next ones are made at the first use of a view of its own,
     /// and are `None` while they are not made (or after they were freed).
     sets: Vec<Option<GlowSet>>,
+    /// The most sources of one block: the room of a set's list, as a frame culls one block.
     sources: u32,
+    /// The place of each block's sources in `source_buffer`.
+    ranges: BTreeMap<Key, SourceRange>,
 }
 
 /// The bytes of the buffers of one glow set for `sources` sources.
@@ -389,6 +427,13 @@ impl DistantLights {
         let file = LightsFile {
             sources: vec![0; sources as usize * 32],
             source_count: sources,
+            ranges: BTreeMap::from([(
+                EXTERIOR_KEY,
+                SourceRange {
+                    first: 0,
+                    count: sources,
+                },
+            )]),
             lamps: BTreeMap::new(),
             records: Vec::new(),
         };
@@ -451,7 +496,11 @@ impl DistantLights {
                 return false;
             }
         };
-        println!("distant lights: {} light sources", file.source_count);
+        println!(
+            "distant lights: {} light sources in {} blocks",
+            file.source_count,
+            file.ranges.len()
+        );
         if file.source_count > 0 {
             self.glows = Some(super::timed("the distant lights' pipeline", || {
                 make_glows(scene, &file, view_layout)
@@ -520,23 +569,28 @@ impl DistantLights {
         self.glows.is_some()
     }
 
-    /// Chooses the glows of the frame, in a command buffer of its own before the frame. `set` is
-    /// the main view's (0) or a view of its own's, which [`DistantLights::ensure_set`] made.
-    /// Answers why it chose nothing: no glows, or no buffers for `set`.
-    pub fn prepare(&mut self, scene: &SceneView, frame: &GlowFrame, set: usize) -> Result<(), Skip> {
+    /// Chooses the glows of the frame among the sources of `block`, the block of the cell
+    /// ([`super::lamp_grid::lamp_block_key`]), in a command buffer of its own before the frame.
+    /// `set` is the main view's (0) or a view of its own's, which [`DistantLights::ensure_set`]
+    /// made. Answers why it chose nothing: no glows, no buffers for `set`, or no sources in the
+    /// block.
+    pub fn prepare(&mut self, scene: &SceneView, frame: &GlowFrame, set: usize, block: &Key) -> Result<(), Skip> {
         let glows = self.glows.as_ref().ok_or(NO_GLOWS)?;
         let buffers = glows.sets.get(set).and_then(Option::as_ref).ok_or(NO_SET)?;
+        // Six corners for each glow; the cull adds the glows. Written before the block's check,
+        // so that the draw of a block without sources draws none, not the glows of an earlier
+        // frame.
+        scene
+            .queue
+            .write_buffer(&buffers.args, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
+        let range = glows.ranges.get(block).ok_or(NO_BLOCK)?;
         let cull = CullUniforms {
             planes: frame.planes,
             eye: frame.eye,
             range: [frame.fade[0], frame.fade[1], frame.draw_distance, 0.0],
-            counts: [glows.sources, 0, 0, 0],
+            counts: [range.count, range.first, 0, 0],
         };
         scene.queue.write_buffer(&buffers.cull_uniforms, 0, bytemuck::bytes_of(&cull));
-        // Six corners for each glow; the cull adds the glows.
-        scene
-            .queue
-            .write_buffer(&buffers.args, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
         let values = GlowUniforms {
             range: [frame.eye[3], 0.0, 0.0, 0.0],
             glow: [frame.glow[0], frame.glow[1], frame.glow[2], 64.0],
@@ -558,7 +612,7 @@ impl DistantLights {
             });
             pass.set_pipeline(&glows.cull);
             pass.set_bind_group(0, &buffers.cull_group, &[]);
-            pass.dispatch_workgroups(glows.sources.div_ceil(256), 1, 1);
+            pass.dispatch_workgroups(range.count.div_ceil(256), 1, 1);
         }
         scene.commands.stamps().end(&mut encoder, at);
         scene.commands.defer(encoder.finish());
@@ -593,6 +647,7 @@ impl DistantLights {
 /// The skips of the glows' calls.
 const NO_GLOWS: Skip = "no glows (the lights' file is not read, or has none)";
 const NO_SET: Skip = "no buffers for the set of the view";
+const NO_BLOCK: Skip = "the lights' file has no sources for the cell's block";
 
 fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGroupLayout) -> Glows {
     let device = scene.device;
@@ -715,7 +770,8 @@ fn make_glows(scene: &SceneView, file: &LightsFile, view_layout: &wgpu::BindGrou
         cull_layout,
         draw_layout,
         sets: Vec::new(),
-        sources: file.source_count,
+        sources: file.ranges.values().map(|range| range.count).max().unwrap_or(0),
+        ranges: file.ranges.clone(),
     };
     let main = glows.make_set(device);
     glows.sets.push(Some(main));
@@ -752,6 +808,28 @@ mod tests {
         assert!(matches!(lights.take_file(false), Some(Err(_))));
         assert!(lights.loading.is_none());
         assert!(lights.take_file(false).is_none());
+    }
+
+    /// The sources of every block go into one buffer, each block after the one before, with the
+    /// place of each (W630): a frame culls the sources of its cell's block only. A block without
+    /// a source has no place, so a frame in its cell culls none ([`NO_BLOCK`]).
+    #[test]
+    fn the_sources_of_every_block_are_joined_with_the_place_of_each() {
+        let interior = distantland::mge_xe::lights::key(b"mournhold, plaza brindisi dorom");
+        let empty = distantland::mge_xe::lights::key(b"mournhold, royal palace");
+        let (bytes, ranges) = join_sources(
+            [
+                (EXTERIOR_KEY, vec![1; 64], 2),
+                (empty.clone(), Vec::new(), 0),
+                (interior.clone(), vec![2; 96], 3),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(bytes.len(), 5 * 32);
+        assert!(bytes[..64].iter().all(|&b| b == 1) && bytes[64..].iter().all(|&b| b == 2));
+        assert_eq!(ranges.get(&EXTERIOR_KEY), Some(&SourceRange { first: 0, count: 2 }));
+        assert_eq!(ranges.get(&interior), Some(&SourceRange { first: 2, count: 3 }));
+        assert_eq!(ranges.get(&empty), None);
     }
 
     /// The shaders of the distant lights compile as the device checks them: the cull of the
