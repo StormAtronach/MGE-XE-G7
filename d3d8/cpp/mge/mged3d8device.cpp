@@ -1201,7 +1201,7 @@ namespace Deviceless {
     static bool gameLoaded = false;
     // The helper said that the distant statics around the camera are there for the place of
     // the wait of a game load (message 1, Arrived, with the number of that wait): the wait
-    // (waitForDistantLand) ends on it. An answer for an earlier place does not end it.
+    // (prefetchDistantLand) ends on it. An answer for an earlier place does not end it.
     static bool distantLandArrived = false;
     static UINT waitSerial = 0;
     // The frames that the game showed: a wait counts the frames of its loading bar.
@@ -1920,12 +1920,13 @@ namespace Deviceless {
 
     // The place of the player goes to the helper (record 10): it streams the distant land
     // there, and says when the distant statics around the player are there (its arrival, the
-    // event distantLandReady "arrived"). With `wait`, from distant_land.wait_on_load, the game
-    // stays in its load, with its loading bar, until that answer or WaitLimitMs. As
+    // event distantLandReady "arrived"). With `wait`, from distant_land.wait_on_load, the load
+    // of a game stays in its load, with its loading bar, until that answer or WaitLimitMs. As
     // DistantLand::drainUploadPump of the Direct3D 9 path holds the first load. The frames
     // of the loading bar go to the helper, and the plugin gives the answer of the helper at
-    // their end (Deviceless::message).
-    static void prefetchDistantLand(MWBridge* mwBridge, bool wait) {
+    // their end (Deviceless::message). A move in play (`gameLoad` false) never waits and opens
+    // no loading bar, as in MGE XE G7: the distant land streams in (W648).
+    static void prefetchDistantLand(MWBridge* mwBridge, bool wait, bool gameLoad) {
         float position[3] = {};
         if (!mwBridge->tryGetPlayerPosition(position)) {
             LOG::logline("-- wgpu renderer: no position of the player after the load; no wait for the distant land");
@@ -1943,6 +1944,11 @@ namespace Deviceless {
         distantLandArrived = false;
         sendToRenderer(PrefetchId, &prefetch, sizeof(prefetch));
         if (!wait) {
+            return;
+        }
+        if (!gameLoad) {
+            LOG::logline("-- wgpu renderer: no wait: a move in play; the distant land at (%.0f, %.0f, %.0f) in '%s' streams in",
+                         position[0], position[1], position[2], prefetch.interiorName);
             return;
         }
 
@@ -2007,7 +2013,8 @@ namespace Deviceless {
             return;
         }
         ++count;
-        LOG::logline("-- wgpu renderer: the game's ids were resolved (%u): the vis groups are loaded", count);
+        LOG::logline("-- wgpu renderer: the game's ids were resolved (%u): the vis groups are loaded; the engine's loading bar: %d",
+                     count, MWBridge::get()->isLoadingBar() ? 1 : 0);
         checkLightRecords("the resolve of the game's ids", false);
         loadVisGroups();
         DistantLand::resolveDynamicVisGroups();
@@ -2031,8 +2038,9 @@ namespace Deviceless {
     }
 
     // The player changed cell through the engine's cell change (MWSE's native event 5): a
-    // teleport (a door, a travel, coc, Recall), or the move to the place of a loaded save,
-    // with its loading bar still up. The engine has drawn no frame of the new place yet.
+    // teleport (a door, a travel, coc, Recall), or the move to the place of a loaded save.
+    // The engine's loading bar is down here, also in the load of a game. The engine has drawn
+    // no frame of the new place yet.
     static void __cdecl onPlayerCellChanged(const void* previousCell, const void* cell, bool gameLoad) {
         auto mwBridge = MWBridge::get();
         if (!Session::wgpu() || !mwBridge->IsLoaded()) {
@@ -2046,7 +2054,7 @@ namespace Deviceless {
         if (!gameLoad && !isFarMove(static_cast<const TES3::Cell*>(previousCell), static_cast<const TES3::Cell*>(cell))) {
             return;
         }
-        prefetchDistantLand(mwBridge, Configuration.DistantLandWaitOnLoad);
+        prefetchDistantLand(mwBridge, Configuration.DistantLandWaitOnLoad, gameLoad);
     }
 
     // The messages of the helper. 1: the distant land, version 1, then the reason
