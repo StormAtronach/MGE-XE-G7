@@ -1941,6 +1941,8 @@ pub struct Statics {
     waited: ArrivalCounts,
     /// A wait for the statics is open (`set_waiting`).
     waiting: bool,
+    /// While the window of the load watch is open: the frame of its lines (`set_watch_frame`).
+    watch_frame: Option<u64>,
     /// The planes of the last main view.
     view_planes: Option<[[f32; 4]; 6]>,
     /// The merged subsets that arrived in play and were on the GPU before in the session.
@@ -2137,6 +2139,7 @@ impl Statics {
             play: ArrivalCounts::default(),
             waited: ArrivalCounts::default(),
             waiting: false,
+            watch_frame: None,
             view_planes: None,
             play_again: 0,
             ever_arrived: HashSet::new(),
@@ -2895,6 +2898,8 @@ impl Statics {
         // The places of the merged subsets that arrived in play, counted after the loop.
         let mut in_play = Vec::new();
         let mut reader_ended = false;
+        // The arrivals of this part of the frame, for the load watch.
+        let mut watched = super::load_watch::StaticsArrivals::default();
         while self.synchronous || (count < ARRIVALS_IN_FRAME && bytes < ARRIVAL_BYTES_IN_FRAME) {
             // Synchronous: all that was asked for comes now; every request is answered, so
             // the limit of time covers a dead reader thread only.
@@ -2991,7 +2996,10 @@ impl Statics {
             if s.grass {
                 self.grass_arrived += 1;
                 self.grass_bent += arrival.bent as u64;
+                watched.grass += 1;
             }
+            watched.subsets += 1;
+            watched.bytes += size;
             let wanted_at = self.clock.elapsed().as_secs_f32();
             self.resident.insert(
                 arrival.subset,
@@ -3028,6 +3036,9 @@ impl Statics {
         }
         for index in in_play {
             self.count_arrival(index, eye);
+        }
+        if let Some(line) = self.watch_frame.and_then(|frame| watched.line(frame, self.requested.len())) {
+            println!("{line}");
         }
         if reader_ended {
             self.reader_ended();
@@ -3317,6 +3328,12 @@ impl Statics {
     /// from the arrivals in play.
     pub fn set_waiting(&mut self, waiting: bool) {
         self.waiting = waiting;
+    }
+
+    /// The frame of the load watch while its window is open, else None: the arrivals of a part of
+    /// a frame then give a line ([`super::load_watch::StaticsArrivals`]).
+    pub fn set_watch_frame(&mut self, frame: Option<u64>) {
+        self.watch_frame = frame;
     }
 
     /// The margin of the requested ring, in whole cells beyond the draw distance (the tunable

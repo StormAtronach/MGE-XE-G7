@@ -649,6 +649,14 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
   long-step guard, then 600 ms more outside it in the same step, 300 frames after the loads ended,
   for a test of the long limits: 12 goes on, and 40 ends at the watchdog's 30 s with the exit code
   30. The log has its `step time:` line.
+- `MGE_XE_LOAD_WATCH=1` (the helper; W640): the log gets the `load watch:` lines of a wait after
+  a game load or a teleport (`mgeHost64/src/renderer/load_watch.rs`). `load watch: arrived at frame
+  N` gives the time and the frame of each condition of ARRIVED from the wait's start (the data
+  loaded, the second frame, the statics settled). From the wait's start to 20 s after ARRIVED,
+  `load watch: statics at frame N` counts the subsets of distant statics that arrived in a part of
+  a frame (the grass among them), and `load watch: the lamp grid of <block> at frame N` names a new
+  grid of the distant lamps. The frame numbers are those of the plugin's `load watch: frame N`
+  lines (its README). Off by default.
 - `MGE_XE_STALL_LOG=1` (d3d8.dll): a line in mgeXE.log for each scan of the vis groups with
   the time the cell worker stalled for it; without it, a line only when a scan or its waits
   take 2 ms or more.
