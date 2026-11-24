@@ -83,8 +83,9 @@ impl FrameLightInfo {
 
 /// The dither of a picture that a pass stores into 8 bits (W660), as WGSL: interleaved gradient
 /// noise of the pixel (Jimenez 2014), less than half a level each way, the same in every frame, so
-/// that a replay of a capture stays exact. Alpha keeps its value. Less than half a level: a value
-/// that is a whole level keeps it, so the copy of an 8-bit picture stays exact.
+/// that a replay of a capture stays exact. Alpha keeps its value. The GPU rounds a sum near half a
+/// level either way, so a few pixels of a flat colour move by one level; the copy of an 8-bit
+/// picture into the frame is therefore the plain copy.
 macro_rules! dither_wgsl {
     () => {
         "
@@ -3011,16 +3012,23 @@ mod tests {
         assert_eq!(twice.compiled_text().2, false);
     }
 
-    /// The files whose last pass has a form that can pack data into 8 bits (a multiply by 255,
-    /// `fract`, `floor`, `%`), each read (W660, verdict 807 4.2): none stores data there. CRT and
-    /// Disorient make noise, jop_adjuster wraps a hue, CRT draws scanlines, Invisibility moves a
-    /// coordinate, and the two fog boxes add their own ordered dither.
-    const LAST_PASS_FORMS_READ: [&str; 7] = [
+    /// The files whose last pass, or a function that it calls, has a form that can pack data into
+    /// 8 bits (a multiply by 255, `fract`, `floor`, `%`), each read (W660, verdicts 807 4.2 and
+    /// 812 4.2): none stores data there. CRT, Disorient and deband_fogaware make noise,
+    /// jop_adjuster wraps a hue, CRT draws scanlines, Invisibility moves a coordinate, the two fog
+    /// boxes and Eternal Shine add their own ordered dither, jop_lut and XERO-lut find the slice of
+    /// a colour table, and Cinematic Bokeh DoF finds the place of a tap.
+    const LAST_PASS_FORMS_READ: [&str; 12] = [
         "CRT",
         "CRT Zoomed Out",
+        "Cinematic Bokeh DoF",
         "Disorient",
+        "Eternal Shine",
         "Invisibility",
+        "XERO-lut",
+        "deband_fogaware",
         "jop_adjuster",
+        "jop_lut",
         "oj_me_fog_box",
         "tew_fogbox",
     ];
@@ -3045,10 +3053,38 @@ mod tests {
         None
     }
 
+    /// The body of the function `entry` in `text` and the bodies of the functions of `text` that it
+    /// calls: one level, as a pass that packs data can do it in a helper (SSAO Fast.wgsl:35).
+    fn pass_bodies(text: &str, entry: &str) -> String {
+        let body = function_body(text, entry).unwrap_or_else(|| panic!("no function {entry}"));
+        let mut all = body.to_string();
+        let mut called: Vec<&str> = Vec::new();
+        let mut start = None;
+        for (at, c) in body.char_indices() {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                start.get_or_insert(at);
+                continue;
+            }
+            if let Some(from) = start.take() {
+                let name = &body[from..at];
+                if c == '(' && name != entry && !called.contains(&name) {
+                    called.push(name);
+                }
+            }
+        }
+        for name in called {
+            if let Some(helper) = function_body(text, name) {
+                all.push_str(helper);
+            }
+        }
+        all
+    }
+
     /// The last pass of a shader is a picture, which the renderer dithers (W660): no post shader
-    /// file of the packs and of our package has a form there that can pack data, other than the
-    /// files read and named in [`LAST_PASS_FORMS_READ`]. A new file with such a form fails here
-    /// until someone reads it and names it.
+    /// file of the packs and of our package has a form in its last pass, or in a function of the
+    /// file that the last pass calls, that can pack data, other than the files read and named in
+    /// [`LAST_PASS_FORMS_READ`]. A new file with such a form fails here until someone reads it and
+    /// names it.
     #[test]
     fn no_last_pass_packs_data() {
         let ports = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ports");
@@ -3063,7 +3099,7 @@ mod tests {
             let text = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
             let definition = Definition::of_file(name, &text).unwrap();
             let (entry, _, _) = definition.passes.last().expect("a pass");
-            let body = function_body(&text, entry).unwrap_or_else(|| panic!("{name}: no function {entry}"));
+            let body = pass_bodies(&text, entry);
             if ["255", "fract(", "floor(", "%"].iter().any(|form| body.contains(form)) {
                 found.push(name.clone());
             }
