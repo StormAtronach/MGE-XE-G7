@@ -25,6 +25,8 @@ pub(super) fn mge_ini_card(ui: &mut Ui, settings: &mut Settings) {
                     ui.checkbox(&mut settings.runtime.mwse_disabled, t!("input.mge.disable_mwse")),
                     t!("input.mge.disable_mwse_tip"),
                 );
+                // The setting acts only on the Direct3D 9 path, which a release does not have (W326).
+                #[cfg(feature = "direct3d9")]
                 tooltip(
                     ui.checkbox(&mut settings.runtime.proxy_only, t!("input.mge.proxy_only")),
                     t!("input.mge.proxy_only_tip"),

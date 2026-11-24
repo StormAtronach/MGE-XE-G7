@@ -4,6 +4,11 @@ version.workspace = true
 edition = "2024"
 build = "build.rs"
 
+[features]
+# The developer form (`cargo xtask dist --direct3d9`): the settings of the Direct3D 9 path, which a
+# release does not have (W326). d3d8 has the feature of the same name.
+direct3d9 = []
+
 [dependencies]
 anyhow = "1"
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow"] }
