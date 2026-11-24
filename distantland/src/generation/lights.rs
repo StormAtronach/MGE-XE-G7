@@ -211,7 +211,8 @@ pub(crate) struct LightParts {
     /// the record and the place of its light are read from it ([`read_lamp_models`]).
     pub models: BTreeMap<Key, String>,
     /// The transform of each lamp's reference: one list for each block of `lights`, in the
-    /// order of the block's lamps.
+    /// order of the block's lamps until [`read_lamp_models`], which moves the lamps and sorts
+    /// them again; after it the lists are out of step and are not read.
     pub frames: Vec<Vec<Affine3A>>,
 }
 
