@@ -5,8 +5,8 @@
 //!
 //! - `load watch: arrived at frame N`: when [`super::ARRIVED`] goes, the time of each of its
 //!   conditions from the start of the wait: the end of the load of the data, the second frame of
-//!   the wait, the distant statics near the camera settled, the host's list of stage pipelines
-//!   made, and the host's mip chains made (or the timeout; [`super::arrival`]).
+//!   the wait, the distant statics near the camera settled, and the host's list of stage
+//!   pipelines made (or the timeout; [`super::arrival`]).
 //! - `load watch: statics at frame N`: in the window, each part of a frame in which subsets of the
 //!   distant statics arrived: their count, the grass subsets among them, their bytes, and the
 //!   subsets asked for that did not arrive yet.
@@ -41,7 +41,6 @@ pub struct ArrivalWatch {
     two_frames: Option<Met>,
     settled: Option<Met>,
     list: Option<Met>,
-    chains: Option<Met>,
 }
 
 impl ArrivalWatch {
@@ -54,7 +53,6 @@ impl ArrivalWatch {
             two_frames: None,
             settled: None,
             list: None,
-            chains: None,
         }
     }
 
@@ -67,7 +65,6 @@ impl ArrivalWatch {
             (&mut self.two_frames, facts.frames >= 2),
             (&mut self.settled, facts.settled),
             (&mut self.list, facts.list_made()),
-            (&mut self.chains, facts.chains_made()),
         ] {
             match true_now {
                 true => {
@@ -91,14 +88,13 @@ impl ArrivalWatch {
             serial => format!("wait {serial}"),
         };
         format!(
-            "load watch: arrived at frame {frame}, {wait}, {:.2} s after its start at frame {}; {}, {}, {}, {}, {}",
+            "load watch: arrived at frame {frame}, {wait}, {:.2} s after its start at frame {}; {}, {}, {}, {}",
             seconds(now),
             self.start_frame,
             condition("the data loaded", self.loaded),
             condition("the second frame", self.two_frames),
             condition("the statics settled", self.settled),
             condition("the list made", self.list),
-            condition("the chains made", self.chains),
         )
     }
 }
@@ -137,10 +133,7 @@ mod tests {
             loaded,
             frames,
             settled,
-            ready: nirender_wgpu::HostReadiness {
-                list_jobs,
-                chain_jobs: 0,
-            },
+            ready: nirender_wgpu::HostReadiness { list_jobs },
         }
     }
 
@@ -156,7 +149,7 @@ mod tests {
         watch.note(at(1500), 13, &facts(true, 3, true, 0));
         assert_eq!(
             watch.line(at(1500), 13, 7),
-            "load watch: arrived at frame 13, wait 7, 1.50 s after its start at frame 10; the data loaded at 0.20 s (frame 12), the second frame at 0.20 s (frame 12), the statics settled at 1.50 s (frame 13), the list made at 0.20 s (frame 12), the chains made at 0.10 s (frame 11)"
+            "load watch: arrived at frame 13, wait 7, 1.50 s after its start at frame 10; the data loaded at 0.20 s (frame 12), the second frame at 0.20 s (frame 12), the statics settled at 1.50 s (frame 13), the list made at 0.20 s (frame 12)"
         );
     }
 
@@ -171,10 +164,7 @@ mod tests {
             line.starts_with("load watch: arrived at frame 300, the wait of a game load, 10.00 s after"),
             "{line}"
         );
-        assert!(
-            line.ends_with(", the statics settled: no, the list made: no, the chains made at 0.00 s (frame 2)"),
-            "{line}"
-        );
+        assert!(line.ends_with(", the statics settled: no, the list made: no"), "{line}");
     }
 
     /// A part of a frame with no arrival gives no line.

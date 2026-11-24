@@ -663,7 +663,7 @@ by MGE XE's part of `numidium.exe`. The helper's other switches are in the READM
 - `MGE_XE_LOAD_WATCH=1` (the helper; W640): the log gets the `load watch:` lines of a wait after
   a game load or a teleport (`mgeHost64/src/renderer/load_watch.rs`). `load watch: arrived at frame
   N` gives the time and the frame of each condition of ARRIVED from the wait's start (the data
-  loaded, the second frame, the statics settled, the list made, the chains made). From the wait's start to 20 s after ARRIVED,
+  loaded, the second frame, the statics settled, the list made). From the wait's start to 20 s after ARRIVED,
   `load watch: statics at frame N` counts the subsets of distant statics that arrived in a part of
   a frame (the grass among them), and `load watch: the lamp grid of <block> at frame N` names a new
   grid of the distant lamps. The frame numbers are those of the plugin's `load watch: frame N`
