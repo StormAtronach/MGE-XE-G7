@@ -137,6 +137,47 @@ fn is_smoke_model(mesh: &str) -> bool {
     mesh.contains("smoke") && !mesh.contains("nosmoke")
 }
 
+/// The scales of the placed lamps with a model. The glow radius is of the model, so a lamp at
+/// another scale than 1 has a glow radius of another size than its glowing parts.
+#[derive(Default)]
+struct LampScales {
+    lamps: usize,
+    scaled: usize,
+    least: f32,
+    most: f32,
+}
+
+impl LampScales {
+    fn count(&mut self, scale: f32) {
+        self.lamps += 1;
+        if scale != 1.0 {
+            if self.scaled == 0 {
+                (self.least, self.most) = (scale, scale);
+            }
+            self.scaled += 1;
+            self.least = self.least.min(scale);
+            self.most = self.most.max(scale);
+        }
+    }
+
+    fn log(&self) {
+        if self.scaled == 0 {
+            crate::logging::info!(
+                "Distant lights: all {} lamps with a model are placed at the scale 1",
+                self.lamps
+            );
+        } else {
+            crate::logging::info!(
+                "Distant lights: {} of {} lamps with a model are placed at another scale than 1, from {} to {}; their glow radius is that of the model",
+                self.scaled,
+                self.lamps,
+                self.least,
+                self.most
+            );
+        }
+    }
+}
+
 /// The lamps and the smoke of the blocks, and the model of each light record that a lamp is.
 #[derive(Default)]
 pub(crate) struct LightParts {
@@ -157,6 +198,7 @@ pub(crate) fn light_blocks(
     let encoder = bytes_io::Writer::default();
     let mut parts: BTreeMap<Key, BlockParts> = BTreeMap::new();
     let mut models: BTreeMap<Key, String> = BTreeMap::new();
+    let mut scales = LampScales::default();
     let mut lamps_without_key = 0usize;
     for (cell, references) in &usage.cells {
         let key = if cell == EXTERIOR_CELL {
@@ -207,6 +249,7 @@ pub(crate) fn light_blocks(
                 && let Some(object) = object
             {
                 models.entry(id.clone()).or_insert_with(|| object.mesh.to_owned());
+                scales.count(reference.scale);
             }
             block.lamps.push(PlacedLamp {
                 id,
@@ -222,6 +265,7 @@ pub(crate) fn light_blocks(
         }
     }
 
+    scales.log();
     if lamps_without_key != 0 {
         crate::logging::warn!(
             "Distant lights: {lamps_without_key} lamps have a record id that the game cannot have; they are left out"

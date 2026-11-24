@@ -663,6 +663,16 @@ fn run_generation(
             job.settings.door_size_multiplier,
             &overrides,
         );
+        let kept_as_lamps: Vec<&str> = distant_statics
+            .iter()
+            .filter(|(_, distant_static)| distant_static.kept_as_lamp)
+            .map(|(mesh, _)| mesh.as_str())
+            .collect();
+        crate::logging::info!(
+            "Distant lights: the lamp rule keeps {} lamp meshes under the size limit for their glowing parts: {}",
+            kept_as_lamps.len(),
+            kept_as_lamps.join(", ")
+        );
         Ok((distant_statics, identities))
     })?;
     for consumption in mesh_consumptions {
