@@ -543,7 +543,9 @@ struct WorldController {
     WorldControllerRenderCamera shadowCamera;           // 0x2B0
     ShadowManager* shadowManager;                       // 0x2DC
     void* mapController;                                // 0x2E0
-    char pad_2E4[0x6C];                                 // 0x2E4
+    char pad_2E4[0x48];                                 // 0x2E4
+    Cell* startingCell;                                 // 0x32C  the cell of a game load, from the save's GAME record
+    char pad_330[0x20];                                 // 0x330
     MusicSituation musicSituation;                      // 0x350
     Fader* transitionFader;                             // 0x354
     char pad_358[0x1C];                                 // 0x358
@@ -558,6 +560,7 @@ static_assert(offsetof(WorldController, systemTimeMillis) == 0x20, "TES3::WorldC
 static_assert(offsetof(WorldController, deltaTime) == 0x2C, "TES3::WorldController::deltaTime failed offset validation");
 static_assert(offsetof(WorldController, renderer) == 0x30, "TES3::WorldController::renderer failed offset validation");
 static_assert(offsetof(WorldController, audioController) == 0x34, "TES3::WorldController::audioController failed offset validation");
+static_assert(offsetof(WorldController, startingCell) == 0x32C, "TES3::WorldController::startingCell failed offset validation");
 static_assert(offsetof(WorldController, mouseController) == 0x50, "TES3::WorldController::mouseController failed offset validation");
 static_assert(offsetof(WorldController, weatherController) == 0x58, "TES3::WorldController::weatherController failed offset validation");
 static_assert(offsetof(WorldController, mobManager) == 0x5C, "TES3::WorldController::mobManager failed offset validation");
