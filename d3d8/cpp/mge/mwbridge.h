@@ -138,6 +138,11 @@ public:
     // (menu / load-screen Present ticks). Validates the environment, cell and position
     // pointers, unlike PlayerPositionX/Y/Z which return a valid-looking zero on failure.
     bool tryGetPlayerPosition(float outPosition[3]);
+    // The place of a game load at MWSE's event 3 (the resolve of the game's ids), before the
+    // engine moves the player there: the position of the player's reference, and the world
+    // controller's starting cell, which the save's GAME record names. The data handler's cell
+    // is still the cell from before the load there. False when a part is missing.
+    bool tryGetGameLoadPlace(float outPosition[3], const TES3::Cell*& outCell);
     float PlayerHeight();
     D3DXVECTOR3* PCam3Offset();
     DWORD getPlayerMACP();

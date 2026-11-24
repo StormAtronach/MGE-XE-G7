@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -1201,7 +1202,7 @@ namespace Deviceless {
     static bool gameLoaded = false;
     // The helper said that the distant statics around the camera are there for the place of
     // the wait of a game load (message 1, Arrived, with the number of that wait): the wait
-    // (prefetchDistantLand) ends on it. An answer for an earlier place does not end it.
+    // (waitInEngineBar) ends on it. An answer for an earlier place does not end it.
     static bool distantLandArrived = false;
     static UINT waitSerial = 0;
     // The frames that the game showed: a wait counts the frames of its loading bar.
@@ -1754,7 +1755,9 @@ namespace Deviceless {
         char interiorName[64];
     };
     static const UINT PrefetchId = 10;
-    static const DWORD WaitLimitMs = 15000;
+    // The limit of the wait of a game load: MGE XE G7's kResidencyBootstrapTimeoutMs. After it,
+    // the game goes on and the distant land streams in.
+    static const DWORD WaitLimitMs = 5000;
 
     // The hello of this d3d8.dll: record 11 (HELLO_ID in mgeHost64/src/renderer.rs), kept,
     // so that the ring and each capture file start with it. The helper stops when the
@@ -1920,84 +1923,163 @@ namespace Deviceless {
 
     // The place of the player goes to the helper (record 10): it streams the distant land
     // there, and says when the distant statics around the player are there (its arrival, the
-    // event distantLandReady "arrived"). With `wait`, from distant_land.wait_on_load, the load
-    // of a game stays in its load, with its loading bar, until that answer or WaitLimitMs. As
-    // DistantLand::drainUploadPump of the Direct3D 9 path holds the first load. The frames
-    // of the loading bar go to the helper, and the plugin gives the answer of the helper at
-    // their end (Deviceless::message). A move in play (`gameLoad` false) never waits and opens
-    // no loading bar, as in MGE XE G7: the distant land streams in (W648).
-    static void prefetchDistantLand(MWBridge* mwBridge, bool wait, bool gameLoad) {
-        float position[3] = {};
-        if (!mwBridge->tryGetPlayerPosition(position)) {
-            LOG::logline("-- wgpu renderer: no position of the player after the load; no wait for the distant land");
-            return;
-        }
+    // event distantLandReady "arrived"; Deviceless::message). The interior name is empty for
+    // the exterior.
+    static void sendPrefetch(const float position[3], const char* interiorName) {
         Prefetch prefetch = {};
         prefetch.version = 1;
         prefetch.serial = ++waitSerial;
-        std::memcpy(prefetch.position, position, sizeof(position));
-        if (!mwBridge->IsExterior()) {
-            if (const char* name = mwBridge->getInteriorName()) {
-                std::strncpy(prefetch.interiorName, name, sizeof(prefetch.interiorName) - 1);
-            }
-        }
+        std::memcpy(prefetch.position, position, sizeof(prefetch.position));
+        std::strncpy(prefetch.interiorName, interiorName, sizeof(prefetch.interiorName) - 1);
         distantLandArrived = false;
         sendToRenderer(PrefetchId, &prefetch, sizeof(prefetch));
-        if (!wait) {
-            return;
-        }
-        if (!gameLoad) {
-            LOG::logline("-- wgpu renderer: no wait: a move in play; the distant land at (%.0f, %.0f, %.0f) in '%s' streams in",
-                         position[0], position[1], position[2], prefetch.interiorName);
-            return;
-        }
+    }
 
-        // The loading bar, as drainUploadPump has it: its label is put back after the wait.
-        const bool hadLoadingBar = mwBridge->isLoadingBar();
+    // The name of a cell in record 10: the name of an interior, also of one that behaves as an
+    // exterior; empty for the exterior.
+    static const char* prefetchName(const TES3::Cell* cell) {
+        return (cell && cell->getIsInterior() && cell->name) ? cell->name : "";
+    }
+
+    // A cell as text for a log line: the name of an interior, or the grid of an exterior.
+    static void describeCell(const TES3::Cell* cell, char* out, size_t size) {
+        if (cell == nullptr) {
+            std::snprintf(out, size, "none");
+        } else if (cell->getIsInterior()) {
+            std::snprintf(out, size, "interior '%s'", cell->name ? cell->name : "");
+        } else {
+            std::snprintf(out, size, "exterior (%d, %d)", cell->variantData.exterior.gridX, cell->variantData.exterior.gridY);
+        }
+    }
+
+    // The wait of a game load, in the engine's own loading bar, which is up: until the helper's
+    // answer for the place of the last record 10, or WaitLimitMs. It moves the bar, shows its
+    // own label there and puts the engine's label back after. It never opens or closes a
+    // loading bar: in play that left the interface hidden (W648). The frames of the bar go to
+    // the helper, and the plugin gives the answer of the helper at their end.
+    static void waitInEngineBar(MWBridge* mwBridge, const float position[3], const char* interiorName) {
         std::string savedLabel;
-        const bool snapshotOk = hadLoadingBar && mwBridge->getLoadingBarLabel(savedLabel);
-        const bool mayOwnLabel = !hadLoadingBar || snapshotOk;
-        char label[64];
-        const char* loadingMessage = *(const char**)mwBridge->getGMSTPointer(602);
-        int firstWordLength = 0;
-        for (const char* c = loadingMessage; *c && *c != ' '; ++c) {
-            ++firstWordLength;
+        const bool labelSaved = mwBridge->getLoadingBarLabel(savedLabel);
+        if (labelSaved) {
+            char label[64];
+            const char* loadingMessage = *(const char**)mwBridge->getGMSTPointer(602);
+            int firstWordLength = 0;
+            for (const char* c = loadingMessage; *c && *c != ' '; ++c) {
+                ++firstWordLength;
+            }
+            std::snprintf(label, sizeof(label), "%.*s MGE XE distant land...", firstWordLength, loadingMessage);
+            mwBridge->setLoadingBarLabel(label);
         }
-        std::snprintf(label, sizeof(label), "%.*s MGE XE distant land...", firstWordLength, loadingMessage);
 
+        const bool barBefore = mwBridge->isLoadingBar();
         const DWORD start = GetTickCount();
         const unsigned presentsBefore = presentCount;
-        bool shown = false;
         while (!distantLandArrived) {
             const DWORD waited = GetTickCount() - start;
             if (waited >= WaitLimitMs) {
                 break;
             }
-            const float progress = 100.0f * float(waited) / float(WaitLimitMs);
-            if (!shown && mayOwnLabel) {
-                mwBridge->showLoadingBar(label, progress);
-            } else {
-                mwBridge->updateLoadingScreen(progress);
-            }
-            shown = true;
+            mwBridge->updateLoadingScreen(100.0f * float(waited) / float(WaitLimitMs));
             Sleep(10);
         }
         LOG::logline("-- wgpu renderer: the load waited %u ms (%u frames of the loading bar, a bar before: %d) for the distant land at (%.0f, %.0f, %.0f) in '%s'%s",
-                     unsigned(GetTickCount() - start), presentCount - presentsBefore, hadLoadingBar ? 1 : 0, position[0], position[1], position[2],
-                     prefetch.interiorName, distantLandArrived ? "" : ": no answer in time");
-        if (shown) {
-            if (!hadLoadingBar) {
-                mwBridge->destroyLoadingBar();
-            } else if (snapshotOk) {
-                mwBridge->setLoadingBarLabel(savedLabel.c_str());
-                mwBridge->renderLoadingFrame();
-            }
+                     unsigned(GetTickCount() - start), presentCount - presentsBefore, barBefore ? 1 : 0, position[0], position[1], position[2],
+                     interiorName, distantLandArrived ? "" : ": no answer in time");
+        if (labelSaved) {
+            mwBridge->setLoadingBarLabel(savedLabel.c_str());
+            mwBridge->renderLoadingFrame();
         }
     }
 
-    // The game resolved the objects of a save or of a new game. The player is still at the
-    // place from before the load: the wait for the distant land comes at the move to the
-    // loaded place (onPlayerCellChanged).
+    // The place that event 3 of the last game load sent: its event 5 sends the place again
+    // only when the engine put the player at another place.
+    struct GameLoadPlace {
+        bool sent = false;
+        const TES3::Cell* cell = nullptr;
+        float position[3] = {};
+    };
+    static GameLoadPlace gameLoadPlace;
+
+    // Event 3 of a game load: the place goes to the helper before the engine moves the player
+    // there, and with distant_land.wait_on_load the load waits in the engine's loading bar. The
+    // place is the position of the player's reference and the starting cell of the load (W648
+    // (b), addendum 1). With no starting cell, nothing goes here, and event 5 sends the place
+    // with no wait.
+    static void sendGameLoadPlace(MWBridge* mwBridge) {
+        gameLoadPlace = {};
+        float position[3] = {};
+        const TES3::Cell* cell = nullptr;
+        if (!mwBridge->tryGetGameLoadPlace(position, cell)) {
+            LOG::logline("-- wgpu renderer: no starting cell or no position of the player at the resolve of the ids; the place goes at the move, with no wait");
+            return;
+        }
+        const char* interiorName = prefetchName(cell);
+        sendPrefetch(position, interiorName);
+        gameLoadPlace.sent = true;
+        gameLoadPlace.cell = cell;
+        std::memcpy(gameLoadPlace.position, position, sizeof(position));
+
+        char cellText[96];
+        describeCell(cell, cellText, sizeof(cellText));
+        LOG::logline("-- wgpu renderer: the place of the game load at the resolve of the ids: (%.0f, %.0f, %.0f), the starting cell: %s",
+                     position[0], position[1], position[2], cellText);
+        if (!Configuration.DistantLandWaitOnLoad) {
+            return;
+        }
+        if (!mwBridge->isLoadingBar()) {
+            LOG::logline("-- wgpu renderer: no wait: the engine's loading bar is down");
+            return;
+        }
+        waitInEngineBar(mwBridge, position, interiorName);
+    }
+
+    // Event 5 of a game load: the engine moved the player to the loaded place. No wait. The
+    // place goes again, with no wait, when it is not the place that event 3 sent: none was
+    // sent, or another cell, or another position (a new game can have a stale starting cell
+    // at event 3).
+    static void checkGameLoadPlace(MWBridge* mwBridge, const TES3::Cell* cell) {
+        const GameLoadPlace sent = gameLoadPlace;
+        gameLoadPlace = {};
+        float position[3] = {};
+        if (!mwBridge->tryGetPlayerPosition(position)) {
+            LOG::logline("-- wgpu renderer: no position of the player after the load");
+            return;
+        }
+        const auto near = [](float a, float b) { return a - b <= 1.0f && b - a <= 1.0f; };
+        const bool same = sent.sent && sent.cell == cell && near(position[0], sent.position[0])
+                          && near(position[1], sent.position[1]) && near(position[2], sent.position[2]);
+        char cellText[96];
+        describeCell(cell, cellText, sizeof(cellText));
+        if (same) {
+            LOG::logline("-- wgpu renderer: the place of the game load at the move: (%.0f, %.0f, %.0f) in %s, as sent at the resolve of the ids",
+                         position[0], position[1], position[2], cellText);
+            return;
+        }
+        sendPrefetch(position, prefetchName(cell));
+        LOG::logline("-- wgpu renderer: the place of the game load at the move: (%.0f, %.0f, %.0f) in %s is not the place sent at the resolve of the ids; sent again, with no wait",
+                     position[0], position[1], position[2], cellText);
+    }
+
+    // A move in play (a door, a travel, Recall, coc, a script's move) to a far place: the place
+    // goes to the helper, with no wait and no loading bar, as in MGE XE G7. The distant land
+    // streams in (W648).
+    static void sendPlaceOfMove(MWBridge* mwBridge, const TES3::Cell* cell) {
+        float position[3] = {};
+        if (!mwBridge->tryGetPlayerPosition(position)) {
+            LOG::logline("-- wgpu renderer: no position of the player after the move");
+            return;
+        }
+        const char* interiorName = prefetchName(cell);
+        sendPrefetch(position, interiorName);
+        if (Configuration.DistantLandWaitOnLoad) {
+            LOG::logline("-- wgpu renderer: no wait: a move in play; the distant land at (%.0f, %.0f, %.0f) in '%s' streams in",
+                         position[0], position[1], position[2], interiorName);
+        }
+    }
+
+    // The game resolved the objects of a save or of a new game, in its load, with the engine's
+    // loading bar up. The engine has not moved the player yet, but the place of the load is
+    // known: the place goes to the helper, and the load waits here (sendGameLoadPlace).
     // MWSE's native event 3, taken in DllMain. It acts only after the game's load in the first
     // frame (MWBridge loaded), the point where it was taken before: a call before that load
     // (the game's start resolves its ids too) changes nothing.
@@ -2020,6 +2102,7 @@ namespace Deviceless {
         DistantLand::resolveDynamicVisGroups();
         visGroupsUnsent = true;
         gameLoaded = true;
+        sendGameLoadPlace(MWBridge::get());
     }
 
     // A move to a place whose distant statics the helper may not have: from or to an
@@ -2048,13 +2131,15 @@ namespace Deviceless {
         }
         // A mod can change the light records after the plugins are read, and at a load.
         checkLightRecords(gameLoad ? "the load of a game" : "a teleport or a door", gameLoad);
+        const auto to = static_cast<const TES3::Cell*>(cell);
         if (gameLoad) {
             lightRecordsCheckDue = true;
-        }
-        if (!gameLoad && !isFarMove(static_cast<const TES3::Cell*>(previousCell), static_cast<const TES3::Cell*>(cell))) {
+            checkGameLoadPlace(mwBridge, to);
             return;
         }
-        prefetchDistantLand(mwBridge, Configuration.DistantLandWaitOnLoad, gameLoad);
+        if (isFarMove(static_cast<const TES3::Cell*>(previousCell), to)) {
+            sendPlaceOfMove(mwBridge, to);
+        }
     }
 
     // The messages of the helper. 1: the distant land, version 1, then the reason
