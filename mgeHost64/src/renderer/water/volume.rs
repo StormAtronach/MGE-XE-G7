@@ -236,9 +236,9 @@ pub struct VolumeLook {
 /// The light of the frame on the surfaces: each part is on when its setting is on and the
 /// frame has it.
 pub struct VolumeLight<'a> {
-    /// The shadow map of the frame (`shadow.rs`): the atlas, the matrices of its two layers from
-    /// the world (the layout of Direct3D), and 1 over its resolution.
-    pub shadow: Option<(&'a wgpu::TextureView, [[f32; 16]; 2], f32)>,
+    /// The shadow map of the frame (`shadow.rs`): the atlas, the values of its cascades from a
+    /// position less the eye, and 1 over the resolution of a cascade.
+    pub shadow: Option<(&'a wgpu::TextureView, crate::renderer::shadow::Receiver, f32)>,
     /// The values of the shadow: the built-in ones or those of a core mod.
     pub shadow_values: crate::renderer::core_mods::ShadowValues,
     /// The lights of the frame for each pixel.
@@ -253,7 +253,10 @@ pub struct VolumeLight<'a> {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Lighting {
-    shadow: [[f32; 16]; 2],
+    shadow: [[f32; 16]; 4],
+    cascade_ends: [f32; 4],
+    cascade_ranges: [f32; 4],
+    view_axis: [f32; 4],
     esm: [f32; 4],
     sun: [f32; 4],
     origin: [f32; 4],
@@ -769,9 +772,11 @@ impl Volumes {
     fn write_light(&self, scene: &SceneView, light: &VolumeLight) {
         let mut values = <Lighting as bytemuck::Zeroable>::zeroed();
         let mut bits = 0;
-        if let Some((_, layers, rcp)) = light.shadow {
-            let eye = scene.eye.map(|v| v as f32);
-            values.shadow = layers.map(|layer| super::super::view::relative_of_product(&layer, eye));
+        if let Some((_, cascades, rcp)) = light.shadow {
+            values.shadow = cascades.matrices;
+            values.cascade_ends = cascades.ends;
+            values.cascade_ranges = cascades.ranges;
+            values.view_axis = cascades.axis;
             values.esm = light.shadow_values.esm(rcp);
             bits |= 1;
         }

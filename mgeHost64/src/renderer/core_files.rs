@@ -71,8 +71,9 @@ macro_rules! core_file {
 /// `GrassInstVS` and `GrassPS` of `XE Mod Grass.fx`, with the looks of Remiros' Groundcover.
 pub(crate) static GRASS: CoreFile = core_file!("XE Mod Grass.wgsl", &[]);
 
-/// The built-ins of the shadow hooks `shadow_delta` and `shadow_esm` (`XE Mod Shadow.fx`).
-pub(crate) static SHADOW: CoreFile = core_file!("XE Mod Shadow.wgsl", &["shadow_delta", "shadow_esm"]);
+/// The built-in of the shadow hook `shadow_esm` (`XE Mod Shadow.fx`), and the shadow of the
+/// cascades that each home of the shadow hooks gets (`cascades`, not a hook).
+pub(crate) static SHADOW: CoreFile = core_file!("XE Mod Shadow.wgsl", &["shadow_esm", "cascades"]);
 
 /// The shadow map (`XE Shadowmap.fx`): the blur, and the casters of the land and of the
 /// distant statics.
@@ -389,8 +390,8 @@ mod tests {
     /// each old constant's text with LF line ends. A change of a shader changes its number here.
     #[test]
     fn the_texts_are_those_of_the_old_constants() {
-        assert_eq!(fnv(GRASS.text()), 0x1ce0_752e_f783_79e3);
-        assert_eq!(fnv(SHADOW.part("shadow_delta")), 0xbeaa_f0be_0c95_1991);
+        assert_eq!(fnv(GRASS.text()), 0x7fd3_3a10_18c8_2c3a);
+        assert_eq!(fnv(SHADOW.part("cascades")), 0xc7bd_ee3e_9854_62c5);
         assert_eq!(fnv(SHADOW.part("shadow_esm")), 0x2b40_758d_3635_aadf);
         assert_eq!(fnv(SHADOWMAP.part("blur")), 0x43b7_4db6_2d00_892d);
         assert_eq!(fnv(SHADOWMAP.part("land")), 0x1b2f_cbb0_6159_7102);
@@ -404,7 +405,7 @@ mod tests {
         assert_eq!(fnv(WATER.part("plane")), 0xa3ad_fab8_e938_8210);
         assert_eq!(fnv(WATER.part("level")), 0xa891_3b38_8e63_f3aa);
         assert_eq!(fnv(WATER_PASSES.part("ripples")), 0xf92d_65d2_3f52_5c72);
-        assert_eq!(fnv(WATER_VOLUME.part("volume")), 0xf962_4a79_cafa_63f5);
+        assert_eq!(fnv(WATER_VOLUME.part("volume")), 0xd03b_f973_198b_6830);
         assert_eq!(fnv(WATER_VOLUME.part("dry")), 0x9952_e2ec_0483_7dec);
         assert_eq!(fnv(WATER_STANDARD.part("standard")), 0x383f_896b_efb8_a08b);
         assert_eq!(fnv(CAUSTICS.part("caustics")), 0x1d4b_2843_824d_eade);

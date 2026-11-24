@@ -7,7 +7,7 @@
 //!
 //! The places of a world space are in a list on the GPU, sorted by texture, subset and place:
 //! the order of the draws of the CPU. For each set of a frame (the main view, the mirror, the
-//! two layers of the shadow map) two compute passes choose the places:
+//! four cascades of the shadow map) two compute passes choose the places:
 //!
 //! - `cull`, one thread for each place: the vis group, the subset on the GPU, the band of its
 //!   tier and the end of the fog, the handoff to the game, the view, and the level of detail,
@@ -570,9 +570,9 @@ struct SetBuffers {
     bytes: u64,
 }
 
-/// The sets that a list has from the start: the main view, the mirror and the two layers of
-/// the shadow map. The sets of the views of their own come with [`Culling::ensure_set`].
-const FIXED_SETS: usize = 4;
+/// The sets that a list has from the start: the main view, the mirror and the four cascades
+/// of the shadow map. The sets of the views of their own come with [`Culling::ensure_set`].
+const FIXED_SETS: usize = super::FIXED_SETS;
 
 /// The bytes of the buffers of one set of a list of `length` places and `textures` textures:
 /// the flags and the draws have a slot for each place (24 bytes), and the counts have a word for

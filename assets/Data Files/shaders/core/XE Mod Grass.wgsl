@@ -41,15 +41,19 @@ struct Grass {
     wind: vec4f,
     // xyz: the position of the player; w: 1 when it is known.
     foot: vec4f,
-    // The matrices from the world to the two layers of the shadow map.
-    shadow_layer0: mat4x4f,
-    shadow_layer1: mat4x4f,
-    // ESM_c, ESM_bias, ESM_scale, 1 over the resolution of a layer.
+    // The matrices from a position less the eye to the four cascades of the shadow map, the
+    // far ends of their slices along the view axis, their depth ranges / 16384, and the view
+    // axis.
+    shadow_cascades: array<mat4x4f, 4>,
+    cascade_ends: vec4f,
+    cascade_ranges: vec4f,
+    view_axis: vec4f,
+    // ESM_c, ESM_bias, ESM_scale, 1 over the resolution of a cascade.
     esm: vec4f,
     // shadecolor, and shade of shadowSunEstimate.
     shade: vec4f,
     // x: 1 with a shadow map. y: the light of the sun for shadowSunEstimate. z: 1 above the
-    // sea. w: 1 to end the shadow as on the ground (the edge of the map and the fog).
+    // sea. w: 1 to end the shadow as on the ground (in the fog).
     shadow: vec4f,
     // x: soft end, y: vertex colour sway, z: wrap lighting (1 on).
     look: vec4f,
@@ -80,11 +84,9 @@ struct Out {
     @location(0) normal: vec3f,
     @location(1) coordinate: vec2f,
     @location(2) fog: f32,
-    // The position less the eye: its derivatives give the plane of the triangle.
+    // The position less the eye: its derivatives give the plane of the triangle, and the
+    // shadow of the cascades takes it.
     @location(4) relative: vec3f,
-    // The position in the two layers of the shadow map, z divided by w.
-    @location(5) shadow0: vec3f,
-    @location(6) shadow1: vec3f,
     // The red of the vertex colour (the looks of Remiros' Groundcover).
     @location(7) red: f32,
     // 1 for a model with bent normals.
@@ -98,12 +100,9 @@ const WRAP_N: f32 = 1.5;
 const BACK_LIGHT: f32 = 0.4;
 
 // The library of the shadow hooks (`core_mods.rs`): the shadow map of the frame and its
-// values. The hooks join this shader after its text.
-fn shadow_map_depth(layer: u32, uv: vec2f) -> f32 {
-    if layer == 0u {
-        return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r;
-    }
-    return textureSampleLevel(shadow_atlas, shadow_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r;
+// values. The hooks and the shadow of the cascades join this shader after its text.
+fn shadow_map_depth(cascade: u32, uv: vec2f) -> f32 {
+    return textureSampleLevel(shadow_atlas, shadow_sampler, shadow_atlas_uv(cascade, uv), 0.0).r;
 }
 fn shadow_texel() -> f32 {
     return g.esm.w;
@@ -113,6 +112,17 @@ fn shadow_esm_scale() -> f32 {
 }
 fn shadow_esm_values() -> vec2f {
     return g.esm.xy;
+}
+fn shadow_depth_range(cascade: u32) -> f32 {
+    return g.cascade_ranges[cascade];
+}
+fn shadow_slice_end(cascade: u32) -> f32 {
+    return g.cascade_ends[cascade];
+}
+// The point `p` (a position less the eye) in a cascade.
+fn shadow_place(cascade: u32, p: vec4f) -> vec3f {
+    let s = g.shadow_cascades[cascade] * p;
+    return vec3f(s.xy, s.z / s.w);
 }
 
 // grassDisplacement: the wind in four waves, and the grass that the player pushes away. The
@@ -175,10 +185,6 @@ fn bnoise(x: f32) -> f32 {
     // fogMWScalar: the linear fog of the near cells.
     out.fog = clamp((u.fog.w - length(to_vertex)) / max(u.fog.w - u.fog.z, 1.0), 0.0, 1.0);
     out.bent = in.model.x;
-    let s0 = clip_with(g.shadow_layer0, world);
-    let s1 = clip_with(g.shadow_layer1, world);
-    out.shadow0 = vec3f(s0.xy, s0.z / s0.w);
-    out.shadow1 = vec3f(s1.xy, s1.z / s1.w);
     return out;
 }
 
@@ -225,16 +231,15 @@ override ALPHA_TO_COVERAGE: bool = false;
     }
     let coverage = clamp(4.0 * (texel.a - 128.0 / 255.0) + 128.0 / 255.0, 0.0, 1.0);
     var color = texel.rgb * light_color;
-    // The shadow, as GrassPS: shadowESM times the light of the sun, towards shadecolor.
+    // The shadow, as GrassPS: the shadow of the cascades times the light of the sun, towards
+    // shadecolor.
     if g.shadow.x > 0.5 {
-        let dz = shadow_delta(in.shadow0, in.shadow1);
-        var v = shadow_esm(dz) * light;
+        let along = abs(dot(in.relative, g.view_axis.xyz));
+        var v = shadow_of_cascades(along, vec4f(in.relative, 1.0)) * light;
         if g.shadow.w > 0.5 {
-            // As the ground under the blade (RenderShadowsPS): the fade at the edge of the
-            // outer layer, and the fog weakens the shadow.
-            let edge = clamp(25.0 * (1.0 - abs(in.shadow1.xy)), vec2f(0.0), vec2f(1.0));
+            // As the ground under the blade (RenderShadowsPS): the fog weakens the shadow.
             let fogatt = in.fog * in.fog;
-            v *= edge.x * edge.y * select(clamp(4.0 * fogatt, 0.0, 1.0), fogatt, g.shadow.z > 0.5);
+            v *= select(clamp(4.0 * fogatt, 0.0, 1.0), fogatt, g.shadow.z > 0.5);
         }
         color *= 1.0 - v * g.shade.rgb;
     }

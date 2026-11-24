@@ -3307,10 +3307,12 @@ const DRAW_SHADER: &str = "
 // The shadow of the draw at the pixel: `RenderShadowsPS` of `XE Mod Shadow.fx`. From
 // `extension_shade` for `extension_finish`.
 var<private> shadow_v: f32;
-// The debug view of the layers (the variant VIEW_SHADOW_LAYERS): the layer that served the
-// pixel (1 or 2, 0 outside both, -1 for a draw without the shadow test), and 1 where the map
-// shadows it. Only that variant writes them.
+// The debug view of the cascades (the variant VIEW_SHADOW_LAYERS): the cascade of the pixel
+// (0 to 3, 4 past the last, -1 for a draw without the shadow test), the weight of the next
+// cascade in it (`shadow_cascade_of`), and 1 where the map shadows it. Only that variant
+// writes them.
 var<private> shadow_layer: f32;
+var<private> shadow_blend: f32;
 var<private> shadow_hit: f32;
 // The light that the pixel takes (`d + a` of `extension_shade`), for the debug view of the
 // lights (the variant VIEW_LIGHTS); `light_term_set` when the draw is lit for each pixel.
@@ -3319,12 +3321,9 @@ var<private> light_term: vec3f;
 var<private> light_term_set: bool;
 
 // The library of the shadow hooks (`core_mods.rs`): the shadow map of the frame in the
-// texture of the extension, and its values.
-fn shadow_map_depth(layer: u32, uv: vec2f) -> f32 {
-    if layer == 0u {
-        return textureSample(extension_texture, extension_sampler, vec2f(uv.x * 0.5, uv.y)).r;
-    }
-    return textureSample(extension_texture, extension_sampler, vec2f(0.5 + uv.x * 0.5, uv.y)).r;
+// texture of the extension, and its values (`Shadow::frame_values`).
+fn shadow_map_depth(cascade: u32, uv: vec2f) -> f32 {
+    return textureSampleLevel(extension_texture, extension_sampler, shadow_atlas_uv(cascade, uv), 0.0).r;
 }
 fn shadow_texel() -> f32 {
     return frame.values[8].w;
@@ -3335,19 +3334,18 @@ fn shadow_esm_scale() -> f32 {
 fn shadow_esm_values() -> vec2f {
     return frame.values[8].xy;
 }
-
-// The layer that has the pixel for the debug view of the layers: 1 or 2, and 0 outside both,
-// by the margin of the built-in `shadow_delta`.
-fn shadow_layer_of(s0: vec3f, s1: vec3f) -> f32 {
-    let rcp = shadow_texel();
-    let margin = vec3f(1.0 - 8.0 * rcp, 1.0 - 8.0 * rcp, 1.0);
-    if all(abs(s0) < margin) {
-        return 1.0;
-    }
-    if all(abs(s1) < margin) {
-        return 2.0;
-    }
-    return 0.0;
+fn shadow_depth_range(cascade: u32) -> f32 {
+    return frame.values[22][cascade];
+}
+fn shadow_slice_end(cascade: u32) -> f32 {
+    return frame.values[21][cascade];
+}
+// The point `p` in the view space of the draw, in a cascade: the matrices of cascades 0 and 1
+// are in the rows 0 to 7, those of cascades 2 and 3 in the rows 13 to 20.
+fn shadow_place(cascade: u32, p: vec4f) -> vec3f {
+    let row = select(4u * cascade, 5u + 4u * cascade, cascade >= 2u);
+    let s = mat4x4f(frame.values[row], frame.values[row + 1u], frame.values[row + 2u], frame.values[row + 3u]) * p;
+    return vec3f(s.xy, s.z / s.w);
 }
 
 // The diffuse and the ambient light that one light gives a pixel at `p` with `normal`.
@@ -3404,26 +3402,21 @@ fn extension_shade(in: VertexOut) -> vec4f {
         }
         let x = clamp(dot(normal, -draw.extension[5].xyz), 0.0, 1.0) * draw.extension[7].x;
         var light = x / (frame.values[9].w + x);
-        // The shadow in the space of the two layers: from the view space of the draw.
+        // The shadow of the cascades, from the view space of the draw: the cascade of the
+        // distance along the view axis.
         let view_position = draw.view * vec4f(in.world_position, 1.0);
-        let to0 = mat4x4f(frame.values[0], frame.values[1], frame.values[2], frame.values[3]);
-        let to1 = mat4x4f(frame.values[4], frame.values[5], frame.values[6], frame.values[7]);
-        var s0 = to0 * view_position;
-        var s1 = to1 * view_position;
-        s0 = vec4f(s0.xy, s0.z / s0.w, s0.w);
-        s1 = vec4f(s1.xy, s1.z / s1.w, s1.w);
-        let dz = shadow_delta(s0.xyz, s1.xyz);
+        let along = abs(view_position.z);
         if DEBUG_VIEW == VIEW_SHADOW_LAYERS {
-            shadow_layer = shadow_layer_of(s0.xyz, s1.xyz);
+            let choice = shadow_cascade_of(along);
+            shadow_layer = choice.x;
+            shadow_blend = choice.y;
         }
-        if dz < 0.0 {
+        let v = shadow_of_cascades(along, view_position);
+        if v > 0.0 {
             if DEBUG_VIEW == VIEW_SHADOW_LAYERS {
                 shadow_hit = 1.0;
             }
-            // shadowESM, and the fade at the edge of the outer layer.
-            var v = shadow_esm(dz) * light;
-            let fade = clamp(25.0 * (1.0 - abs(s1.xy)), vec2f(0.0), vec2f(1.0));
-            shadow_v = v * fade.x * fade.y;
+            shadow_v = v * light;
         }
     }
     if (draw.counts.w & 16u) == 0u {
@@ -3612,16 +3605,20 @@ fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f {
         return vec4f(light_term, alpha);
     }
     if DEBUG_VIEW == VIEW_SHADOW_LAYERS {
-        // The debug view of the shadow layers (the debug view `shadow-layers`).
+        // The debug view of the cascades (the debug view `shadow-layers`): red, green, blue and
+        // yellow, the mix of two in a blend band, and black past the last cascade.
         if shadow_layer < -0.5 {
             return vec4f(0.3, 0.3, 0.3, out.a);
         }
-        var c = vec3f(0.0, 0.0, 1.0);
-        if shadow_layer > 1.5 {
-            c = vec3f(0.0, 1.0, 0.0);
-        } else if shadow_layer > 0.5 {
-            c = vec3f(1.0, 0.0, 0.0);
-        }
+        let colors = array<vec3f, 5>(
+            vec3f(1.0, 0.0, 0.0),
+            vec3f(0.0, 1.0, 0.0),
+            vec3f(0.0, 0.0, 1.0),
+            vec3f(1.0, 1.0, 0.0),
+            vec3f(0.0),
+        );
+        let cascade = min(u32(shadow_layer), 4u);
+        let c = mix(colors[cascade], colors[min(cascade + 1u, 4u)], shadow_blend);
         return vec4f(c * (1.0 - 0.6 * shadow_hit), out.a);
     }
     return out;
@@ -3972,7 +3969,7 @@ impl Extension for DistantLand {
                 (Some(shadow), Some(e), Some(light_vec)) => {
                     let eye = scene.eye.map(|v| v as f32);
                     let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
-                    shadow.set_frame(eye, eye_vec, light_vec);
+                    shadow.set_frame(eye, eye_vec, &scene.projection, self.draw_distance, light_vec);
                     values = shadow.frame_values(
                         e.sun_vis,
                         &scene.view,
@@ -4033,8 +4030,9 @@ impl Extension for DistantLand {
             // `distant_land.per_pixel_particles` false, or the tune `lights.particles` 0: a
             // particle takes its lights at its corners. Only a draw lit for each pixel can.
             particle_corners: self.tunables.get(tunables::PARTICLES) < 0.5,
-            // The far cascade of the shadow map: what it reaches animates in the game.
-            shadow_reach: if self.shadow_in_frame { shadow::RADII[1] } else { 0.0 },
+            // What animates for the shadow map in the game: the reach of the outer layer before
+            // the cascades (`shadow::ANIMATION_REACH`).
+            shadow_reach: if self.shadow_in_frame { shadow::ANIMATION_REACH } else { 0.0 },
             full_tier_max: Some(self.full_tier_max),
             debug_view: self.debug_view.frame_id(self.shadow_in_frame),
             debug_lines: self.debug_view.lines,
@@ -4776,10 +4774,10 @@ impl Extension for DistantLand {
                 fog_end,
             }];
             if let Some(shadow) = self.shadow.as_ref().filter(|_| self.shadow_in_frame) {
-                for layer in 0..2 {
+                for (cascade, viewproj) in shadow.viewproj.iter().enumerate() {
                     sets.push(statics::CullSet {
-                        set: 2 + layer,
-                        planes: crate::renderer::planes(&shadow.viewproj[layer]),
+                        set: statics::SHADOW_SETS[cascade],
+                        planes: crate::renderer::planes(viewproj),
                         eye,
                         fog_end: 1.0e9,
                     });
@@ -4841,22 +4839,23 @@ impl Extension for DistantLand {
             if let Some(timer) = self.gpu_time.as_ref() {
                 timer.start(&mut encoder);
             }
-            let mut pass = shadow.begin(&mut encoder);
-            for layer in 0..2 {
-                shadow.set_layer(&mut pass, layer);
-                let viewproj = shadow.viewproj[layer];
+            // Each cascade in turn: its casters into the cast texture, then its blur into its
+            // square of the atlas.
+            for cascade in 0..shadow::CASCADES {
+                let mut pass = shadow.begin(&mut encoder);
+                let viewproj = shadow.viewproj[cascade];
                 let layer_view = view::View {
                     view_projection: viewproj,
                     relative: view::relative_of_product(&viewproj, eye),
                     ..main_view
                 };
-                views.write(scene.queue, view::SHADOW[layer], &layer_view);
+                views.write(scene.queue, view::SHADOW[cascade], &layer_view);
                 let layer_planes = crate::renderer::planes(&viewproj);
                 // The terrain casts a shadow in an exterior, as `renderShadowLayerGeneric`
                 // of the Direct3D 9 path has it.
                 if !scene.interior {
                     pass.set_pipeline(&gpu.shadow_pipeline);
-                    pass.set_bind_group(0, views.group(view::SHADOW[layer]), &[]);
+                    pass.set_bind_group(0, views.group(view::SHADOW[cascade]), &[]);
                     for mesh in &gpu.meshes {
                         let inside = layer_planes.iter().all(|p| {
                             p[0] * mesh.center[0] + p[1] * mesh.center[1] + p[2] * mesh.center[2] + p[3] >= -mesh.radius
@@ -4876,14 +4875,14 @@ impl Extension for DistantLand {
                         fog_end: 1.0e9,
                         time: game_time(self.environment, self.started),
                     };
-                    let drawn = statics.draw(scene, &mut pass, &layer_frame, 2 + layer);
+                    let drawn = statics.draw(scene, &mut pass, &layer_frame, statics::SHADOW_SETS[cascade]);
                     pass_report::note_result(part::SHADOW_STATICS, drawn);
                 } else {
                     pass_report::note_skipped(part::SHADOW_STATICS, NO_STATICS);
                 }
+                drop(pass);
+                shadow.blur(&mut encoder, cascade);
             }
-            drop(pass);
-            shadow.blur(&mut encoder);
             if let Some(timer) = self.gpu_time.as_ref() {
                 timer.stop(&mut encoder);
             }
@@ -6249,7 +6248,14 @@ impl DistantLand {
             .shadow
             .as_ref()
             .filter(|_| self.volume_shadows && self.shadow_in_frame)
-            .map(|shadow| (&*shadow.atlas_view, shadow.viewproj, 1.0 / shadow.resolution as f32));
+            .map(|shadow| {
+                let axis = [scene.view[2], scene.view[6], scene.view[10]];
+                (
+                    &*shadow.atlas_view,
+                    shadow.receiver(scene.eye, axis),
+                    1.0 / shadow.resolution as f32,
+                )
+            });
         let outdoors = self.facts.like_exterior && !scene.interior;
         let light = water::VolumeLight {
             shadow,
@@ -6983,7 +6989,7 @@ impl DistantLand {
                 .filter(|_| self.shadow_in_frame)
                 .map(|shadow| statics::GrassShadow {
                     atlas: shadow.atlas_view.clone(),
-                    layers: shadow.viewproj.map(|layer| view::relative_of_product(&layer, eye)),
+                    cascades: shadow.receiver(scene.eye, [scene.view[2], scene.view[6], scene.view[10]]),
                     rcp: 1.0 / shadow.resolution as f32,
                     sun_vis: environment.map_or(0.0, |e| e.sun_vis),
                     day: self.shadow_day,
@@ -7199,7 +7205,7 @@ mod shader_tests {
     fn the_land_shader_names_no_hook() {
         let land = land_source();
         let hooks = core_mods::hook_names();
-        assert_eq!(hooks.len(), 7);
+        assert_eq!(hooks.len(), 6);
         for hook in hooks {
             assert!(!land.contains(hook), "the land's shader names the hook {hook}");
         }
@@ -7510,9 +7516,10 @@ fn clouds_color(p: CloudPixel) -> vec4f {
             (home.check)(hooks.shadow_hooks()).unwrap_or_else(|problem| panic!("{}: {problem}", home.name));
         }
         let source = world_source(hooks.shadow_hooks(), None);
-        assert_eq!(source.matches("fn shadow_delta(").count(), 1);
+        assert_eq!(source.matches("fn shadow_delta(").count(), 0);
         assert_eq!(source.matches("fn shadow_esm(").count(), 1);
-        assert!(!DRAW_SHADER.contains("fn shadow_delta(") && !DRAW_SHADER.contains("fn shadow_esm("));
+        assert_eq!(source.matches("fn shadow_of_cascades(").count(), 1);
+        assert!(!DRAW_SHADER.contains("fn shadow_esm(") && !DRAW_SHADER.contains("fn shadow_of_cascades("));
     }
 
     /// The cone of a spot light has one home, `nirender_wgpu::spot`: the draw part calls it in

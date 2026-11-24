@@ -39,10 +39,14 @@ struct Clusters {
     depth: vec4f,
 }
 struct Lighting {
-    // From a position less the eye to the two layers of the shadow map (`clip_with`).
-    shadow0: mat4x4f,
-    shadow1: mat4x4f,
-    // The constants of the shadow: c, the bias, the scale, and 1 over the resolution.
+    // From a position less the eye to the four cascades of the shadow map, the far ends of
+    // their slices along the view axis, their depth ranges / 16384, and the view axis.
+    shadow: array<mat4x4f, 4>,
+    cascade_ends: vec4f,
+    cascade_ranges: vec4f,
+    view_axis: vec4f,
+    // The constants of the shadow: c, the bias, the scale, and 1 over the resolution of a
+    // cascade.
     esm: vec4f,
     // The direction that the light of the sun goes in; w the strength of the caustics, 0 for
     // none.
@@ -58,33 +62,22 @@ struct Lighting {
 @group(1) @binding(15) var<storage, read> cluster_table: array<vec2u>;
 @group(1) @binding(16) var<storage, read> cluster_indexes: array<u32>;
 
-// How much of the sun reaches a place, 0 to 1: the shadow map of the frame, read as the draws
+// How much of the sun reaches a place, 0 to 1: the shadow of the cascades, read as the draws
 // of the game read it (`extension_shade` of the renderer), so the water has the shadow of the
-// shore next to it. All of it outside the map.
+// shore next to it. All of it past the last cascade.
 fn sunlight_at(place: vec3f) -> f32 {
     if (u32(lighting.origin.w) & 1u) == 0u {
         return 1.0;
     }
-    let s0 = clip_with(lighting.shadow0, place);
-    let s1 = clip_with(lighting.shadow1, place);
-    let p0 = vec3f(s0.xy, s0.z / s0.w);
-    let p1 = vec3f(s1.xy, s1.z / s1.w);
-    let dz = shadow_delta(p0, p1);
-    if dz >= 0.0 {
-        return 1.0;
-    }
-    // shadowESM, and the fade at the edge of the outer layer.
-    let fade = clamp(25.0 * (1.0 - abs(p1.xy)), vec2f(0.0), vec2f(1.0));
-    return 1.0 - shadow_esm(dz) * fade.x * fade.y;
+    let relative = place - u.eye.xyz;
+    let along = abs(dot(relative, lighting.view_axis.xyz));
+    return 1.0 - shadow_of_cascades(along, vec4f(relative, 1.0));
 }
 
 // The library of the shadow hooks (`core_mods.rs`): the shadow map of the frame and its
-// values. The hooks join this shader after its text.
-fn shadow_map_depth(layer: u32, uv: vec2f) -> f32 {
-    if layer == 0u {
-        return textureSampleLevel(shadow_atlas, clamp_sampler, vec2f(uv.x * 0.5, uv.y), 0.0).r;
-    }
-    return textureSampleLevel(shadow_atlas, clamp_sampler, vec2f(0.5 + uv.x * 0.5, uv.y), 0.0).r;
+// values. The hooks and the shadow of the cascades join this shader after its text.
+fn shadow_map_depth(cascade: u32, uv: vec2f) -> f32 {
+    return textureSampleLevel(shadow_atlas, clamp_sampler, shadow_atlas_uv(cascade, uv), 0.0).r;
 }
 fn shadow_texel() -> f32 {
     return lighting.esm.w;
@@ -94,6 +87,17 @@ fn shadow_esm_scale() -> f32 {
 }
 fn shadow_esm_values() -> vec2f {
     return lighting.esm.xy;
+}
+fn shadow_depth_range(cascade: u32) -> f32 {
+    return lighting.cascade_ranges[cascade];
+}
+fn shadow_slice_end(cascade: u32) -> f32 {
+    return lighting.cascade_ends[cascade];
+}
+// The point `p` (a position less the eye) in a cascade.
+fn shadow_place(cascade: u32, p: vec4f) -> vec3f {
+    let s = lighting.shadow[cascade] * p;
+    return vec3f(s.xy, s.z / s.w);
 }
 
 // The light of a point or spot light at a distance, for a place in `direction` (from the place

@@ -420,10 +420,16 @@ Differences from MGE XE on Direct3D 9 that are by design, not issues:
   drawn with its distant statics, shadows and sky. A plain interior cell that has distant
   statics in the generated data gets its statics and grass, with the fog of the game.
 - The grass receives the shadows of the distant land and the distant statics, as on
-  Direct3D 9. Where the shadow map ends (about 4000 units ahead) and in the fog, its shadow
-  fades as the shadow on the ground under it does; Direct3D 9 ends it at once. The
-  parameter "Grass: shadow" of the renderer's parameters window chooses: 2 (as the ground),
-  1 (as Direct3D 9), 0 (no shadow on the grass).
+  Direct3D 9, from the same cascades as the ground. In the fog its shadow fades as the shadow
+  on the ground under it does; Direct3D 9 does not fade it. The parameter "Grass: shadow" of
+  the renderer's parameters window chooses: 2 (as the ground), 1 (as Direct3D 9), 0 (no
+  shadow on the grass).
+- The shadow map has four cascades to the draw distance (W437), in place of the two layers
+  of Direct3D 9 (1000 and 4000 units). Each covers the sphere of its slice of the view, so a
+  texel has the same size in every view direction, and it is snapped to whole texels of the
+  sun's view from the world's origin, so the shadow's edges stay in place when the camera
+  moves. A pixel takes the cascade of its distance along the view axis and blends with the
+  next one over the last 10 % of the slice; the last cascade fades out to the draw distance.
 - A skinned shape takes every authored influence. On Direct3D 9 a vertex has at most 4, so a
   picture differs on a triangle with over 4 bones across its vertices.
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
@@ -459,8 +465,8 @@ view.
 | Shader view | What it shows |
 | --- | --- |
 | `lights` | a draw lit for each pixel shows only the light it takes, without its material, its textures and the fog |
-| `shadow-layers` | each pixel coloured by the layer of the shadow map that serves it: red the first, green the second, blue outside both, grey a draw without the shadow test; darker where the map shadows it. Where the frame draws no shadow map, the view shows the normal picture: a plain interior, the night, the shadows off or distant land off. An interior that behaves like an exterior has the map |
-| `shadow-map` | the atlas of the shadow map in the lower left of the picture |
+| `shadow-layers` | each pixel coloured by the cascade of the shadow map that serves it: red, green, blue and yellow from the near one, a mix of two in a blend band, black past the last, grey a draw without the shadow test; darker where the map shadows it. Where the frame draws no shadow map, the view shows the normal picture: a plain interior, the night, the shadows off or distant land off. An interior that behaves like an exterior has the map |
+| `shadow-map` | the atlas of the four cascades of the shadow map in the lower left of the picture |
 | `water <term>` | one term of the built-in water shader, 1 to 10: the table and the rule for a core mod's `water_color` are in `docs/core-mods.md`, "The water debug views" |
 | `post <term>` | 1 tints the result of the post chain, 2 shows its linear depth over 10000 units as grey |
 | `fog` | each draw writes the part of the fog that it applied, as grey: black no fog, white all fog. It is the draw's own fog: that of the game's scene or of the shape's own fog property for a draw of the game, none for a material without fog, the curve of the distant land for the land, the statics and the grass, and that of the water for the water, from above or below. Each draw of the sky (the dome, the clouds, the stars, the sun, the moons) is blue; a draw that adds to the picture writes black, the sun glare too. The dark overlay of the actors' stencil shadows writes nothing, so the fog under a shadow shows. The glows of the distant lights, the caustics of the sea, the blend and the post chain are left out while it is on (they add to the grey or change it), and the overlay names them |
@@ -469,7 +475,7 @@ The line sources: `lights`, `shadow-boxes`, `bounds`, `lua`.
 
 | Line source | What it draws |
 | --- | --- |
-| `shadow-boxes` | the box of each layer of the shadow map in this frame, from the matrix that the shadow pass used (with its snap to whole texels): the near layer red, the far layer green, over everything. A frame with no shadow pass draws none, and the overlay says so |
+| `shadow-boxes` | the box of each cascade of the shadow map in this frame, from the matrix that the shadow pass used (with its snap to whole texels): red, green, blue and yellow from the near one, over everything. A frame with no shadow pass draws none, and the overlay says so |
 | `lights` | a sphere for each light of the world that is on, at its place, with the reach that the draws use: a light with an end (the extension's fade) in yellow, with its reach in the clusters; a light with no end in cyan, with the radius by which it reaches the bound of a draw. The overlay gives the number of each kind |
 | `lua` | the lines, boxes and spheres that a mod sends from Lua (below), each in its colour, tested against the frame's depth or over everything. The overlay gives the shapes, their segments and the shapes refused past the limit |
 | `bounds` | the cull sphere of each instance that the main view of the frame drew (the engine's bound, which decides whether the shape is cut), the nearest to the camera first, at most 2,048: a plain draw magenta, a blend that the engine sorts orange, a skinned draw blue. Tested against the frame's depth. The overlay gives the spheres drawn and the instances drawn. The particle systems and the distant statics have no sphere here |

@@ -1059,7 +1059,7 @@ struct GrassParts {
     draw_seconds: f64,
 }
 
-/// The work of the draws of one set (the main view, the mirror, the two layers of the shadow
+/// The work of the draws of one set (the main view, the mirror, the four cascades of the shadow
 /// map) since the last report (`statics report` of `nirender.tune`).
 #[derive(Default, Clone, Copy)]
 struct SetStats {
@@ -1098,10 +1098,14 @@ struct WaitStats {
     again: u32,
 }
 
-/// The sets of a frame that exist from the start: the main view, the mirror and the two layers
-/// of the shadow map. The sets of the views of their own ([`tier_set`]) follow, a list that
-/// grows with the places and the spares (D82 caps, design B).
-pub const FIXED_SETS: usize = 4;
+/// The sets of a frame that exist from the start: the main view, the mirror and the four
+/// cascades of the shadow map. The sets of the views of their own ([`tier_set`]) follow, a list
+/// that grows with the places and the spares (D82 caps, design B).
+pub const FIXED_SETS: usize = 6;
+
+/// The sets of the cascades of the shadow map: the numbers of their views
+/// ([`super::view::SHADOW`]).
+pub const SHADOW_SETS: [usize; super::shadow::CASCADES] = super::view::SHADOW;
 
 /// The set of the view of its own in the set `k` of the views of their own (a place, or a
 /// spare: [`super::view::TierViews`]).
@@ -1110,7 +1114,7 @@ pub const fn tier_set(k: usize) -> usize {
 }
 
 /// The names of the fixed sets, for the report.
-const SET_NAMES: [&str; FIXED_SETS] = ["view", "mirror", "shadow 1", "shadow 2"];
+const SET_NAMES: [&str; FIXED_SETS] = ["view", "mirror", "shadow 1", "shadow 2", "shadow 3", "shadow 4"];
 
 /// The view group of the set `set` of the statics, when it is made.
 fn group_of(view_groups: &[Option<wgpu::BindGroup>], set: usize) -> Option<&wgpu::BindGroup> {
@@ -1541,7 +1545,7 @@ struct Gpu {
     mirror_pipeline_lines: Option<wgpu::RenderPipeline>,
     /// The depth from the sun into the shadow map.
     shadow_pipeline: wgpu::RenderPipeline,
-    /// The main view, the reflection, the two layers of the shadow map ([`FIXED_SETS`]), and the
+    /// The main view, the reflection, the four cascades of the shadow map ([`FIXED_SETS`]), and the
     /// views of their own, by the number of the set; `None` for a set not made yet or freed.
     sets: Vec<Option<BufferSet>>,
     /// What a set of the views of their own needs to make its uniforms and its group
@@ -1675,10 +1679,9 @@ pub struct GrassFrame {
 #[derive(Clone)]
 pub struct GrassShadow {
     pub atlas: std::rc::Rc<wgpu::TextureView>,
-    /// The matrices from a position less the eye to the two layers, with the layout of Direct3D
-    /// (made as `view::relative_of_product` makes them): the grass takes them with `clip_with`.
-    pub layers: [[f32; 16]; 2],
-    /// 1 over the resolution of a layer.
+    /// The values of the cascades for the grass, from a position less the eye.
+    pub cascades: super::shadow::Receiver,
+    /// 1 over the resolution of a cascade.
     pub rcp: f32,
     /// The visibility of the sun, for the light that `shadowSunEstimate` gives.
     pub sun_vis: f32,
@@ -1687,9 +1690,8 @@ pub struct GrassShadow {
     pub day: f32,
     /// The camera is above the sea: the fog weakens the shadow less below it.
     pub above_sea: bool,
-    /// The shadow of a blade ends as the shadow of the ground under it: the fade at the edge
-    /// of the outer layer and in the fog (tunable `grass.shadow`, 2). With 1, as the
-    /// Direct3D 9 path: no fade.
+    /// The shadow of a blade ends as the shadow of the ground under it: the fade in the fog
+    /// (tunable `grass.shadow`, 2). With 1, as the Direct3D 9 path: no fade.
     pub edge: bool,
 }
 
@@ -1703,9 +1705,13 @@ struct GrassUniforms {
     ambient: [f32; 4],
     wind: [f32; 4],
     foot: [f32; 4],
-    /// The matrices from the world to the two layers of the shadow map.
-    shadow_layers: [[f32; 16]; 2],
-    /// `ESM_c`, `ESM_bias`, `ESM_scale`, 1 over the resolution of a layer.
+    /// The matrices from a position less the eye to the four cascades of the shadow map, the
+    /// far ends of their slices, their depth ranges / 16384, and the view axis.
+    shadow_cascades: [[f32; 16]; 4],
+    cascade_ends: [f32; 4],
+    cascade_ranges: [f32; 4],
+    view_axis: [f32; 4],
+    /// `ESM_c`, `ESM_bias`, `ESM_scale`, 1 over the resolution of a cascade.
     esm: [f32; 4],
     /// `shadecolor`, and `shade` of `shadowSunEstimate`.
     shade: [f32; 4],
@@ -3271,7 +3277,13 @@ impl Statics {
             ambient: frame.ambient,
             wind: frame.wind,
             foot: frame.foot,
-            shadow_layers: frame.shadow.as_ref().map_or([[0.0; 16]; 2], |shadow| shadow.layers),
+            shadow_cascades: frame
+                .shadow
+                .as_ref()
+                .map_or([[0.0; 16]; 4], |shadow| shadow.cascades.matrices),
+            cascade_ends: frame.shadow.as_ref().map_or([0.0; 4], |shadow| shadow.cascades.ends),
+            cascade_ranges: frame.shadow.as_ref().map_or([0.0; 4], |shadow| shadow.cascades.ranges),
+            view_axis: frame.shadow.as_ref().map_or([0.0; 4], |shadow| shadow.cascades.axis),
             esm: frame
                 .shadow_values
                 .esm(frame.shadow.as_ref().map_or(0.0, |shadow| shadow.rcp)),
@@ -4085,7 +4097,7 @@ impl Statics {
             _ if own_samples => (&gpu.picture_pipeline, &None),
             _ => (&gpu.pipeline, &gpu.pipeline_lines),
         };
-        let shadow = matches!(set, 2 | 3);
+        let shadow = SHADOW_SETS.contains(&set);
         pass.set_pipeline(if shadow {
             &gpu.shadow_pipeline
         } else if scene.wireframe {
@@ -5251,17 +5263,26 @@ mod tests {
         for set in [0, 2, 3] {
             count_culled(&mut culled, set);
         }
-        assert_eq!(culled_text(&culled, set_name), "view: 1, mirror: 0, shadow 1: 1, shadow 2: 1");
-        for set in [0, 1, 2, 3] {
+        assert_eq!(
+            culled_text(&culled, set_name),
+            "view: 1, mirror: 0, shadow 1: 1, shadow 2: 1, shadow 3: 0, shadow 4: 0"
+        );
+        for set in [0, 1, 2, 3, 4, 5] {
             count_culled(&mut culled, set);
         }
-        assert_eq!(culled_text(&culled, set_name), "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2");
+        assert_eq!(
+            culled_text(&culled, set_name),
+            "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2, shadow 3: 1, shadow 4: 1"
+        );
         count_culled(&mut culled, FIXED_SETS + 1);
         assert_eq!(
             culled_text(&culled, set_name),
-            "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2, view of its own 2: 1"
+            "view: 2, mirror: 1, shadow 1: 2, shadow 2: 2, shadow 3: 1, shadow 4: 1, view of its own 2: 1"
         );
-        assert_eq!(culled_text(&[], set_name), "view: 0, mirror: 0, shadow 1: 0, shadow 2: 0");
+        assert_eq!(
+            culled_text(&[], set_name),
+            "view: 0, mirror: 0, shadow 1: 0, shadow 2: 0, shadow 3: 0, shadow 4: 0"
+        );
     }
 
     /// A record of 16 floats that starts at `first` and rises by one.
