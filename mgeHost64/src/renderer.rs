@@ -50,8 +50,6 @@ mod live_parts;
 mod lua_shapes;
 mod menu_keep;
 mod post;
-mod post_jop;
-mod post_look;
 mod ripples;
 mod shader_check;
 mod shadow;
@@ -109,6 +107,10 @@ mod part {
     pub const UNDER_MENU: &str = "the kept picture under a menu";
     pub const OUT_OF_VIEW: &str = "the water plane is out of view";
     pub const NO_LIGHTS: &str = "no distant lights";
+    /// The glows of a cell whose lamps do not light it: an interior that is not like an exterior,
+    /// one without a block in the lights' file, or the time from a change of the block until the
+    /// grid of the new block is in use (W630; the same answer as the lamps' light).
+    pub const NO_LAMPS_HERE: &str = "no lamps for the cell";
     pub const NOT_MADE: &str = "the bindings are not made yet";
     pub const NO_ENVIRONMENT: &str = "no environment record";
     /// The crate's name of the post chain's span (`Player::post_process`).
@@ -292,6 +294,45 @@ const DEBUG_SHAPES_ID: u32 = nirender_wgpu::debug_shapes_format::RECORD_ID;
 /// environment record. See [`Weather`]; the post shaders read it (`weather_mix` of their
 /// library, W622).
 const WEATHER_ID: u32 = 16;
+/// The version of each extension record that its reader takes, by id: the one home of these
+/// versions (Environment and Settings have theirs in their `impl` blocks). A record of another
+/// version needs its version word only, and its reader drops it. A change of a version here, of a
+/// record's layout or of an id's meaning needs another [`EXTENSION_FORMAT`]: nirender's
+/// `check_handshake.py --mge` reads this table and refuses a change of it with the same format.
+const RECORD_VERSIONS: &[(u32, u32)] = &[
+    (SHADER_STATE_ID, 1),
+    (PICTURE_ID, 1),
+    (WATER_LOOKS_ID, 1),
+    (WATER_MASKS_ID, 1),
+    (VIS_GROUPS_ID, 1),
+    (STATUS_ID, 1),
+    (PREFETCH_ID, 1),
+    (LIGHT_SETTINGS_ID, 1),
+    (LIGHT_RECORDS_ID, 1),
+    (RELOAD_ID, 1),
+    (WEATHER_ID, 1),
+];
+
+/// The version of the record of `id` in [`RECORD_VERSIONS`]; [`None`] for an id that is not in it.
+const fn record_version(id: u32) -> Option<u32> {
+    let mut at = 0;
+    while at < RECORD_VERSIONS.len() {
+        if RECORD_VERSIONS[at].0 == id {
+            return Some(RECORD_VERSIONS[at].1);
+        }
+        at += 1;
+    }
+    None
+}
+
+/// The version of the record of `id` for its reader, as a constant: an id with no entry in
+/// [`RECORD_VERSIONS`] stops the build.
+const fn version_of(id: u32) -> u32 {
+    match record_version(id) {
+        Some(version) => version,
+        None => panic!("an extension id with no entry in RECORD_VERSIONS"),
+    }
+}
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
@@ -327,6 +368,17 @@ fn changing_record_name(id: u32) -> Option<&'static str> {
 /// pools reserved). A frame with none of them is steady.
 fn frame_change(record: Option<&'static str>, loading: bool, statics: Option<&'static str>) -> Option<&'static str> {
     record.or(loading.then_some("a load of distant land")).or(statics)
+}
+
+/// One GPU test at a time in the whole crate (W629): every test that makes a device holds this
+/// lock while it lives. The helper has one device, and the process has one
+/// `gpu::last_submission`: a test on another device at the same time changes the index that the
+/// HDR read waits for, and its work changes the busy GPU of the HDR timing tests. A lock in each
+/// module let the tests of two modules run at once. A test that fails does not stop the next one.
+#[cfg(test)]
+pub(crate) fn one_gpu_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -475,23 +527,9 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
             .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
     };
     let sum = |parts: &[usize]| parts.iter().fold(0usize, |total, part| total.saturating_add(*part));
-    // The ids below, except the environment and the settings, are read at version 1 only: a
-    // record of another version needs its version word, and its reader drops it.
-    let version_1_only = matches!(
-        id,
-        SHADER_STATE_ID
-            | PICTURE_ID
-            | WATER_LOOKS_ID
-            | WATER_MASKS_ID
-            | VIS_GROUPS_ID
-            | STATUS_ID
-            | PREFETCH_ID
-            | LIGHT_SETTINGS_ID
-            | LIGHT_RECORDS_ID
-            | RELOAD_ID
-            | WEATHER_ID
-    );
-    if version_1_only && word(0) != 1 {
+    // The ids of RECORD_VERSIONS are read at their version only: a record of another version
+    // needs its version word, and its reader drops it.
+    if record_version(id).is_some_and(|version| word(0) != version as usize) {
         return Some(4);
     }
     Some(match id {
@@ -876,9 +914,9 @@ fn usable_or_say(usable: Result<(), String>) -> bool {
 }
 
 /// The weather of the game, record 16 ([`WEATHER_ID`]): the twin of `Deviceless::Weather` in
-/// `mged3d8device.cpp`. Its version is the literal 1 of `version_1_only` in
-/// [`extension_needed`], not a `const VERSION`: the handshake check does not see this layout,
-/// so a change of it needs another [`EXTENSION_FORMAT`] by hand.
+/// `mged3d8device.cpp`. Its version is its entry in [`RECORD_VERSIONS`]. The handshake check
+/// does not see a change of this layout with no change of the version: such a change needs
+/// another [`EXTENSION_FORMAT`] by hand.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct Weather {
@@ -897,10 +935,12 @@ impl Weather {
     /// The bytes of the record.
     const BYTES: usize = 20;
 
-    /// Reads the record; [`None`] for a short record or another version than 1.
+    /// Reads the record; [`None`] for a short record or another version than its entry in
+    /// [`RECORD_VERSIONS`].
     fn read(bytes: &[u8]) -> Option<Weather> {
+        const VERSION: u32 = version_of(WEATHER_ID);
         let weather: Weather = bytemuck::pod_read_unaligned(bytes.get(..Self::BYTES)?);
-        (weather.version == 1).then_some(weather)
+        (weather.version == VERSION).then_some(weather)
     }
 
     /// The `weather` of the post shaders' uniform: the weather now, the weather it changes
@@ -1377,8 +1417,10 @@ pub struct DistantLand {
     lamps_wait_told: bool,
     /// The frames of the session.
     frames_seen: u64,
-    /// The grid of the lamps in use is of the block of the cell: they may light it.
-    lamps_lit: bool,
+    /// The block of the cell while the grid of the lamps in use is of it: the lamps may light
+    /// it, and the glows are that block's (W630). [`None`] in a cell without lamps, and from a
+    /// change of the block until the grid of the new block is in use.
+    lit_block: Option<distantland::mge_xe::lights::Key>,
     /// The strength of the lamps' light in the last log line about it.
     lamp_strength_logged: f32,
     /// The darkness of the main view of the frame, made one time in `before_world`: the lamps'
@@ -1562,9 +1604,11 @@ fn wave_file(root: &Path) -> Option<Vec<u8>> {
 
 /// The places of a path under `Data Files`, in the order [`data_file`] tries them. A place
 /// whose real path is one already in the list (the game folder is also the folder of this
-/// program, or `MGE_XE_GAME_DIR`) is left out.
+/// program, or `MGE_XE_GAME_DIR`) is left out. `relative` names its folders with `/`; each
+/// place has the separator of the system only, so the log shows one kind.
 fn data_places(root: &Path, relative: &str) -> Vec<PathBuf> {
-    let name = Path::new("Data Files").join(relative);
+    let mut name = PathBuf::from("Data Files");
+    name.extend(relative.split('/'));
     let mut places = vec![root.join(&name)];
     if let Some(game) = nirender_wgpu::switches::path("MGE_XE_GAME_DIR") {
         places.push(game.join(&name));
@@ -2018,7 +2062,7 @@ impl DistantLand {
             light_binding: None,
             lamp_rebuilds: lamp_grid::LampRebuilds::default(),
             frames_seen: 0,
-            lamps_lit: false,
+            lit_block: None,
             lamp_strength_logged: -1.0,
             darkness: lamp_grid::Darkness::default(),
             haze_route: lamp_grid::HazeRoute::default(),
@@ -2286,7 +2330,7 @@ impl DistantLand {
                 self.lamp_rebuilds.counts.note(frame_ms, made.worker_ms(), delay);
             }
         }
-        self.lamps_lit = self.lamp_rebuilds.lit(block.as_ref());
+        self.lit_block = self.lamp_rebuilds.lit_block(block);
         if self.light_records_line_due {
             let file = self.lights.as_ref().and_then(distant_lights::DistantLights::file_records);
             if let (Some(records), Some(file)) = (self.light_records.as_deref(), file) {
@@ -4573,7 +4617,9 @@ impl Extension for DistantLand {
             println!(
                 "distant lamps: the strength {lamp_strength:.3} (lit {}): the brightness {:.3} of the sun [{r:.3}, {g:.3}, {b:.3}] \
                  x {sun_vis:.3} and the ambient [{ar:.3}, {ag:.3}, {ab:.3}]; the points {:.3}",
-                self.lamps_lit, self.darkness.luminance, self.darkness.points
+                self.lit_block.is_some(),
+                self.darkness.luminance,
+                self.darkness.points
             );
         }
         let haze = lamp_grid::HazeFrame {
@@ -4682,7 +4728,7 @@ impl Extension for DistantLand {
         let glows_skip = if self.debug_view.fog() {
             Some(debug_view::FOG_VIEW_OUT)
         } else {
-            self.glows_skip(scene)
+            self.glows_skip()
         };
         let glows = glows_skip.is_none();
         if let Some(reason) = glows_skip {
@@ -4690,11 +4736,12 @@ impl Extension for DistantLand {
             pass_report::note_skipped(part::GLOWS, reason);
         } else {
             let frame = self.glow_frame(scene, eye_range, planes, &projection);
-            match self.lights.as_mut() {
-                Some(lights) => {
-                    pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, 0));
+            match (self.lights.as_mut(), self.lit_block.as_ref()) {
+                (Some(lights), Some(block)) => {
+                    pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, 0, block));
                 }
-                None => pass_report::note_skipped(part::GLOW_CULL, part::NO_LIGHTS),
+                (None, _) => pass_report::note_skipped(part::GLOW_CULL, part::NO_LIGHTS),
+                (Some(_), None) => pass_report::note_skipped(part::GLOW_CULL, part::NO_LAMPS_HERE),
             }
         }
 
@@ -5051,8 +5098,9 @@ impl Extension for DistantLand {
         // the call (set 0 is the main view's).
         if glows_ready {
             let frame = self.glow_frame(scene, eye_range, planes, &projection);
-            if let Some(lights) = self.lights.as_mut().filter(|lights| lights.has_glows()) {
-                pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, k + 1));
+            let block = self.lit_block.as_ref();
+            if let (Some(lights), Some(block)) = (self.lights.as_mut().filter(|lights| lights.has_glows()), block) {
+                pass_report::note_result(part::GLOW_CULL, lights.prepare(scene, &frame, k + 1, block));
                 pass.push_debug_group("distant lights (view of its own)");
                 let glowed = lights.draw(pass, view_group, k + 1, scene.samples);
                 pass.pop_debug_group();
@@ -5711,7 +5759,7 @@ impl DistantLand {
         let of = |flag: Additions| (!parts.contains(flag)).then_some(NOT_IN_OPTIONS);
         let terrain = of(Additions::LAND).or_else(|| Self::terrain_skip(scene));
         let statics = of(Additions::STATICS).or_else(|| skipped("statics").then_some("left out by MGE_XE_SKIP"));
-        let glows = of(Additions::GLOWS).or_else(|| self.glows_skip(scene));
+        let glows = of(Additions::GLOWS).or_else(|| self.glows_skip());
         let grass = world
             .or_else(|| of(Additions::GRASS))
             .or_else(|| skipped("grass").then_some("left out by MGE_XE_SKIP"))
@@ -6879,15 +6927,15 @@ impl DistantLand {
     }
 
     /// Why the points of light of the distant lamps draw nothing in a view: left out, not dark
-    /// ([`lamp_grid::point_darkness`] of the frame), an interior, or under water (the page,
-    /// section 6).
-    fn glows_skip(&self, scene: &SceneView) -> Option<Skip> {
+    /// ([`lamp_grid::point_darkness`] of the frame), no lamps for the cell (no block of the
+    /// lights file for it, or its grid not made yet), or under water (the page, section 6).
+    fn glows_skip(&self) -> Option<Skip> {
         if skipped("glows") {
             Some("left out by MGE_XE_SKIP")
         } else if self.darkness.points <= 0.0 {
             Some("not dark")
-        } else if scene.interior {
-            Some("an interior")
+        } else if self.lit_block.is_none() {
+            Some(part::NO_LAMPS_HERE)
         } else if self.under_water() {
             Some("under water")
         } else {
@@ -6908,7 +6956,7 @@ impl DistantLand {
     /// the lights file ([`lamp_grid::lamp_block_key`]); else 0: in an interior without distant
     /// lamps, and from a change of the block until the grid of the new block.
     fn lamp_strength(&self) -> f32 {
-        if !self.lamps_lit || skipped("lamps") {
+        if self.lit_block.is_none() || skipped("lamps") {
             return 0.0;
         }
         self.darkness.gate * self.tunables.get(tunables::LAMP_STRENGTH)
@@ -6953,6 +7001,16 @@ mod data_place_tests {
         let places = data_places(folder, "shaders/water");
         let in_folder = places.iter().filter(|place| place.starts_with(folder)).count();
         assert_eq!(in_folder, 1, "{places:?}");
+    }
+
+    #[test]
+    fn a_place_has_one_kind_of_separator() {
+        // Path equality ignores the kind of separator, so the test compares the texts.
+        let places = data_places(Path::new("game"), "shaders/core/XE Common.wgsl");
+        let expected = ["game", "Data Files", "shaders", "core", "XE Common.wgsl"]
+            .iter()
+            .collect::<PathBuf>();
+        assert_eq!(shown(&places[0]), shown(&expected));
     }
 
     #[test]
@@ -8052,6 +8110,29 @@ mod weather_tests {
         assert_eq!(Weather::read(&whole[..19]), None);
     }
 
+    /// RECORD_VERSIONS (W241, W242): each id is in it once; a record of another version than its
+    /// entry needs its version word only, and a record of its version needs more. The ids whose
+    /// version is elsewhere (an `impl` block) or that have no version are not in it.
+    #[test]
+    fn a_record_of_another_version_than_its_table_entry_needs_its_version_word_only() {
+        for (at, &(id, version)) in RECORD_VERSIONS.iter().enumerate() {
+            assert!(
+                !RECORD_VERSIONS[..at].iter().any(|&(other, _)| other == id),
+                "the id {id} is in the table two times"
+            );
+            assert_eq!(extension_needed(id, &(version + 1).to_le_bytes()), Some(4), "the id {id}");
+            let own = [version.to_le_bytes(), [0; 4]].concat();
+            assert!(
+                extension_needed(id, &own).is_some_and(|needed| needed > 4),
+                "the id {id} at its version"
+            );
+            assert_eq!(version_of(id), version);
+        }
+        for id in [ENVIRONMENT_ID, SETTINGS_ID, TUNE_ID, HELLO_ID, DEBUG_SHAPES_ID] {
+            assert_eq!(record_version(id), None, "the id {id}");
+        }
+    }
+
     /// A record gives the uniform's `weather`: the two indices, the ratio and 1. Without a
     /// record all four are 0, so `weather_known()` of the shaders is false.
     #[test]
@@ -8552,8 +8633,7 @@ mod set_free_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn a_free_of_a_set_takes_its_glows_and_post_state_and_their_bytes() {
-        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
@@ -8700,8 +8780,7 @@ mod interior_start_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn an_interior_start_takes_a_late_catalog_and_becomes_a_distant_cell() {
-        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
@@ -8784,9 +8863,6 @@ mod interior_start_tests {
 #[cfg(test)]
 mod frame_value_tests {
     use super::*;
-
-    /// One GPU test at a time: each makes a device of its own.
-    static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A device with the helper's features and limits: the frame makes the post chain too.
     struct TestDevice {
@@ -8962,7 +9038,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn the_post_chain_gets_the_night() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let scene = gpu.scene();
         let (mut land, root) = super::set_free_tests::land_with_no_data("night");
@@ -8989,7 +9065,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn a_load_that_ends_after_the_frame_counts_from_the_next_frame() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let scene = gpu.scene();
         let (mut land, root, sender) = land_with_a_load("load-after-frame");
@@ -9016,7 +9092,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn distant_land_that_goes_off_after_the_frame_counts_from_the_next_frame() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let scene = gpu.scene();
         let (mut land, root, sender) = land_with_a_load("off-after-frame");
@@ -9046,7 +9122,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn a_frame_under_a_menu_after_a_world_frame_draws_no_land() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let scene = gpu.scene();
         let (mut land, root, sender) = land_with_a_load("menu-after-world");
@@ -9079,7 +9155,7 @@ mod frame_value_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn the_weather_multipliers_need_the_light_for_each_pixel() {
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let gpu = TestDevice::new();
         let mut scene = gpu.scene();
         scene.like_exterior = true;

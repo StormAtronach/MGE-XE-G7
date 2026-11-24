@@ -49,8 +49,8 @@ the mod that is on.
 
 ## The written ports
 
-A core mod has no built-in port, and some post shaders of mods have none: their pack files are
-written by hand from the mod's `.fx`.
+These pack files were written by hand from the mod's `.fx`, not exported: the files of core
+mods, and post shaders of mods that the renderer had no built-in port of.
 
 - `Watch the Skies - wgpu shaders/shaders/core-mods/XE Mod Sky.wgsl`: the `clouds_color` hook,
   from `CloudsPS` of `XE Mod Sky.fx`, md5 9ec82f14916051527a12be3577689c53, of
@@ -68,10 +68,8 @@ written by hand from the mod's `.fx`.
 - `Watch the Skies (older, Morrowind Refreshed) - wgpu shaders/shaders/XEshaders/Sunshafts.wgsl`:
   from `Sunshafts.fx`, md5 a0265743472e0aa94336b530a830c9d0, of
   `mods/Watch the Skies - Dynamic Weather and Sky Effects` in Morrowind Refreshed. It is the stock
-  Sunshafts with other numbers, two of them in expressions, so the stock port does not take them:
-  the file is the stock port with all the numbers of the `.fx`. The test
-  `the_older_watch_the_skies_sunshafts_is_the_stock_port_with_its_numbers` of `post_export.rs`
-  checks it.
+  Sunshafts with other numbers, two of them in expressions, so the stock port did not take them:
+  the file is the stock Sunshafts with all the numbers of the `.fx`.
 - `Watch the Skies (older, Morrowind Refreshed) - wgpu shaders/shaders/core-mods/XE Mod Sky.wgsl`:
   from `XE Mod Sky.fx`, md5 56b31f168d28ae2453e019552a53308e, of the same mod in Morrowind
   Refreshed. It is the current Watch the Skies' `XE Mod Sky.fx` with 9 other numbers: the file is
@@ -79,15 +77,15 @@ written by hand from the mod's `.fx`.
 
 ## The exported packs
 
-The renderer has ports built in, which it finds by the code key of the mod's `.fx` (post.rs
-`MOD_FILES`). The test `export_packs` of `mgeHost64/src/renderer/post_export.rs` writes such a
-port as a pack file. The file holds the port as the renderer runs it for the mod's real `.fx`
-(the `//!` header, then the WGSL with the file's numbers in the lines that end with
-`// file`). The tests of that module check each file against its port. The wgpu renderer reads
-`<name>.wgsl` before `<name>.fx`, so a number changed in the `.fx` does not reach the wgpu
-picture: change it in the `.wgsl`.
+Until W609 step 5 the renderer had ports built in, which it found by the code key of the mod's
+`.fx`. The test `export_packs` of `post_export.rs` wrote such a port as a pack file: the port as
+the renderer ran it for the mod's real `.fx` (the `//!` header, then the WGSL with the file's
+numbers in the lines that end with `// file`), and the tests of that module checked each file
+against its port. Step 5 removed the ports, the export and its tests: the pack files are the
+shaders now. The wgpu renderer reads only `<name>.wgsl`, so a number changed in the `.fx` does
+not reach the wgpu picture: change it in the `.wgsl`.
 
-The `.fx` copies that each exported pack was made from. All copies of a pack give the same port.
+The `.fx` copies that each exported pack was made from. All copies of a pack gave the same port.
 
 - `Ashfall - wgpu shaders/shaders/XEshaders/ashfall.wgsl`: `ashfall.fx` of
   `mods/Ashfall - A Camping Survival and Needs Mod`, md5 a4719efd5ca35fd57fc90a379ab9926e in
@@ -173,5 +171,4 @@ The `.fx` copies that each exported pack was made from. All copies of a pack giv
 - `Modern Lockpicking (MWSE) - wgpu shaders/shaders/XEshaders/modern-lockpicking/Bokeh.wgsl`:
   `modern-lockpicking/Bokeh.fx` of `mods/Modern Lockpicking (MWSE)` in Morrowind Refreshed
   (260602). It is the file of Inspect It (the same md5), loaded by another name, so the pack file
-  is the same as Inspect It's. The renderer has no built-in port for this name, so without this
-  pack the shader does not run on wgpu.
+  is the same as Inspect It's. Without this pack the shader does not run on wgpu.

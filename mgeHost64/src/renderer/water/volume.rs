@@ -86,8 +86,9 @@ impl Look {
     /// slots, then for each its number and its `WaterLook`. A look that is shorter than this
     /// layout keeps the standard values after its end. [`None`] for a record that is not one.
     pub fn read_table(bytes: &[u8]) -> Option<HashMap<u32, Look>> {
+        const VERSION: u32 = crate::renderer::version_of(crate::renderer::WATER_LOOKS_ID);
         let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-        if word(0)? != 1 {
+        if word(0)? != VERSION {
             return None;
         }
         let count = word(4)?;
@@ -1645,8 +1646,7 @@ mod tests {
     strengths[3] = light_strength(point, 100.0, vec3f(0.0, -1.0, 0.0));
 }
 ";
-        static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = GPU_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");

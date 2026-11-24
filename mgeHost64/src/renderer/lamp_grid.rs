@@ -364,6 +364,13 @@ impl LampRebuilds {
     pub fn lit(&self, block: Option<&Key>) -> bool {
         block.is_some_and(|block| self.made_for.as_ref().is_some_and(|made| made.block == *block))
     }
+
+    /// The cell's block `block` when the lamps light it ([`LampRebuilds::lit`]), else [`None`]:
+    /// the one answer of the lamps' light and of the glows of a frame (W630), so the two go on
+    /// and off together at a change of the cell.
+    pub fn lit_block(&self, block: Option<Key>) -> Option<Key> {
+        block.filter(|block| self.lit(Some(block)))
+    }
 }
 
 /// The key of the block of the lights file whose lamps light the cell of a frame: the
@@ -1686,6 +1693,48 @@ mod tests {
         assert!(!rebuilds.lit(Some(&EXTERIOR_KEY)));
     }
 
+    /// The glows and the lamps' light of a frame take one answer, `lit_block` (W630): the cell's
+    /// block while its grid is in use. The cases: the exterior; an interior like an exterior
+    /// with a name, while the grid is still the exterior's (the block changed, its grid not in use
+    /// yet) and then with its own grid; an interior like an exterior without a name; another
+    /// interior. Each answer is also the block whose glows the frame culls.
+    #[test]
+    fn the_glows_and_the_lamps_light_with_one_block() {
+        let file = Arc::new(file_lamps());
+        let lamps = |_: &Key| Arc::clone(&file);
+        let mut name = [0u8; 64];
+        name[..17].copy_from_slice(b"Mournhold, Temple");
+        let interior = key(b"mournhold, temple");
+        let mut rebuilds = LampRebuilds::default();
+        assert!(rebuilds.want(outlander_test(), FADED, EXTERIOR_KEY, lamps, None));
+        assert!(matches!(
+            rebuilds.finished(true, 1, Some(&EXTERIOR_KEY)),
+            Some(Finished::HandOver(_))
+        ));
+
+        let exterior = lamp_block_key(false, true, &[0; 64]);
+        assert_eq!(rebuilds.lit_block(exterior), Some(EXTERIOR_KEY));
+
+        // The player goes into the interior like an exterior: off until its grid is in use.
+        let like = lamp_block_key(true, true, &name);
+        assert_eq!(like, Some(interior.clone()));
+        assert_eq!(
+            rebuilds.lit_block(like.clone()),
+            None,
+            "the block changed, its grid is not in use yet"
+        );
+        assert!(rebuilds.want(outlander_test(), FADED, interior.clone(), lamps, None));
+        assert!(matches!(
+            rebuilds.finished(true, 2, Some(&interior)),
+            Some(Finished::HandOver(_))
+        ));
+        assert_eq!(rebuilds.lit_block(like), Some(interior));
+
+        // No name, or not like an exterior: no block, so no glows and no light.
+        assert_eq!(rebuilds.lit_block(lamp_block_key(true, true, &[0; 64])), None);
+        assert_eq!(rebuilds.lit_block(lamp_block_key(true, false, &name)), None);
+    }
+
     /// The block of a cell: the exterior's; an interior like an exterior by its name, with A to
     /// Z lowered (the key of the generator); none in another interior.
     #[test]
@@ -2235,6 +2284,7 @@ struct Case {{ flags: u32, phase: f32, time: f32, depth: f32 }}
 }}"
         );
 
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");

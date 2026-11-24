@@ -25,11 +25,17 @@ fn main() {
         .position(|a| a == "--morrowind-dir")
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from);
+    // The developer form keeps the Direct3D 9 path for the runner's `--reference` (W326).
+    let form = if args.iter().any(|a| a == "--direct3d9") {
+        Form::Developer
+    } else {
+        Form::Release
+    };
 
     let root = workspace_root();
 
     match command {
-        "build" => cmd_build(&root, mode),
+        "build" => cmd_build(&root, mode, form),
         // The archive is a release build, as the builds of each day: it packs fast, and it
         // has the same binaries that the tests ran. `--max-perf` is for a final release.
         "dist" => cmd_dist(
@@ -39,8 +45,9 @@ fn main() {
             } else {
                 BuildMode::Release
             },
+            form,
         ),
-        "deploy" => cmd_deploy(&root, mode, morrowind_dir),
+        "deploy" => cmd_deploy(&root, mode, form, morrowind_dir),
         "compdb" => cmd_compdb(&root),
         _ => print_usage(),
     }
@@ -48,7 +55,7 @@ fn main() {
 
 fn print_usage() {
     eprintln!(concat!(
-        "Usage: cargo xtask <command> [--release | --max-perf] [--morrowind-dir <path>]\n\n",
+        "Usage: cargo xtask <command> [--release | --max-perf] [--direct3d9] [--morrowind-dir <path>]\n\n",
         "Commands:\n",
         "  build     Build all artifacts and mirror assets/ into bin/MSVC-<config>/\n",
         "  dist      Build --release (or --max-perf) and pack a release archive into dist/\n",
@@ -63,8 +70,46 @@ fn print_usage() {
         "  --release   release / release-dll profiles\n",
         "  --max-perf  max-perf / max-perf-dll profiles (codegen-units=1 + fat LTO; slow)\n",
         "`dist` builds --release into MGE-XE-G7-v<version>-test.7z; with --max-perf it\n",
-        "builds a final release into MGE-XE-G7-v<version>.7z (slow)."
+        "builds a final release into MGE-XE-G7-v<version>.7z (slow).\n\n",
+        "Forms:\n",
+        "  (default)    the player's form: wgpu only; renderer_wgpu = false is ignored\n",
+        "  --direct3d9  the developer form: the Direct3D 9 path too, for the runner's --reference"
     ));
+}
+
+/// The form of a build (W326). A release has no Direct3D 9: `runtime.renderer_wgpu = false` is
+/// ignored and the settings program has no setting of the Direct3D 9 path. The developer form
+/// keeps the Direct3D 9 path for the runner's `--reference`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Form {
+    Release,
+    Developer,
+}
+
+impl Form {
+    /// The features of the 32-bit DLLs' build: `max-perf` for `--max-perf`, `direct3d9` for the
+    /// developer form.
+    fn dll_features(self, mode: BuildMode) -> Vec<&'static str> {
+        let mut features = Vec::new();
+        if matches!(mode, BuildMode::MaxPerf) {
+            // Cargo's lto/codegen-units do not reach the C++; this is what turns on
+            // /GL + /LTCG so `--max-perf` actually affects d3d8.dll.
+            features.push("d3d8/max-perf");
+        }
+        if self == Form::Developer {
+            features.push("d3d8/direct3d9");
+        }
+        features
+    }
+
+    /// The features of the x64 executables' build: the settings program's `direct3d9` for the
+    /// developer form.
+    fn exe_features(self) -> Vec<&'static str> {
+        match self {
+            Form::Release => Vec::new(),
+            Form::Developer => vec!["MGEXEgui/direct3d9"],
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -277,7 +322,7 @@ fn remap_config(root: &Path, triple: &str) -> String {
     format!("target.{triple}.rustflags=[{}]", flags.join(", "))
 }
 
-fn cmd_build(root: &Path, mode: BuildMode) {
+fn cmd_build(root: &Path, mode: BuildMode, form: Form) {
     let dll_profile = mode.dll_profile();
     let exe_profile = mode.exe_profile();
 
@@ -294,10 +339,9 @@ fn cmd_build(root: &Path, mode: BuildMode) {
         .arg("i686-pc-windows-msvc")
         .arg("--profile")
         .arg(dll_profile);
-    if matches!(mode, BuildMode::MaxPerf) {
-        // Cargo's lto/codegen-units do not reach the C++; this is what turns on
-        // /GL + /LTCG so `--max-perf` actually affects d3d8.dll.
-        dll_cmd.arg("--features").arg("d3d8/max-perf");
+    let dll_features = form.dll_features(mode);
+    if !dll_features.is_empty() {
+        dll_cmd.arg("--features").arg(dll_features.join(","));
     }
     dll_cmd.current_dir(root);
     run(&mut dll_cmd);
@@ -316,6 +360,10 @@ fn cmd_build(root: &Path, mode: BuildMode) {
         .arg("--profile")
         .arg(exe_profile)
         .current_dir(root);
+    let exe_features = form.exe_features();
+    if !exe_features.is_empty() {
+        exe_cmd.arg("--features").arg(exe_features.join(","));
+    }
     run(&mut exe_cmd);
 
     let out_dir = root.join("bin").join(format!("MSVC-{}", mode.config_name()));
@@ -467,8 +515,8 @@ fn seven_zip() -> PathBuf {
 ///
 /// `mode` is `Release` or `MaxPerf`. `MaxPerf` (fat LTO, one codegen unit) takes some
 /// minutes more for each archive and is for a final release.
-fn cmd_dist(root: &Path, mode: BuildMode) {
-    cmd_build(root, mode);
+fn cmd_dist(root: &Path, mode: BuildMode, form: Form) {
+    cmd_build(root, mode, form);
 
     // Stage into a directory rebuilt from scratch rather than packing bin\MSVC-*
     // directly. `mirror_dir` only ever adds, so that directory keeps files that
@@ -553,7 +601,7 @@ fn cmd_dist(root: &Path, mode: BuildMode) {
     println!("Packed {} ({:.1} MiB)", archive.display(), size as f64 / (1024.0 * 1024.0));
 }
 
-fn cmd_deploy(root: &Path, mode: BuildMode, morrowind_dir: Option<PathBuf>) {
+fn cmd_deploy(root: &Path, mode: BuildMode, form: Form, morrowind_dir: Option<PathBuf>) {
     let morrowind = morrowind_dir
         .or_else(|| env::var("MGE_XE_MORROWIND_DIR").ok().map(PathBuf::from))
         .or_else(|| resolve_from_local_toml(root))
@@ -567,7 +615,7 @@ fn cmd_deploy(root: &Path, mode: BuildMode, morrowind_dir: Option<PathBuf>) {
             process::exit(1);
         });
 
-    cmd_build(root, mode);
+    cmd_build(root, mode, form);
 
     let config = mode.config_name();
     let src_bin = root.join("bin").join(format!("MSVC-{config}"));
@@ -796,6 +844,21 @@ fn should_copy(src: &Path, dest: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The release form builds no Direct3D 9 (W326); the developer form adds `direct3d9` to d3d8
+    /// and to the settings program; `--max-perf` keeps its own feature in both forms.
+    #[test]
+    fn only_the_developer_form_has_direct3d9() {
+        assert!(Form::Release.dll_features(BuildMode::Release).is_empty());
+        assert!(Form::Release.exe_features().is_empty());
+        assert_eq!(Form::Developer.dll_features(BuildMode::Release), ["d3d8/direct3d9"]);
+        assert_eq!(Form::Developer.exe_features(), ["MGEXEgui/direct3d9"]);
+        assert_eq!(Form::Release.dll_features(BuildMode::MaxPerf), ["d3d8/max-perf"]);
+        assert_eq!(
+            Form::Developer.dll_features(BuildMode::MaxPerf),
+            ["d3d8/max-perf", "d3d8/direct3d9"]
+        );
+    }
 
     /// A clean stamp of the repo's core files passes the release check; a changed byte, a
     /// build line of another build, a missing file and a file that the repo does not have
