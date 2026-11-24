@@ -80,14 +80,16 @@ reads it at each frame end and calls `MGE_StreamMessage(id, data, length)` of `d
 | --- | --- | --- |
 | 1 | distant land: version 1, reason 1 loaded / 2 arrived, the serial of the wait it answers (0 none) | `LOADED` once; `ARRIVED` after a game load or a jump of more than 2 cells, when `Statics::settled` and the host's `HostReadiness` has no job of the list and of the mip chains left (`renderer/arrival.rs`; or after 10 s) |
 
-The wait of a game load (`Deviceless::waitForDistantLand`): the game sends record 10 and
-draws its loading bar until `ARRIVED` with that serial comes back (or 15 s). The frames of
-the loading bar have no world: the crate calls `Extension::after_frame(scene)` at the end of
-each live frame, and there the helper finishes its loads and streams the statics near the
-place (`Statics::prefetch`). The game holds its load only with `distant_land.wait_on_load`
-(on for a new file since 2026-11-17, the owner's D581). Without it the helper's wait is open
-in world frames: `statics report` counts the subsets that arrive in it apart ("arrivals
-during a wait").
+The wait of a game load (`Deviceless::prefetchDistantLand`): the game sends record 10 and
+draws its loading bar until `ARRIVED` with that serial comes back (or 15 s). A move in play
+(a door, a travel, Recall, coc) sends record 10 and does not wait, and opens no loading bar,
+as in MGE XE G7: the engine's loading menu hides and restores the whole interface, and a bar
+of ours in play crashed the engine (W648). The frames of the loading bar have no world: the
+crate calls `Extension::after_frame(scene)` at the end of each live frame, and there the
+helper finishes its loads and streams the statics near the place (`Statics::prefetch`). The
+game holds its load only with `distant_land.wait_on_load` (on for a new file since
+2026-11-17, the owner's D581). Without it the helper's wait is open in world frames:
+`statics report` counts the subsets that arrive in it apart ("arrivals during a wait").
 
 `d3d8.dll` queues the reasons (`distantlandready.h`, also filled by the Direct3D 9 path); the
 Lua of MGE XE (`MGE XE Options/events.lua`) takes them through the FFI export
