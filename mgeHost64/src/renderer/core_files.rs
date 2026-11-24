@@ -386,6 +386,14 @@ mod tests {
         }
     }
 
+    /// The band of the cascades in the shader is the band of shadow.rs, which fits the spheres
+    /// (addendum 7): one number in two homes, checked here.
+    #[test]
+    fn the_band_of_the_cascades_is_the_band_of_the_fit() {
+        let band = format!("let band = end - {:?} * (end - start);", crate::renderer::shadow::BAND);
+        assert!(SHADOW.part("cascades").contains(&band), "{band}");
+    }
+
     /// The texts at their move from the constants of the Rust code (W609 step 3b): the FNV-1a of
     /// each old constant's text with LF line ends. A change of a shader changes its number here.
     #[test]

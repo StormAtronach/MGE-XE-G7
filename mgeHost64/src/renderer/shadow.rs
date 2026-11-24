@@ -215,8 +215,7 @@ const REACH: f64 = ZRANGE as f64;
 pub const DEPTH_UNIT: f32 = 2.0 * ZRANGE;
 /// The last part of each slice: there a pixel blends its cascade's shadow with the next one's,
 /// and in the last slice the shadow fades out. The shader has the same number
-/// (`shadow_cascade_of`); the tests use this one.
-#[cfg(test)]
+/// (`shadow_cascade_of`; a test of core_files checks it).
 pub const BAND: f32 = 0.1;
 /// The far end of cascade 0 when the draw distance is 4000 units or more.
 const FIRST_END: f32 = 1000.0;
@@ -233,6 +232,19 @@ pub fn slice_ends(draw_distance: f32) -> [f32; CASCADES] {
 /// first.
 fn slice_start(ends: &[f32; CASCADES], cascade: usize) -> f32 {
     if cascade == 0 { 0.0 } else { ends[cascade - 1] }
+}
+
+/// The start of the band at the end of a slice: there the pixels start to blend in the next
+/// cascade.
+fn band_start(ends: &[f32; CASCADES], cascade: usize) -> f32 {
+    let end = ends[cascade];
+    end - BAND * (end - slice_start(ends, cascade))
+}
+
+/// The near end of what a cascade covers: the start of the band of the slice before it, where
+/// its pixels first take it (addendum 7, verdict 795 4.1), and 0 for the first.
+fn fit_start(ends: &[f32; CASCADES], cascade: usize) -> f32 {
+    if cascade == 0 { 0.0 } else { band_start(ends, cascade - 1) }
 }
 
 /// The bounding sphere of a slice of the camera's view from `near` to `far` along the view axis,
@@ -339,7 +351,7 @@ impl Cascades {
         let ends = slice_ends(draw_distance);
         let axis = normalize64(eye_vec.map(f64::from));
         let spheres: [([f64; 3], f64); CASCADES] = core::array::from_fn(|i| {
-            let (along, radius) = slice_sphere(slice_start(&ends, i), ends[i], tan[0], tan[1]);
+            let (along, radius) = slice_sphere(fit_start(&ends, i), ends[i], tan[0], tan[1]);
             let centre = core::array::from_fn(|c| eye[c] as f64 + along * axis[c]);
             (centre, radius)
         });
@@ -360,9 +372,8 @@ impl Cascades {
 pub fn cascade_of(z: f32, ends: &[f32; CASCADES]) -> (usize, f32) {
     for (cascade, &end) in ends.iter().enumerate() {
         if z < end {
-            let start = slice_start(ends, cascade);
-            let band_start = end - BAND * (end - start);
-            return (cascade, ((z - band_start) / (end - band_start)).clamp(0.0, 1.0));
+            let band = band_start(ends, cascade);
+            return (cascade, ((z - band) / (end - band)).clamp(0.0, 1.0));
         }
     }
     (CASCADES, 1.0)
@@ -803,8 +814,8 @@ const CASCADE_ROWS: [usize; CASCADES] = [0, 4, 13, 17];
 #[cfg(test)]
 mod tests {
     use super::{
-        CASCADES, Cascades, DEBUG_SHADER, DEPTH_UNIT, ESM_BIAS, ESM_C, ESM_SCALE, RADII, Shadow, cascade_of, delta_in_unit,
-        depth_step, layer_matrix, light_vector, slice_ends, slice_sphere, sun_light,
+        BAND, CASCADES, Cascades, DEBUG_SHADER, DEPTH_UNIT, ESM_BIAS, ESM_C, ESM_SCALE, RADII, Shadow, cascade_of,
+        delta_in_unit, depth_step, layer_matrix, light_vector, slice_ends, slice_sphere, sun_light,
     };
     use nirender_wgpu::wgpu::TextureFormat;
 
@@ -893,7 +904,14 @@ mod tests {
             [0.7, 0.7, 0.3],
         ];
         for (cascade, expected) in [888.0, 3395.0, 13092.0, 50485.0].into_iter().enumerate() {
-            let near = if cascade == 0 { 0.0 } else { ends[cascade - 1] };
+            // From the start of the band of the slice before (addendum 7): no change of the radius
+            // at 75 degrees.
+            let near = if cascade == 0 {
+                0.0
+            } else {
+                let before = if cascade == 1 { 0.0 } else { ends[cascade - 2] };
+                ends[cascade - 1] - BAND * (ends[cascade - 1] - before)
+            };
             for direction in directions {
                 let cascades = Cascades::new(
                     eye.map(|v| v as f32),
@@ -1069,12 +1087,19 @@ mod tests {
         }
     }
 
+    /// The half-angle tangents of a 16:9 view with the horizontal field of view `degrees`.
+    fn tan_of(degrees: f32) -> [f32; 2] {
+        let tan_x = (0.5 * degrees).to_radians().tan();
+        [tan_x, tan_x * 9.0 / 16.0]
+    }
+
     /// Every point of a slice is in the map of its cascade, in x, y and depth, for a high
-    /// camera, a high sun and a side sun: so the ground under the camera is in cascade 0 when
-    /// its distance along the view axis is in slice 0.
+    /// camera, a high sun and a side sun, at fields of view of 75, 40, 25 and 10 degrees. So is
+    /// every point of the band at the end of the slice before it, where a pixel mixes in this
+    /// cascade (verdict 795, 4.1). And the ground under the camera is in cascade 0 when its
+    /// distance along the view axis is in slice 0.
     #[test]
     fn each_slice_is_inside_the_map_of_its_cascade() {
-        let tan = default_tan();
         let ends = slice_ends(DRAW_DISTANCE);
         let poses: [([f32; 3], [f32; 3]); 3] = [
             // A camera 600 units above the ground looking down 40 degrees.
@@ -1083,29 +1108,39 @@ mod tests {
             ([32864.0, -107932.0, 1835.0], [0.0, 1.0, 0.0]),
         ];
         let suns = [[0.05, 0.1, -1.0], [-0.95, 0.1, -0.25], [-0.416, 0.546, -0.728]];
-        for (eye, axis) in poses {
-            for sun in suns {
-                let light = light_vector(Some(sun)).unwrap();
-                let cascades = Cascades::new(eye, axis, tan, DRAW_DISTANCE, light, 2048);
-                for cascade in 0..CASCADES {
-                    let near = if cascade == 0 { 0.0 } else { ends[cascade - 1] as f64 };
-                    let corners =
-                        slice_corners(eye.map(f64::from), unit(axis.map(f64::from)), tan, near, ends[cascade] as f64);
-                    for corner in corners {
-                        let p = project64(&cascades.world[cascade], corner);
-                        assert!(p[0].abs() <= 1.0 && p[1].abs() <= 1.0, "cascade {cascade} {sun:?}: {p:?}");
-                        assert!((0.0..=1.0).contains(&p[2]), "cascade {cascade} {sun:?}: {p:?}");
+        for degrees in [75.0, 40.0, 25.0, 10.0] {
+            let tan = tan_of(degrees);
+            for (eye, axis) in poses {
+                for sun in suns {
+                    let light = light_vector(Some(sun)).unwrap();
+                    let cascades = Cascades::new(eye, axis, tan, DRAW_DISTANCE, light, 2048);
+                    for cascade in 0..CASCADES {
+                        let near = if cascade == 0 { 0.0 } else { ends[cascade - 1] as f64 };
+                        let mut corners =
+                            slice_corners(eye.map(f64::from), unit(axis.map(f64::from)), tan, near, ends[cascade] as f64);
+                        if cascade > 0 {
+                            // The band at the end of the slice before: from its start to `near`.
+                            let before = if cascade == 1 { 0.0 } else { ends[cascade - 2] as f64 };
+                            let band = near - BAND as f64 * (near - before);
+                            corners.extend(slice_corners(eye.map(f64::from), unit(axis.map(f64::from)), tan, band, near));
+                        }
+                        for corner in corners {
+                            let p = project64(&cascades.world[cascade], corner);
+                            let inside = p[0].abs() <= 1.0 && p[1].abs() <= 1.0 && (0.0..=1.0).contains(&p[2]);
+                            assert!(inside, "{degrees} degrees, cascade {cascade}, sun {sun:?}: {p:?}");
+                        }
                     }
-                }
-                // The ground under the high camera: 600 units down and 500 ahead.
-                if eye[2] == 600.0 {
-                    let ground = [eye[0] as f64, eye[1] as f64 + 500.0, 0.0];
-                    let along = (0..3)
-                        .map(|c| (ground[c] - eye[c] as f64) * unit(axis.map(f64::from))[c])
-                        .sum::<f64>();
-                    assert_eq!(cascade_of(along as f32, &ends).0, 0, "{along}");
-                    let p = project64(&cascades.world[0], ground);
-                    assert!(p[0].abs() <= 1.0 && p[1].abs() <= 1.0 && (0.0..=1.0).contains(&p[2]), "{p:?}");
+                    // The ground under the high camera: 600 units down and 500 ahead, in the view
+                    // at 75 degrees.
+                    if eye[2] == 600.0 && degrees == 75.0 {
+                        let ground = [eye[0] as f64, eye[1] as f64 + 500.0, 0.0];
+                        let along = (0..3)
+                            .map(|c| (ground[c] - eye[c] as f64) * unit(axis.map(f64::from))[c])
+                            .sum::<f64>();
+                        assert_eq!(cascade_of(along as f32, &ends).0, 0, "{along}");
+                        let p = project64(&cascades.world[0], ground);
+                        assert!(p[0].abs() <= 1.0 && p[1].abs() <= 1.0 && (0.0..=1.0).contains(&p[2]), "{p:?}");
+                    }
                 }
             }
         }
