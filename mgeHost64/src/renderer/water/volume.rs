@@ -86,8 +86,9 @@ impl Look {
     /// slots, then for each its number and its `WaterLook`. A look that is shorter than this
     /// layout keeps the standard values after its end. [`None`] for a record that is not one.
     pub fn read_table(bytes: &[u8]) -> Option<HashMap<u32, Look>> {
+        const VERSION: u32 = crate::renderer::version_of(crate::renderer::WATER_LOOKS_ID);
         let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-        if word(0)? != 1 {
+        if word(0)? != VERSION {
             return None;
         }
         let count = word(4)?;

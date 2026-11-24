@@ -42,7 +42,8 @@ pub struct LightSettings {
 }
 
 impl LightSettings {
-    pub const VERSION: u32 = 1;
+    /// Its entry in `RECORD_VERSIONS` of the renderer.
+    pub const VERSION: u32 = super::version_of(super::LIGHT_SETTINGS_ID);
     /// The bytes of record 12: twelve words (`Deviceless::LightSettings`).
     pub const BYTES: usize = 48;
 
@@ -200,7 +201,8 @@ impl LightRecords {
     /// after the last record. An id is the game's own bytes, and every id is taken: no id makes
     /// the record refused.
     pub fn read(bytes: &[u8]) -> Option<LightRecords> {
-        if word(bytes, 0)? != 1 {
+        const VERSION: u32 = super::version_of(super::LIGHT_RECORDS_ID);
+        if word(bytes, 0)? != VERSION {
             return None;
         }
         let count = word(bytes, 4)?;

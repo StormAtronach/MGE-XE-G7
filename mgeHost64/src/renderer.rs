@@ -290,6 +290,45 @@ const DEBUG_SHAPES_ID: u32 = nirender_wgpu::debug_shapes_format::RECORD_ID;
 /// environment record. See [`Weather`]; the post shaders read it (`weather_mix` of their
 /// library, W622).
 const WEATHER_ID: u32 = 16;
+/// The version of each extension record that its reader takes, by id: the one home of these
+/// versions (Environment and Settings have theirs in their `impl` blocks). A record of another
+/// version needs its version word only, and its reader drops it. A change of a version here, of a
+/// record's layout or of an id's meaning needs another [`EXTENSION_FORMAT`]: nirender's
+/// `check_handshake.py --mge` reads this table and refuses a change of it with the same format.
+const RECORD_VERSIONS: &[(u32, u32)] = &[
+    (SHADER_STATE_ID, 1),
+    (PICTURE_ID, 1),
+    (WATER_LOOKS_ID, 1),
+    (WATER_MASKS_ID, 1),
+    (VIS_GROUPS_ID, 1),
+    (STATUS_ID, 1),
+    (PREFETCH_ID, 1),
+    (LIGHT_SETTINGS_ID, 1),
+    (LIGHT_RECORDS_ID, 1),
+    (RELOAD_ID, 1),
+    (WEATHER_ID, 1),
+];
+
+/// The version of the record of `id` in [`RECORD_VERSIONS`]; [`None`] for an id that is not in it.
+const fn record_version(id: u32) -> Option<u32> {
+    let mut at = 0;
+    while at < RECORD_VERSIONS.len() {
+        if RECORD_VERSIONS[at].0 == id {
+            return Some(RECORD_VERSIONS[at].1);
+        }
+        at += 1;
+    }
+    None
+}
+
+/// The version of the record of `id` for its reader, as a constant: an id with no entry in
+/// [`RECORD_VERSIONS`] stops the build.
+const fn version_of(id: u32) -> u32 {
+    match record_version(id) {
+        Some(version) => version,
+        None => panic!("an extension id with no entry in RECORD_VERSIONS"),
+    }
+}
 /// The format of the extension records of this build. The twin is `MGE_EXTENSION_FORMAT` in
 /// `d3d8/cpp/mge/mgeversion.h`; a unit test compares the two. Bump both with any change of a
 /// record's layout or of an id's meaning.
@@ -473,23 +512,9 @@ fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {
             .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
     };
     let sum = |parts: &[usize]| parts.iter().fold(0usize, |total, part| total.saturating_add(*part));
-    // The ids below, except the environment and the settings, are read at version 1 only: a
-    // record of another version needs its version word, and its reader drops it.
-    let version_1_only = matches!(
-        id,
-        SHADER_STATE_ID
-            | PICTURE_ID
-            | WATER_LOOKS_ID
-            | WATER_MASKS_ID
-            | VIS_GROUPS_ID
-            | STATUS_ID
-            | PREFETCH_ID
-            | LIGHT_SETTINGS_ID
-            | LIGHT_RECORDS_ID
-            | RELOAD_ID
-            | WEATHER_ID
-    );
-    if version_1_only && word(0) != 1 {
+    // The ids of RECORD_VERSIONS are read at their version only: a record of another version
+    // needs its version word, and its reader drops it.
+    if record_version(id).is_some_and(|version| word(0) != version as usize) {
         return Some(4);
     }
     Some(match id {
@@ -874,9 +899,9 @@ fn usable_or_say(usable: Result<(), String>) -> bool {
 }
 
 /// The weather of the game, record 16 ([`WEATHER_ID`]): the twin of `Deviceless::Weather` in
-/// `mged3d8device.cpp`. Its version is the literal 1 of `version_1_only` in
-/// [`extension_needed`], not a `const VERSION`: the handshake check does not see this layout,
-/// so a change of it needs another [`EXTENSION_FORMAT`] by hand.
+/// `mged3d8device.cpp`. Its version is its entry in [`RECORD_VERSIONS`]. The handshake check
+/// does not see a change of this layout with no change of the version: such a change needs
+/// another [`EXTENSION_FORMAT`] by hand.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct Weather {
@@ -895,10 +920,12 @@ impl Weather {
     /// The bytes of the record.
     const BYTES: usize = 20;
 
-    /// Reads the record; [`None`] for a short record or another version than 1.
+    /// Reads the record; [`None`] for a short record or another version than its entry in
+    /// [`RECORD_VERSIONS`].
     fn read(bytes: &[u8]) -> Option<Weather> {
+        const VERSION: u32 = version_of(WEATHER_ID);
         let weather: Weather = bytemuck::pod_read_unaligned(bytes.get(..Self::BYTES)?);
-        (weather.version == 1).then_some(weather)
+        (weather.version == VERSION).then_some(weather)
     }
 
     /// The `weather` of the post shaders' uniform: the weather now, the weather it changes
@@ -8039,6 +8066,29 @@ mod weather_tests {
         assert_eq!(extension_needed(WEATHER_ID, &other), Some(4));
         assert_eq!(Weather::read(&other), None);
         assert_eq!(Weather::read(&whole[..19]), None);
+    }
+
+    /// RECORD_VERSIONS (W241, W242): each id is in it once; a record of another version than its
+    /// entry needs its version word only, and a record of its version needs more. The ids whose
+    /// version is elsewhere (an `impl` block) or that have no version are not in it.
+    #[test]
+    fn a_record_of_another_version_than_its_table_entry_needs_its_version_word_only() {
+        for (at, &(id, version)) in RECORD_VERSIONS.iter().enumerate() {
+            assert!(
+                !RECORD_VERSIONS[..at].iter().any(|&(other, _)| other == id),
+                "the id {id} is in the table two times"
+            );
+            assert_eq!(extension_needed(id, &(version + 1).to_le_bytes()), Some(4), "the id {id}");
+            let own = [version.to_le_bytes(), [0; 4]].concat();
+            assert!(
+                extension_needed(id, &own).is_some_and(|needed| needed > 4),
+                "the id {id} at its version"
+            );
+            assert_eq!(version_of(id), version);
+        }
+        for id in [ENVIRONMENT_ID, SETTINGS_ID, TUNE_ID, HELLO_ID, DEBUG_SHAPES_ID] {
+            assert_eq!(record_version(id), None, "the id {id}");
+        }
     }
 
     /// A record gives the uniform's `weather`: the two indices, the ratio and 1. Without a
