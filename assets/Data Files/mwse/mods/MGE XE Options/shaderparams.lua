@@ -202,7 +202,8 @@ end
 -- A value as a text, with the decimals of a step.
 local function shown(value, step)
 	local decimals = math.max(0, math.min(6, math.ceil(-math.log10(step) - 1e-6)))
-	return string.format("%." .. decimals .. "f", value)
+	-- %d: for a step of 1 the count is -0, which as text made the pattern "%.-0f".
+	return string.format(string.format("%%.%df", decimals), value)
 end
 
 -- The step of a row without one: a tenth of the size of the first value.

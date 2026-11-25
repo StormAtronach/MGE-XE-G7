@@ -39,10 +39,13 @@ local horizonId = {
 }
 
 -- Custom components
+
+-- A page of the menu. It fills the height between the tabs and the bottom bar, so that a
+-- scroll pane in it can take the height that is free (the shader list of the page Rendering).
 local function createPane(menu, id)
 	local p = menu:createBlock{id = id}
 	p.widthProportional = 1.0
-	p.autoHeight = true
+	p.heightProportional = 1.0
 	p.flowDirection = tes3.flowDirection.topToBottom
 	p.visible = false
 
@@ -53,6 +56,55 @@ local function createPane(menu, id)
 		end
 	end)
 	return p
+end
+
+-- A page whose rows scroll when they are taller than the menu: a scroll pane that fills the
+-- page. Returns the page and the element that takes the rows. The bar of the scroll pane shows
+-- only while the rows overflow (fitScrollingPages).
+local function createScrollingPane(menu, id)
+	-- The scroll pane is made while its page is visible: one made in a hidden page drew its rows
+	-- over the page that was shown (seen live, W663).
+	local p = createPane(menu, id)
+	p.visible = true
+	local scroll = p:createVerticalScrollPane{id = id .. ":Scroll"}
+	p.visible = false
+	scroll.widthProportional = 1.0
+	scroll.heightProportional = 1.0
+	-- No frame and no padding: the rows stand where they stood before the scroll pane. The frame
+	-- is taken away before the rows are made: a change of it later left the old rows drawn.
+	scroll.contentPath = nil
+	scroll.paddingAllSides = 0
+	scroll.widget.scrollbarVisible = false
+	local rows = scroll:getContentElement()
+
+	-- Propagate update event to the rows
+	scroll:registerBefore("update", function(e)
+		for i, child in ipairs(rows.children) do
+			child:triggerEvent(e)
+		end
+	end)
+	return p, rows
+end
+
+-- Shows the bar of the scroll pane of each visible page while its rows are taller than the
+-- space; true when one changed.
+local function fitScrollingPages(menu)
+	local changed = false
+	local e = menu:getContentElement()
+	for i = 2, #e.children - 1 do
+		local page = e.children[i]
+		local scroll = page.visible and page:findChild(page.name .. ":Scroll")
+		if scroll then
+			local frame = scroll:findChild("PartScrollPane_outer_frame")
+			local overflow = scroll:getContentElement().height > frame.height
+			if scroll.widget.scrollbarVisible ~= overflow then
+				scroll.widget.scrollbarVisible = overflow
+				scroll.widget:contentsChanged()
+				changed = true
+			end
+		end
+	end
+	return changed
 end
 
 local function showPane(menu, n)
@@ -388,7 +440,7 @@ end
 -- It is made on the wgpu renderer only.
 local function createDebugPane(menu)
 	local i18n = this.i18n
-	local pane = createPane(menu, "PaneDebug")
+	local _, pane = createScrollingPane(menu, "PaneDebug")
 
 	-- The view: each click sets the next one; the text under it says what the view shows.
 	local section = createGroup(pane)
@@ -480,15 +532,22 @@ function this.run()
 	menu.text = "MGE XE"
 	-- The tab "Debug" needs 524 px for the six tabs (484 px of tabs, 40 px of borders and frame).
 	menu.width = debugPage and 524 or 520
-	menu.height = 720
+	-- The menu is at most as tall as the screen (in the units of the UI scale), so that the
+	-- bottom bar stays in view in a small window; the pages scroll in the rest (W663).
+	local _, viewportHeight = tes3ui.getViewportSize()
+	local fullHeight = math.min(720, viewportHeight - 40)
+	menu.height = fullHeight
 	menu.minWidth = debugPage and 524 or 480
-	menu.minHeight = 720
+	menu.minHeight = fullHeight
 
 	-- Right-align menu default position
 	menu.positionX = 0.5 * menu.maxWidth - menu.width
 	menu.positionY = 0.5 * menu.height + 20
 	-- Restore menu position
 	menu:loadMenuPosition()
+	-- A size or a place kept from a larger screen.
+	menu.height = math.min(menu.height, viewportHeight - 40)
+	menu.positionY = math.min(menu.positionY, 0.5 * viewportHeight)
 
 	-- UI creation
 	local element
@@ -571,7 +630,10 @@ function this.run()
 		function(x) mge.camera.thirdPersonOffset = mge.camera.thirdPersonOffset + tes3vector3.new(0, 0, x) end,
 		5.0)
 
+	-- The group of the shaders takes the rest of the page; its list scrolls (W663).
 	section = createGroup(pane)
+	section.autoHeight = false
+	section.heightProportional = 1.0
 	createFeatureToggle(section, "shaders")
 	createNumberEdit(section, nil, i18n("HDRReactionSpeed"),
 		function() return string.format("%0.2f sec", mge.shaders.hdrReactionSpeed) end,
@@ -579,11 +641,12 @@ function this.run()
 		0.1)
 	createSpacer(section)
 	section:createLabel{text = i18n("ShaderList")}
-	element = section:createBlock()
-	element.widthProportional = 1.0
-	element.autoHeight = true
-	element.borderLeft = 30
-	element.flowDirection = tes3.flowDirection.topToBottom
+	local shaderList = section:createVerticalScrollPane{id = "MGE-XE:ShaderList"}
+	shaderList.widthProportional = 1.0
+	shaderList.heightProportional = 1.0
+	shaderList.borderLeft = 30
+	shaderList.borderTop = 4
+	element = shaderList:getContentElement()
 	-- A row of the list: the name, and a button that opens the parameters.
 	local function createShaderRow(name)
 		local row = element:createBlock{}
@@ -623,6 +686,7 @@ function this.run()
 		nameBlock:createLabel{text = group .. " " .. i18n("BuiltinSuffix")}
 		params:register("mouseClick", function(e) shaderparams.open{group = group} end)
 	end
+	shaderList.widget:contentsChanged()
 
 	-- A shader is loaded again when its file changes: for the author of a shader.
 	createSpacer(section)
@@ -647,7 +711,7 @@ function this.run()
 	end
 
 	-- Distant land pane
-	pane = createPane(menu, "PaneDistantLand")
+	_, pane = createScrollingPane(menu, "PaneDistantLand")
 	section = createGroup(pane)
 	createFeatureToggle(section, "distantLand")
 	createFeatureToggle(section, "distantStatics")
@@ -748,7 +812,7 @@ function this.run()
 	end
 
 	-- Water pane
-	pane = createPane(menu, "PaneWater")
+	_, pane = createScrollingPane(menu, "PaneWater")
 	section = createGroup(pane)
 	createFeatureToggle(section, "reflectiveWater")
 	createFeatureToggle(section, "reflectNearStatics")
@@ -778,7 +842,7 @@ function this.run()
 		1.0)
 
 	-- Weather pane
-	pane = createPane(menu, "PaneWeather")
+	_, pane = createScrollingPane(menu, "PaneWeather")
 
 	section = createGroup(pane)
 	section:createLabel{text = i18n("WeatherSectionTitle")}
@@ -826,7 +890,7 @@ function this.run()
 
 
 	-- Lighting pane
-	pane = createPane(menu, "PaneLighting")
+	_, pane = createScrollingPane(menu, "PaneLighting")
 	section = createGroup(pane)
 	createPPLCycler(section, i18n("LightingPerPixelMode"))
 	element = pane:createLabel{text = i18n("LightingCaveat")}
@@ -870,13 +934,11 @@ function this.run()
 		createDebugPane(menu)
 	end
 
+	-- Bottom bar. Save, load, close. The page above it fills the height, so it stays at the bottom.
 	section = menu:createBlock()
 	section.widthProportional = 1.0
-	section.heightProportional = 1.0
-	section.childAlignY = 1.0
 	section.autoHeight = true
 
-	-- Bottom bar. Save, load, close.
 	element = section:createButton{text = i18n("Save")}
 	element:register("mouseClick", function(e)
 		local success = pcall(mge.saveConfig)
@@ -900,6 +962,21 @@ function this.run()
 	element.childAlignX = 1.0
 	element:createButton{text = i18n("Close")}
 	element:register("mouseClick", function(e) menu:destroy() end)
+
+	-- After each layout (a page shown, the menu resized), the scroll bar of a page shows only
+	-- while its rows overflow; a change needs one more layout. A change of the UI scale can
+	-- lay out the menu after its destroy: then nothing is done.
+	local fitting = false
+	local destroyed = false
+	menu:registerAfter("destroy", function(e) destroyed = true end)
+	menu:registerAfter("update", function(e)
+		if fitting or destroyed then return end
+		fitting = true
+		if fitScrollingPages(menu) then
+			menu:updateLayout()
+		end
+		fitting = false
+	end)
 
 	-- Run layout twice to iron out use of proportional sizing on multiple branches.
 	showPane(menu, 1)
