@@ -545,9 +545,10 @@ function this.run()
 	menu.positionY = 0.5 * menu.height + 20
 	-- Restore menu position
 	menu:loadMenuPosition()
-	-- A size or a place kept from a larger screen.
+	-- A size or a place kept from a larger screen: the top and the bottom bar stay in view.
 	menu.height = math.min(menu.height, viewportHeight - 40)
 	menu.positionY = math.min(menu.positionY, 0.5 * viewportHeight)
+	menu.positionY = math.max(menu.positionY, menu.height - 0.5 * viewportHeight)
 
 	-- UI creation
 	local element
