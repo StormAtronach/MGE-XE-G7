@@ -103,6 +103,9 @@ pub struct Shadow {
     pub cascades: Cascades,
     /// Their world matrices in f32, with the layout of Direct3D: the casters and the cull.
     pub viewproj: [[f32; 16]; CASCADES],
+    /// The reach of the receivers that the cascades end at ([`receiver_reach`]), for the log
+    /// line of a change; 0 before the first frame.
+    reach: f32,
 }
 
 /// The values of the cascades for a receiver that has its points less the eye (the grass, the
@@ -221,11 +224,25 @@ pub const BAND: f32 = 0.1;
 const FIRST_END: f32 = 1000.0;
 
 /// The far ends of the cascades' slices along the view axis: cascade 0 ends at
-/// F = min(1000, D / 4), and the ends go geometric from F to the draw distance D.
-pub fn slice_ends(draw_distance: f32) -> [f32; CASCADES] {
-    let first = FIRST_END.min(draw_distance / 4.0) as f64;
-    let ratio = draw_distance as f64 / first;
+/// F = min(1000, R / 4), and the ends go geometric from F to the reach R of the receivers
+/// ([`receiver_reach`]).
+pub fn slice_ends(reach: f32) -> [f32; CASCADES] {
+    let first = FIRST_END.min(reach / 4.0) as f64;
+    let ratio = reach as f64 / first;
     core::array::from_fn(|i| (first * ratio.powf(i as f64 / 3.0)) as f32)
+}
+
+/// How far along the view axis the receivers of the sun shadow go: the game's view range
+/// `near_view_range`, where the game's draws end (the grass and the water volumes end there
+/// too), and never past the draw distance. Past it only the distant land and the distant
+/// statics draw, and they take no shadow. The draw distance when the game gives no range (0
+/// or less).
+pub fn receiver_reach(draw_distance: f32, near_view_range: f32) -> f32 {
+    if near_view_range > 0.0 {
+        draw_distance.min(near_view_range)
+    } else {
+        draw_distance
+    }
 }
 
 /// The near end of the slice of a cascade: the far end of the cascade before it, and 0 for the
@@ -339,16 +356,9 @@ pub struct Cascades {
 
 impl Cascades {
     /// The cascades of a camera at `eye` with the view axis `eye_vec` and the half-angle
-    /// tangents `tan`, to the draw distance, for the sun's `light_vec`.
-    pub fn new(
-        eye: [f32; 3],
-        eye_vec: [f32; 3],
-        tan: [f32; 2],
-        draw_distance: f32,
-        light_vec: [f32; 3],
-        resolution: u32,
-    ) -> Self {
-        let ends = slice_ends(draw_distance);
+    /// tangents `tan`, to the reach of the receivers, for the sun's `light_vec`.
+    pub fn new(eye: [f32; 3], eye_vec: [f32; 3], tan: [f32; 2], reach: f32, light_vec: [f32; 3], resolution: u32) -> Self {
+        let ends = slice_ends(reach);
         let axis = normalize64(eye_vec.map(f64::from));
         let spheres: [([f64; 3], f64); CASCADES] = core::array::from_fn(|i| {
             let (along, radius) = slice_sphere(fit_start(&ends, i), ends[i], tan[0], tan[1]);
@@ -645,21 +655,32 @@ impl Shadow {
             debug: false,
             cascades: Cascades::default(),
             viewproj: [[0.0; 16]; CASCADES],
+            reach: 0.0,
         }
     }
 
     /// The cascades of a frame: the camera at `eye` with the view axis `eye_vec`, its
-    /// projection (the half angles of its view), the draw distance, and the sun's light.
+    /// projection (the half angles of its view), the draw distance, the game's view range, and
+    /// the sun's light. The cascades end at the reach of the receivers ([`receiver_reach`]); a
+    /// change of the reach gives one log line.
     pub fn set_frame(
         &mut self,
         eye: [f32; 3],
         eye_vec: [f32; 3],
         projection: &[f32; 16],
         draw_distance: f32,
+        near_view_range: f32,
         light_vec: [f32; 3],
     ) {
+        let reach = receiver_reach(draw_distance, near_view_range);
+        if reach != self.reach {
+            println!(
+                "shadow: the cascades end at {reach} units (the game's view range {near_view_range}, the draw distance {draw_distance})"
+            );
+            self.reach = reach;
+        }
         let tan = [1.0 / projection[0].abs().max(1e-6), 1.0 / projection[5].abs().max(1e-6)];
-        self.cascades = Cascades::new(eye, eye_vec, tan, draw_distance, light_vec, self.resolution);
+        self.cascades = Cascades::new(eye, eye_vec, tan, reach, light_vec, self.resolution);
         self.viewproj = self.cascades.world.map(|world| world.map(|v| v as f32));
     }
 
@@ -815,7 +836,7 @@ const CASCADE_ROWS: [usize; CASCADES] = [0, 4, 13, 17];
 mod tests {
     use super::{
         BAND, CASCADES, Cascades, DEBUG_SHADER, DEPTH_UNIT, ESM_BIAS, ESM_C, ESM_SCALE, RADII, Shadow, cascade_of,
-        delta_in_unit, depth_step, layer_matrix, light_vector, slice_ends, slice_sphere, sun_light,
+        delta_in_unit, depth_step, layer_matrix, light_vector, receiver_reach, slice_ends, slice_sphere, sun_light,
     };
     use nirender_wgpu::wgpu::TextureFormat;
 
@@ -1162,6 +1183,27 @@ mod tests {
         }
         assert_eq!(light_vector(None), None);
         assert_eq!(light_vector(Some([0.0, 0.0, 0.0])), None);
+    }
+
+    /// The cascades end where the receivers end: at the game's view range 7168 with the draw
+    /// distance of 7 cells, the ends 1000, 1928, 3718 and 7168; with no range from the game (0),
+    /// the ends of the draw distance; with a draw distance below the range, the ends of the
+    /// draw distance (W437 stage 1).
+    #[test]
+    fn the_cascades_end_at_the_reach_of_the_receivers() {
+        let light = light_vector(Some([-0.416, 0.546, -0.728])).unwrap();
+        let ends = |draw_distance: f32, range: f32| {
+            let reach = receiver_reach(draw_distance, range);
+            Cascades::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], default_tan(), reach, light, 2048).ends
+        };
+        let stage1 = ends(DRAW_DISTANCE, 7168.0);
+        for (end, wanted) in stage1.iter().zip([1000.0, 1928.0, 3718.0, 7168.0]) {
+            assert!((end - wanted).abs() < 1.0, "{stage1:?}");
+        }
+        assert_eq!(ends(DRAW_DISTANCE, 0.0), slice_ends(DRAW_DISTANCE));
+        assert_eq!(ends(DRAW_DISTANCE, -1.0), slice_ends(DRAW_DISTANCE));
+        assert_eq!(ends(5000.0, 7168.0), slice_ends(5000.0));
+        assert_eq!(receiver_reach(DRAW_DISTANCE, 7168.0), 7168.0);
     }
 
     /// The camera of each layer looks along the light vector it is given: a point moved along

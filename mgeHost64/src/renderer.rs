@@ -3969,7 +3969,14 @@ impl Extension for DistantLand {
                 (Some(shadow), Some(e), Some(light_vec)) => {
                     let eye = scene.eye.map(|v| v as f32);
                     let eye_vec = [scene.view[2], scene.view[6], scene.view[10]];
-                    shadow.set_frame(eye, eye_vec, &scene.projection, self.draw_distance, light_vec);
+                    shadow.set_frame(
+                        eye,
+                        eye_vec,
+                        &scene.projection,
+                        self.draw_distance,
+                        e.near_view_range,
+                        light_vec,
+                    );
                     values = shadow.frame_values(
                         e.sun_vis,
                         &scene.view,

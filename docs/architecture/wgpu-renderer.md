@@ -223,7 +223,8 @@ first, and they wait for the scene that flushes the queue (P9): with the water s
 
 The shadow atlas is the extension's frame texture (`FrameParameters::texture`) of the game's draws. The grass
 binds it too, and so do the surfaces of the water volumes when their shadow setting is on. The land and the
-distant statics do not. The reflection is in the frame group of the water, for the plane and for the surfaces
+distant statics do not. So the cascades end at the game's view range, where these receivers end
+(`shadow::receiver_reach`; never past the draw distance). The reflection is in the frame group of the water, for the plane and for the surfaces
 of the volumes. The held draws and the water plane get the depth before the world (P2) when it was kept. When
 they read the depth, the held draws get the copy of the world depth made for the post chain at the world's end
 (P5), or a copy of their own when there is no post chain; the water plane gets a copy of its own.

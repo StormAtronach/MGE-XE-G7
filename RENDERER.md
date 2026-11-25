@@ -424,17 +424,21 @@ Differences from MGE XE on Direct3D 9 that are by design, not issues:
   on the ground under it does; Direct3D 9 does not fade it. The parameter "Grass: shadow" of
   the renderer's parameters window chooses: 2 (as the ground), 1 (as Direct3D 9), 0 (no
   shadow on the grass).
-- The shadow map has four cascades to the draw distance (W437), in place of the two layers
-  of Direct3D 9 (1000 and 4000 units). Each covers the sphere of its slice of the view, so a
+- The shadow map has four cascades to the game's view range (W437), in place of the two
+  layers of Direct3D 9 (1000 and 4000 units). Only the game's own draws, the grass and the
+  water volumes take the shadow, and they end at the game's view range: 7168 units with
+  distant land on. The distant land and the distant statics take none. The cascades never go
+  past the draw distance. Each covers the sphere of its slice of the view, so a
   texel has the same size in every view direction, and it is snapped to whole texels of the
   sun's view from the world's origin, so the shadow's edges stay in place when the camera
   moves. A pixel takes the cascade of its distance along the view axis and blends with the
-  next one over the last 10 % of the slice; the last cascade fades out to the draw distance.
-  The distant statics cast in the last cascade at their coarsest level of detail: its texels
-  are too large to show the finer ones. A static with no triangles at that level takes the
-  next finer one, never finer than the level of its distance. The parameter "Shadow: far
-  casters' detail" (`shadow.far_level`) of the renderer's parameters window sets it: 2 (the
-  coarsest, the start), 1, or 0 (the level of the distance, as the other cascades).
+  next one over the last 10 % of the slice; the last cascade fades out to the game's view
+  range.
+  The distant statics cast in the last cascade at the level of detail of their distance, as
+  in the other cascades. The parameter "Shadow: far casters' detail" (`shadow.far_level`) of
+  the renderer's parameters window can give them a coarser one: 0 (the level of the distance,
+  the start), 1, or 2 (the coarsest). A static with no triangles at that level takes the next
+  finer one, never finer than the level of its distance.
 - A skinned shape takes every authored influence. On Direct3D 9 a vertex has at most 4, so a
   picture differs on a triangle with over 4 bones across its vertices.
 - The character in the inventory is lighter than on Direct3D 9. The light is the one that
