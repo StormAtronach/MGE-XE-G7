@@ -3043,8 +3043,9 @@ mod tests {
     /// 812 4.2): none stores data there. CRT, Disorient and deband_fogaware make noise,
     /// jop_adjuster wraps a hue, CRT draws scanlines, Invisibility moves a coordinate, the two fog
     /// boxes and Eternal Shine add their own ordered dither, jop_lut and XERO-lut find the slice of
-    /// a colour table, and Cinematic Bokeh DoF finds the place of a tap.
-    const LAST_PASS_FORMS_READ: [&str; 12] = [
+    /// a colour table, Cinematic Bokeh DoF finds the place of a tap, and underwaterdust repeats space
+    /// into the cells of its dust.
+    const LAST_PASS_FORMS_READ: [&str; 13] = [
         "CRT",
         "CRT Zoomed Out",
         "Cinematic Bokeh DoF",
@@ -3057,6 +3058,7 @@ mod tests {
         "jop_lut",
         "oj_me_fog_box",
         "tew_fogbox",
+        "underwaterdust",
     ];
 
     /// The body of the function `name` in `text`, with its braces.
