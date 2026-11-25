@@ -1,5 +1,5 @@
 //! interface: mge-xe-wgsl 1
-//! passes: rays
+//! passes: rays f16
 //! category: scene
 //! mgeflags: 17
 
@@ -60,5 +60,7 @@ fn fetch(tex: vec3f, uw: f32) -> f32 {
     shellpos3 = vec3f(shellpos3.xy + 1.2 * r * shellpos3.z, shellpos3.z);
     rayz += fetch(shellpos3, 3.0 * eyepos.z) * saturate(d / 800.0 - 2.0) * 0.065;
 
-    return c + rayz * lf * lightcolour;
+    // The pass draws into 16-bit floats, so that the soft edge of the rays has no steps. The
+    // 8-bit target of the effect file kept 0 to 1: the clamp keeps that range.
+    return clamp(c + rayz * lf * lightcolour, vec4f(0.0), vec4f(1.0));
 }

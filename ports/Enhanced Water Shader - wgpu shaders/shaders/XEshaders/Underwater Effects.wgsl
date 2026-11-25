@@ -1,5 +1,5 @@
 //! interface: mge-xe-wgsl 1
-//! passes: rays, chroma
+//! passes: rays f16, chroma f16
 //! category: none
 //! mgeflags: 17
 
@@ -72,7 +72,9 @@ fn fetch(tex: vec3f, uw: f32) -> f32 {
         result += rayz * 0.3;
         result += 0.3 * green;
     }
-    return result;
+    // The pass draws into 16-bit floats, so that the soft edge of the rays has no steps. The
+    // 8-bit target of the file kept 0 to 1: the clamp keeps that range.
+    return clamp(result, vec4f(0.0), vec4f(1.0));
 }
 
 @fragment fn chroma(in: Quad) -> @location(0) vec4f {

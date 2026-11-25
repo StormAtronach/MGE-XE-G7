@@ -90,6 +90,19 @@ has in its annotations. The rest of the file is WGSL.
 MGE XE on the game side (d3d8.dll) reads these lines with the same parser as the renderer
 (mge-config's `post_header`): a file that one of them refuses, the other refuses too.
 
+The last pass of a shader is its picture, which the next shader reads as `lastshader`. The
+renderer draws it into 16-bit floats, clamped to 0 to 1 as an 8-bit store clips, so that a soft
+gradient keeps its fine steps when the next shaders stretch it (W660). The renderer does this by
+its own entry point around the last pass, so the last pass must have the form of a pass (below)
+and must not be a pass twice; a last pass of another form stays in 8 bits. A last pass with
+`f16` in the header is not clamped. The passes before the last keep their format: they can keep
+data in their 8 bits, as the SSAO shaders keep a depth in two colours. So the last pass must not
+keep data: it is a picture. The copy of a 16-bit result into the frame adds less than half a
+level of a fixed noise of the pixel to red, green and blue: the one dither of the chain. The GPU
+rounds a sum near half a level either way, so a few pixels of a flat colour move by one level.
+Alpha keeps its value, and the noise is the same in every frame. MGE XE on Direct3D 9 stores
+each picture in 8 bits and has no dither.
+
 ## What a shader has
 
 The renderer puts a common part before the file. A shader does not declare these:

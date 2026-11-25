@@ -81,8 +81,23 @@ impl FrameLightInfo {
     }
 }
 
+/// The dither of the copy of a 16-bit picture into the 8 bits of the frame (W660), as WGSL:
+/// interleaved gradient noise of the pixel (Jimenez 2014), less than half a level each way, the
+/// same in every frame, so that a replay of a capture stays exact. Alpha keeps its value. The GPU
+/// rounds a sum near half a level either way, so a few pixels of a flat colour move by one level.
+macro_rules! dither_wgsl {
+    () => {
+        "
+fn mge_xe_dither(color: vec4f, position: vec4f) -> vec4f {
+    let noise = fract(52.9829189 * fract(dot(floor(position.xy), vec2f(0.06711056, 0.00583715))));
+    return vec4f(color.rgb + (noise - 0.5) * (0.99 / 255.0), color.a);
+}
+"
+    };
+}
+
 /// The part of each shader module that every shader has: the variables, the textures, the
-/// samplers, the quad, and the helpers of HLSL that WGSL does not have.
+/// samplers, the quad and the helpers of HLSL that WGSL does not have.
 const COMMON: &str = "
 struct Variables {
     mview: mat4x4f,
@@ -231,6 +246,63 @@ struct Quad {
     return out;
 }
 ";
+
+/// The prefix of the entry point that the renderer adds for the clamped last pass of a shader
+/// ([`last_pass`]).
+const CLAMPED_PREFIX: &str = "mge_xe_clamped_";
+
+/// The last pass of a shader file, as the renderer compiles it (W660).
+#[cfg_attr(test, derive(Debug, PartialEq))]
+enum LastPass {
+    /// The file with the last pass clamped, and the entry point of each pass.
+    Clamped(String, Vec<String>),
+    /// The header asks for 16-bit floats on the last pass: the file as it is.
+    HalfFloat,
+    /// The last pass is not `@fragment fn <name>(in: Quad) -> @location(0) vec4f {` once in the
+    /// file, or its function is also an earlier pass: the file as it is, in 8 bits.
+    OtherForm,
+}
+
+/// What the renderer does with the last pass of a shader file (W660).
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
+enum LastForm {
+    /// In 16-bit floats, clamped to 0..1.
+    Clamped,
+    /// In 16-bit floats by its header, not clamped.
+    HalfFloat,
+    /// Another form: as its header says.
+    Other,
+}
+
+/// The last pass of the file `source` with the passes `passes`, clamped to 0..1 for its store into
+/// 16-bit floats: its function loses `@fragment` and the `@location(0)` of its return, and the
+/// entry point `mge_xe_clamped_<name>` returns its result clamped. The renderer gives that pass a
+/// 16-bit target, so a soft gradient keeps its fine steps until the copy into the frame, which
+/// dithers once; the clamp keeps the range of the 8-bit store (0 to 1; a NaN gives 0 where min and
+/// max return the other operand, as on Direct3D). Only the last pass: it is the picture that the
+/// next shader reads, and a pass before it can hold data in its 8 bits (the depth that the SSAO
+/// shaders pack into two channels). The lines of the file keep their numbers: the new entry point
+/// comes after them.
+fn last_pass(source: &str, passes: &[(String, u32, bool)]) -> LastPass {
+    let Some(((entry, _, half_float), earlier)) = passes.split_last() else {
+        return LastPass::OtherForm;
+    };
+    if *half_float {
+        return LastPass::HalfFloat;
+    }
+    let head = format!("@fragment fn {entry}(in: Quad) -> @location(0) vec4f {{");
+    if source.matches(head.as_str()).count() != 1 || earlier.iter().any(|(name, _, _)| name == entry) {
+        return LastPass::OtherForm;
+    }
+    let plain = source.replacen(&head, &format!("fn {entry}(in: Quad) -> vec4f {{"), 1);
+    let text = format!(
+        "{plain}\n@fragment fn {CLAMPED_PREFIX}{entry}(in: Quad) -> @location(0) vec4f {{\n    return clamp({entry}(in), vec4f(0.0), vec4f(1.0));\n}}\n"
+    );
+    let mut entries: Vec<String> = earlier.iter().map(|(name, _, _)| name.clone()).collect();
+    entries.push(format!("{CLAMPED_PREFIX}{entry}"));
+    LastPass::Clamped(text, entries)
+}
 
 /// The places of the variables of a shader in the uniform `modv`: 256 vectors of 4 floats.
 const MOD_SLOTS: usize = 256;
@@ -591,6 +663,28 @@ impl Definition {
         })
     }
 
+    /// The WGSL of the file as the renderer compiles it after the common part, the entry point of
+    /// each pass, and the form of its last pass ([`last_pass`]).
+    fn compiled_text(&self) -> (String, Vec<String>, LastForm) {
+        let own = || self.passes.iter().map(|(entry, _, _)| entry.clone()).collect();
+        match last_pass(&self.source, &self.passes) {
+            LastPass::Clamped(text, entries) => (text, entries, LastForm::Clamped),
+            LastPass::HalfFloat => (self.source.clone(), own(), LastForm::HalfFloat),
+            LastPass::OtherForm => (self.source.clone(), own(), LastForm::Other),
+        }
+    }
+
+    /// For each pass, true when it draws into 16-bit floats: its header's `f16`, and the last pass
+    /// when the renderer clamps it (`form`).
+    fn half_floats(&self, form: LastForm) -> Vec<bool> {
+        let last = self.passes.len().saturating_sub(1);
+        self.passes
+            .iter()
+            .enumerate()
+            .map(|(index, (_, _, half_float))| *half_float || (index == last && form == LastForm::Clamped))
+            .collect()
+    }
+
     /// The shader of the chain name `name`: the file `shaders/XEshaders/<name>.wgsl` that `read`
     /// gives. A name with no such file is skipped, also when an effect file `<name>.fx` is there:
     /// the renderer has no shader of its own for an effect file (W609 step 5).
@@ -911,8 +1005,10 @@ struct Quad {
 }
 ";
 
-/// The copy of the result into the picture of the frame.
-pub(super) const BLIT_SHADER: &str = "
+/// The bindings, the quad and the vertex function of a copy of a picture.
+macro_rules! blit_head {
+    () => {
+        "
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var source_sampler: sampler;
 
@@ -929,11 +1025,32 @@ struct Quad {
     out.tex = vec2f(0.5 + 0.5 * x, 0.5 - 0.5 * y);
     return out;
 }
+"
+    };
+}
 
+/// The copy of a picture.
+pub(super) const BLIT_SHADER: &str = concat!(
+    blit_head!(),
+    "
 @fragment fn fs(in: Quad) -> @location(0) vec4f {
     return textureSampleLevel(source, source_sampler, in.tex, 0.0);
 }
-";
+"
+);
+
+/// The copy of a 16-bit result of the chain into the picture of the frame, with the dither of a
+/// store into 8 bits (`dither_wgsl!`; W660): the one dither of the chain. An 8-bit result (a last
+/// pass of another form) goes through the plain copy ([`BLIT_SHADER`]), as on Direct3D 9.
+const DITHERED_BLIT_SHADER: &str = concat!(
+    blit_head!(),
+    dither_wgsl!(),
+    "
+@fragment fn fs(in: Quad) -> @location(0) vec4f {
+    return mge_xe_dither(textureSampleLevel(source, source_sampler, in.tex, 0.0), in.position);
+}
+"
+);
 
 /// A look at a term, for a test: the debug view `post 1` tints the result, `post 2` shows the linear
 /// depth over 10000 units as grey.
@@ -1215,7 +1332,9 @@ pub struct Post {
     black: wgpu::TextureView,
     depth_pipeline: wgpu::RenderPipeline,
     depth_layout: wgpu::BindGroupLayout,
+    /// The copy of an 8-bit result into the frame, and of a 16-bit result with the dither.
     blit_pipeline: wgpu::RenderPipeline,
+    dithered_blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
     /// The term of the debug view `post` (0: off): [`Post::set_debug`].
     debug: f32,
@@ -1419,6 +1538,13 @@ impl Post {
             ],
         });
         let blit_pipeline = full_screen_pipeline(device, "post blit", BLIT_SHADER, &blit_layout, scene.target_format);
+        let dithered_blit_pipeline = full_screen_pipeline(
+            device,
+            "post dithered blit",
+            DITHERED_BLIT_SHADER,
+            &blit_layout,
+            scene.target_format,
+        );
         let debug = 0.0f32;
         let debug_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post debug"),
@@ -1481,6 +1607,7 @@ impl Post {
             depth_pipeline,
             depth_layout,
             blit_pipeline,
+            dithered_blit_pipeline,
             blit_layout,
             debug,
             debug_pipeline,
@@ -1529,7 +1656,15 @@ impl Post {
             }
         };
         let functions = variables_wgsl(&shader.variables);
-        let source = format!("{COMMON}\n{functions}\n{}", shader.source);
+        let (text, entries, form) = shader.compiled_text();
+        if form == LastForm::Other {
+            println!(
+                "post: the last pass of the shader {} is not `@fragment fn <name>(in: Quad) -> @location(0) vec4f {{` of its own; its picture stays in 8 bits",
+                shader.name
+            );
+        }
+        let half_floats = shader.half_floats(form);
+        let source = format!("{COMMON}\n{functions}\n{text}");
         // An error of the WGSL of a file, or a pass that is not a function of it, comes
         // back from the scope and does not stop the program.
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1540,7 +1675,9 @@ impl Post {
         let passes: Vec<CompiledPass> = shader
             .passes
             .iter()
-            .map(|(entry, scale, half_float)| {
+            .zip(&entries)
+            .zip(&half_floats)
+            .map(|(((_, scale, _), entry), half_float)| {
                 let format = if *half_float {
                     wgpu::TextureFormat::Rgba16Float
                 } else {
@@ -2106,7 +2243,11 @@ impl Post {
                 },
             );
             let mut pass = full_screen_pass(encoder, target, wgpu::LoadOp::Load, "post: the result into the picture");
-            pass.set_pipeline(&self.blit_pipeline);
+            pass.set_pipeline(if view.pool[index].half_float {
+                &self.dithered_blit_pipeline
+            } else {
+                &self.blit_pipeline
+            });
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -2237,12 +2378,13 @@ mod shader_tests {
     use super::*;
 
     /// The shaders of the chain itself compile as the device checks them: the depth frame,
-    /// the blit of a picture, and the debug tint.
+    /// the blit of a picture and its dithered form, and the debug tint.
     #[test]
     fn the_shaders_of_the_chain_are_valid() {
         let check = crate::renderer::shader_check::check;
         check("post depth", &format!("{}{DEPTH_SHADER}", nirender_wgpu::depth::wgsl())).unwrap();
         check("post blit", BLIT_SHADER).unwrap();
+        check("post dithered blit", DITHERED_BLIT_SHADER).unwrap();
         check("post debug", DEBUG_BLIT_SHADER).unwrap();
     }
 }
@@ -2693,7 +2835,11 @@ mod tests {
                     continue;
                 }
             };
-            let source = format!("{COMMON}\n{}\n{}", variables_wgsl(&definition.variables), definition.source);
+            let (text, entries, form) = definition.compiled_text();
+            if form == LastForm::Other {
+                problems.push(format!("{name}: the last pass has another form and stays in 8 bits"));
+            }
+            let source = format!("{COMMON}\n{}\n{text}", variables_wgsl(&definition.variables));
             let module = match crate::renderer::shader_check::check(name, &source) {
                 Ok(module) => module,
                 Err(problem) => {
@@ -2701,7 +2847,7 @@ mod tests {
                     continue;
                 }
             };
-            for (entry, _, _) in &definition.passes {
+            for entry in &entries {
                 if !module
                     .entry_points
                     .iter()
@@ -2793,12 +2939,16 @@ mod tests {
             std::fs::remove_dir(empty).unwrap();
         }
         assert_eq!(names, ["Sub/bad", "good", "none"]);
-        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert_eq!(problems.len(), 3, "{problems:?}");
         assert!(
-            problems[0].contains("Sub/bad: the pass other is not a fragment function"),
+            problems[0].contains("Sub/bad: the last pass has another form and stays in 8 bits"),
             "{problems:?}"
         );
-        assert!(problems[1].contains("none.wgsl"), "{problems:?}");
+        assert!(
+            problems[1].contains("Sub/bad: the pass other is not a fragment function"),
+            "{problems:?}"
+        );
+        assert!(problems[2].contains("none.wgsl"), "{problems:?}");
     }
 
     /// W609 step 5: a chain name with no `.wgsl` file is skipped with its line and its note, also
@@ -2837,6 +2987,294 @@ mod tests {
             "{}",
             skip.note
         );
+    }
+
+    /// W660: the last pass of a file is clamped and draws into 16-bit floats. Its function is no
+    /// entry point any more, keeps its line, and the new entry point returns it clamped; the file
+    /// compiles; the passes before keep their format. The null: a last pass in 16-bit floats by its
+    /// header, a last pass of another form, and a function that is two passes keep the file as it
+    /// is, and the last pass of another form stays in 8 bits.
+    #[test]
+    fn the_last_pass_is_clamped_into_half_floats() {
+        use wgpu::naga;
+        let file = "//! interface: mge-xe-wgsl 1\n//! passes: first, last\n\n\
+            @fragment fn first(in: Quad) -> @location(0) vec4f {\n\
+            \x20   return vec4f(0.5);\n\
+            }\n\
+            @fragment fn last(in: Quad) -> @location(0) vec4f {\n\
+            \x20   return textureSampleLevel(lastpass, linear_clamp, in.tex, 0.0);\n\
+            }\n";
+        let definition = Definition::of_file("two", file).unwrap();
+        let (text, entries, form) = definition.compiled_text();
+        assert_eq!(form, LastForm::Clamped);
+        assert_eq!(definition.half_floats(form), [false, true]);
+        assert_eq!(entries, ["first", "mge_xe_clamped_last"]);
+        assert!(
+            text.contains("@fragment fn first(in: Quad) -> @location(0) vec4f {"),
+            "{text}"
+        );
+        assert!(text.contains("\nfn last(in: Quad) -> vec4f {"), "{text}");
+        assert!(text.contains("return clamp(last(in), vec4f(0.0), vec4f(1.0));"), "{text}");
+        let line_of = |t: &str| t.lines().position(|line| line.contains("fn last("));
+        assert_eq!(line_of(&text), line_of(file), "the function keeps its line");
+        let source = format!("{COMMON}\n{}\n{text}", variables_wgsl(&definition.variables));
+        let module = crate::renderer::shader_check::check("two", &source).expect("the clamped file compiles");
+        let fragments: Vec<&str> = module
+            .entry_points
+            .iter()
+            .filter(|point| point.stage == naga::ShaderStage::Fragment)
+            .map(|point| point.name.as_str())
+            .collect();
+        assert_eq!(fragments, ["first", "mge_xe_clamped_last"]);
+
+        let own = vec!["first".to_string(), "last".to_string()];
+        let half = Definition::of_file("half", &file.replace("first, last", "first, last f16")).unwrap();
+        assert_eq!(half.compiled_text(), (half.source.clone(), own.clone(), LastForm::HalfFloat));
+        assert_eq!(half.half_floats(LastForm::HalfFloat), [false, true]);
+        let other = Definition::of_file("other", &file.replace("fn last(in: Quad)", "fn last(q: Quad)")).unwrap();
+        assert_eq!(other.compiled_text(), (other.source.clone(), own, LastForm::Other));
+        assert_eq!(other.half_floats(LastForm::Other), [false, false]);
+        let twice = Definition::of_file("twice", &file.replace("first, last", "last, last")).unwrap();
+        assert_eq!(twice.compiled_text().2, LastForm::Other);
+    }
+
+    /// The files whose last pass, or a function that it calls, has a form that can pack data into
+    /// 8 bits (a multiply by 255, `fract`, `floor`, `%`), each read (W660, verdicts 807 4.2 and
+    /// 812 4.2): none stores data there. CRT, Disorient and deband_fogaware make noise,
+    /// jop_adjuster wraps a hue, CRT draws scanlines, Invisibility moves a coordinate, the two fog
+    /// boxes and Eternal Shine add their own ordered dither, jop_lut and XERO-lut find the slice of
+    /// a colour table, Cinematic Bokeh DoF finds the place of a tap, and underwaterdust repeats space
+    /// into the cells of its dust.
+    const LAST_PASS_FORMS_READ: [&str; 13] = [
+        "CRT",
+        "CRT Zoomed Out",
+        "Cinematic Bokeh DoF",
+        "Disorient",
+        "Eternal Shine",
+        "Invisibility",
+        "XERO-lut",
+        "deband_fogaware",
+        "jop_adjuster",
+        "jop_lut",
+        "oj_me_fog_box",
+        "tew_fogbox",
+        "underwaterdust",
+    ];
+
+    /// The body of the function `name` in `text`, with its braces.
+    fn function_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+        let start = text.find(&format!("fn {name}("))?;
+        let open = start + text[start..].find('{')?;
+        let mut depth = 0;
+        for (at, c) in text[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&text[open..=open + at]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The body of the function `entry` in `text` and the bodies of the functions of `text` that it
+    /// calls: one level, as a pass that packs data can do it in a helper (SSAO Fast.wgsl:35).
+    fn pass_bodies(text: &str, entry: &str) -> String {
+        let body = function_body(text, entry).unwrap_or_else(|| panic!("no function {entry}"));
+        let mut all = body.to_string();
+        let mut called: Vec<&str> = Vec::new();
+        let mut start = None;
+        for (at, c) in body.char_indices() {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                start.get_or_insert(at);
+                continue;
+            }
+            if let Some(from) = start.take() {
+                let name = &body[from..at];
+                if c == '(' && name != entry && !called.contains(&name) {
+                    called.push(name);
+                }
+            }
+        }
+        for name in called {
+            if let Some(helper) = function_body(text, name) {
+                all.push_str(helper);
+            }
+        }
+        all
+    }
+
+    /// The last pass of a shader is a picture, which the renderer stores in 16-bit floats (W660):
+    /// no post shader file of the packs and of our package has a form in its last pass, or in a
+    /// function of the file that the last pass calls, that can pack data, other than the files read
+    /// and named in [`LAST_PASS_FORMS_READ`]. A new file with such a form fails here until someone
+    /// reads it and names it.
+    #[test]
+    fn no_last_pass_packs_data() {
+        let ports = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ports");
+        let mut files: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(&ports)
+            .expect("the folder ports")
+            .flat_map(|pack| post_files(&pack.expect("a pack").path()))
+            .collect();
+        files.extend(post_files(&package_folder()));
+        assert!(files.len() >= PACK_FILES_AT_LEAST + STOCK_FILES_AT_LEAST);
+        let mut found: Vec<String> = Vec::new();
+        for (name, path) in &files {
+            let text = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
+            let definition = Definition::of_file(name, &text).unwrap();
+            let (entry, _, _) = definition.passes.last().expect("a pass");
+            let body = pass_bodies(&text, entry);
+            if ["255", "fract(", "floor(", "%"].iter().any(|form| body.contains(form)) {
+                found.push(name.clone());
+            }
+        }
+        found.sort();
+        assert_eq!(
+            found, LAST_PASS_FORMS_READ,
+            "a last pass with a form that can pack data: read it, then name it in LAST_PASS_FORMS_READ"
+        );
+    }
+
+    /// Stores `value` in each colour and 0.6 in alpha, with the dither, into an 8-bit target of 64
+    /// by 64 pixels on the GPU, and gives the pixels.
+    fn dithered_constant(value: f32) -> Vec<[u8; 4]> {
+        let _one_at_a_time = crate::renderer::one_gpu_test_at_a_time();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let size = 64;
+        let target = device.counted_texture(&wgpu::TextureDescriptor {
+            label: Some("test dither"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let source = format!(
+            "{}
+@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {{
+    return vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0);
+}}
+@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {{
+    return mge_xe_dither(vec4f(vec3f({value:.9}), 0.6), position);
+}}
+",
+            dither_wgsl!()
+        );
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test dither"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("test dither"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let row = size * 4;
+        let readback = device.counted_buffer(&wgpu::BufferDescriptor {
+            label: Some("test dither"),
+            size: u64::from(row * size),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let target_view = target.counted_view(&Default::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("test dither"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Default::default(),
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: None,
+                },
+            },
+            target.size(),
+        );
+        queue.submit([encoder.finish()]);
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |result| result.expect("the map"));
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("the poll");
+        let bytes = readback.slice(..).get_mapped_range().expect("the mapped range");
+        bytes.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect()
+    }
+
+    /// The dither on the GPU (W660): a value a quarter of a level above 100 stores as 100 or 101
+    /// only, with about a quarter of the pixels at 101, and three quarters above gives about three
+    /// quarters at 101; a whole level stores as 99 or 100 only, with few pixels at 99 (the GPU rounds
+    /// a value near half a level not exactly: 174 of 4096 pixels on the probe of 2026-11-25); alpha
+    /// keeps its value. The pattern is the same at each run. Needs a GPU:
+    /// `cargo test -p mgeHost64 --release -- --ignored the_dither`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_dither_moves_a_store_by_less_than_a_level() {
+        for (above, low, high) in [(0.25, 0.18, 0.32), (0.75, 0.68, 0.82)] {
+            let pixels = dithered_constant((100.0 + above) / 255.0);
+            assert!(
+                pixels
+                    .iter()
+                    .all(|p| p[..3].iter().all(|&c| c == 100 || c == 101) && p[3] == 153),
+                "only 100 and 101, alpha 153"
+            );
+            let share = pixels.iter().filter(|p| p[0] == 101).count() as f64 / pixels.len() as f64;
+            println!("{above} of a level above 100: {share:.3} of the pixels at 101");
+            assert!((low..=high).contains(&share), "{share} at 101 for {above} above");
+            assert_eq!(pixels, dithered_constant((100.0 + above) / 255.0), "the same pattern again");
+        }
+        let whole = dithered_constant(100.0 / 255.0);
+        assert!(
+            whole
+                .iter()
+                .all(|p| p[..3].iter().all(|&c| c == 99 || c == 100) && p[3] == 153),
+            "a whole level: only 99 and 100, alpha 153"
+        );
+        let share = whole.iter().filter(|p| p[0] == 99).count() as f64 / whole.len() as f64;
+        println!("a whole level: {share:.3} of the pixels at 99");
+        assert!(share <= 0.1, "{share} at 99 for a whole level");
     }
 }
 
